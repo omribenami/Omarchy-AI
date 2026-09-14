@@ -16,16 +16,19 @@ import logging
 import queue
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 
 import av
 import numpy as np
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamTrack
 from rapidfuzz import fuzz
 
 from ..config import Config
+from ..execution.actions import run_action
+from ..execution.tools import TOOLS
 
 log = logging.getLogger("omarchy_ai.voice.live")
 
@@ -115,8 +118,13 @@ class LiveSession:
     # than free-form user speech, and `instructions` explicitly tells it to
     # say a farewell when the user wants to end — this reads that back.
     _FAREWELL_MARKERS = (
-        "goodbye", "good bye", "bye for now", "bye!", "bye.", "take care",
-        "see you", "farewell", "talk to you later", "have a good",
+        # "take care" deliberately excluded — confirmed live false
+        # positive: the model said "let me take care of that" while about
+        # to run a tool, not goodbye. Genuinely ambiguous now that it also
+        # narrates handling requests, not just safe to assume.
+        "goodbye", "good bye", "bye for now", "bye!", "bye.",
+        "farewell", "talk to you later", "take care of yourself",
+        "take care now",
     )
 
     def __init__(self, config: Config):
@@ -126,6 +134,13 @@ class LiveSession:
         self._input_buffer = ""
         self._output_buffer = ""
         self._farewell_scheduled = False
+        self._dc = None
+        self._handled_call_ids: set[str] = set()
+        # In-memory only, per conversation — resets every session. A
+        # per-window ("per-tile") log so the model can recall what it's
+        # already done to a specific window rather than only the last
+        # thing overall.
+        self._action_log: list[dict] = []
 
     def _read_key(self) -> str:
         with open(self.config.api_key_path) as f:
@@ -185,23 +200,110 @@ class LiveSession:
             proc.wait()
 
     def _check_function_call(self, event: dict) -> None:
-        """Look for an end_conversation tool call inside a response.event
-        wrapper. Schema not fully documented — this checks the shapes
-        actually observed in this session's response.output_item.* events
-        (item.type == "function_call") plus the more conventional
-        top-level Responses-API streaming event name, in case the real
-        session uses that instead. Logged at debug either way so the real
-        shape can be confirmed/corrected from a live run.
+        """Look for a tool call inside a response.event wrapper.
+
+        Schema not fully documented for this brand-new API — checks the
+        shape actually observed live (response.output_item.done, item.type
+        == "function_call"). Only acts on .done (not .added) so arguments
+        are complete, and dedupes by call_id since a real conversation can
+        legitimately call the same tool more than once.
         """
         inner = event.get("event", {})
+        if inner.get("type") != "response.output_item.done":
+            return
         item = inner.get("item", {})
-        if (
-            inner.get("type") in ("response.output_item.done", "response.output_item.added")
-            and item.get("type") == "function_call"
-            and item.get("name") == "end_conversation"
-        ):
+        if item.get("type") != "function_call":
+            return
+        call_id = item.get("call_id") or item.get("id")
+        name = item.get("name")
+        if not call_id or call_id in self._handled_call_ids:
+            return
+        self._handled_call_ids.add(call_id)
+
+        if name == "end_conversation":
             log.info("end_conversation tool call received")
             self._hangup.set()
+            return
+
+        raw_args = item.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except json.JSONDecodeError:
+            args = {}
+
+        if name == "get_recent_actions":
+            output = self._get_recent_actions(args.get("target"))
+            self._send_function_result(call_id, True, output)
+            return
+
+        # Executing inline here (this is a sync callback off the data
+        # channel) blocks the whole asyncio event loop for however long the
+        # action takes — confirmed live as a real bug: describe_screen's
+        # multi-second vision API call froze the loop long enough that
+        # aiortc's own connection handling underneath it broke. Every
+        # action, not just slow ones, needs to run off-loop.
+        asyncio.ensure_future(self._run_tool_call(call_id, name, args))
+
+    async def _run_tool_call(self, call_id: str, name: str, args: dict) -> None:
+        loop = asyncio.get_event_loop()
+        window = await loop.run_in_executor(None, self._current_window)
+        log.info("tool call: %s(%s)", name, args)
+        result = await loop.run_in_executor(None, run_action, name, args)
+        log.info("tool result: ok=%s message=%r", result.ok, result.message)
+        self._action_log.append(
+            {"action": name, "args": args, "ok": result.ok, "window": window}
+        )
+        self._send_function_result(call_id, result.ok, result.message)
+
+    @staticmethod
+    def _current_window() -> dict:
+        try:
+            r = run_action("list_windows", {})
+            if r.ok:
+                for w in json.loads(r.message):
+                    if w.get("focused"):
+                        return {"app": w.get("app"), "title": w.get("title")}
+        except Exception:  # noqa: BLE001
+            log.debug("failed to resolve current window", exc_info=True)
+        return {}
+
+    def _get_recent_actions(self, target: str | None) -> str:
+        entries = self._action_log
+        if target:
+            needle = target.lower()
+            entries = [
+                e for e in entries
+                if needle in (e.get("window", {}).get("app") or "").lower()
+                or needle in (e.get("window", {}).get("title") or "").lower()
+            ]
+        if not entries:
+            return json.dumps([])
+        return json.dumps(entries[-20:])
+
+    def _send_function_result(self, call_id: str, ok: bool, message: str) -> None:
+        if self._dc is None:
+            return
+        # "conversation.item.create" (the older Realtime API's convention)
+        # is rejected on this API — confirmed live, the error response
+        # listed the real supported event types, "response.item.create"
+        # among them. Same item shape, corrected event name.
+        payload = {
+            "type": "response.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps({"ok": ok, "message": message}),
+            },
+        }
+        try:
+            self._dc.send(json.dumps(payload))
+            # Submitting the result doesn't make the model continue on its
+            # own — confirmed live: no error, but also no reaction at all
+            # for 6+ seconds until this was added. Same "explicit trigger
+            # needed" pattern as the very first response.
+            self._dc.send(json.dumps({"type": "response.create"}))
+        except Exception:  # noqa: BLE001
+            log.debug("failed to send function_call_output", exc_info=True)
 
     def _check_farewell(self, text: str) -> bool:
         norm = text.strip().lower()
@@ -240,17 +342,41 @@ class LiveSession:
             log.info("end_conversation tool call received (top-level event)")
             self._hangup.set()
         elif etype == "error":
-            log.warning("gpt-live-1 error event: %s", event.get("error"))
+            err = event.get("error", {})
+            log.warning("gpt-live-1 error event: %s", err)
+            # Confirmed live: a billing error (credit_balance_exhausted)
+            # repeats every ~15-20s forever with no self-recovery — the
+            # daemon just silently burned minutes retrying an error that
+            # can only be fixed outside the process. Recognize this class
+            # of unrecoverable error and hang up immediately instead.
+            code = (err.get("code") or "").lower()
+            message = (err.get("message") or "").lower()
+            if "credit" in code or "quota" in code or "credit" in message or "billing" in message:
+                log.error(
+                    "unrecoverable billing/quota error, hanging up: %s",
+                    err.get("message"),
+                )
+                self._hangup.set()
         log.debug("data channel event: %s", message[:500])
 
     async def run(self) -> None:
         """Connect, converse, and return once the session ends (exit
         phrase, the safety timeout, or a connection failure)."""
-        pc = RTCPeerConnection()
+        t_start = time.monotonic()
+        # aiortc defaults to Google's public STUN server when no
+        # configuration is given (RTCIceTransport.getDefaultIceServers),
+        # and aioice's gatherer waits up to 5s for a STUN reply before
+        # falling back — confirmed live, in source: that 5s wait was the
+        # entire "slow to start hearing" latency. Every connection so far
+        # has worked on host candidates alone (this machine's NAT allows
+        # outbound-initiated connections without needing a reflexive
+        # candidate), so skip STUN entirely rather than wait for it.
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self._pc = pc
         mic = MicTrack(self.config.mic_device)
         pc.addTrack(mic)
         dc = pc.createDataChannel("oai-events")
+        self._dc = dc
 
         @dc.on("open")
         def on_open():
@@ -332,7 +458,8 @@ class LiveSession:
                                             "properties": {},
                                             "required": [],
                                         },
-                                    }
+                                    },
+                                    *TOOLS,
                                 ],
                             },
                         },
@@ -360,7 +487,7 @@ class LiveSession:
 
             answer_sdp = response["transport"]["sdp"]
             await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
-            log.info("live session connected")
+            log.info("live session connected (%.2fs)", time.monotonic() - t_start)
 
             try:
                 await asyncio.wait_for(

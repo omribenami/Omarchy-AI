@@ -1,5 +1,113 @@
 # Status
 
+## Phase 1: real OS control wired up, confirmed live
+
+Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
+
+- **`actions.py` / `tools.py`** — ~25 typed tool functions (volume,
+  brightness, workspace, window, launchers, media, Bluetooth, night light,
+  battery) ported from jarvisd's already-tested `actions.py`, exposed to
+  `gpt-live-1` via `delegation.responses.tools` (see the "real tool call"
+  schema notes below).
+- **`keybindings.py`** — rather than hand-writing a function per Omarchy
+  command (228 of them), `list_commands`/`execute_command` reuse Omarchy's
+  own `omarchy-menu-keybindings` bash functions directly (`output_binding_
+  records`, `dispatch_binding`), sourced with `$1` forced to `--print` so
+  the interactive picker never opens. This matters because `hyprctl binds
+  -j` only exposes an opaque internal id for Lua-dispatched binds
+  (`dispatcher: "__lua", arg: "6"`) — the menu script already re-resolves
+  those from source, so reusing it avoids reimplementing (and risking
+  drifting out of sync with) that resolution logic. First attempt had a
+  real bug: `$1`/`$2` got clobbered by the `--print` safety trick before
+  `dispatch_binding` could read them — fixed by passing dispatcher/arg
+  through environment variables instead. Confirmed live end-to-end
+  (`list_commands("gaps")` → `execute_command("Toggle window gaps")`
+  actually flipped `general:gaps_in`/`gaps_out` to `0 0 0 0`).
+- **`vision.py`** — `describe_screen` takes a screenshot and asks a
+  vision-capable model about it via a plain, separate Responses API call
+  (`gpt-5`, non-realtime) rather than attempting to feed images through
+  gpt-live-1's own event stream (unverified whether this new API even
+  supports that). Confirmed live: correctly described real, multi-window
+  screen content and was used by the model *before* toggling gaps, to
+  check the current state first rather than guessing.
+- **Window awareness** (`list_windows`, `focus_window` in `actions.py`) —
+  the gap the user caught: `window_fullscreen_toggle`/`close_window` only
+  ever affected whichever window Hyprland happened to have focused, and
+  the model had no way to know what was actually open. Confirmed live:
+  asked to fullscreen a specific unfocused terminal by name, it correctly
+  called `list_windows` → `focus_window("...")` → `window_fullscreen_
+  toggle` in sequence, verified via `hyprctl clients -j`.
+- **Typing** (`type_text`, `press_key`, via `wtype`) — real keystroke
+  injection into whatever's focused (terminal, browser, any text field).
+- **Per-conversation action history** (`get_recent_actions`) — in-memory
+  only, resets each session (deliberately, per the user's own call on
+  scope — persistent cross-restart history is bigger, deferred work).
+  Tracked in `LiveSession._action_log`, keyed by whichever window was
+  focused at call time, queryable filtered by window.
+
+### A real architectural bug found and fixed: blocking the event loop
+
+`_check_function_call` executed `run_action(...)` synchronously inline —
+fine for fast actions, but `describe_screen`'s multi-second vision API call
+froze the *entire* asyncio event loop for its duration, which starved
+aiortc's own connection handling running on that same loop. Confirmed live:
+this crashed a real session (`describe_screen crashed` in the log, an
+unhandled exception from a socket read that failed because the connection
+broke underneath it while the loop was blocked). Fixed by moving all tool
+execution (not just the slow ones — this needed to be true generally) into
+`loop.run_in_executor` via a new `_run_tool_call` coroutine.
+
+### The real `gpt-live-1` tool-calling schema (reverse-engineered further)
+
+Building on the `end_conversation` findings already in this file:
+- Submitting a tool's result back over the data channel: **`conversation.
+  item.create`** (the older Realtime API's convention) is rejected —
+  confirmed live, the error response listed the actual supported event
+  types, `response.item.create` among them. Same `function_call_output`
+  item shape, just the corrected event name.
+- Submitting the result does **not** make the model continue on its own —
+  confirmed live: no error, but also no reaction for 6+ seconds until an
+  explicit follow-up `response.create` was sent right after. Same
+  "needs an explicit nudge" pattern as the very first response.
+- Real tools (not just `end_conversation`) needed the same `delegation.
+  responses.tool_choice: "auto"` fix already documented below — without
+  it, confirmed the model doesn't consider calling them either.
+
+### Connection latency: ~5.3s → ~0.6-0.9s
+
+Root-caused in aioice's actual source, not guessed: `RTCPeerConnection()`
+with no explicit config defaults to Google's public STUN server
+(`aiortc.rtcicetransport.getDefaultIceServers`), and `aioice.ice.Connection.
+get_component_candidates` has a hardcoded `timeout: int = 5` waiting for a
+STUN reply before falling back to host-only candidates. Every connection
+this project has made has worked on host candidates alone (this network's
+NAT allows outbound-initiated connections without needing a reflexive
+candidate) — the STUN wait was pure dead weight. Fixed with
+`RTCPeerConnection(RTCConfiguration(iceServers=[]))`. Confirmed live,
+repeatedly: `setLocalDescription` dropped from 5.01s to ~0.01s, total
+connect time from ~5.3s to 0.44-0.89s across several real runs.
+
+### Graceful handling for unrecoverable billing errors
+
+Confirmed live: the OpenAI org ran out of credits mid-session
+(`insufficient_quota` / `credit_balance_exhausted`, verified independently
+with a plain `gpt-5` API call outside the daemon entirely, ruling out a
+code bug) and the session just retried the same failing request every
+~15-20s forever with no self-recovery, burning real time silently. Now
+recognized (`credit`/`quota`/`billing` in the error code or message) and
+hung up immediately with a clear log line instead of retrying blind.
+
+### Known false-positive lesson (farewell detection)
+
+Confirmed live, twice, as real bugs rather than theoretical risks: the
+model saying "let me **take care** of that" (about to run a tool) matched
+the farewell marker "take care" and ended a real conversation early.
+Removed the ambiguous marker; kept only phrases with no plausible
+non-farewell reading (`goodbye`, `farewell`, `talk to you later`, `take
+care of yourself` / `take care now`). Worth remembering if adding more
+markers later: test against "the model narrating handling a request," not
+just genuine goodbyes.
+
 ## Completed
 
 - Retired `jarvisd` (disabled its systemd service; code left in
