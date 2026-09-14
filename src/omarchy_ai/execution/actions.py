@@ -228,13 +228,38 @@ def type_text(args: dict) -> ActionResult:
     return _run(["wtype", "--", text])
 
 
+_WTYPE_MODIFIERS = {"shift", "ctrl", "alt", "logo", "super", "win", "altgr", "capslock"}
+
+
 def press_key(args: dict) -> ActionResult:
     key = args.get("key")
     if not key:
         return ActionResult(False, "no key given")
     if shutil.which("wtype") is None:
         return ActionResult(False, "wtype is not installed")
-    return _run(["wtype", "-k", key])
+
+    modifiers = args.get("modifiers") or []
+    if isinstance(modifiers, str):
+        modifiers = [modifiers]
+    # wtype's modifier names: shift/ctrl/alt/logo/altgr/capslock. "super"/
+    # "win" are common aliases people (and the model) would reach for — map
+    # them rather than fail on a technicality.
+    normalized = []
+    for m in modifiers:
+        m = m.strip().lower()
+        if m in ("super", "win"):
+            m = "logo"
+        if m not in _WTYPE_MODIFIERS:
+            return ActionResult(False, f"unknown modifier '{m}'")
+        normalized.append(m)
+
+    argv = ["wtype"]
+    for m in normalized:
+        argv += ["-M", m]
+    argv += ["-k", key]
+    for m in reversed(normalized):
+        argv += ["-m", m]
+    return _run(argv)
 
 
 def describe_screen(args: dict) -> ActionResult:
