@@ -27,6 +27,8 @@ from aiortc.mediastreams import MediaStreamTrack
 from rapidfuzz import fuzz
 
 from ..config import Config
+from ..core.history import append_session, load_recent_context
+from ..core.memory import load_preferences
 from ..execution.actions import run_action
 from ..execution.tools import TOOLS
 
@@ -141,6 +143,10 @@ class LiveSession:
         # already done to a specific window rather than only the last
         # thing overall.
         self._action_log: list[dict] = []
+        # This session's own turns, flushed to core/history.py on hangup so
+        # the *next* session (potentially minutes or days later) can recall
+        # it — separate from _action_log, which never leaves memory.
+        self._transcript: list[dict] = []
 
     def _read_key(self) -> str:
         with open(self.config.api_key_path) as f:
@@ -250,9 +256,17 @@ class LiveSession:
         log.info("tool call: %s(%s)", name, args)
         result = await loop.run_in_executor(None, run_action, name, args)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
-        self._action_log.append(
-            {"action": name, "args": args, "ok": result.ok, "window": window}
-        )
+        if name == "close_window" and result.ok:
+            # That window no longer exists — drop its whole history rather
+            # than let get_recent_actions keep recalling a closed tile
+            # (user request: no reason to retain it).
+            self._action_log = [
+                e for e in self._action_log if e.get("window") != window
+            ]
+        else:
+            self._action_log.append(
+                {"action": name, "args": args, "ok": result.ok, "window": window}
+            )
         self._send_function_result(call_id, result.ok, result.message)
 
     @staticmethod
@@ -323,6 +337,8 @@ class LiveSession:
         etype = event.get("type", "")
         if etype == "session.input_transcript.delta":
             self._input_buffer += event.get("delta", "")
+            if self._output_buffer:
+                self._transcript.append({"role": "assistant", "text": self._output_buffer})
             self._output_buffer = ""
             self._farewell_scheduled = False
             if self._check_exit_phrase(self._input_buffer):
@@ -330,6 +346,8 @@ class LiveSession:
         elif etype == "session.output_transcript.delta":
             # The model started replying — the user's turn is over. Reset
             # the input buffer so the next utterance is judged on its own.
+            if self._input_buffer:
+                self._transcript.append({"role": "user", "text": self._input_buffer})
             self._input_buffer = ""
             self._output_buffer += event.get("delta", "")
             if not self._farewell_scheduled and self._check_farewell(self._output_buffer):
@@ -419,6 +437,29 @@ class LiveSession:
             while pc.iceGatheringState != "complete":
                 await asyncio.sleep(0.1)
 
+            instructions = self.config.instructions
+            preferences = load_preferences()
+            if preferences:
+                # Standing corrections saved via remember_preference in past
+                # conversations — folded in fresh every session so they
+                # persist across restarts, not just within one conversation.
+                instructions += "\n\nLearned preferences from past conversations:\n" + "\n".join(
+                    f"- {p}" for p in preferences
+                )
+            recent_context = load_recent_context(
+                self.config.context_retention_hours, self.config.context_max_chars
+            )
+            if recent_context:
+                # What was actually said in recent past sessions (within
+                # context_retention_hours) — user explicitly asked for this:
+                # a new session used to know nothing about a conversation
+                # from even a minute earlier in the previous wake-word cycle.
+                instructions += (
+                    "\n\nRecent conversation history (for your context only — "
+                    "don't recite it back unprompted, just use it to avoid "
+                    "asking the user to repeat themselves):\n" + recent_context
+                )
+
             body = json.dumps(
                 {
                     "session": {
@@ -464,7 +505,7 @@ class LiveSession:
                                 ],
                             },
                         },
-                        "instructions": self.config.instructions,
+                        "instructions": instructions,
                         "audio": {"output": {"voice": self.config.voice}},
                     },
                     "transport": {"type": "webrtc", "sdp": pc.localDescription.sdp},
@@ -497,6 +538,11 @@ class LiveSession:
             except asyncio.TimeoutError:
                 log.info("session hit max_session_seconds, hanging up")
         finally:
+            if self._input_buffer:
+                self._transcript.append({"role": "user", "text": self._input_buffer})
+            if self._output_buffer:
+                self._transcript.append({"role": "assistant", "text": self._output_buffer})
+            append_session(self._transcript, self.config.context_retention_hours)
             mic.stop()
             await pc.close()
             self._pc = None

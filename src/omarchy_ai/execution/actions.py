@@ -262,6 +262,16 @@ def press_key(args: dict) -> ActionResult:
     return _run(argv)
 
 
+def remember_preference(args: dict) -> ActionResult:
+    text = (args.get("preference") or "").strip()
+    if not text:
+        return ActionResult(False, "no preference given")
+    from ..core.memory import add_preference
+
+    add_preference(text)
+    return ActionResult(True, "remembered")
+
+
 def describe_screen(args: dict) -> ActionResult:
     from ..config import load_config
     from .vision import describe_screen as _describe_screen
@@ -368,6 +378,7 @@ ACTIONS = {
     "list_windows": list_windows,
     "focus_window": focus_window,
     "describe_screen": describe_screen,
+    "remember_preference": remember_preference,
     "list_commands": list_commands,
     "execute_command": execute_command,
     "type_text": type_text,

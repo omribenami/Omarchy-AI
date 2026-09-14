@@ -83,6 +83,10 @@ class Config:
         "to type a URL in a browser, first press_key 'l' with "
         "modifiers ['ctrl'] to focus the address bar, then type_text the "
         "URL, then press_key 'Return'. "
+        "If they give you a standing correction or preference about how "
+        "you should behave going forward — not just for this "
+        "conversation — call remember_preference so you keep doing it in "
+        "future conversations too. "
         "Briefly confirm what you did after calling a "
         "tool. When they indicate they want to end the conversation "
         "(goodbye, stop, that's all, or similar, in whatever language "
@@ -109,6 +113,13 @@ class Config:
     # a stopgap for real VAD-based silence detection (see jarvisd's
     # audio.py capture_utterance for the pattern to port over next).
     speak_window_seconds: int = 6
+
+    # Cross-session conversation history — how far back to recall in a new
+    # session's instructions, and a hard cap on how much of it to include
+    # (this is a live, latency-sensitive voice prompt, not a place for an
+    # ever-growing verbatim transcript).
+    context_retention_hours: float = 24.0
+    context_max_chars: int = 4000
 
     log_level: str = "INFO"
 
