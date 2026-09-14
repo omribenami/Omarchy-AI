@@ -232,6 +232,25 @@ TOOLS: list[dict] = [
             "required": ["target"],
         },
     ),
+    _tool(
+        "remember_preference",
+        "Save a standing preference or correction about how you should "
+        "behave in future conversations, not just this one — e.g. 'always "
+        "confirm before muting', 'call me by my first name', 'don't use "
+        "metric units'. Only for an explicit, general instruction about "
+        "your own behavior; not for one-off task requests like 'open the "
+        "browser'.",
+        {
+            "type": "object",
+            "properties": {
+                "preference": {
+                    "type": "string",
+                    "description": "The standing instruction to remember, written as a clear rule.",
+                }
+            },
+            "required": ["preference"],
+        },
+    ),
     _tool("bluetooth_toggle", "Turn Bluetooth on if it's off, or off if it's on."),
     _tool("nightlight_toggle", "Turn the night light (warmer screen color) on or off."),
     _tool("battery_status", "Read the current battery charge percentage and charging state."),
