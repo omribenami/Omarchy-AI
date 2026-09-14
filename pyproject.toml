@@ -1,5 +1,5 @@
 [project]
-name = "oma"
+name = "omarchy-ai"
 version = "0.1.0"
 description = "Independent voice assistant for Omarchy with Android TV/tablet casting"
 authors = [
@@ -9,10 +9,14 @@ requires-python = ">=3.12"
 dependencies = [
     "aiortc>=1.15.0",
     "numpy>=2.5.3",
+    "onnxruntime>=1.30.0",
+    "openwakeword>=0.4.0",
+    "pyyaml>=6.0.3",
+    "rapidfuzz>=3.14.6",
 ]
 
 [project.scripts]
-oma = "oma:main"
+omarchy-ai = "omarchy_ai:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

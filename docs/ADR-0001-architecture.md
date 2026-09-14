@@ -1,11 +1,11 @@
-# ADR-0001: Oma architecture and Phase 0 findings
+# ADR-0001: Omarchy AI architecture and Phase 0 findings
 
 Status: accepted for Phase 0 scope. Revisit after the Phase 2 vertical slice
 (ADB → receiver → decoded frame) has run against real hardware once.
 
 ## Context
 
-Oma is an independent voice assistant for Omarchy: local wake word, a
+Omarchy AI is an independent voice assistant for Omarchy: local wake word, a
 realtime voice model (`gpt-live-1`) for speech I/O, an LLM-driven planner
 that converts natural language into typed tool calls (not a fixed phrase
 table), and a casting subsystem that can put the desktop on a paired Android
@@ -36,7 +36,7 @@ machine (Hyprland 0.56.2, Omarchy 4.0.3): `hyprctl dispatch` now requires a
 Lua expression (`hl.dsp.focus({ workspace = N })`); the classic
 `dispatch <name> <args>` grammar errors. This was discovered and fixed in
 jarvisd's `actions.py` (`_hyprctl_dispatch`: try the Lua form, fall back to
-classic for older Hyprland). Oma's `execution/hyprland` module should reuse
+classic for older Hyprland). Omarchy AI's `execution/hyprland` module should reuse
 that exact pattern rather than assume either syntax — the spec's own
 instruction ("build a capability manifest... do not hardcode obsolete
 Hyprland syntax") anticipated exactly this.

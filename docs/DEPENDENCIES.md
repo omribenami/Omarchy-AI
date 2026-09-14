@@ -37,9 +37,9 @@ another Omarchy machine, not assume identical to this one:
 - `avahi-daemon` — mDNS/DNS-SD
 - `python-gobject` (`gi`) — PyGObject; needed for the `webrtcbin`/GStreamer
   Python bindings used in `scripts/spike_live_webrtc.py` and (once it
-  exists) `src/oma/voice`. **Not pip-installable in the normal sense** — it's
+  exists) `src/omarchy_ai/voice`. **Not pip-installable in the normal sense** — it's
   a system package tied to the installed GObject-introspection typelibs, so
-  Oma's own venv must be created with `--system-site-packages` against the
+  Omarchy AI's own venv must be created with `--system-site-packages` against the
   *system* Python (not a `uv`-downloaded one) — see the `.python-version`
   note below.
 - `mise` — used for the JDK; assumed already on the machine like it was
