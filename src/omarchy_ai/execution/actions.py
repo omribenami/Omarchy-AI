@@ -278,7 +278,9 @@ def describe_screen(args: dict) -> ActionResult:
 
     question = args.get("question") or "Briefly describe what's on the screen."
     cfg = load_config()
-    text = _describe_screen(question, cfg.api_key_path, cfg.responses_model)
+    text = _describe_screen(
+        question, cfg.api_key_path, cfg.responses_model, cfg.responses_reasoning_effort
+    )
     if text.startswith("error:"):
         return ActionResult(False, text)
     return ActionResult(True, text)
