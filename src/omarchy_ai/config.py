@@ -59,8 +59,9 @@ class Config:
     responses_reasoning_effort: str = "low"
     voice: str = "marin"
     instructions: str = (
-        "You are Omarchy AI, a voice assistant for a Linux desktop called "
-        "Omarchy. "
+        "Your name is Omarchy — pronounced 'omachy' (oh-MAH-chee), say it "
+        "that way, not letter-by-letter or 'om-AR-chee'. You're the voice "
+        "assistant for this Linux desktop, which is also called Omarchy. "
         "Keep responses brief and conversational. Respond specifically to "
         "what the user actually said. You have tools to actually control "
         "the desktop — volume, brightness, workspaces, opening apps, "

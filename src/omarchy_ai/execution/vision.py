@@ -76,6 +76,26 @@ def describe_screen(
             # quick "what's on screen" lookup. Same lever already used for
             # the live session's own delegation.responses.
             "reasoning": {"effort": reasoning_effort},
+            # Real latency data across several live calls this session: 3-7s
+            # even with reasoning effort already at low — a noticeable but,
+            # per the two things tried and reverted below, apparently close
+            # to the practical floor for this model/endpoint:
+            #
+            # - max_output_tokens as a second lever: wrong for a reasoning
+            #   model on the Responses API — it caps *reasoning* tokens too,
+            #   not just the visible answer. A real call came back
+            #   status="incomplete", incomplete_details.reason=
+            #   "max_output_tokens", with the reasoning item's own content
+            #   empty — the whole budget was consumed before any visible
+            #   text, so describe_screen returned nothing useful.
+            # - input_image detail="low": a real, isolated A/B (4 calls,
+            #   alternating, via the Responses API directly) showed it cuts
+            #   input_tokens hugely (925 -> 85) but the model compensates
+            #   with far more reasoning_tokens (64 -> 384, 256 across two
+            #   runs) — net latency the same or worse, since sequential
+            #   reasoning generation is the actual bottleneck here, not
+            #   image encoding. Not worth the accuracy tradeoff for no
+            #   real speed gain.
             "input": [
                 {
                     "role": "user",

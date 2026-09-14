@@ -894,6 +894,25 @@ live voice session).
 5. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
    (reuse jarvisd's silence-detection approach) so the daemon knows when
    the user actually finished talking, rather than guessing a duration.
+6. **Future settings idea (explicitly deferred, not started):** an
+   ASCII/unicode audio-reactive visualizer — a small "hacky"/cyberpunk
+   waveform that animates from the assistant's actual output audio level
+   while speaking — as a selectable alternative display mode alongside
+   the Watch Dogs overlay's current state/tool-call feed, not a
+   replacement for it. User clarified this is what they originally meant
+   by "voice feedback graphic," but explicitly asked for it to wait for a
+   real settings system rather than being wired in now. A start was
+   sketched (a throttled, non-blocking `watchdog.level()` IPC call from
+   `live.py`'s `_play_remote_audio` RMS-per-chunk, `Popen`-dispatched so
+   it can never block the real-time audio loop the way `subprocess.run`'s
+   wait would) and deliberately reverted, not merged — pick that pattern
+   back up when a settings system exists to gate it.
+7. **Also for that future settings menu:** a plain on/off toggle for the
+   Watch Dogs overlay itself — some users may want it hidden entirely,
+   not just switched between display modes. No settings system exists
+   yet at all (this and the item above are both blocked on that, not on
+   each other) — whatever it ends up being (a config file, a real UI
+   panel) should gate both.
 6. ~~Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked,
    not started) — GPU-light, replaces omavoice's simple waveform panel.~~
    Done — see "Watch Dogs overlay" below for the live-test evidence trail.
