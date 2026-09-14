@@ -61,14 +61,27 @@ spec's own terms if VAAPI ever fails to initialize for a given surface
 format — worth a runtime check-and-fallback in the encoder module, not an
 assumption that VAAPI always succeeds.
 
-**D7 — WebRTC: `webrtcbin` (GStreamer), settled.** Installed via
-`gst-plugins-bad` and confirmed live: `gst-inspect-1.0 webrtcbin` shows full
-factory details, and `gst-launch-1.0 webrtcbin name=wb bundle-policy=max-bundle
-! fakesink` reaches PLAYING and holds (the run ends only because the harness
-timeout kills it — steady state while it waits for SDP negotiation is
-correct). `aiortc` is not needed; this keeps the VAAPI-encoded path in
-`display/encoder` on the same GStreamer pipeline as capture
-(`pipewiresrc`) without a second media framework in the process.
+**D7 — WebRTC: split by job, revised after real evidence.**
+`display/encoder` (TV casting) uses **`webrtcbin`** (GStreamer,
+`gst-plugins-bad`) — confirmed live reaching PLAYING, and it keeps the
+VAAPI-encoded path on the same pipeline as capture (`pipewiresrc`) without a
+second media framework in that process.
+
+`voice` (the `gpt-live-1` connection) uses **`aiortc`** instead, reversing
+the original all-webrtcbin plan. Reason: webrtcbin hit two distinct, real
+bugs building the voice spike — a streaming-thread deadlock linking an
+incoming track synchronously (fixed with `GLib.idle_add`), then a deeper
+issue where ICE reached `COMPLETED` and stayed there but exactly zero audio
+frames were ever delivered to the linked pad (confirmed with a buffer
+probe), never root-caused. `aiortc` — pure Python, async-native, matches
+the daemon's own asyncio architecture (D2), no opaque C pipeline threading
+— worked on the first properly-configured attempt and carried a full,
+verified multi-turn conversation including a live language switch. See
+`STATUS.md` "Phase 1: real two-way conversation confirmed working" for the
+full debugging trail and the reverse-engineered `gpt-live-1` session
+schema. Not a reversal of the tool choice generally — a recognition that
+casting (tight PipeWire+VAAPI integration, GStreamer's actual strength) and
+a simple audio-only client talking to one external API are different jobs.
 
 ## Confirmed available, no install needed
 
@@ -128,7 +141,13 @@ SDK) actually produces an APK, not just that each piece installed.
 - **Android receiver toolchain weight.** Multi-GB install, plus this is the
   first Kotlin/Android work in this repo — expect Phase 2 to take
   meaningfully longer than the Linux-side phases.
-- **WebRTC library choice is unresolved** (D7) — this affects both the
-  receiver (must match) and the daemon's encoder module. Should be settled
-  by a small spike (send one PipeWire-captured frame over `webrtcbin` to a
-  trivial receiver) before Phase 2 real work starts, not assumed.
+- **WebRTC for voice is settled (D7), casting is not yet exercised
+  end-to-end.** The Android receiver side of `webrtcbin` (send one
+  PipeWire-captured frame to a trivial receiver, then to the actual
+  Kotlin app) is still an assumption, not a confirmed spike, going into
+  Phase 2.
+- **Residual audio-quality issue, not yet resolved.** Some static under a
+  longer/heavier voice conversation, investigated with real evidence
+  (ruled out: packet loss, PipeWire XRUNs) but not conclusively
+  root-caused — see `STATUS.md`. Not a functional blocker; worth revisiting
+  before this becomes the default daily-use experience.
