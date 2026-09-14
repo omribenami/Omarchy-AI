@@ -205,6 +205,92 @@ actual top-left corner, matching titles, and `hide_window_labels` cleared
 them immediately. See `STATUS.md` for the screenshots' details and the
 `config.py` instructions wiring.
 
+**D9 — The Watch Dogs overlay is driven by the daemon's own lifecycle, not
+by a model tool call, and reuses D8's IPC pattern exactly.** User-requested,
+tracked as a "not started" next-action since early in this project: a
+Matrix/hacking-HUD overlay (cascading green/cyan monospace feed, terminal
+readouts, subtle scanline/pulse accents) that appears for the duration of a
+voice conversation and shows real activity — not decoration. The explicit
+ask was "connect it to the tooling so it can actually do something", so the
+feed is literal, real tool-call activity (`> execute_command("Browser")`,
+`> volume_up() -> ok`), not randomly generated characters.
+
+Unlike D8 (a tool the model calls on its own, one-shot show/hide), this
+overlay stays open for an entire session and needs an ongoing event stream
+while up, so the IPC surface has three methods instead of D8's two:
+`start` (show + reset scroll content for a new session), `event` (append a
+feed line or update the state indicator — called repeatedly through the
+conversation), `stop` (hide, session over). Built as a new user-owned
+plugin, `~/.config/omarchy/plugins/omarchy-ai.watchdog/` (`manifest.json` +
+`Watchdog.qml`), copying D8's own shape exactly: `IpcHandler { target:
+"watchdog" }`, the same `Variants{model: Quickshell.screens}` per-output
+layer-shell pattern, `BorderSurface`/`Style`/`Color`/`Border` design tokens
+from `qs.Commons`/`qs.Ui`, but with the color/font choices skewed toward
+the hacking-terminal aesthetic rather than the shell's default theme
+colors: `Style.font.family` (which already resolves to this machine's
+system monospace, `JetBrainsMono Nerd Font` — confirmed via this repo's own
+terminal configs, `~/.config/{alacritty,foot,ghostty}`) for the feed, and a
+small green/cyan palette (`#39ff88`/`#39e6ff`/`#a6ff4d` for
+connecting/listening/thinking/speaking states and call/ok/thinking tones,
+`#ff5f5f` for tool-call errors) layered on top of the theme's own
+`Color.background`/`Border` tokens rather than replacing them outright.
+Kept GPU-light per the original ask: a small bottom-right corner panel
+(similar footprint to a small waveform panel, not a full-screen takeover),
+one animated scanline `Rectangle` and one pulsing state dot as the only
+continuous animations, both paused via `running: root.opened` whenever the
+overlay is closed — no shaders, no per-frame JS.
+
+One QML gotcha specific to this plugin, not present in D8: `Item` already
+reserves a property named `state` for QtQuick's own States/Transitions
+machinery, so the conversation-state property had to be named `convState`
+instead — redeclaring `state` directly on an `Item` subclass collides with
+the built-in one rather than cleanly overriding it. (The `IpcHandler`
+method literally named `state()` — returning `"open"`/`"closed"`, same as
+D8 — is unaffected; it lives on a different QML object with no such
+built-in.) Same array-vs-object payload rule as D8 applies to every payload
+here too, though none of them happen to carry an array today.
+
+Python side: a new `src/omarchy_ai/voice/watchdog.py` wraps the
+`omarchy-shell -q watchdog ...` calls, mirroring `actions.py`'s `_run`
+subprocess convention but going further — every call is wrapped so a
+failed/missing IPC call only logs a warning and returns, never raises,
+because this sits directly in `live.py`'s own hot paths (session connect,
+every real tool call, transcript-delta handling, hangup) and must never be
+allowed to take down an actual conversation. Wired into `voice/live.py` at
+four points: `run()` calls `watchdog.start()` right after "live session
+connected" logs; `_run_tool_call()` calls `watchdog.state("thinking")` +
+`watchdog.tool_call(name, args)` before running the action and
+`watchdog.tool_result(...)` after, reusing the exact `name`/`args`/
+`result.ok`/`result.message` already flowing into `_action_log` and the
+existing log lines — no parallel tracking; `_on_data_message()` emits
+`watchdog.state("listening")`/`"speaking"` on the *first* delta of each new
+user/assistant utterance (checked via "was the buffer empty before this
+delta", not once per token, to avoid an event storm — the ask explicitly
+called this out); and `run()`'s `finally:` block calls `watchdog.stop()`
+unconditionally, so even a session that fails before ever connecting still
+clears the overlay.
+
+Verified live: `omarchy plugin validate`, then `omarchy-shell watchdog
+ping`/`state` confirmed the plugin compiled and the IpcHandler responded
+(no repeat of D8's "not a type" failure mode). Direct IPC calls through
+both raw `omarchy-shell watchdog ...` and the real `watchdog.py` module
+(bypassing only the live WebRTC session, which requires an actual spoken
+wake word this agent cannot produce) exercised every state
+(connecting/listening/thinking/speaking), both tool-call/tool-result tones
+including the error path, and line truncation on a deliberately long
+window title and error message — screenshotted at each step: the panel
+renders bottom-right, cascading green/cyan lines match the ask's own
+example format exactly (`> execute_command("Browser")`, `> volume_up() ->
+ok`), and `stop` clears it with no leftover artifacts. `omarchy-ai.service`
+was independently restarted mid-session by another in-progress agent task
+in this same repo (unrelated wake-word/ONNX work) while this feature was
+being built; that restart picked up this feature's `live.py`/`watchdog.py`
+changes too and the service came up clean (`omarchy-ai ready`, no crash),
+which is real evidence the integration loads correctly inside the actual
+daemon process, even though no live spoken conversation happened to occur
+in the window this agent had to observe it. See `STATUS.md` for the
+screenshots' details.
+
 ## Confirmed available, no install needed
 
 - Omarchy 4.0.3, Hyprland 0.56.2
