@@ -16,12 +16,24 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import socket
 import subprocess
+import time
 from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger("omarchy_ai.execution.actions")
 
 _TIMEOUT = 10
+
+# --- Android TV casting (Phase 2) --------------------------------------
+# actions.py lives at <repo>/src/omarchy_ai/execution/actions.py.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_VENV_PYTHON = str(_REPO_ROOT / ".venv" / "bin" / "python")
+_TV_ADB_ADDR = "192.168.1.86:5555"
+_SIGNALING_PORT = 8765
+_cast_process: subprocess.Popen | None = None
+_signaling_process: subprocess.Popen | None = None
 
 
 @dataclass
@@ -428,6 +440,81 @@ def media_prev(args: dict) -> ActionResult:
     return _playerctl("previous")
 
 
+# --- Android TV casting -------------------------------------------------
+
+def _port_listening(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def start_casting(args: dict) -> ActionResult:
+    global _cast_process, _signaling_process
+
+    if _cast_process is not None and _cast_process.poll() is None:
+        return ActionResult(True, "already casting")
+
+    # adb connect can hang for a long time against an unreachable host
+    # (confirmed live — a plain 120s-timeout background hang, not a quick
+    # failure) so this needs its own short timeout rather than trusting
+    # adb to fail fast.
+    r = _run(["adb", "connect", _TV_ADB_ADDR], timeout=8)
+    if not r.ok or "connected" not in r.message.lower():
+        return ActionResult(False, "could not reach the TV over the network")
+
+    if not _port_listening(_SIGNALING_PORT):
+        _signaling_process = subprocess.Popen(
+            [_VENV_PYTHON, "-m", "omarchy_ai.display.signaling"],
+            cwd=str(_REPO_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        for _ in range(20):
+            if _port_listening(_SIGNALING_PORT):
+                break
+            time.sleep(0.25)
+        else:
+            return ActionResult(False, "signaling server failed to start")
+
+    _run(
+        ["adb", "shell", "am", "start", "-n", "ai.omarchy.receiver/.MainActivity"],
+        timeout=8,
+    )
+    time.sleep(1)
+
+    _cast_process = subprocess.Popen(
+        [_VENV_PYTHON, "-u", str(_REPO_ROOT / "scripts" / "spike_cast_sender.py")],
+        cwd=str(_REPO_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    time.sleep(2)
+    if _cast_process.poll() is not None:
+        _cast_process = None
+        return ActionResult(False, "casting failed to start")
+    return ActionResult(True, "casting started to the TV")
+
+
+def stop_casting(args: dict) -> ActionResult:
+    global _cast_process
+    if _cast_process is None or _cast_process.poll() is not None:
+        _cast_process = None
+        return ActionResult(True, "not currently casting")
+    _cast_process.terminate()
+    try:
+        _cast_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        _cast_process.kill()
+    _cast_process = None
+    return ActionResult(True, "casting stopped")
+
+
 ACTIONS = {
     "volume_up": volume_up,
     "volume_down": volume_down,
@@ -464,6 +551,8 @@ ACTIONS = {
     "media_play_pause": media_play_pause,
     "media_next": media_next,
     "media_prev": media_prev,
+    "start_casting": start_casting,
+    "stop_casting": stop_casting,
 }
 
 

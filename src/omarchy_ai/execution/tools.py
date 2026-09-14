@@ -288,4 +288,16 @@ TOOLS: list[dict] = [
     _tool("media_play_pause", "Toggle play/pause on the current media player."),
     _tool("media_next", "Skip to the next track."),
     _tool("media_prev", "Go back to the previous track."),
+    _tool(
+        "start_casting",
+        "Start mirroring this desktop's screen and audio to the paired "
+        "Android TV/projector over the local network. Connects to the TV, "
+        "launches the receiver app on it if needed, and starts streaming — "
+        "takes a few seconds. Safe to call again if already casting (no-op).",
+    ),
+    _tool(
+        "stop_casting",
+        "Stop mirroring the screen/audio to the TV/projector. Safe to call "
+        "even if nothing is currently casting.",
+    ),
 ]
