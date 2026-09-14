@@ -54,10 +54,35 @@ installed).
 
 ## Hardware-dependent findings
 
-None yet — no Android hardware has been reachable from this session (no
-adb, no IP/pairing exchanged). The Android TV is confirmed to exist per the
-user but its make/model, network reachability, and remote-mic capability are
-all unknown until the live pairing session.
+**Paired: the user's Android TV, 192.168.1.86:5555.** ADB-over-network
+authorized (the TV's own confirmation dialog was dismissed by accident, but
+a disconnect/reconnect re-triggered it and it came back authorized —
+network debugging on this device does not require the pairing-code dance
+some newer Android versions use, just the one-time on-screen allow).
+
+Pulled via `adb shell getprop`/`pm list packages`:
+
+- **Model `HY300Pro`** (board `exdroid`) — an Allwinner-chipset Android
+  projector running a community/enthusiast Android TV build, *not* a
+  mainstream Google-certified box (no NVIDIA Shield/Chromecast-with-Google-TV
+  pedigree). Relevant because Cast/CEC support on this class of device is
+  less standardized than on certified hardware — treat as untested until
+  checked directly, not assumed present.
+- **Android 11 / API 30.** Confirms `minSdk 26` on the receiver template
+  (already set) is the right call, not higher.
+- **Display 1280x720 @ density 240** — a 720p device. The spec's "1080p at
+  30fps minimum" target doesn't apply to *this* unit; encoder/bitrate
+  tuning should target what the device actually outputs, not a fixed floor.
+- **Has Google Play Services** (`com.google.android.gms`, `gsf`) — some
+  Google integration present, so Cast may work, unconfirmed.
+- **`com.softwinner.miracastReceiver` is installed** — this device has a
+  built-in Miracast (WiFi Direct mirroring) receiver. Notably simpler than
+  the full custom-receiver pipeline for *video-only* mirroring, but no
+  remote-input or mic-uplink channel — doesn't replace the Oma Receiver app,
+  worth keeping in mind as a possible quick-mirror fallback path later.
+- No Android TV "Leanback" launcher package turned up in one grep pass —
+  not conclusive on its own, worth a closer look when actually launching
+  the receiver Activity (Phase 2), not assumed either way from this.
 
 ## Next action
 
