@@ -1,2 +1,10 @@
 [tools]
 java = "temurin-21.0.12+8.0.LTS"
+
+[env]
+# User-space SDK dir — android-sdk-cmdline-tools-latest (AUR) installs the
+# cmdline-tools themselves to /opt/android-sdk, root-owned; `android sdk
+# install` needs somewhere it can write, so packages (platform-tools,
+# platforms, build-tools) live here instead.
+ANDROID_SDK_ROOT = "{{env.HOME}}/Android/Sdk"
+ANDROID_HOME = "{{env.HOME}}/Android/Sdk"

@@ -61,13 +61,14 @@ spec's own terms if VAAPI ever fails to initialize for a given surface
 format — worth a runtime check-and-fallback in the encoder module, not an
 assumption that VAAPI always succeeds.
 
-**D7 — WebRTC: not yet decided.** `gst-plugins-bad` (which provides
-`webrtcbin`) is *not* installed and needs `sudo pacman -S gst-plugins-bad` —
-see Blocked, below. Alternative considered: `aiortc` (pure-Python WebRTC),
-which would avoid the GStreamer C dependency and sudo entirely via `uv add`,
-at a real cost in encode performance (no VAAPI passthrough without extra
-glue). Recommend `webrtcbin` once the sudo install is approved, `aiortc` only
-if GStreamer's webrtcbin proves unworkable in the Phase 2 spike.
+**D7 — WebRTC: `webrtcbin` (GStreamer), settled.** Installed via
+`gst-plugins-bad` and confirmed live: `gst-inspect-1.0 webrtcbin` shows full
+factory details, and `gst-launch-1.0 webrtcbin name=wb bundle-policy=max-bundle
+! fakesink` reaches PLAYING and holds (the run ends only because the harness
+timeout kills it — steady state while it waits for SDP negotiation is
+correct). `aiortc` is not needed; this keeps the VAAPI-encoded path in
+`display/encoder` on the same GStreamer pipeline as capture
+(`pipewiresrc`) without a second media framework in the process.
 
 ## Confirmed available, no install needed
 
@@ -81,33 +82,40 @@ if GStreamer's webrtcbin proves unworkable in the Phase 2 spike.
   advertisement)
 - 93GB free disk (Android SDK + Gradle + JDK, if approved, fit comfortably)
 
-## Blocked on the user (sudo / hardware / a decision)
+## Toolchain — resolved
 
-None of these can be completed unilaterally — flagging rather than guessing:
+All installed. `adb`, `gradle`, `gst-plugins-bad` via `pacman`;
+`android-sdk-cmdline-tools-latest` via AUR/`yay` (lands at `/opt/android-sdk`,
+root-owned/read-only — SDK *packages* it manages, e.g. platform-tools,
+platforms, build-tools, go to a user-writable `~/Android/Sdk` instead, set
+via `ANDROID_SDK_ROOT`/`ANDROID_HOME` in `mise.toml`, same file that pins the
+JDK). JDK 21 (Temurin) via `mise`, no sudo. Installed SDK packages:
+`platform-tools` 37.0.1, `platforms/android-37.1`, `build-tools/37.0.0` (plus
+`platforms/android-36`, pulled automatically by the project template).
 
-1. **`adb` is not installed.** `android-tools` (37.0.0) is in the `extra`
-   repo but needs `sudo pacman -S android-tools`; this session does not have
-   passwordless sudo (confirmed earlier, same constraint hit during jarvisd's
-   build). Needs the user to run it, e.g. via `! sudo pacman -S android-tools
-   gst-plugins-bad` in the terminal.
-2. **No Java/Gradle/Android SDK at all.** Building even the spec's "minimal
-   Android receiver that can be launched through ADB" needs a JDK, the
-   Android SDK command-line tools, a target platform + build-tools package,
-   and Gradle — a multi-GB one-time download. Worth confirming before
-   starting given the size; not started yet.
-3. **`gst-plugins-bad`** (webrtcbin) — same sudo blocker as adb, bundle into
-   the same install command.
-4. **Live TV pairing.** Wireless ADB debugging has to be enabled *on the TV*
+The cmdline-tools package ships a newer, more capable `android` CLI
+(v1.0.16261425) that deprecates the classic `sdkmanager`/`avdmanager` in favor
+of unified `android sdk`/`android create`/`android emulator`/`android run`
+subcommands — used throughout instead of the older tool names.
+
+`android-receiver/` was scaffolded from the `empty-activity` template
+(`android create empty-activity --minSdk 26`) and a first `./gradlew
+assembleDebug` is running to confirm the full chain (JDK → Gradle → AGP →
+SDK) actually produces an APK, not just that each piece installed.
+
+## Still blocked on the user (hardware / live interaction)
+
+1. **Live TV pairing.** Wireless ADB debugging has to be enabled *on the TV*
    and a pairing code read off its screen — this needs the user standing at
    the TV with me, in real time, it cannot be scripted ahead of that.
-5. **Remote TV microphone.** The spec is explicit that this is not assumed
+2. **Remote TV microphone.** The spec is explicit that this is not assumed
    available — most Android TV platforms reserve the remote's mic button for
    the system assistant and do not expose it to third-party apps via
    `AudioRecord`. Expect the capability test (Phase 4) to report
    `RESERVED_FOR_SYSTEM_ASSISTANT` on most hardware; a paired tablet/phone
    mic is the realistic fallback, not a hard requirement to design around as
    the primary path.
-6. **`gpt-live-1`** — used as given per your confirmation. Not yet wired into
+3. **`gpt-live-1`** — used as given per your confirmation. Not yet wired into
    any code; that's Phase 1 (voice subsystem), not Phase 0.
 
 ## Risks worth naming now
