@@ -1529,8 +1529,10 @@ dot-patterns (`⠁⠃⠇⡇⡏⡟⡿⣿`, dot counts 0..8 so density tracks ampl
 same way bar height does), with rare full-column artifacts (`▓▒░╳┃╎`)
 spliced in at ~4%. The mix, not any single set, is what reads as glitchy
 rather than as a tidy audio meter. Width was cut 56 -> 30 columns after a
-first screenshot showed it spanning nearly the whole display; the ask was
-a "small group", not a full-width equalizer.
+first screenshot showed it spanning nearly the whole display, then 30 ->
+10 on the user's own follow-up ("perfect but I want it one third of its
+current length"); the ask was a "small group", not a full-width
+equalizer.
 
 **Real gotcha, cost two screenshots:** the first attempt appeared to have
 changed nothing — the card was still there with bars inside it. That was
