@@ -1506,3 +1506,74 @@ restart safe — e.g. `systemctl --user show omarchy-ai -p
 ControlGroup`/`systemd-cgls` cross-checked against a known-good process
 list, refusing (like the conversation check already does) if something
 unexpected is present.
+
+## Visualizer moved out of the card; secure API key entry
+
+Two pieces of direct user feedback on the settings/visualizer round, both
+live-verified by screenshot.
+
+**Visualizer is no longer inside the Watch Dogs card.** The ask, verbatim:
+"outside of the watchdog box, frameless in the center bottom area of the
+screen and use the current ascii char but also the one with the more
+dotted texture (should look glitchy)". It's now a sibling of `card` rather
+than a row in its Column — a bare `Text` with no surface/border of its
+own, anchored bottom-center, still gated by the same
+`watchdog_display_mode` setting and still only accumulating while
+`convState === "speaking"`. In `visualizer`-only mode the card itself is
+now hidden outright (`visible: displayMode !== "visualizer"`) rather than
+left as an empty header/divider shell.
+
+The glyph set is two density ramps mixed per column and reshuffled on
+every level update (~10Hz): the original blocks (`▁▂▃▄▅▆▇█`) plus braille
+dot-patterns (`⠁⠃⠇⡇⡏⡟⡿⣿`, dot counts 0..8 so density tracks amplitude the
+same way bar height does), with rare full-column artifacts (`▓▒░╳┃╎`)
+spliced in at ~4%. The mix, not any single set, is what reads as glitchy
+rather than as a tidy audio meter. Width was cut 56 -> 30 columns after a
+first screenshot showed it spanning nearly the whole display; the ask was
+a "small group", not a full-width equalizer.
+
+**Real gotcha, cost two screenshots:** the first attempt appeared to have
+changed nothing — the card was still there with bars inside it. That was
+the already-documented stale-plugin-cache behaviour (`omarchy restart
+shell` clears it; hot-reload's "Local plugin changed, reloading" log line
+appears either way and does *not* mean the running QML actually updated).
+Trust the screenshot, not the reload log.
+
+**API key entry (`OPENAI API KEY` section).** The key was previously read
+from `~/.config/omavoice/key` — a different, older project's file, which
+is not a real setup path for a fresh install. Now: `config.py` grows
+`OMARCHY_KEY_PATH` (`~/.config/omarchy-ai/key`) preferred over
+`LEGACY_KEY_PATH` (the omavoice one, kept purely so an existing install
+doesn't have to re-enter a key it already has), and the settings panel has
+a masked field + Save.
+
+Security-relevant details, deliberate:
+- The key travels to the helper in the `OMARCHY_AI_API_KEY` environment
+  variable (or stdin), **never in argv** — `/proc/<pid>/cmdline` is
+  world-readable, so a key passed as an argument is visible in `ps` to any
+  other user with a shell here; `/proc/<pid>/environ` is 0400 owner-only.
+  This is the whole reason it isn't just another `set <key> <value>` call.
+- The file is created with `os.open(..., 0o600)` rather than written then
+  chmod-ed, so there's no window where it sits world-readable.
+- The value is **write-only from the UI's perspective**: the helper's
+  snapshot returns only `{"set": bool, "source": ...}`, never the key, so
+  nothing can re-display a stored key and it never reaches QML/JS state,
+  a Process's stdout, or a log.
+- Validation is deliberately loose (non-empty, no whitespace, >=20 chars,
+  `sk-` prefix) — OpenAI has shipped several key formats and a strict
+  check would reject a valid future one. No live API call to verify it:
+  out of scope, and needlessly exercises a secret to answer a question the
+  next real session answers anyway.
+
+Verified: all four rejection paths, then the real existing key migrated
+through the command (file lands 0600, content matches source, snapshot
+flips `source` omavoice -> omarchy-ai, `load_config()` resolves to the new
+path), then the panel screenshotted showing "A key is set."
+
+**Non-bug worth recording, since it cost real debugging time:** the panel
+first appeared to show "No key set" and "No trained *.onnx models found"
+despite both being present. That was purely screenshot timing — the
+Python helper takes ~2s to cold-start, and the screenshots were taken 1.5s
+after opening the panel. Confirmed by temporarily logging the callback:
+the correct JSON was arriving all along. When this panel looks empty, wait
+longer before concluding anything.

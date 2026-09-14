@@ -19,10 +19,30 @@ RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "omarchy-ai"
 USER_CONFIG_PATH = CONFIG_DIR / "config.yaml"
 SOCKET_PATH = RUNTIME_DIR / "omarchy-ai.sock"
 
-# omavoice's key file is reused directly — same OpenAI account/project, no
-# reason to duplicate it. If omavoice is ever fully removed, move this to
-# ~/.config/omarchy-ai/key instead.
-DEFAULT_KEY_PATH = Path("~/.config/omavoice/key").expanduser()
+# This project's own key file, written 0600 by the settings panel — the
+# real setup path for a fresh install (nothing else to know about, no other
+# project's config to borrow from).
+OMARCHY_KEY_PATH = CONFIG_DIR / "key"
+# Where this project started: omavoice's key, reused directly since it's
+# the same OpenAI account. Kept as a fallback purely so an install that
+# predates the settings panel keeps working without the user having to
+# re-enter a key they already had on disk.
+LEGACY_KEY_PATH = Path("~/.config/omavoice/key").expanduser()
+
+
+def _default_key_path() -> Path:
+    """Prefer this project's own key; fall back to the borrowed omavoice
+    one only when we don't have our own yet. Resolved at import time — the
+    settings panel restarts the daemon after writing a key, so a fresh
+    write is always picked up by the next process."""
+    if OMARCHY_KEY_PATH.exists():
+        return OMARCHY_KEY_PATH
+    if LEGACY_KEY_PATH.exists():
+        return LEGACY_KEY_PATH
+    return OMARCHY_KEY_PATH
+
+
+DEFAULT_KEY_PATH = _default_key_path()
 
 API_URL = "https://api.openai.com/v1/live/sessions"
 
