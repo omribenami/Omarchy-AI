@@ -124,8 +124,16 @@ class Sender:
     # ---------- portal handshake (GLib thread, via libportal) ----------
 
     def acquire_screencast(self):
-        portal = Xdp.Portal.new()
-        portal.create_screencast_session(
+        # Keep a strong reference on self -- a local var here would go out
+        # of scope the instant this method returns (it only *starts* the
+        # async call), and PyGObject can garbage-collect the Portal object
+        # mid-flight, silently dropping the pending callback. Confirmed
+        # live: without this, _on_session_created never fired, no error,
+        # no timeout -- just silence forever, unlike the working standalone
+        # spike script where `portal` stays alive in main()'s own frame for
+        # the whole loop.run().
+        self._portal = Xdp.Portal.new()
+        self._portal.create_screencast_session(
             Xdp.OutputType.MONITOR,
             Xdp.ScreencastFlags.NONE,
             Xdp.CursorMode.EMBEDDED,
