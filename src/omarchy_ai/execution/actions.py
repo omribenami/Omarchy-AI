@@ -286,6 +286,77 @@ def describe_screen(args: dict) -> ActionResult:
     return ActionResult(True, text)
 
 
+def _matching_windows(targets, clients: list[dict]) -> list[dict]:
+    """Same fuzzy app/title substring match focus_window uses, applied per
+    target in a list. First match wins per target; already-matched windows
+    are skipped so two vague targets can't both resolve to the same window."""
+    chosen: list[dict] = []
+    seen_addresses: set = set()
+    for target in targets:
+        needle = str(target or "").strip().lower()
+        if not needle:
+            continue
+        match = next(
+            (
+                c for c in clients
+                if c.get("address") not in seen_addresses
+                and (needle in (c.get("class") or "").lower() or needle in (c.get("title") or "").lower())
+            ),
+            None,
+        )
+        if match is not None:
+            chosen.append(match)
+            seen_addresses.add(match.get("address"))
+    return chosen
+
+
+def show_window_labels(args: dict) -> ActionResult:
+    """Floating name-label badges pinned over each candidate window's real
+    on-screen rectangle — the visual "which window do you mean?" aid,
+    rendered by the omarchy-ai.window-labels Quickshell plugin (same IPC
+    pattern as omarchy-osd). Geometry comes straight from hyprctl clients -j
+    (same shape list_windows already parses), so the badges track this
+    machine's actual current window layout rather than a guess."""
+    targets = args.get("targets")
+    if targets is not None and not isinstance(targets, list):
+        return ActionResult(False, "targets must be a list of strings or omitted")
+
+    r = _run(["hyprctl", "clients", "-j"])
+    if not r.ok:
+        return r
+    try:
+        clients = json.loads(r.message)
+    except json.JSONDecodeError:
+        return ActionResult(False, "could not parse window list")
+    mapped = [c for c in clients if c.get("mapped")]
+
+    chosen = _matching_windows(targets, mapped) if targets else mapped
+    if not chosen:
+        return ActionResult(False, "no matching windows found")
+
+    windows = []
+    for c in chosen:
+        at = c.get("at") or [0, 0]
+        size = c.get("size") or [0, 0]
+        label = c.get("title") or c.get("class") or "window"
+        # Long titles would draw a chip wider than the window it's labeling
+        # — the plugin elides overflow but has no cap on the chip's own
+        # width, so keep it from growing unbounded in the first place.
+        if len(label) > 40:
+            label = label[:39].rstrip() + "…"
+        windows.append({"x": at[0], "y": at[1], "width": size[0], "height": size[1], "label": label})
+
+    payload = json.dumps({"windows": windows})
+    r2 = _run(["omarchy-shell", "-q", "windowLabels", "show", payload])
+    if not r2.ok:
+        return r2
+    return ActionResult(True, f"labeled {len(windows)} window(s)")
+
+
+def hide_window_labels(args: dict) -> ActionResult:
+    return _run(["omarchy-shell", "-q", "windowLabels", "hide"])
+
+
 def focus_window(args: dict) -> ActionResult:
     target = (args.get("target") or "").strip()
     if not target:
@@ -379,6 +450,8 @@ ACTIONS = {
     "window_fullscreen_toggle": window_fullscreen_toggle,
     "list_windows": list_windows,
     "focus_window": focus_window,
+    "show_window_labels": show_window_labels,
+    "hide_window_labels": hide_window_labels,
     "describe_screen": describe_screen,
     "remember_preference": remember_preference,
     "list_commands": list_commands,

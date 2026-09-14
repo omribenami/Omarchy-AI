@@ -233,6 +233,37 @@ TOOLS: list[dict] = [
         },
     ),
     _tool(
+        "show_window_labels",
+        "Show a real floating name-label badge on top of each candidate "
+        "window, positioned at that window's actual on-screen rectangle. "
+        "Use this right before you ask the user 'which window do you "
+        "mean?' out loud, scoped to just the ambiguous candidates (by app "
+        "or title) — so they can look at the screen and answer instead of "
+        "you listing windows in speech. Call hide_window_labels as soon "
+        "as you have their answer, whether or not you then act on it.",
+        {
+            "type": "object",
+            "properties": {
+                "targets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "App names or title substrings, one per candidate "
+                        "window — same fuzzy matching as focus_window's "
+                        "target. Omit or leave empty to label every open "
+                        "window instead of a specific set."
+                    ),
+                }
+            },
+            "required": [],
+        },
+    ),
+    _tool(
+        "hide_window_labels",
+        "Clear any window name-label badges currently shown by "
+        "show_window_labels.",
+    ),
+    _tool(
         "remember_preference",
         "Save a standing preference or correction about how you should "
         "behave in future conversations, not just this one — e.g. 'always "

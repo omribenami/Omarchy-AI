@@ -919,3 +919,108 @@ dark navy field, matching the app's existing black background closely
 enough that contrast wasn't a concern. `./gradlew assembleDebug` re-run to
 confirm this actually compiles, not just that the diff looks plausible
 (see build output/result noted at commit time).
+
+## Window name-label badges ("which window do you mean?")
+
+New feature, user-requested after explicitly rejecting cheaper alternatives
+(a border-flash, a plain spoken text list) — they wanted real floating
+per-window name badges, positioned at each candidate window's actual
+on-screen rectangle, shown while the assistant asks and hidden once it has
+an answer. Full design/precedent reasoning in ADR-0001 D8; this entry is
+the live-test evidence trail.
+
+**Quickshell side** — new user-owned plugin,
+`~/.config/omarchy/plugins/omarchy-ai.window-labels/` (`manifest.json` +
+`WindowLabels.qml`), built by copying `omarchy-osd`'s own IPC pattern
+exactly (`$OMARCHY_PATH/shell/plugins/osd/Osd.qml`). Registers `IpcHandler
+{ target: "windowLabels" }` with `show(payloadJson)` / `hide()` / `state()`
+/ `ping()`. One `PanelWindow` per screen (`Variants { model:
+Quickshell.screens }`, matching `omarchy.notifications`/`omarchy.background`'s
+own per-output pattern) holding a `Repeater` of chip badges, each converted
+from the window's global (`hyprctl clients -j` "at"/"size") coordinates into
+that screen's local surface coordinates and anchored near the window's
+top-left corner. No auto-hide timer — `hide_window_labels` owns the
+lifecycle explicitly.
+
+Two real bugs hit and fixed getting it live (both root-caused from
+`journalctl --user` — the shell logs to the journal under the
+`omarchy-shell` tag even with `QS_DISABLE_FILE_WATCHER=1`, confirmed that
+env var only disables Quickshell's own reload-popup, not the journal or
+`PluginRegistry`'s own file-watch reload path):
+
+1. Missing `import Quickshell.Io` → `IpcHandler` resolved as "not a type".
+   The CLI side gave no hint (`omarchy-shell windowLabels ping` just said
+   "Target not found"); only the journal showed the real compile error.
+2. `qs ipc call` — the underlying Quickshell IPC CLI `omarchy-shell` wraps
+   — splats a top-level JSON **array** argument into multiple positional
+   CLI arguments instead of one string. Confirmed live: a 3-window
+   `show '[{...},{...},{...}]'` failed with `Too many arguments provided
+   (1 required but 3 were provided)`; the identical call with a 1-element
+   array worked. Fixed by changing the wire payload to a JSON *object*
+   (`{"windows": [...]}`) — this is why the payload isn't a bare array
+   despite the tool description talking about "a list of windows".
+
+Also confirmed live: once a plugin has failed to compile, neither
+`omarchy-shell shell rescanPlugins` nor further file saves (which do
+correctly trigger `PluginRegistry`'s "Local plugin changed, reloading" —
+confirmed in the journal) clear the bad cached state — only a real
+`omarchy restart shell` process restart did. And a brand-new third-party
+plugin needs an explicit `omarchy plugin enable <id>` before
+`listPlugins` reports it `enabled: true` — just existing on disk and being
+*discovered* isn't enough, first-party-only default-enable per the
+shell's own plugin README.
+
+**Live-tested the full mechanism directly** (bypassing the voice daemon,
+per the task's own suggested approach — no live spoken conversation
+needed to prove this): with two real `foot` terminal windows open (plus
+two pre-existing ones), resolved real geometry via `hyprctl clients -j`,
+called `omarchy-shell windowLabels show '{"windows":[...]}'` with 1, then
+3, then all 4 windows, screenshotted each time
+(`omarchy-capture-screenshot fullscreen`) and confirmed a correctly
+titled, correctly positioned chip badge sitting right at each labeled
+window's actual top-left corner — not a placeholder, not approximate.
+`hide` screenshotted clean (no leftover badges) both times.
+
+**Python side** — `show_window_labels`/`hide_window_labels` added to
+`src/omarchy_ai/execution/actions.py` (registered in `ACTIONS`) and
+`src/omarchy_ai/execution/tools.py` (schemas via the existing `_tool(...)`
+helper). `show_window_labels(args: {"targets": list[str] | None})` resolves
+real geometry via `hyprctl clients -j` (same shape `list_windows` already
+parses), matches each target the same fuzzy app/title-substring way
+`focus_window` does (one match per target, first-match-wins, already-
+matched windows skipped so two vague targets can't collide on one window),
+falls back to labeling every mapped window when `targets` is omitted/empty,
+truncates titles over 40 chars so a long title can't draw a chip wider
+than the window it labels, builds the `{"windows": [...]}` payload, and
+shells out to `omarchy-shell -q windowLabels show <json>` via the existing
+`_run` subprocess helper (no `shell=True`, matching every other action in
+this file). `hide_window_labels` is a one-line `_run` call to `windowLabels
+hide`. Confirmed live end-to-end, independent of the voice daemon: called
+`run_action("show_window_labels", {"targets": ["foot"]})` and
+`run_action("show_window_labels", {})` directly from a Python shell,
+screenshotted, same correctly-positioned real badges as the raw-IPC test
+above.
+
+`src/omarchy_ai/config.py`'s `instructions` string now tells the model:
+when it's genuinely ambiguous which window the user means and it's about
+to ask out loud, call `show_window_labels` scoped to the ambiguous
+candidates right before asking, then `hide_window_labels` once it has an
+answer — whether or not it then acts on it. No changes to
+`src/omarchy_ai/voice/` were needed: both new actions are ordinary entries
+in `ACTIONS`/`TOOLS`, so they run through the existing generic
+`run_action(name, args)` dispatch in `live.py` (`_run_tool_call`) exactly
+like every other tool — no special-casing like `end_conversation` or
+`get_recent_actions` required.
+
+**Not yet done:** a real spoken end-to-end test through the live
+`omarchy-ai.service` (ask "which terminal did you mean" out loud and watch
+badges appear/disappear as part of an actual conversation). The service
+was mid-conversation for long stretches of this work (confirmed via
+`journalctl --user -u omarchy-ai` — the user was actively voice/text
+driving it, asking in-band why the labels feature wasn't done yet) and,
+per this project's own established restart discipline (a careless restart
+previously cut a live session short), the service was restarted only once
+`journalctl` showed no in-progress turn, immediately after wiring these
+tools in, specifically so the next real conversation would have them
+available. See the commit log around this entry for exactly when that
+restart happened and what the log showed right before it.
