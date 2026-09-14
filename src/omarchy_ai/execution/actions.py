@@ -13,6 +13,7 @@ model's tool-call arguments, and that is untrusted input same as any other.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import shutil
@@ -30,10 +31,21 @@ _TIMEOUT = 10
 # actions.py lives at <repo>/src/omarchy_ai/execution/actions.py.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _VENV_PYTHON = str(_REPO_ROOT / ".venv" / "bin" / "python")
+# The one TV that's been manually paired and proven working (STATUS.md's
+# "Hardware-dependent findings" -- adb tcpip 5555, not Wireless Debugging).
+# Used only as the fallback when live mDNS discovery (display/discovery.py)
+# comes back empty -- never the only path, see _resolve_cast_target.
 _TV_ADB_ADDR = "192.168.1.86:5555"
 _SIGNALING_PORT = 8765
+_APK_PATH = (
+    _REPO_ROOT / "android-receiver" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
+)
 _cast_process: subprocess.Popen | None = None
 _signaling_process: subprocess.Popen | None = None
+# Set by install_receiver_on_tv's discovery step, consumed by its pairing
+# step on the next call -- same "module-level state across separate tool
+# calls" pattern _cast_process already uses.
+_pending_pair_target: dict | None = None
 
 
 @dataclass
@@ -452,19 +464,112 @@ def _port_listening(port: int) -> bool:
             return False
 
 
+def _looks_like_address(s: str) -> bool:
+    """True if s (optionally with a :port suffix) is a literal IP -- lets
+    the model/user pass a raw address directly rather than only a
+    discovered device name."""
+    host = s.split(":")[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _discover_androidtv_devices() -> list[dict]:
+    from ..display import discovery
+
+    try:
+        return discovery.discover_androidtv_devices()
+    except Exception:  # noqa: BLE001 -- discovery must never take casting down
+        log.exception("TV discovery failed")
+        return []
+
+
+def _resolve_cast_target(target: str | None) -> tuple[str | None, ActionResult | None]:
+    """Resolves a spoken/typed target -- a name from list_cast_targets, a
+    raw IP[:port], or nothing -- to a single adb address ("host:port").
+    Real mDNS discovery (_androidtvremote2._tcp) is authoritative: a named
+    target that doesn't match anything real is reported back as a failure
+    rather than silently guessed at. Returns (address, None) on success or
+    (None, ActionResult) with a message for the model to relay/act on
+    (ambiguous match, no match, or multiple candidates needing a pick)."""
+    devices = _discover_androidtv_devices()
+
+    if target:
+        needle = target.strip().lower()
+        matches = [d for d in devices if needle in d["name"].lower()]
+        if len(matches) == 1:
+            return f"{matches[0]['address']}:5555", None
+        if len(matches) > 1:
+            names = ", ".join(d["name"] for d in matches)
+            return None, ActionResult(
+                False,
+                f"'{target}' matches more than one TV on the network ({names}) "
+                "-- ask which exact one, then call start_casting again with that name.",
+            )
+        if _looks_like_address(target):
+            host = target.split(":")[0]
+            port = target.split(":")[1] if ":" in target else "5555"
+            return f"{host}:{port}", None
+        if devices:
+            names = ", ".join(d["name"] for d in devices)
+            return None, ActionResult(
+                False, f"no TV named '{target}' found on the network right now. Available: {names}"
+            )
+        return None, ActionResult(
+            False, f"no TV named '{target}' found, and no TVs are currently discoverable on the network"
+        )
+
+    if len(devices) == 1:
+        return f"{devices[0]['address']}:5555", None
+    if len(devices) > 1:
+        names = ", ".join(d["name"] for d in devices)
+        return None, ActionResult(
+            False,
+            f"found {len(devices)} TVs on the network ({names}) -- call list_cast_targets "
+            "and ask the user which one, then call start_casting again with that name as the target.",
+        )
+
+    # Discovery found nothing at all -- fall back to the one TV already
+    # confirmed working today rather than failing the moment mDNS has a
+    # bad day or a TV's remote-control service happens to be off.
+    log.info("no TVs discovered via mDNS; falling back to last-known TV %s", _TV_ADB_ADDR)
+    return _TV_ADB_ADDR, None
+
+
+def list_cast_targets(args: dict) -> ActionResult:
+    """Real mDNS discovery of every Android TV currently advertising
+    _androidtvremote2._tcp on the network -- what the model reads out (or
+    uses to disambiguate) when asked "what TVs are available" or when
+    start_casting comes back ambiguous."""
+    devices = _discover_androidtv_devices()
+    if not devices:
+        # Still give a real, useful answer: the one TV already known to
+        # work, so this isn't just an empty list the moment mDNS has a
+        # bad day.
+        devices = [{"name": "previously paired TV", "address": _TV_ADB_ADDR.split(":")[0]}]
+    return ActionResult(True, json.dumps(devices))
+
+
 def start_casting(args: dict) -> ActionResult:
     global _cast_process, _signaling_process
 
     if _cast_process is not None and _cast_process.poll() is None:
         return ActionResult(True, "already casting")
 
+    target = (args.get("target") or "").strip() or None
+    tv_addr, err = _resolve_cast_target(target)
+    if err is not None:
+        return err
+
     # adb connect can hang for a long time against an unreachable host
     # (confirmed live — a plain 120s-timeout background hang, not a quick
     # failure) so this needs its own short timeout rather than trusting
     # adb to fail fast.
-    r = _run(["adb", "connect", _TV_ADB_ADDR], timeout=8)
+    r = _run(["adb", "connect", tv_addr], timeout=8)
     if not r.ok or "connected" not in r.message.lower():
-        return ActionResult(False, "could not reach the TV over the network")
+        return ActionResult(False, f"could not reach {tv_addr} over the network")
 
     if not _port_listening(_SIGNALING_PORT):
         _signaling_process = subprocess.Popen(
@@ -482,7 +587,7 @@ def start_casting(args: dict) -> ActionResult:
             return ActionResult(False, "signaling server failed to start")
 
     _run(
-        ["adb", "shell", "am", "start", "-n", "ai.omarchy.receiver/.MainActivity"],
+        ["adb", "-s", tv_addr, "shell", "am", "start", "-n", "ai.omarchy.receiver/.MainActivity"],
         timeout=8,
     )
     time.sleep(1)
@@ -498,7 +603,7 @@ def start_casting(args: dict) -> ActionResult:
     if _cast_process.poll() is not None:
         _cast_process = None
         return ActionResult(False, "casting failed to start")
-    return ActionResult(True, "casting started to the TV")
+    return ActionResult(True, f"casting started to the TV at {tv_addr}")
 
 
 def stop_casting(args: dict) -> ActionResult:
@@ -513,6 +618,152 @@ def stop_casting(args: dict) -> ActionResult:
         _cast_process.kill()
     _cast_process = None
     return ActionResult(True, "casting stopped")
+
+
+def _ensure_receiver_apk_built() -> ActionResult:
+    if _APK_PATH.exists():
+        return ActionResult(True, f"receiver APK already built ({_APK_PATH.stat().st_size} bytes)")
+    gradlew = _REPO_ROOT / "android-receiver" / "gradlew"
+    if not gradlew.exists():
+        return ActionResult(False, "android-receiver/gradlew not found -- can't build the receiver app")
+    log.info("receiver APK missing, building via ./gradlew assembleDebug")
+    r = _run([str(gradlew), "assembleDebug"], timeout=300)
+    if not r.ok or not _APK_PATH.exists():
+        return ActionResult(False, f"building the receiver APK failed: {r.message}")
+    return ActionResult(True, "built the receiver APK")
+
+
+def install_receiver_on_tv(args: dict) -> ActionResult:
+    """Guided new-TV setup, real step by step.
+
+    Hard, real Android constraint (checked live on this network -- not
+    worked around, because it can't be): a brand-new, never-paired TV
+    cannot be discovered or reached over adb at all until the user
+    personally turns on Developer options + Wireless debugging *on that
+    TV's own screen*. There is no scriptable path around that first step.
+
+    This tool does everything that CAN be automated -- building the APK if
+    needed, discovering the TV's pairing/connect mDNS services once they
+    appear, running `adb pair`/`adb connect`/`adb install` -- and is
+    explicit, in its return messages, about the one piece that can't be:
+    reading a pairing code off the TV's screen. It's called once with no
+    `pairing_code` to get the narrated setup steps (and, once the TV is
+    mid-pairing, its address); called again with `pairing_code` once the
+    user has read it out to finish pairing, connect, and install.
+    """
+    global _pending_pair_target
+
+    apk = _ensure_receiver_apk_built()
+    if not apk.ok:
+        return apk
+
+    pairing_code = (args.get("pairing_code") or "").strip() or None
+    from ..display import discovery
+
+    if pairing_code is None:
+        try:
+            pairing = discovery.discover_adb_tls_pairing()
+        except Exception:  # noqa: BLE001
+            log.exception("adb-tls-pairing discovery failed")
+            pairing = []
+
+        if not pairing:
+            _pending_pair_target = None
+            return ActionResult(
+                True,
+                "No TV is currently broadcasting a pairing signal. Walk the user "
+                "through these steps on the TV itself, one at a time, waiting for "
+                "them to confirm each: open Settings, go to About (or Device "
+                "Preferences) and select the build/version entry, then click/select "
+                "it repeatedly (about 7 times) until it says Developer options is "
+                "unlocked; go back to the main Settings screen, open Developer "
+                "options, and turn on 'Wireless debugging'; then open 'Wireless "
+                "debugging' and select 'Pair device with pairing code'. Once that "
+                "screen is showing a 6-digit code, call this tool again (still no "
+                "pairing_code) to find it.",
+            )
+        if len(pairing) > 1:
+            names = ", ".join(p["name"] for p in pairing)
+            _pending_pair_target = None
+            return ActionResult(
+                False,
+                f"more than one TV is showing a pairing screen right now ({names}) "
+                "-- ask which one to set up and pair them one at a time.",
+            )
+
+        target = pairing[0]
+        _pending_pair_target = target
+        return ActionResult(
+            True,
+            f"Found '{target['name']}' at {target['address']} ready to pair. Ask "
+            "the user to read the pairing code shown on the TV screen out loud "
+            "(or type it), then call this tool again with that code as pairing_code.",
+        )
+
+    # pairing_code given: use the target found by the discovery step above,
+    # re-discovering if it's missing (e.g. a fresh conversation/process, or
+    # the model skipped straight to a code it already had).
+    if _pending_pair_target is None:
+        try:
+            pairing = discovery.discover_adb_tls_pairing()
+        except Exception:  # noqa: BLE001
+            log.exception("adb-tls-pairing discovery failed")
+            pairing = []
+        if len(pairing) != 1:
+            return ActionResult(
+                False,
+                "no single TV is currently showing a pairing screen -- ask the user "
+                "to reopen Developer options > Wireless debugging > Pair device "
+                "with pairing code on the TV, then retry.",
+            )
+        _pending_pair_target = pairing[0]
+
+    pair_target = _pending_pair_target
+    _pending_pair_target = None
+    pair_addr = f"{pair_target['address']}:{pair_target['port']}"
+
+    r = _run(["adb", "pair", pair_addr, pairing_code], timeout=15)
+    if not r.ok:
+        return ActionResult(
+            False,
+            f"pairing failed ({r.message}). Ask the user to double check the code, "
+            "or reopen the pairing screen on the TV for a fresh one and try again.",
+        )
+
+    # Wireless Debugging's general connect port is a separate, randomly
+    # assigned port from the one just used for pairing -- discovered via a
+    # different mDNS service (_adb-tls-connect._tcp), not the fixed 5555
+    # this project's already-paired TV happens to use (that one was set up
+    # via the older adb tcpip 5555 method, not Wireless Debugging).
+    try:
+        connect_candidates = discovery.discover_adb_tls_connect()
+    except Exception:  # noqa: BLE001
+        log.exception("adb-tls-connect discovery failed")
+        connect_candidates = []
+    if not connect_candidates:
+        return ActionResult(
+            False,
+            "paired successfully, but no TV is currently advertising a connect "
+            "address -- ask the user to confirm Wireless debugging is still on, "
+            "then call this tool again with the same pairing_code.",
+        )
+    connect = connect_candidates[0]
+    connect_addr = f"{connect['address']}:{connect['port']}"
+
+    r = _run(["adb", "connect", connect_addr], timeout=8)
+    if not r.ok or "connected" not in r.message.lower():
+        return ActionResult(False, f"paired, but could not adb connect to {connect_addr}")
+
+    r = _run(["adb", "-s", connect_addr, "install", "-r", str(_APK_PATH)], timeout=120)
+    if not r.ok:
+        return ActionResult(False, f"connected to {connect_addr}, but installing the receiver app failed: {r.message}")
+
+    return ActionResult(
+        True,
+        f"receiver app installed on '{connect['name']}' at {connect_addr}. "
+        "You can now cast to it -- it should also show up under that name "
+        "via list_cast_targets once its Android TV remote-control service is up.",
+    )
 
 
 ACTIONS = {
@@ -553,6 +804,8 @@ ACTIONS = {
     "media_prev": media_prev,
     "start_casting": start_casting,
     "stop_casting": stop_casting,
+    "list_cast_targets": list_cast_targets,
+    "install_receiver_on_tv": install_receiver_on_tv,
 }
 
 

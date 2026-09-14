@@ -1127,3 +1127,137 @@ in `run()`). No changes to `execution/actions.py`, `execution/tools.py`, or
 `config.py`'s `instructions` — unlike window-labels, this feature is driven
 entirely by the daemon's own lifecycle, not a tool the model chooses to
 call, so there's nothing for the model to be told about it.
+
+## Casting: auto-discovery, TV disambiguation, assisted receiver install
+
+Extends the same-day `start_casting`/`stop_casting` (hardcoded
+`_TV_ADB_ADDR = "192.168.1.86:5555"`, confirmed live: real 15fps, 60/60
+frames, 0 dropped) with real mDNS auto-discovery, a spoken "which TV?"
+flow, and a guided new-TV install. Full design reasoning in
+`docs/ADR-0001-architecture.md` D10; this is the live-evidence trail.
+
+**New file `src/omarchy_ai/display/discovery.py`** wraps `avahi-browse -r
+-p -t <service>`, parsing its resolved (`=`) rows including avahi's
+decimal-escape format (`\032` -> space, confirmed against real captured
+output: `Philips\0324K\032A1` -> `Philips 4K A1`). Three functions:
+`discover_androidtv_devices()` (`_androidtvremote2._tcp`, deduped IPv4-
+preferred), `discover_adb_tls_pairing()`/`discover_adb_tls_connect()`
+(the two Wireless-Debugging mDNS services, for new-TV setup). Real timing
+measured directly on this network before picking the subprocess timeout:
+`avahi-browse -r -p -t _androidtvremote2._tcp` takes ~5s wall-clock
+whenever an unresolvable instance is present (one real device on this
+network, "Philips 4K A1", intermittently fails to resolve -- confirmed
+via the literal `avahi-browse` stderr: "Failed to resolve service
+'Philips 4K A1' ... Timeout reached") -- `_BROWSE_TIMEOUT = 8.0` set above
+that measured cost, not guessed. Runs happily off the asyncio event loop
+already (all tool execution goes through `loop.run_in_executor`, per the
+Phase 1 "blocking the event loop" fix above), so this real multi-second
+mDNS latency never stalls the voice session.
+
+**Confirmed live against the real network** (not mocked): `avahi-browse
+-a -t` surfaced `_androidtvremote2._tcp` (three real devices: "Living
+Room TV" 192.168.1.191, "Idol TV" 192.168.1.203, "Philips 4K A1"
+unresolvable) and, separately, `_googlecast._tcp` (a broader set including
+plain Chromecasts and non-Android-TV devices -- concretely, "Nest Audio",
+"Google Home", and "Google Nest Hub" have no `_androidtvremote2._tcp`
+counterpart at all, real proof they're not adb-installable cast targets).
+Decision: only `_androidtvremote2._tcp` is browsed for cast targets --
+full reasoning in ADR-0001 D10. `_adb-tls-connect._tcp`/
+`_adb-tls-pairing._tcp` (Wireless Debugging's own services) both returned
+zero results, confirmed directly, matching that no TV on this network
+currently has Wireless debugging toggled on.
+
+**`execution/actions.py`**: `_resolve_cast_target(target)` is the new
+core logic -- discovers real devices, matches a given name substring
+(1 match -> use it, >1 -> `ActionResult(False, ...)` naming the
+candidates so the model can ask, 0 matches -> honest "not found,
+available: ..." unless the target parses as a raw IP, in which case it's
+used directly), or with no target picks the sole discovered device, asks
+via `ActionResult(False, ...)` if there's more than one, and falls back to
+the always-known `_TV_ADB_ADDR` if discovery finds nothing at all (so a
+bad mDNS moment degrades to today's already-proven behavior rather than
+failing outright). `start_casting(args)` now takes an optional `target`,
+resolves it through this function first, and uses the resolved
+`tv_addr` (not the old hardcoded constant) for `adb connect` and for a
+new `-s tv_addr` on the `am start` launch call (targets the right device
+if more than one TV is ever adb-connected at once). New `list_cast_targets`
+action returns the same discovery as JSON, with the same last-known-TV
+fallback if discovery is empty. New `install_receiver_on_tv` action
+(detailed below) plus its `_ensure_receiver_apk_built()`/
+`_pending_pair_target` support.
+
+**Live-tested directly** (`run_action(...)`/`_resolve_cast_target(...)`
+called from a Python shell in this project's own venv, bypassing voice --
+same verification approach this repo has used for every visual/IPC
+feature that can't be triggered by a spoken wake word):
+- `list_cast_targets({})` -> `[{"name": "Living Room TV", "address":
+  "192.168.1.191"}, {"name": "Idol TV", "address": "192.168.1.203"}]` --
+  real discovered devices, not mocked, "Philips 4K A1" correctly absent
+  (it never resolves to an address).
+- `_resolve_cast_target(None)` with 2 real devices discovered -> correct
+  ambiguous-refusal `ActionResult(False, "found 2 TVs on the network
+  (Living Room TV, Idol TV) -- call list_cast_targets and ask...")`.
+- `_resolve_cast_target("idol")` -> `("192.168.1.203:5555", None)` --
+  correct single-match resolution by name.
+- `_resolve_cast_target("nonexistent tv")` -> correct honest failure
+  naming what IS available, not a silent fallback.
+- `_resolve_cast_target("192.168.1.86")` and `("192.168.1.86:5555")` --
+  both correctly pass the already-paired TV's raw IP straight through
+  (this device isn't `_androidtvremote2._tcp`-discoverable, proving the
+  raw-IP path works independently of discovery).
+- `install_receiver_on_tv({})` -> correctly detected the already-built
+  APK (55,940,636 bytes, unchanged from Phase 2) and, since
+  `_adb-tls-pairing._tcp` is empty right now, returned the full narrated
+  Developer-options/Wireless-debugging walkthrough text.
+- `install_receiver_on_tv({"pairing_code": "123456"})` with no pairing
+  target cached or discoverable -> correct honest failure ("no single TV
+  is currently showing a pairing screen..."), not a crash or a guess.
+
+**Not verified live**: the actual `adb pair`/`adb connect`/`adb install`
+sequence in `install_receiver_on_tv` -- no unpaired TV was available this
+session (every real TV already set up some other way, confirmed via the
+empty `_adb-tls-pairing._tcp` discovery above). Reasoned through against
+real `adb`/mDNS semantics and this project's own already-proven
+`adb connect`/`adb install` calls elsewhere in this file, not exercised
+end to end. Also not re-run: a full `start_casting(target=...)` live
+cast -- the earlier-today `start_casting({})` call (`journalctl`,
+15:08:11-15:08:14) left a real `spike_cast_sender.py` process (pid
+190420) actively streaming to the paired TV throughout this work
+(confirmed via `ss` showing live ESTABLISHED websocket connections, 8+
+minutes elapsed at the time of checking), and the signaling relay is
+deliberately single-sender -- starting a second one to test `target=`
+would have kicked that live session off mid-stream. The only new code in
+`start_casting`'s path (`_resolve_cast_target`) was verified independently
+instead, as above; everything after target resolution is the same
+sequence already proven live earlier today.
+
+**A sharper version of this project's restart discipline, found while
+checking whether it was safe to restart `omarchy-ai.service` to pick up
+these changes**: `systemctl --user show omarchy-ai -p KillMode` is
+`control-group`, and the live `spike_cast_sender.py` process above (pid
+190420) is a member of that same cgroup
+(`/user.slice/.../omarchy-ai.service`, confirmed via `/proc/190420/
+cgroup`) despite being spawned with `start_new_session=True`. A service
+restart right now would kill the live cast too, not just interrupt a
+conversation -- previously this repo's restart discipline only accounted
+for the latter. **Deliberately not restarted this session** -- the daemon
+is `active`, idle (no in-progress conversation per `journalctl`), but
+still driving a real live cast; these changes aren't loaded into the
+running process yet. Restart once the current cast test is done, same
+"only between conversations" discipline, now also "only when nothing is
+actively streaming."
+
+### Next action
+
+1. Restart `omarchy-ai.service` once the live cast test above has wrapped
+   up, so these tools are actually reachable by voice, then do a real
+   spoken end-to-end test: "what TVs are available", "cast to the
+   [name]", and (once a genuinely new/factory-reset TV is available)
+   `install_receiver_on_tv`'s full pairing flow.
+2. If `install_receiver_on_tv` gets a real unpaired TV to test against,
+   confirm the `adb pair` -> `_adb-tls-connect._tcp` re-discovery ->
+   `adb connect` -> `adb install -r` sequence end to end -- the one part
+   of this feature reasoned through but not yet proven.
+3. Consider persisting the last-used cast target (survives a daemon
+   restart) instead of only the always-available `_TV_ADB_ADDR` fallback,
+   once there's real multi-TV usage to learn a preference from.
