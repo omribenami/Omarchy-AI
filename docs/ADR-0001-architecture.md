@@ -53,6 +53,21 @@ Confirmed live: `org.freedesktop.portal.ScreenCast` is registered and
 reachable over the user D-Bus session, backed by
 `org.freedesktop.impl.portal.desktop.hyprland`. `gst-pipewiresrc` is also
 installed and can consume a portal-negotiated PipeWire node directly.
+Confirmed live end to end (Phase 2, `scripts/spike_cast_sender.py`): real
+ICE COMPLETED / WebRTC CONNECTED session to the Android TV, video and audio
+both flowing over `webrtcbin`. One real caveat found and root-caused with
+real evidence, not yet fully closed: `xdg-desktop-portal-hyprland`'s
+screencopy→PipeWire producer can run itself out of buffers almost
+immediately (`journalctl --user -u xdg-desktop-portal-hyprland` shows an
+endless `[screencopy/pipewire] Out of buffers` / `Retrying screencopy`
+loop), which reproduced as "one video frame then a permanent stall" on
+real hardware — a known symptom class upstream (GNOME LP#1987631,
+`hyprwm/xdg-desktop-portal-hyprland#434`), not specific to this codebase.
+Mitigated in `pipewiresrc`'s video branch with `always-copy=true` (stop
+holding references into the portal's buffer pool) plus a bounded
+`min-buffers`/`max-buffers`; see `STATUS.md` for the full evidence trail
+and the still-open re-confirmation step (needs a human to click through
+the one-time portal consent picker).
 
 **D6 — Encode: VAAPI H.264 via ffmpeg or GStreamer, hardware-accelerated.**
 Confirmed live: `ffmpeg` lists `h264_vaapi` and the Intel HD 4000 in this

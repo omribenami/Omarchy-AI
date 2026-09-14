@@ -172,8 +172,54 @@ class Sender:
 
     def build_pipeline(self, node_id: int, fd: int):
         a = self.args
+        # Video freezes after exactly one frame (confirmed live on real
+        # hardware, see STATUS.md/ADR-0001 for the full evidence trail):
+        # journalctl --user -u xdg-desktop-portal-hyprland showed, in the
+        # SAME time window as the one frame that got through, an endless
+        # loop of
+        #     [screencopy/pipewire] Out of buffers
+        #     [sc] Retrying screencopy (1/10)
+        #     [pw] Building modifiers for dma
+        #     [WARN] [pipewire] Asked for a wl_shm buffer which is legacy.
+        # i.e. the portal's screencopy->PipeWire producer runs out of
+        # buffers to write into almost immediately and never recovers --
+        # not a "only pushes on screen damage" issue (ruled out live: a
+        # deliberately-changing foot terminal on screen during the stall
+        # produced no new frames either). This matches multiple upstream
+        # reports of the identical symptom (GNOME LP#1987631 "Screencast
+        # only records one second", hyprwm/xdg-desktop-portal-hyprland#434
+        # "DMA-BUF screencopy failure leaves xdph wedged"): the consumer
+        # doesn't return PipeWire's buffers to its pool fast/reliably
+        # enough (worse when DMA-BUF modifier negotiation is in play, which
+        # our own log shows retried on every single attempt), so the
+        # portal's small buffer pool empties out and capture wedges solid.
+        # Mitigations applied here, in order of how directly they attack
+        # that root cause:
+        #  - always-copy=true: copy PipeWire's buffer into a fresh GstBuffer
+        #    immediately instead of holding a reference into its pool, so
+        #    our pipeline can never be the reason a buffer isn't returned.
+        #    (Deprecated property, but still implemented; this is the same
+        #    workaround documented for LP#1987631 before it was fixed
+        #    upstream in gstreamer's videoconvert -- kept here deliberately
+        #    since our own logs show the portal-side pool exhaustion is
+        #    still happening on current versions: pipewire 1.6.8,
+        #    xdg-desktop-portal-hyprland 1.4.1, gstreamer 1.28.6.)
+        #  - min-buffers/max-buffers: give the portal's allocator a small,
+        #    fixed pool to negotiate against instead of an unbounded default
+        #    (max-buffers defaults to INT_MAX), which is a plausible
+        #    contributor to the repeated "Building modifiers for dma"
+        #    renegotiation churn visible in the portal log.
+        #  - keepalive-time: last-resort safety net -- periodically resend
+        #    the last good frame so the receiver never sits on a fully dead
+        #    stream even if the above doesn't fully fix upstream buffer
+        #    exhaustion. Does not fix the underlying stall by itself.
+        # Not yet re-confirmed live after this change (blocked on the portal
+        # consent picker, which requires a human click -- see STATUS.md);
+        # the diagnosis above IS from real hardware/real logs, not a guess.
         video = (
-            f"pipewiresrc fd={fd} path={node_id} do-timestamp=true ! "
+            f"pipewiresrc fd={fd} path={node_id} do-timestamp=true "
+            f"always-copy=true min-buffers=2 max-buffers=4 "
+            f"keepalive-time={a.keepalive_ms} ! "
             "videoconvert ! videorate ! videoscale ! "
             f"video/x-raw,format=I420,framerate={a.fps}/1 ! "
             "queue max-size-buffers=2 leaky=downstream ! "
@@ -205,8 +251,43 @@ class Sender:
         bus.connect("message::error", self._on_bus_error)
         bus.connect("message::warning", self._on_bus_warning)
 
+        if self.args.probe_buffers:
+            self._install_debug_probes()
+
         self.pipeline.set_state(Gst.State.PLAYING)
         log.info("pipeline set to PLAYING")
+
+    # ---------- diagnostic buffer-counting probes (--probe-buffers) ----------
+
+    def _install_debug_probes(self):
+        """Count buffers at each stage of the video branch so we can see
+        exactly where the "one frame then nothing" stall happens: at the
+        PipeWire source itself (portal/compositor stopped pushing) or
+        somewhere further down the chain (videorate/encoder/webrtcbin)."""
+        points = [
+            ("pipewiresrc0", "src"),
+            ("videorate0", "src"),
+            ("openh264enc0", "src"),
+        ]
+        self._probe_counts = {}
+        for name, pad_name in points:
+            el = self.pipeline.get_by_name(name)
+            if el is None:
+                log.warning("probe: no element named %s in pipeline", name)
+                continue
+            pad = el.get_static_pad(pad_name)
+            self._probe_counts[name] = 0
+            pad.add_probe(Gst.PadProbeType.BUFFER, self._probe_cb, name)
+        log.info("debug buffer-counting probes installed on %s", list(self._probe_counts))
+
+    def _probe_cb(self, _pad, info, name):
+        buf = info.get_buffer()
+        self._probe_counts[name] += 1
+        n = self._probe_counts[name]
+        if n <= 5 or n % 30 == 0:
+            pts = buf.pts / Gst.SECOND if buf.pts != Gst.CLOCK_TIME_NONE else -1
+            log.info("PROBE %-14s buffer #%d pts=%.3fs", name, n, pts)
+        return Gst.PadProbeReturn.OK
 
     def _on_bus_error(self, _bus, message):
         err, debug = message.parse_error()
@@ -258,6 +339,21 @@ def main():
     p.add_argument("--bitrate", type=int, default=2_500_000, help="video bitrate, bits/sec")
     p.add_argument("--fps", type=int, default=15)
     p.add_argument("--audio-source", default=DEFAULT_AUDIO_MONITOR)
+    p.add_argument(
+        "--probe-buffers",
+        action="store_true",
+        help="log a buffer-arrival count at pipewiresrc/videorate/openh264enc "
+        "(diagnostic for the frozen-after-one-frame bug)",
+    )
+    p.add_argument(
+        "--keepalive-ms",
+        type=int,
+        default=1000,
+        help="pipewiresrc keepalive-time: periodically resend the last buffer "
+        "if no new one has arrived (0 = disabled). Safety net only -- see "
+        "build_pipeline() for the real fix attempt (always-copy + bounded "
+        "buffer count) for the 'Out of buffers' portal-side stall.",
+    )
     args = p.parse_args()
     Sender(args).run()
 
