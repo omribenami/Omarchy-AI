@@ -481,31 +481,116 @@ top of the Phase 0 vertical slice and ADR-0001 D7's `webrtcbin` decision:
 "unable to strip" line). The signaling relay's protocol was verified
 against a live scripted client before wiring the Kotlin side to it.
 
-**Not yet confirmed:** nothing has run on the TV itself this phase. The
-paired TV (192.168.1.86) is currently off the network — `ping` returns
-"Destination Host Unreachable" and `adb connect` returns "No route to
-host", not an application-level failure. Needs the device powered back
-on before install/launch/real-cast confirmation can happen, same
-"needs the user/hardware present" pattern as the original wireless-ADB
-pairing.
+**Confirmed live, real hardware, first time:** `acquire_screencast()` in
+`spike_cast_sender.py` had a real bug — it kept `portal = Xdp.Portal.new()`
+as a local variable and returned immediately after starting the async
+`create_screencast_session()` call, so nothing else held a reference and
+PyGObject could (and did) garbage-collect the `Portal` object mid-flight,
+silently dropping the pending callback forever (no error, no timeout).
+Fixed by storing it on `self._portal` (commit `6add25c`). After the fix:
+real ICE connection state COMPLETED, WebRTC connection state CONNECTED,
+one real video frame rendered on the TV at the correct 1366x768
+resolution, and the Android side's audio playback thread
+(`AudioTrackJavaThread`) activated — the whole capture → encode → WebRTC →
+render chain proven end to end on real hardware for the first time.
+
+### Frozen-after-one-frame bug — root-caused with real evidence
+
+The remaining bug from the milestone above: video stalls after exactly one
+frame (Android's `EglRenderer` log: "Frames received: 1. Rendered: 1" in
+the first 4s window, then "Frames received: 0" in every window after,
+indefinitely — no error, ICE/connection state stays healthy).
+
+Root-caused, not guessed: `journalctl --user -u xdg-desktop-portal-hyprland`
+for the exact same time window as the one delivered frame shows an
+immediate, endless retry loop:
+```
+[LOG] [screencopy/pipewire] Out of buffers
+[LOG] [sc] Retrying screencopy (1/10)
+[LOG] [pw] Building modifiers for dma
+[WARN] [pipewire] Asked for a wl_shm buffer which is legacy.
+```
+i.e. the portal's screencopy→PipeWire producer runs out of buffers to
+write new frames into almost immediately and never recovers. The
+"only pushes on screen damage" hypothesis (in the original handoff notes)
+was tested live and ruled out: a deliberately-changing `foot` terminal
+window was put on screen during the stall and produced no new frames
+either — the stream was already wedged, not waiting for damage.
+
+This matches known upstream reports of the identical symptom class:
+GNOME's launchpad bug 1987631 ("Screencast only records one second" — root
+cause was the buffer consumer not releasing PipeWire buffers back to the
+pool fast enough, worked around with PipeWire's `always-copy`/force-copy
+mechanism before a proper fix landed in GStreamer's `videoconvert`) and
+`hyprwm/xdg-desktop-portal-hyprland#434` ("DMA-BUF screencopy failure
+leaves xdph wedged" — same "Out of buffers" log line, same permanent wedge
+until the portal service is restarted).
+
+Fix applied to `pipewiresrc`'s video branch in `build_pipeline()` (see the
+code comment there for the full reasoning), in order of how directly each
+attacks the root cause: `always-copy=true` (copy PipeWire's buffer into a
+fresh `GstBuffer` immediately so our pipeline can never be the reason a
+buffer isn't returned to the pool — deprecated property, kept deliberately
+since this exact issue is still reproducing on current versions: pipewire
+1.6.8, xdg-desktop-portal-hyprland 1.4.1, gstreamer 1.28.6), `min-buffers=2
+max-buffers=4` (bounded pool instead of the default unbounded max, to stop
+the repeated DMA modifier renegotiation churn visible in the portal log),
+and `keepalive-time` (last-resort safety net, resends the last frame
+periodically — does not fix the underlying stall by itself). Also added an
+opt-in `--probe-buffers` flag that pad-probes pipewiresrc/videorate/
+openh264enc buffer counts, used during this diagnosis.
+
+**Not yet re-confirmed live after the fix**: reproducing it needs a fresh
+portal session, which pops a real GUI consent picker
+(`hyprland-preview-share-picker`, a layer-shell overlay — not a normal
+window, doesn't show in `hyprctl clients`, only `hyprctl layers`) that a
+human has to click through; there's no restore token saved yet (the portal
+log shows "restore data invalid / missing, prompting" every time — the app
+has no appid, so persisted grants don't carry over between runs), and no
+mouse-click injection tool is available in this environment (`wtype`
+exists for keyboard only; no `ydotool`/`wlrctl`). Needs the user present
+for one click, same as the original milestone run.
+
+Also still open from the original handoff, now understood to be a
+*different* question because the root cause above is screencopy/DMA-BUF
+specific: whether the Opus **audio** branch has an analogous stall. The
+audio `pipewiresrc target-object=<monitor>` captures a continuous PCM
+stream from the default sink's monitor — a fundamentally different
+PipeWire producer than the screencopy/DMA-BUF-negotiated video stream, so
+the "Out of buffers"/DMA modifier mechanism above should not apply to it.
+That is reasoning from the mechanism, not a live measurement — still needs
+real confirmation (RTP packet counts on the audio transceiver via
+`webrtcbin`'s stats, or GST_DEBUG on the audio branch) once a live session
+is possible again.
+
+The paired TV (192.168.1.86) is reachable on the network in this session
+(`adb connect 192.168.1.86:5555` succeeded, receiver app was resumed and
+connected as viewer).
 
 ## Next action
 
-1. **Once the TV is reachable again:** `adb connect`, install the debug
-   APK, launch it, then run `spike_cast_sender.py` (with the user present
-   for the one-time portal consent dialog) and confirm on camera/by eye
-   that the desktop actually appears on the TV with audio — the real
-   target this whole phase is building toward, not yet done.
-2. **Fix the English-only farewell/exit detection** (see above) — the
+1. **With the user present to click the portal consent dialog:** run
+   `spike_cast_sender.py` again and confirm the `always-copy`/bounded-
+   buffer-pool fix above actually keeps video flowing past the first
+   frame — watch Android's `EglRenderer` log for "Frames received"
+   continuing to climb past a single 4s window, same evidence standard as
+   the diagnosis. If it's still stalling, `--probe-buffers` plus
+   `journalctl --user -u xdg-desktop-portal-hyprland -f` (watch for
+   whether "Out of buffers" still appears) is the next thing to check —
+   the fix targets the most likely cause but wasn't re-confirmed live.
+2. Once video is confirmed continuous, verify audio the same rigorous way
+   (webrtcbin RTP stats or GST_DEBUG on the audio branch — see above) and
+   confirm actually hearing it, closer to the TV than ~3m this time.
+3. **Fix the English-only farewell/exit detection** (see above) — the
    actual next correctness bug, not a nice-to-have.
-3. Confirm whether `tool_choice: auto` made the `end_conversation` tool
+4. Confirm whether `tool_choice: auto` made the `end_conversation` tool
    call actually fire, with a clean live test (the one attempt after adding
    it was inconclusive — session closed on its own after ~30s of silence,
    not clearly from either mechanism).
-4. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
+5. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
    (reuse jarvisd's silence-detection approach) so the daemon knows when
    the user actually finished talking, rather than guessing a duration.
-5. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
+6. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
    started) — GPU-light, replaces omavoice's simple waveform panel.
-6. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
+7. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
    to the OS yet; this is still a conversation, not an OS-control assistant.
