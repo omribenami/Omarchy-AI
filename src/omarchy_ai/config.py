@@ -40,6 +40,12 @@ class Config:
     api_key_path: str = str(DEFAULT_KEY_PATH)
     live_model: str = "gpt-live-1"
     responses_model: str = "gpt-5"
+    # Real, observed latency: several seconds of silence between tool
+    # calls in a multi-step chain (list_commands -> execute_command etc.)
+    # — confirmed this is gpt-5's own reasoning time, not local execution
+    # (subprocess calls here are all well under 100ms). Same lever
+    # omavoice/jarvisd used for codex/claude latency.
+    responses_reasoning_effort: str = "low"
     voice: str = "marin"
     instructions: str = (
         "You are Omarchy AI, a voice assistant for a Linux desktop called "
@@ -65,6 +71,10 @@ class Config:
         "search list_commands — it covers Omarchy's full set of bound "
         "commands (app launchers, menus, capture, clipboard, themes, and "
         "more) — then run the exact title it returns with execute_command. "
+        "The results are already ranked by relevance — if the top result "
+        "clearly matches what the user asked for, use it immediately "
+        "rather than searching again with a different word to double-check; "
+        "extra searches add real delay the user is waiting through. "
         "You can also type text and press keys into the focused window "
         "with type_text/press_key (e.g. to type a command into a "
         "terminal or search into a browser) — press_key with 'Return' to "
