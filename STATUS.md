@@ -5,7 +5,8 @@
 - Retired `jarvisd` (disabled its systemd service; code left in
   `~/Git/jarvisd` for reference — its Hyprland Lua/classic dispatch fallback
   pattern carries over directly, see ADR-0001 D3).
-- Repo scaffolded at `~/Git/oma`: `src/oma/{core,voice,execution,vision,
+- Repo scaffolded at `~/Git/omarchy-ai` (renamed from `oma` — see the
+  rebrand note further down): `src/omarchy_ai/{core,voice,execution,vision,
   devices,display,policy,cli}`, `systemd/`, `android-receiver/`, `docs/`.
 - Environment audit complete — see ADR-0001 for the full list. Summary:
   Omarchy 4.0.3 / Hyprland 0.56.2; PipeWire, portal, GStreamer+pipewiresrc,
@@ -34,9 +35,9 @@
    be scripted ahead of that moment.
 
 **JDK: done, no sudo needed.** Temurin 21.0.12 installed via `mise` (already
-in use on this machine), pinned in `mise.toml` (committed) so `oma`'s own
-setup script can reproduce it the same way — same pattern jarvisd used for
-its Python venv.
+in use on this machine), pinned in `mise.toml` (committed) so this project's
+own setup script can reproduce it the same way — same pattern jarvisd used
+for its Python venv.
 
 **Lesson logged:** a WebFetch summary of an Android developer docs page
 fabricated a plausible-looking but nonexistent download URL (404'd on
@@ -78,8 +79,9 @@ Pulled via `adb shell getprop`/`pm list packages`:
 - **`com.softwinner.miracastReceiver` is installed** — this device has a
   built-in Miracast (WiFi Direct mirroring) receiver. Notably simpler than
   the full custom-receiver pipeline for *video-only* mirroring, but no
-  remote-input or mic-uplink channel — doesn't replace the Oma Receiver app,
-  worth keeping in mind as a possible quick-mirror fallback path later.
+  remote-input or mic-uplink channel — doesn't replace the Omarchy AI
+  Receiver app, worth keeping in mind as a possible quick-mirror fallback
+  path later.
 - No Android TV "Leanback" launcher package turned up in one grep pass —
   not conclusive on its own, worth a closer look when actually launching
   the receiver Activity (Phase 2), not assumed either way from this.
@@ -95,7 +97,7 @@ Pulled via `adb shell getprop`/`pm list packages`:
   launch → verify running, no manual TV navigation — works end to end on
   real hardware.
 - Package name (`com.example.omareceiver`) and Activity name are template
-  defaults; rename to `ai.oma.receiver` (per spec) when receiver
+  defaults; rename to `ai.omarchy.receiver` when receiver
   development actually starts in Phase 2.
 
 ## Phase 1 in progress
@@ -258,16 +260,98 @@ fixed window is a spike-quality hack; the real daemon needs local
 VAD-based silence detection (same pattern as jarvisd's `audio.py`) to know
 when the user has actually finished talking, not a hardcoded timer.
 
+## Rebrand: Oma → Omarchy AI
+
+Renamed everything (repo directory `~/Git/oma` → `~/Git/omarchy-ai`, Python
+package `oma` → `omarchy_ai`, systemd unit `oma.service` →
+`omarchy-ai.service`, config dir `~/.config/oma` → `~/.config/omarchy-ai`,
+persona in `instructions` — "You are Oma" → "You are Omarchy AI"). The
+wake word is still the "hey jarvis" pretrained placeholder (openWakeWord has
+no "omarchy" model; training one is separate, deferred work — see the
+wake-word decision earlier in this doc). Verified after the rename: package
+imports cleanly, config loads with the new paths, systemd service starts
+and reaches "ready" under the new name.
+
+## Phase 1: wake word integrated into a real daemon
+
+Ported jarvisd's proven `audio.py`/`wake.py` (openWakeWord + `pw-record`,
+unchanged detection logic) into `src/omarchy_ai/voice/`. `src/omarchy_ai/
+core/daemon.py` is the actual loop: block on the wake word (in an executor,
+off the asyncio loop) → run one `LiveSession` (the gpt-live-1 client,
+refactored from the spike script) → back to listening. Running as a real
+systemd user service (`omarchy-ai.service`), confirmed live end to end
+multiple times: wake word fires, session connects, conversation happens,
+session ends, daemon returns to listening and fires again on the next wake
+word — no crash across repeated cycles.
+
+**No connection is ever open outside an active conversation** — each
+`gpt-live-1` session (billed per second) starts only on a real wake-word
+detection and ends when the conversation does, per the design goal in the
+README.
+
+### Ending a conversation — three attempts, in order, each with real evidence
+
+The user asked for "bye/stop/finish" to end a session and go back to
+listening (not stop the whole service — just that one conversation).
+
+1. **Fuzzy text match on the user's own transcript** (`fuzz.WRatio`) —
+   first real bug: a single letter "i" matched "finish" and hung up a
+   conversation the user hadn't tried to end (WRatio's partial-match
+   component inflates scores badly for very short strings). Fixed with a
+   minimum-length gate and switching to `fuzz.ratio` (whole-string, no
+   partial matching) — confirmed via calibration against real phrasings
+   that this correctly rejects "can we **stop** for a sec" and "what's the
+   **finish** line" (both would false-positive under partial matching) at
+   the cost of missing more loosely-phrased exits. Second real bug this
+   surfaced: still unreliable in practice, and **English-only** — doesn't
+   help when the user is speaking another language and both their exit
+   phrase and the model's own farewell come back in that language.
+2. **A real tool call** (`end_conversation`, added to
+   `delegation.responses.tools` — confirmed by probing the live API that
+   this is where tools live, not `session.tools` at the top level, which is
+   rejected as `unknown_parameter`) — the model never invoked it once
+   across a full conversation where the user clearly said "bye" (zero
+   `function_call` events in the log). Added `delegation.responses.
+   tool_choice: "auto"` (also confirmed accepted by the API) on the theory
+   that tool use might be off by default — **not yet confirmed working
+   live**, see below.
+3. **Watching the assistant's own reply for a farewell** — the mechanism
+   actually confirmed working live: `instructions` tells the model to say a
+   brief goodbye when the user wants to end, and `LiveSession` checks its
+   own `session.output_transcript.delta` text for farewell markers
+   ("goodbye", "take care", "see you", ...), then hangs up ~2s later (grace
+   period so the farewell audio finishes playing). Confirmed live: user
+   said "bye", assistant replied "Bye—take care.", session closed cleanly,
+   daemon returned to listening. **Known gap, not yet fixed:** the marker
+   list is English-only, so this fails the same way as attempt 1 when the
+   conversation (and therefore the model's farewell) is in another
+   language — confirmed live, the user reported it "hung up only when
+   switched to english". A language-agnostic version (e.g. a fixed marker
+   token the model is instructed to include regardless of spoken language,
+   rather than matching its literal words) is the next real fix here, not
+   attempted yet.
+
+Both the tool-call and farewell mechanisms are active at once (either can
+trigger hangup); the text-match fallback is disabled by neither being
+removed nor separately gated — worth deciding whether to keep it as a
+third safety net or drop it now that farewell-watching works, once the
+language gap above is actually fixed.
+
 ## Next action
 
-1. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
+1. **Fix the English-only farewell/exit detection** (see above) — the
+   actual next correctness bug, not a nice-to-have.
+2. Confirm whether `tool_choice: auto` made the `end_conversation` tool
+   call actually fire, with a clean live test (the one attempt after adding
+   it was inconclusive — session closed on its own after ~30s of silence,
+   not clearly from either mechanism).
+3. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
    (reuse jarvisd's silence-detection approach) so the daemon knows when
    the user actually finished talking, rather than guessing a duration.
-2. Wake word gating — nothing here opens a connection only on demand yet;
-   every spike run is a live, billed ($0.05/min) session from the moment it
-   starts. The real daemon must not connect until the wake word fires.
-3. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
+4. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
    started) — GPU-light, replaces omavoice's simple waveform panel.
-4. Fold this into `src/oma/voice/` and `core/` as the real module instead
-   of a standalone script, with the policy/audit layer (ADR-0001 D1) sitting
-   between what the backend model decides and what actually executes.
+5. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
+   to the OS yet; this is still a conversation, not an OS-control assistant.
+6. Phase 2: Android receiver real development, display casting end-to-end
+   (the `webrtcbin` side of this hasn't been exercised past the Phase 0
+   spike).
