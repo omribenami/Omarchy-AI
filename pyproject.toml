@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=2.5.3",
     "onnxruntime>=1.30.0",
     "openwakeword>=0.4.0",
+    "pywayland>=0.4.19",
     "pyyaml>=6.0.3",
     "rapidfuzz>=3.14.6",
     "websockets>=17.1",

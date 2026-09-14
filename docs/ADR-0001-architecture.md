@@ -48,53 +48,60 @@ is the classic (non-Lua) output subcommand and was not affected by the Lua
 migration. This is the mechanism `display/` will use for "show my workspace
 on the TV" without touching the physical monitor.
 
-**D5 — Capture: PipeWire ScreenCast portal, not a bespoke capture path.**
-Confirmed live: `org.freedesktop.portal.ScreenCast` is registered and
-reachable over the user D-Bus session, backed by
-`org.freedesktop.impl.portal.desktop.hyprland`. `gst-pipewiresrc` is also
-installed and can consume a portal-negotiated PipeWire node directly.
-Confirmed live end to end (Phase 2, `scripts/spike_cast_sender.py`): real
-ICE COMPLETED / WebRTC CONNECTED session to the Android TV, video and audio
-both flowing over `webrtcbin`. One real caveat found and root-caused with
-real evidence, not yet fully closed: `xdg-desktop-portal-hyprland`'s
-screencopy→PipeWire producer can run itself out of buffers almost
-immediately (`journalctl --user -u xdg-desktop-portal-hyprland` shows an
-endless `[screencopy/pipewire] Out of buffers` / `Retrying screencopy`
-loop), which reproduced as "one video frame then a permanent stall" on
-real hardware — a known symptom class upstream (GNOME LP#1987631,
-`hyprwm/xdg-desktop-portal-hyprland#434`), not specific to this codebase.
-Mitigated in `pipewiresrc`'s video branch with `always-copy=true` (stop
-holding references into the portal's buffer pool) plus a bounded
-`min-buffers`/`max-buffers`; see `STATUS.md` for the full evidence trail
-and the still-open re-confirmation step (needs a human to click through
-the one-time portal consent picker).
+**D5 — Capture: `wlr-screencopy-unstable-v1` direct, NOT the PipeWire
+ScreenCast portal (revised from the original decision after real evidence
+it doesn't work).**
 
-**Update, re-tested live:** the `always-copy`/bounded-pool mitigation
-above helped only marginally (2 frames instead of 1, then the same
-permanent stall) — a fresh portal log from that exact retest showed the
-identical `Out of buffers`/`Building modifiers for dma` loop unchanged,
-confirmed not a one-off (11,000+ repeats across the last 2 days of casting
-tests, continuous for the life of every session). Root-caused further:
-this matches `hyprwm/xdg-desktop-portal-hyprland#434` exactly, and
-"Building modifiers for dma" is xdph's own *internal* DMA-BUF capture from
-the Hyprland compositor, not something steerable via our GStreamer
-consumer's caps (tried anyway — an explicit `video/x-raw` capsfilter after
-`pipewiresrc` — kept, but reasoned unlikely to be sufficient alone,
-since downstream `videoconvert` already implicitly excluded
-`memory:DMABuf` caps). Already on the latest available
-`xdg-desktop-portal-hyprland` (1.4.1, both in Arch `extra` and upstream's
-newest GitHub tag — no version bump available to fix this). Applied the
-fix that actually matches the mechanism instead: PipeWire's own DMA-BUF
-*modifier* negotiation disabled globally via
-`~/.config/pipewire/pipewire.conf.d/98-screencast-no-dmabuf-modifiers.conf`
-(`support.dmabuf.modifiers = false`), matching a documented, resolved
-community report of the identical symptom (Arch forum thread id=308493).
-Confirmed live that the config actually loads (`pw-cli info 0` shows the
-setting, all four affected services restarted clean, audio unaffected) —
-**not yet confirmed live that it fixes the actual freeze**, which needs a
-human to click through the portal picker again. See `STATUS.md` "Re-tested
-live" / "Root-caused further" / "The actual fix applied" for the full
-trail.
+Original decision: `org.freedesktop.portal.ScreenCast` (confirmed
+reachable over the user D-Bus session, `gst-pipewiresrc` consuming a
+portal-negotiated PipeWire node). Confirmed live end to end once (Phase 2,
+`scripts/spike_cast_sender.py`): real ICE COMPLETED / WebRTC CONNECTED
+session to the Android TV. But `xdg-desktop-portal-hyprland`'s own
+screencopy→PipeWire producer runs itself out of buffers almost immediately
+(`[screencopy/pipewire] Out of buffers` / `Retrying screencopy` /
+`Building modifiers for dma`, matching `hyprwm/xdg-desktop-portal-
+hyprland#434` and GNOME LP#1987631) and reproduced as "one or two video
+frames then a permanent stall," **every time, across three separate
+mitigation attempts, each confirmed live and each confirmed NOT to fix
+it**: `always-copy=true` + bounded `min/max-buffers` (2 frames instead of
+1, then the same stall); a `video/x-raw` capsfilter forcing our consumer
+off DMA-BUF (reasoned unlikely to reach the actual bug since
+`videoconvert` already implicitly excluded `memory:DMABuf`, and confirmed
+so); PipeWire's own `support.dmabuf.modifiers=false` config drop-in,
+matching a documented community fix for the identical log signature (Arch
+forum thread id=308493) — also re-tested live and confirmed NOT to fix it,
+because that setting governs generic PipeWire client/session-manager
+buffer negotiation, not xdph's own compositor-internal DMA-BUF capture
+code, which turned out to be a separate path the setting doesn't touch at
+all. `xdg-desktop-portal-hyprland` was already at the latest available
+version (1.4.1, Arch `extra` and upstream's newest GitHub tag agree) — not
+a "wait for a package bump" situation either.
+
+**Decision, revised: bypass the portal entirely for video.** Talk to
+Hyprland's `wlr-screencopy-unstable-v1` Wayland global directly (the same
+protocol `grim` uses, proven reliable dozens of times this session) via
+`pywayland`, feeding a GStreamer `appsrc` instead of consuming a
+portal-negotiated `pipewiresrc` node. Proven in isolation first
+(`scripts/spike_cast_wlr_screencopy.py`): 40 real seconds, ~60fps
+sustained, 0 failures, real pixel-content changes confirmed via per-frame
+CRC and a visual PNG sanity dump, **zero** `xdg-desktop-portal-hyprland`
+log lines during the entire test (definitive proof of zero portal
+involvement), and no consent dialog at any point (confirmed, not assumed:
+`wlr-screencopy` is compositor-policy-gated, not portal-consent-gated, on
+this Hyprland build — a real side benefit matching the earlier "no click
+required" goal). Wired into `scripts/spike_cast_sender.py`'s video branch
+(shared capture core in `scripts/wlr_screencopy_capture.py`) and confirmed
+live end to end on real hardware: twelve consecutive 4-second windows of
+Android's `EglRenderer` log all reading `Frames received: 60. Dropped: 0.
+Rendered: 60. Render fps: 15.0` — continuous, steady video for the whole
+test, not a stall at any point. This is the actual fix; the frozen-
+after-one-frame bug is closed. Audio (`pipewiresrc target-object=<sink
+monitor>`) is untouched and was never implicated — a different PipeWire
+producer than the screencopy/DMA-BUF path that was actually broken. See
+`STATUS.md` "Casting video: wlr-screencopy-unstable-v1 direct capture" for
+the full trail, including a real segfault-on-exit bug found and fixed
+along the way (unordered GC destroying Wayland proxies after their
+Display was already freed — fixed with an explicit `disconnect()`).
 
 **D6 — Encode: VAAPI H.264 via ffmpeg or GStreamer, hardware-accelerated.**
 Confirmed live: `ffmpeg` lists `h264_vaapi` and the Intel HD 4000 in this

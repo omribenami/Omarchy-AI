@@ -60,3 +60,22 @@ another Omarchy machine, not assume identical to this one:
   (`~/Android/Sdk`), not the AUR package's own root-owned
   `/opt/android-sdk` — `android sdk install` fails with a permissions error
   otherwise. Set in `mise.toml`.
+
+## Added for direct `wlr-screencopy-unstable-v1` video capture (replaces the portal/PipeWire video path)
+
+| Package | Source | Why |
+|---|---|---|
+| `pywayland` | `uv add pywayland` (project venv, PyPI) | Low-level Wayland client bindings — talks to `zwlr_screencopy_manager_v1` directly, bypassing `xdg-desktop-portal`'s broken ScreenCast->PipeWire bridging (see STATUS.md/ADR-0001 D5). Not a pacman package. |
+
+**`wlr-protocols` (the pacman package that ships `wlr-screencopy-unstable-v1.xml`)
+was NOT installed** — no passwordless sudo in this session
+(`sudo -n pacman -Q wlr-protocols` confirmed). Vendored the same XML
+content from the upstream `wlr-protocols` GitHub repo into
+`scripts/protocols/wlr-screencopy-unstable-v1.xml` instead, and compiled
+Python bindings from it once via `python -m pywayland.scanner` into
+`scripts/protocols/generated/wlr_screencopy_unstable_v1.py` (checked into
+git, not regenerated at install time). **A real installer for another
+machine should prefer `sudo pacman -S wlr-protocols` and read the XML from
+`/usr/share/wlr-protocols/unstable/wlr-screencopy-unstable-v1.xml`
+instead** — the vendored copy here is a workaround for this session's
+missing sudo, not the intended long-term approach.

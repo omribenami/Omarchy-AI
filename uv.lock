@@ -366,6 +366,7 @@ dependencies = [
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "openwakeword" },
+    { name = "pywayland" },
     { name = "pyyaml" },
     { name = "rapidfuzz" },
     { name = "websockets" },
@@ -377,6 +378,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "onnxruntime", specifier = ">=1.30.0" },
     { name = "openwakeword", specifier = ">=0.4.0" },
+    { name = "pywayland", specifier = ">=0.4.19" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rapidfuzz", specifier = ">=3.14.6" },
     { name = "websockets", specifier = ">=17.1" },
@@ -507,6 +509,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3f/e8/7325d258199b159eb2c03fe32107533e2832e70e63f4fb88a6aa00023201/pyopenssl-26.4.0.tar.gz", hash = "sha256:28dfcce0162b9211413e26dfbfdf1d24317fbeba18fc93c12400a1856b2a0bc7", size = 182046, upload-time = "2026-08-01T19:50:50.512Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/51/ad/2cf6d3fa2fae5c79e1ed9960c0d42badd0f94d81dd12b50604cdc839e648/pyopenssl-26.4.0-py3-none-any.whl", hash = "sha256:f0eb0cb2d581d3ad2b9c489468485e7f2ab6727d08401bcf9d824c3caddf3c1c", size = 56026, upload-time = "2026-08-01T19:50:48.94Z" },
+]
+
+[[package]]
+name = "pywayland"
+version = "0.4.19"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/43/81da8524a9e81bee3cd4d8bd1752de34031060e8011d2d3d1e9950840d6f/pywayland-0.4.19.tar.gz", hash = "sha256:9d8478f5b0df3540333ccf85a55fe8b34150b2c28c685805de9ffa855898549e", size = 280412, upload-time = "2026-08-15T15:03:51.982Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/46/20d628982baab0f57df815e2ba6b34b4f08a8111edd65eeb831dd6bcd5c3/pywayland-0.4.19-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:1cde2f1f133f5f8d6974014969bad64789c5d2b129acbe212a9425805c65fe2b", size = 705327, upload-time = "2026-08-15T15:03:47.282Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/22/dc49766cb01d174d5f1f55620385436bd8032547d6196aef22c8fec991e2/pywayland-0.4.19-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:267e24092fefad19b0d8c4ca79ed11f9e6ab8074a4953d6dbbba1b180ec36363", size = 705279, upload-time = "2026-08-15T15:03:48.411Z" },
+    { url = "https://files.pythonhosted.org/packages/27/e8/10f36b4db54bcccfc906c2939333e9b6482ca953f5a36a61fb5c7ed8518e/pywayland-0.4.19-cp314-cp314-manylinux_2_34_x86_64.whl", hash = "sha256:51bba0917ba7815a4db75a3ecf7efe4683d4d78e861d59f83f7efade719faedb", size = 705127, upload-time = "2026-08-15T15:03:49.674Z" },
 ]
 
 [[package]]
