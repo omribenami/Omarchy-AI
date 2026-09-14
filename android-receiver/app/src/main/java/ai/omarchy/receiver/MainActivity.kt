@@ -1,22 +1,43 @@
-package com.example.omareceiver
+package ai.omarchy.receiver
 
+import android.Manifest
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.example.omareceiver.theme.OmaReceiverTheme
+import ai.omarchy.receiver.theme.OmarchyReceiverTheme
 
 class MainActivity : ComponentActivity() {
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
+    private val viewModel: ReceiverViewModel by viewModels()
 
-    enableEdgeToEdge()
-    setContent {
-      OmaReceiverTheme { Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { MainNavigation() } }
+    // See the RECORD_AUDIO comment in AndroidManifest.xml / WebRtcClient.kt
+    // -- requested up front so WebRTC's audio device module never has to
+    // find out the hard way that it's missing.
+    private val requestRecordAudio =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* proceed regardless */ }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        requestRecordAudio.launch(Manifest.permission.RECORD_AUDIO)
+
+        // A cast target should never let the system blank the screen
+        // mid-stream.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        enableEdgeToEdge()
+        setContent {
+            OmarchyReceiverTheme {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    ReceiverScreen(viewModel)
+                }
+            }
+        }
     }
-  }
 }

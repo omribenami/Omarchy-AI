@@ -1,14 +1,13 @@
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
-  alias(libs.plugins.kotlin.serialization)
 }
 
 android {
-    namespace = "com.example.omareceiver"
+    namespace = "ai.omarchy.receiver"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.omareceiver"
+        applicationId = "ai.omarchy.receiver"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
@@ -77,8 +76,8 @@ dependencies {
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
 
-  // Navigation
-  implementation(libs.androidx.navigation3.ui)
-  implementation(libs.androidx.navigation3.runtime)
-  implementation(libs.androidx.lifecycle.viewmodel.navigation3)
+  // Casting: WebRTC receive-only client + its signaling transport (see
+  // ADR-0001 D7 and src/omarchy_ai/display/signaling.py).
+  implementation(libs.stream.webrtc.android)
+  implementation(libs.okhttp)
 }

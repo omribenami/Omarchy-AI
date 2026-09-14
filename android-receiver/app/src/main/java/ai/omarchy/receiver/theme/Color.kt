@@ -1,4 +1,4 @@
-package com.example.omareceiver.theme
+package ai.omarchy.receiver.theme
 
 import androidx.compose.ui.graphics.Color
 
