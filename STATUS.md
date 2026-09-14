@@ -687,17 +687,201 @@ upstream for whether `#434` itself has a maintainer response yet (checked
 via WebFetch during this session — the issue had no comments yet as of
 this investigation).
 
+### PipeWire dmabuf.modifiers config fix: re-tested live, did NOT work either
+
+Confirmed live, real hardware: with the `support.dmabuf.modifiers=false`
+config from the previous round still in place, the exact same failure
+signature reproduced identically -- `journalctl --user -u
+xdg-desktop-portal-hyprland` showed the same "Building modifiers for dma"
+-> "Out of buffers" loop, 213 occurrences in a 30-second window, same
+freeze-after-2-frames symptom on Android's `EglRenderer` log. Root cause,
+understood more precisely now: that PipeWire setting governs generic
+PipeWire client/session-manager buffer negotiation between separate
+processes -- it has no effect on `xdg-desktop-portal-hyprland`'s own
+*internal* screencopy->DMA-BUF bridging code (how xdph pulls frames off
+the compositor's GPU in the first place, before any PipeWire client is
+even involved), which is a distinct, compositor-internal code path the
+setting doesn't touch. This matches `hyprwm/xdg-desktop-portal-
+hyprland#434` and is treated as confirmed-unfixable from the consumer
+side -- not worth further tuning.
+
+## Casting video: wlr-screencopy-unstable-v1 direct capture, bypassing the portal entirely -- fixed
+
+Rather than continue tweaking the portal/PipeWire path (proven broken
+three separate ways: `always-copy`/bounded-pool, PipeWire
+`dmabuf.modifiers=false`, both re-tested live and confirmed ineffective),
+replaced the entire video capture mechanism: talk to Hyprland's
+`wlr-screencopy-unstable-v1` Wayland global directly instead of going
+through `org.freedesktop.portal.ScreenCast` at all. This is the same
+lower-level protocol `grim` uses (`omarchy-capture-screenshot`), called
+successfully dozens of times this session -- strong prior evidence this
+path is solid on this machine, unlike the portal's own internal bridging.
+
+### Step 1: proven in isolation first, per this repo's own convention
+
+`scripts/spike_cast_wlr_screencopy.py` -- pulls continuous frames via
+wlr-screencopy with no portal, no PipeWire, and no GStreamer involved at
+all (pure `pywayland`), before touching the real sender.
+
+**Environment work needed first, done without sudo:**
+- No `python-pywayland` pacman package, no gst wlr-screencopy element in
+  gst-plugins-good/bad, no `wf-recorder`/`wayvnc` on this machine (all
+  checked before writing anything). Added `pywayland` via `uv add
+  pywayland` (proper project dependency, not a bare system pip install).
+- The `zwlr_screencopy_manager_v1`/`zwlr_screencopy_frame_v1` Python
+  bindings pywayland needs aren't bundled with it (wlr-protocols isn't a
+  standard wayland-protocols package). No passwordless sudo available in
+  this session (`sudo -n pacman -Q wlr-protocols` confirmed this,
+  consistent with the earlier-logged blocker) to install the `extra/
+  wlr-protocols` pacman package, so the protocol XML was vendored instead
+  from the upstream wlr-protocols GitHub repo (same content the pacman
+  package ships) into `scripts/protocols/wlr-screencopy-unstable-v1.xml`,
+  then compiled once via `python -m pywayland.scanner` into
+  `scripts/protocols/generated/wlr_screencopy_unstable_v1.py` -- generated
+  against pywayland's own bundled `pywayland.protocol.wayland` module
+  (not a second independently-generated copy) so the `wl_output`/
+  `wl_buffer` types are identical objects, since pywayland's
+  `protocol_core` checks object identity for interface arguments.
+
+**A real bug found and fixed before the proof could be trusted:** the
+first live run captured perfectly (360/360 frames in 6s, 0 failures) but
+**segfaulted on exit** every time. Root-caused with real evidence, not
+guessed: `coredumpctl info` on the core dump showed the crash was in
+`wl_proxy_destroy -> wl_map_insert_at`, called from cffi's GC finalizer
+during Python's interpreter-shutdown garbage collection pass -- the
+Display and its many child proxies (registry, shm, manager, outputs,
+buffer, pool) were being destroyed in arbitrary GC order instead of
+explicitly, and a proxy's finalizer fired *after* the `wl_display`'s own
+internal proxy map had already been freed by a separately-GC'd Display
+object (classic destroy-after-free). Read pywayland's own
+`Display.disconnect()` source to confirm the intended pattern: it walks
+`display._children` (every `Proxy` registers itself there) and destroys
+each one *while the display is still alive*, then releases the display
+itself. Fixed by calling `grabber.disconnect()` explicitly in a `finally`
+block instead of relying on GC -- confirmed live: repeated runs after the
+fix exit cleanly (0/1 as expected) with no core dump.
+
+**Real hardware result, 40-second run, `--save-frame` sanity check:**
+2389 frames captured in 40.0s = **59.70 fps sustained**, **0 failures**,
+every single one of ten consecutive 4-second report windows showed a
+non-zero, consistent frame count (~241 frames/window) -- the exact
+evidence bar the portal path never once cleared (it died after 1-2
+frames). 352 real content-changes detected across the run (CRC of each
+frame's pixel bytes, not just event bookkeeping) -- genuine live capture,
+not a frozen buffer being resent. `--save-frame` dumped one captured
+frame to a real PNG (via `ffmpeg -f rawvideo`) and it is visually the
+actual live desktop content at that moment (terminal windows, a real
+system notification visible in the shot) -- direct visual confirmation,
+not just numbers. `journalctl --user -u xdg-desktop-portal-hyprland`
+during the entire 40+ second test window: **zero lines** -- definitive
+proof this path never touches the portal at all. **No consent dialog
+appeared** at any point -- confirms wlr-screencopy is compositor-policy-
+gated, not portal-consent-gated, on this Hyprland build (checked as asked
+rather than assumed).
+
+### Step 2: wired into the real sender
+
+Extracted the capture core into `scripts/wlr_screencopy_capture.py`
+(shared by both the spike and the real sender, avoiding duplicating the
+protocol logic) -- `ScreencopyGrabber` class plus a
+`select()`-with-timeout dispatch helper for standalone use. Its `on_frame`
+callback hands consumers a **fresh copy** of each frame's tightly-packed
+pixel bytes (stride padding stripped if present -- a real correctness
+guard: this machine's stride happened to exactly equal `width*4` so the
+stripping code path wasn't exercised locally, but nothing guarantees that
+elsewhere, and an un-stripped mismatch would show up downstream as
+skewed/torn video, one row at a time). The copy happens synchronously
+before the callback returns, specifically so a consumer can safely
+request the next capture (which reuses the same `wl_shm` mmap region)
+without racing the compositor overwriting it mid-read.
+
+`scripts/spike_cast_sender.py`'s video branch: `Xdp`/libportal and
+`pipewiresrc` removed from the video path entirely, replaced with an
+`appsrc` fed directly from `ScreencopyGrabber`. The Wayland display's fd
+is wired into the *same* `GLib.MainLoop` that already drives webrtcbin's
+bus/promise callbacks via `GLib.io_add_watch` -- no extra thread needed,
+consistent with this script's existing GLib-for-pipeline /
+asyncio-for-signaling split. Captures are paced to roughly the target fps
+via `GLib.timeout_add` (proven capable of ~60fps in isolation; no reason
+to burn CPU copying/encoding frames `videorate` would just drop). Each
+frame becomes a `Gst.Buffer.new_wrapped(data)` with a real PTS relative to
+first-frame time, pushed via `appsrc.emit("push-buffer", ...)`; the
+pipeline itself isn't built until the first frame arrives, since
+`build_pipeline()` needs the real width/height/format learned from the
+compositor's first "buffer" event (same "learn params, then build"
+sequencing the old portal-based flow used, just with wlr-screencopy as the
+new source of those params). The `appsrc` caps use `framerate=0/1`
+("variable/unknown") deliberately -- `videorate` downstream uses each
+buffer's real PTS to retime to the fixed output rate, not the nominal caps
+framerate. Verified the launch string parses and the `appsrc` caps
+property is set correctly via a standalone `Gst.parse_launch()` check
+before the real hardware test. Audio branch: **untouched**, byte-for-byte
+identical `pipewiresrc target-object=<monitor>` -- never implicated in
+this bug (different PipeWire producer than the screencopy/DMA-BUF path).
+
+### Step 4: real hardware test -- confirmed, continuous video, no stall
+
+Signaling relay was already running from an earlier session (reused, not
+restarted); the Android receiver app was already resumed on the paired TV
+(`ai.omarchy.receiver/.MainActivity`, re-launched via `adb shell am
+start` to get a clean connection state -- `adb` reported it was already
+top-most). Ran `spike_cast_sender.py --fps 15` for 48 real seconds while
+watching `journalctl --user -u xdg-desktop-portal-hyprland -f` live and
+`adb logcat` (cleared first via `logcat -c`) for Android's `EglRenderer`.
+
+**Sender side:** ICE reached `CONNECTED` (state 2) within ~0.6s. Twelve
+consecutive 4-second capture windows, **all ~50 frames each, 0 failures,
+zero stalls**.
+
+**Portal log for the entire 48+ second test: zero lines.** Not "no error
+lines" -- *zero output at all*, confirming this path never touches
+`xdg-desktop-portal-hyprland` in any way, the definitive version of the
+"no portal involvement" claim.
+
+**Android `EglRenderer` log (the actual evidence bar this whole
+investigation was blocked on) -- twelve consecutive 4-second windows after
+the initial ICE ramp-up, every single one:**
+```
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0.
+```
+Locked exactly to the requested 15fps target, zero drops, for the entire
+duration the sender ran -- not "one frame then a permanent stall" (the
+original bug), not "two frames then a permanent stall" (the
+`always-copy`/bounded-pool attempt), not "unchanged" (the PipeWire
+`dmabuf.modifiers` attempt) -- **continuous, steady video for the whole
+test**, ending only because the sender process was deliberately stopped
+(the final two logcat windows show 0 frames, timed exactly to when
+`timeout 50` killed the sender). Audio confirmed still flowing throughout
+via `AudioFlinger` mixer activity in the same logcat pull (untouched
+branch, as expected).
+
+**This closes the frozen-after-one-frame casting bug.** The portal-based
+video path is retired (kept only in git history / this file's earlier
+entries for the record); `wlr-screencopy-unstable-v1` via `appsrc` is now
+the real video capture mechanism. `src/omarchy_ai/voice/` and
+`omarchy-ai.service` were never touched -- confirmed still `active`
+throughout (`systemctl --user is-active omarchy-ai.service pipewire
+pipewire-pulse wireplumber`), and no PipeWire-related service restart was
+needed or performed this round (unlike the previous round, which broke a
+live voice session).
+
 ## Next action
 
-1. **With the user present to click the portal consent dialog:** run
-   `spike_cast_sender.py` again with the PipeWire `dmabuf.modifiers=false`
-   fix now live, and confirm `journalctl --user -u xdg-desktop-portal-
-   hyprland -f` stops showing "Out of buffers"/"Building modifiers for
-   dma" and Android's `EglRenderer` "Frames received" keeps climbing past
-   a single 4s window — same evidence standard as the diagnosis. This is
-   the one remaining step that cannot be done without a human; everything
-   else machine-verifiable about this fix (config loaded, services
-   healthy, pipeline still parses) has been checked already.
+1. Verify audio the same rigorous way as video was just verified here
+   (webrtcbin RTP stats or GST_DEBUG on the audio branch, plus actually
+   listening closer to the TV) -- reasoned safe/unaffected so far, not yet
+   measured with the same rigor as video.
+2. Retire/delete `scripts/spike_cast_portal.py` (the now-unused portal
+   consent-dialog spike) or clearly mark it historical-only, since video
+   capture no longer goes through the portal at all.
+3. **Fix the English-only farewell/exit detection** (voice subsystem, see
+   above) -- the actual next correctness bug, not a nice-to-have.
+4. Confirm whether `tool_choice: auto` made the `end_conversation` tool
+   call actually fire, with a clean live test.
+5. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD.
+6. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
+   started).
+7. The policy/tool-registry/audit layer (ADR-0001 D1).
 2. Once video is confirmed continuous, verify audio the same rigorous way
    (webrtcbin RTP stats or GST_DEBUG on the audio branch — see above) and
    confirm actually hearing it, closer to the TV than ~3m this time.
