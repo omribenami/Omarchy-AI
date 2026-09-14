@@ -445,21 +445,67 @@ removed nor separately gated — worth deciding whether to keep it as a
 third safety net or drop it now that farewell-watching works, once the
 language gap above is actually fixed.
 
+## Phase 2: casting subsystem — Linux side proven, Android side wired up
+
+Real end-to-end casting code now exists on both ends, built directly on
+top of the Phase 0 vertical slice and ADR-0001 D7's `webrtcbin` decision:
+
+- `src/omarchy_ai/display/signaling.py` — the minimal WebSocket
+  offer/answer/ICE relay both ends need (WebRTC's own signaling is
+  intentionally out of band). Confirmed working standalone with a
+  scripted sender/viewer round-trip.
+- `scripts/spike_cast_portal.py` / `spike_cast_sender.py` /
+  `spike_cast_receiver.py` — the Linux-side proof-of-concept chain
+  (portal → PipeWire → `openh264enc` → `webrtcbin`, system-audio capture
+  via the default sink's monitor → `opusenc`), same "prove it in
+  GStreamer before touching Android" convention as Phase 1's voice spike.
+  **Not yet run this session** — `spike_cast_portal.py` pops a real
+  screen-share consent dialog on the live desktop, deliberately not
+  triggered unattended.
+- The Android receiver (`android-receiver/`) now has a real UI, not the
+  template's placeholder: `SignalingClient.kt` (OkHttp, registers as
+  `role=viewer`), `WebRtcClient.kt` (receive-only `org.webrtc`
+  `PeerConnection`, empty ICE server list — LAN-only, same
+  no-STUN-needed lesson already paid for on the voice side — remote
+  video exposed as a `StateFlow`), `ReceiverViewModel.kt` /
+  `ReceiverScreen.kt` (auto-connects on launch using a remembered/
+  default sender IP, full-screen `SurfaceViewRenderer`, status overlay
+  that hides once ICE reaches CONNECTED/COMPLETED). Dependency:
+  `io.getstream:stream-webrtc-android` (Maven Central's maintained
+  drop-in for `org.webrtc` now that Google no longer publishes
+  `google-webrtc`).
+
+**Confirmed:** `./gradlew assembleDebug` succeeds, real 55.9MB debug APK
+(up from Phase 0's 11.9MB — now actually linking
+`libjingle_peerconnection_so.so`, named directly in the build log's
+"unable to strip" line). The signaling relay's protocol was verified
+against a live scripted client before wiring the Kotlin side to it.
+
+**Not yet confirmed:** nothing has run on the TV itself this phase. The
+paired TV (192.168.1.86) is currently off the network — `ping` returns
+"Destination Host Unreachable" and `adb connect` returns "No route to
+host", not an application-level failure. Needs the device powered back
+on before install/launch/real-cast confirmation can happen, same
+"needs the user/hardware present" pattern as the original wireless-ADB
+pairing.
+
 ## Next action
 
-1. **Fix the English-only farewell/exit detection** (see above) — the
+1. **Once the TV is reachable again:** `adb connect`, install the debug
+   APK, launch it, then run `spike_cast_sender.py` (with the user present
+   for the one-time portal consent dialog) and confirm on camera/by eye
+   that the desktop actually appears on the TV with audio — the real
+   target this whole phase is building toward, not yet done.
+2. **Fix the English-only farewell/exit detection** (see above) — the
    actual next correctness bug, not a nice-to-have.
-2. Confirm whether `tool_choice: auto` made the `end_conversation` tool
+3. Confirm whether `tool_choice: auto` made the `end_conversation` tool
    call actually fire, with a clean live test (the one attempt after adding
    it was inconclusive — session closed on its own after ~30s of silence,
    not clearly from either mechanism).
-3. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
+4. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
    (reuse jarvisd's silence-detection approach) so the daemon knows when
    the user actually finished talking, rather than guessing a duration.
-4. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
+5. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
    started) — GPU-light, replaces omavoice's simple waveform panel.
-5. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
+6. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
    to the OS yet; this is still a conversation, not an OS-control assistant.
-6. Phase 2: Android receiver real development, display casting end-to-end
-   (the `webrtcbin` side of this hasn't been exercised past the Phase 0
-   spike).
