@@ -290,14 +290,86 @@ TOOLS: list[dict] = [
     _tool("media_prev", "Go back to the previous track."),
     _tool(
         "start_casting",
-        "Start mirroring this desktop's screen and audio to the paired "
-        "Android TV/projector over the local network. Connects to the TV, "
-        "launches the receiver app on it if needed, and starts streaming — "
-        "takes a few seconds. Safe to call again if already casting (no-op).",
+        "Start mirroring this desktop's screen and audio to an Android "
+        "TV/projector over the local network. Connects to the TV, launches "
+        "the receiver app on it if needed, and starts streaming — takes a "
+        "few seconds. Safe to call again if already casting (no-op). If "
+        "the user named a specific TV, pass it as target. If no target is "
+        "given and more than one TV is currently discoverable on the "
+        "network, this returns ok=false with the list of candidates in "
+        "the message instead of guessing — call list_cast_targets, ask "
+        "the user which one, then call this again with their answer as "
+        "target. If exactly one TV is discoverable (or none, in which "
+        "case it falls back to the one TV already known from before), it "
+        "just works with no target needed.",
+        {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Which TV to cast to — a device name as returned "
+                        "by list_cast_targets (e.g. 'Living Room TV', "
+                        "matched case-insensitively as a substring), or a "
+                        "raw IP address. Omit if the user didn't name one "
+                        "and there's no ambiguity."
+                    ),
+                }
+            },
+            "required": [],
+        },
     ),
     _tool(
         "stop_casting",
         "Stop mirroring the screen/audio to the TV/projector. Safe to call "
         "even if nothing is currently casting.",
+    ),
+    _tool(
+        "list_cast_targets",
+        "List Android TVs currently discoverable on the local network (via "
+        "mDNS — real-time, not a fixed list), each with a name and IP. Call "
+        "this when the user asks what TVs/casting targets are available, or "
+        "right before asking 'which TV do you mean?' after start_casting "
+        "comes back ambiguous — read the names out and let them answer by "
+        "name (e.g. 'the Living Room TV' or 'Idol TV'), then call "
+        "start_casting again with that name as target. This only finds "
+        "TVs that already have the Android TV remote-control service "
+        "running — a TV that's never been set up at all won't appear here; "
+        "use install_receiver_on_tv for that case instead.",
+    ),
+    _tool(
+        "install_receiver_on_tv",
+        "Guided setup to get the receiver app onto a TV that's never been "
+        "used for casting before. This is a real back-and-forth, not a "
+        "single automatic step: Android requires the user to personally "
+        "enable Developer options and Wireless debugging on the TV's own "
+        "screen first — that cannot be done remotely or skipped. Call this "
+        "with no pairing_code first: if no TV is mid-setup yet, it returns "
+        "the exact steps to narrate to the user (Settings > About > tap "
+        "the build entry repeatedly to unlock Developer options > "
+        "Developer options > Wireless debugging on > Pair device with "
+        "pairing code); once the user says they see a pairing screen, "
+        "call it again (still no pairing_code) to check whether it's now "
+        "discoverable. Once found, ask the user to read the code shown on "
+        "the TV out loud (or type it), then call this a final time with "
+        "that code as pairing_code — it will pair, connect, and install "
+        "the app, or explain exactly what went wrong if something fails. "
+        "Building the APK first if it isn't already built can take a "
+        "while — say so rather than going quiet.",
+        {
+            "type": "object",
+            "properties": {
+                "pairing_code": {
+                    "type": "string",
+                    "description": (
+                        "The pairing code currently shown on the TV's "
+                        "screen, read out or typed by the user. Omit to "
+                        "just check/discover a pairing-in-progress TV and "
+                        "get the narrated setup steps."
+                    ),
+                }
+            },
+            "required": [],
+        },
     ),
 ]
