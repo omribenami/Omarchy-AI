@@ -213,13 +213,68 @@ class Sender:
         #    the last good frame so the receiver never sits on a fully dead
         #    stream even if the above doesn't fully fix upstream buffer
         #    exhaustion. Does not fix the underlying stall by itself.
-        # Not yet re-confirmed live after this change (blocked on the portal
-        # consent picker, which requires a human click -- see STATUS.md);
-        # the diagnosis above IS from real hardware/real logs, not a guess.
+        # RE-TESTED LIVE (same day, real hardware) after the above fix:
+        # marginal improvement only (2 frames rendered instead of 1 per
+        # Android's EglRenderer log, then the same permanent stall), and a
+        # fresh journalctl --user -u xdg-desktop-portal-hyprland pull from
+        # that exact test window showed the IDENTICAL loop still firing --
+        # confirmed not a one-off: grepping the last 2 days of portal logs
+        # found 11,000+ repeats of "Out of buffers", roughly once/sec
+        # continuously for the whole duration of every casting test session
+        # run in that window, not just "one frame then done". So
+        # always-copy/bounded-pool did not touch the real root cause.
+        #
+        # Investigated further (no human available for a live re-test at
+        # the time): whether restricting OUR pipewiresrc consumer to plain
+        # system-memory caps (no memory:DMABuf feature) would stop the
+        # portal from ever offering a DMA-BUF-backed format in the first
+        # place. Conclusion, reasoned from the actual GitHub issue this
+        # matches (hyprwm/xdg-desktop-portal-hyprland#434, "DMA-BUF
+        # screencopy failure leaves xdph wedged" -- identical log
+        # signature) -- the "Building modifiers for dma" line is
+        # xdg-desktop-portal-hyprland's OWN internal DMA-BUF capture from
+        # the Hyprland compositor (how it gets frames off the GPU in the
+        # first place), not something negotiated against our consumer's
+        # requested caps; downstream `videoconvert` already implicitly
+        # restricts to system-memory raw video today (no
+        # memory:DMABuf-feature caps appear anywhere in this pipeline), so
+        # this consumer-side lever most likely does not reach the code path
+        # that is actually wedging. Keeping the explicit `video/x-raw`
+        # capsfilter right after pipewiresrc anyway below -- it is what was
+        # asked for, costs nothing, and makes the "no DMA-BUF on our side"
+        # intent explicit instead of implicit -- but it is NOT expected to
+        # be the fix by itself.
+        #
+        # The fix that actually matches the upstream mechanism: PipeWire's
+        # own DMA-BUF *modifier* negotiation, which is what "Building
+        # modifiers for dma" names, and which xdph's internal capture goes
+        # through regardless of what any client requests. Applied at
+        # ~/.config/pipewire/pipewire.conf.d/98-screencast-no-dmabuf-
+        # modifiers.conf (support.dmabuf.modifiers = false), matching a
+        # documented community fix for this exact symptom (Arch forum
+        # thread id=308493, "[SOLVED] XDPH stuck at building modifiers for
+        # dma"). `xdg-desktop-portal-hyprland` is already at 1.4.1, the
+        # newest version in Arch's `extra` repo AND the newest GitHub tag
+        # (`pacman -Si` and `gh api repos/.../tags` agree) -- no newer
+        # package fixes this. pipewire/pipewire-pulse/wireplumber and
+        # xdg-desktop-portal-hyprland were restarted to load the new
+        # config; confirmed live (machine-verifiable, no human needed):
+        # `pw-cli info 0` now reports `support.dmabuf.modifiers = "false"`,
+        # and pactl/pipewire came back up cleanly with no new errors.
+        # NOT YET RE-CONFIRMED for the actual bug: still needs a human to
+        # click through the portal consent picker for a real casting
+        # session and confirm "Out of buffers" stops appearing in
+        # `journalctl --user -u xdg-desktop-portal-hyprland -f` and frames
+        # keep flowing past the first one. This machine's GPU (Intel HD
+        # 4000, i915) isn't in the encode path anyway (software
+        # openh264enc, no VAAPI plugin installed -- ADR-0001 D6), so
+        # disabling DMA-BUF modifiers costs an extra copy at most, not a
+        # capability loss, on this hardware.
         video = (
             f"pipewiresrc fd={fd} path={node_id} do-timestamp=true "
             f"always-copy=true min-buffers=2 max-buffers=4 "
             f"keepalive-time={a.keepalive_ms} ! "
+            "video/x-raw ! "
             "videoconvert ! videorate ! videoscale ! "
             f"video/x-raw,format=I420,framerate={a.fps}/1 ! "
             "queue max-size-buffers=2 leaky=downstream ! "

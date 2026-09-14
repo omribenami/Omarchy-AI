@@ -69,6 +69,33 @@ holding references into the portal's buffer pool) plus a bounded
 and the still-open re-confirmation step (needs a human to click through
 the one-time portal consent picker).
 
+**Update, re-tested live:** the `always-copy`/bounded-pool mitigation
+above helped only marginally (2 frames instead of 1, then the same
+permanent stall) — a fresh portal log from that exact retest showed the
+identical `Out of buffers`/`Building modifiers for dma` loop unchanged,
+confirmed not a one-off (11,000+ repeats across the last 2 days of casting
+tests, continuous for the life of every session). Root-caused further:
+this matches `hyprwm/xdg-desktop-portal-hyprland#434` exactly, and
+"Building modifiers for dma" is xdph's own *internal* DMA-BUF capture from
+the Hyprland compositor, not something steerable via our GStreamer
+consumer's caps (tried anyway — an explicit `video/x-raw` capsfilter after
+`pipewiresrc` — kept, but reasoned unlikely to be sufficient alone,
+since downstream `videoconvert` already implicitly excluded
+`memory:DMABuf` caps). Already on the latest available
+`xdg-desktop-portal-hyprland` (1.4.1, both in Arch `extra` and upstream's
+newest GitHub tag — no version bump available to fix this). Applied the
+fix that actually matches the mechanism instead: PipeWire's own DMA-BUF
+*modifier* negotiation disabled globally via
+`~/.config/pipewire/pipewire.conf.d/98-screencast-no-dmabuf-modifiers.conf`
+(`support.dmabuf.modifiers = false`), matching a documented, resolved
+community report of the identical symptom (Arch forum thread id=308493).
+Confirmed live that the config actually loads (`pw-cli info 0` shows the
+setting, all four affected services restarted clean, audio unaffected) —
+**not yet confirmed live that it fixes the actual freeze**, which needs a
+human to click through the portal picker again. See `STATUS.md` "Re-tested
+live" / "Root-caused further" / "The actual fix applied" for the full
+trail.
+
 **D6 — Encode: VAAPI H.264 via ffmpeg or GStreamer, hardware-accelerated.**
 Confirmed live: `ffmpeg` lists `h264_vaapi` and the Intel HD 4000 in this
 machine exposes it. This machine is the CPU-encode fallback case in the
