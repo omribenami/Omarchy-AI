@@ -98,10 +98,33 @@ Pulled via `adb shell getprop`/`pm list packages`:
   defaults; rename to `ai.oma.receiver` (per spec) when receiver
   development actually starts in Phase 2.
 
+## Phase 1 in progress
+
+**`gpt-live-1` WebRTC connection confirmed working against the real API**
+(`scripts/spike_live_webrtc.py`): `webrtcbin` generates a real SDP offer,
+`POST https://api.openai.com/v1/live/sessions` with
+`{"session": {"model": "gpt-live-1"}, "transport": {"type": "webrtc", "sdp":
+...}}` returns a real answer, ICE reaches `CONNECTED`. Test audio only so
+far (`audiotestsrc`), not the mic, and no data channel for control
+events/function-calling wired up yet.
+
+Key facts learned by probing the real API directly (not from docs, which
+were incomplete via WebFetch):
+- `session.type` is *not* a valid field — just `{"model": "gpt-live-1"}`
+  under `session`.
+- WebRTC-only transport; the API rejects anything else.
+- Response has top-level `session` and `transport` keys; the answer SDP is
+  at `transport.sdp`.
+
+Needed `gst-plugins-good` (RTP payloaders — `rtpopuspay` etc.) on top of
+`gst-plugins-bad`; both now logged in `docs/DEPENDENCIES.md`, which is the
+running list for the real installer, per the user's request to track every
+package as we go rather than reconstruct it later.
+
 ## Next action
 
-Per the user: finish Phase 0 (done, above), then move to **Phase 1 — Local
-Oma assistant**: conversation loop, `gpt-live-1` voice, wake word, typed
-tool registry, Hyprland/system-query tools, the 4-level policy engine, and
-an audit log. Nothing in `src/oma/voice/` or `core/` exists yet beyond
-empty `__init__.py` stubs — that's the actual next work, not a polish pass.
+Real mic audio in, remote audio out, then the data channel for
+control/function-calling events (client-delegation mode — Oma's own tool
+registry handles the actual function calls, matching ADR-0001 D1). Wake
+word comes before any of this opens a connection at all — no always-on
+billed session. Then the daemon shell (`core/`) that ties it together.
