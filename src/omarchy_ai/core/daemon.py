@@ -27,8 +27,8 @@ class OmaDaemon:
 
     async def run(self) -> None:
         log.info(
-            "omarchy-ai ready — say '%s' to talk",
-            self.config.wake_word.replace("_", " "),
+            "omarchy-ai ready — say any of: %s",
+            ", ".join(self.wake_detector.model_names),
         )
         loop = asyncio.get_event_loop()
         while not self._stop.is_set():

@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "omarchy-ai"
+WAKE_MODELS_DIR = CONFIG_DIR / "wake_models"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "omarchy-ai"
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "omarchy-ai"
 
@@ -29,9 +30,19 @@ API_URL = "https://api.openai.com/v1/live/sessions"
 @dataclass
 class Config:
     # Wake word (openWakeWord). See jarvisd's README for tuning notes —
-    # same detector, same knobs.
-    wake_word: str = "hey_jarvis"
-    custom_wake_model_path: str | None = None
+    # same detector, same knobs. Custom-trained models (any number) load
+    # simultaneously — anyone whose name is in this list wakes it, not
+    # just one fixed phrase. wake_word is now just a label (used in the
+    # startup log/greeting), not a lookup key, once custom paths are set.
+    wake_word: str = "omachy"
+    custom_wake_model_path: str | None = None  # back-compat single-model override
+    custom_wake_model_paths: list[str] = field(
+        default_factory=lambda: (
+            [str(p) for p in sorted(WAKE_MODELS_DIR.glob("*.onnx"))]
+            if WAKE_MODELS_DIR.is_dir()
+            else []
+        )
+    )
     wake_threshold: float = 0.5
     wake_trigger_frames: int = 3
     mic_device: str | None = None
@@ -93,6 +104,10 @@ class Config:
         "to type a URL in a browser, first press_key 'l' with "
         "modifiers ['ctrl'] to focus the address bar, then type_text the "
         "URL, then press_key 'Return'. "
+        "If asked to cast, mirror, or project the screen (e.g. to a TV or "
+        "projector), call start_casting — that's the real mechanism, not a "
+        "display/monitor command. It takes a few seconds to connect; say "
+        "so rather than going silent. stop_casting ends it. "
         "If you type shell commands into a terminal: this machine runs "
         "Omarchy, an Arch-based Linux distro — package commands are "
         "'pacman -S <package>' (official repos) or 'yay -S <package>' "
