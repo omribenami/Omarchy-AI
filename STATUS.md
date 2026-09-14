@@ -567,17 +567,137 @@ The paired TV (192.168.1.86) is reachable on the network in this session
 (`adb connect 192.168.1.86:5555` succeeded, receiver app was resumed and
 connected as viewer).
 
+### Re-tested live: `always-copy`/bounded-pool fix helped marginally, did NOT fix it
+
+Confirmed live, real hardware, same day: with the fix above in place,
+Android's `EglRenderer` log improved from "Frames received: 1" to "Frames
+received: 2... Rendered: 2" in the first 4s window — but then the exact
+same "Frames received: 0" every window after, indefinitely. A fresh
+`journalctl --user -u xdg-desktop-portal-hyprland` pull from that same
+test window showed the **identical** failure signature still repeating,
+unchanged:
+```
+[LOG] [screencopy/pipewire] Out of buffers
+[LOG] [sc] Retrying screencopy (1/10)
+[LOG] [pw] Building modifiers for dma
+[WARN] [pipewire] Asked for a wl_shm buffer which is legacy.
+```
+Not a one-off either: grepping the last 2 days of portal logs
+(`journalctl --user -u xdg-desktop-portal-hyprland --since "-2 days"`)
+found **11,000+** repeats of "Out of buffers", firing roughly once/sec
+continuously across every casting test session run in that window (~08:07,
+08:48-08:53, 09:48-09:56, 10:07, 10:28-10:31) — this is a permanent,
+continuous retry storm for the life of the session, not "stalls once and
+gives up". `always-copy`/`min-buffers`/`max-buffers` did not touch the
+real root cause.
+
+### Root-caused further: the wedge is inside xdph's own capture, not steerable from our GStreamer caps
+
+Investigated the concrete lead to force `pipewiresrc` onto plain
+system-memory buffers (explicit `video/x-raw` caps, no `memory:DMABuf`
+feature) before trying anything else, per the plan. Three checks done
+without needing the human-gated portal picker:
+
+- **`gst-inspect-1.0 pipewiresrc`**: no property to disable DMA-BUF
+  negotiation outright (no `dmabuf`/`buffer-types` property exists on this
+  GStreamer 1.6.8 build). The closest lever is caps-based: an explicit
+  `video/x-raw` capsfilter right after `pipewiresrc`.
+- **Added that capsfilter anyway** (`scripts/spike_cast_sender.py`,
+  `pipewiresrc ! video/x-raw ! videoconvert ! ...`) and confirmed via
+  `Gst.parse_launch()` on the real launch string (fd/node_id substituted)
+  that it parses cleanly, and via `gst-launch-1.0` with `videotestsrc`
+  substituted for `pipewiresrc` that the rest of the video branch runs to
+  EOS unchanged — both checks need no human and no portal session.
+- **But reasoned this likely doesn't reach the actual bug**: downstream
+  `videoconvert` already implicitly restricts to system-memory raw video
+  today (no `memory:DMABuf` caps feature appears anywhere in the existing
+  pipeline), so this pipeline was arguably never *requesting* DMA-BUF from
+  PipeWire's SPA format negotiation in the first place. Matching this
+  against the actual GitHub issue with the identical log signature —
+  `hyprwm/xdg-desktop-portal-hyprland#434`, "**DMA-BUF screencopy failure
+  leaves xdph wedged**: CloseSession times out, portal spins ~36% CPU
+  until restart" — "Building modifiers for dma" is xdph's own *internal*
+  DMA-BUF capture from the Hyprland compositor (how it gets frames off the
+  GPU before ever handing them to any PipeWire client), not something
+  negotiated against a consumer's requested caps. So a client-side caps
+  restriction is very unlikely to be the fix by itself. Added it anyway
+  (cheap, matches the plan, doesn't hurt) but flagged in-code as not
+  expected to be sufficient alone.
+
+### Checked for an upstream package fix: none available, already on latest
+
+`pacman -Qi xdg-desktop-portal-hyprland` → `1.4.1-2` (Arch `extra`).
+`pacman -Si xdg-desktop-portal-hyprland` (repo) → also `1.4.1-2`, i.e.
+already the latest packaged build. Cross-checked against GitHub directly
+(`gh`/`api.github.com/repos/hyprwm/xdg-desktop-portal-hyprland/tags`) —
+newest tag is also `v1.4.1`. No newer release exists anywhere to update
+to; this isn't a "wait for a package bump" fix.
+
+### The actual fix applied: disable PipeWire's DMA-BUF modifier negotiation globally
+
+Web research on the exact log signature turned up a documented, matching
+community fix: Arch Linux forum thread id=308493, "[SOLVED] XDPH stuck at
+building modifiers for dma, won't screenshare" — resolved by disabling
+PipeWire's DMA-BUF *modifier* negotiation (the actual subsystem "Building
+modifiers for dma" names) via a PipeWire config drop-in, not anything
+GStreamer-side. Applied the same fix here:
+`~/.config/pipewire/pipewire.conf.d/98-screencast-no-dmabuf-modifiers.conf`:
+```
+context.properties = {
+    support.dmabuf           = true
+    support.dmabuf.modifiers = false
+}
+```
+Left the existing `99-omavoice-echo-cancel.conf` in that same directory
+untouched (voice subsystem, out of scope here) — this is a new, separate
+drop-in file.
+
+Ran `systemctl --user restart pipewire pipewire-pulse wireplumber` and
+`systemctl --user restart xdg-desktop-portal-hyprland` to load it.
+**Confirmed live, machine-verifiable, no human needed:**
+- All four units came back `active (running)` with no new errors in
+  `journalctl --user -u pipewire` (only pre-existing, unrelated
+  `RTKit ... ServiceUnknown` lines that predate this change and aren't
+  about dmabuf).
+- `pw-cli info 0` now reports `support.dmabuf = "true"` /
+  `support.dmabuf.modifiers = "false"` — the setting is actually loaded
+  and live, not just written to a file.
+- `pactl info` still answers normally — audio path (and therefore
+  `omavoice`) is unaffected by the restart.
+
+No zero-copy GPU capability is being given up on this hardware: this
+machine's GPU (Intel HD 4000, `i915`) isn't in the encode path anyway —
+casting uses software `openh264enc`, no VAAPI GStreamer plugin installed
+(ADR-0001 D6) — so disabling DMA-BUF modifiers costs at most an extra
+memory copy, not a lost capability.
+
+**NOT YET RE-CONFIRMED for the actual bug** — this is the one part of the
+investigation that needs a live human click, per the constraints. The
+mechanism match (identical log signature to a documented, resolved issue)
+is strong circumstantial evidence, but circumstantial is not the same as
+confirmed. If it's still wedged after this, the next things to check, in
+order: (a) whether xdph needs a *cold* restart timed right after a
+fresh Hyprland session rather than just a service restart (some reports
+of this bug describe the wedge state itself, not just the config,
+surviving a portal restart until the whole compositor session cycles);
+(b) `hyprctl` / Hyprland-side screencopy protocol debug logs, since xdph's
+DMA-BUF capture source is the compositor, not PipeWire, so a residual bug
+could be on the Hyprland side of that handoff; (c) filing/searching
+upstream for whether `#434` itself has a maintainer response yet (checked
+via WebFetch during this session — the issue had no comments yet as of
+this investigation).
+
 ## Next action
 
 1. **With the user present to click the portal consent dialog:** run
-   `spike_cast_sender.py` again and confirm the `always-copy`/bounded-
-   buffer-pool fix above actually keeps video flowing past the first
-   frame — watch Android's `EglRenderer` log for "Frames received"
-   continuing to climb past a single 4s window, same evidence standard as
-   the diagnosis. If it's still stalling, `--probe-buffers` plus
-   `journalctl --user -u xdg-desktop-portal-hyprland -f` (watch for
-   whether "Out of buffers" still appears) is the next thing to check —
-   the fix targets the most likely cause but wasn't re-confirmed live.
+   `spike_cast_sender.py` again with the PipeWire `dmabuf.modifiers=false`
+   fix now live, and confirm `journalctl --user -u xdg-desktop-portal-
+   hyprland -f` stops showing "Out of buffers"/"Building modifiers for
+   dma" and Android's `EglRenderer` "Frames received" keeps climbing past
+   a single 4s window — same evidence standard as the diagnosis. This is
+   the one remaining step that cannot be done without a human; everything
+   else machine-verifiable about this fix (config loaded, services
+   healthy, pipeline still parses) has been checked already.
 2. Once video is confirmed continuous, verify audio the same rigorous way
    (webrtcbin RTP stats or GST_DEBUG on the audio branch — see above) and
    confirm actually hearing it, closer to the TV than ~3m this time.
