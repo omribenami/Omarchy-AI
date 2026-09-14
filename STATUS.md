@@ -1579,3 +1579,29 @@ Python helper takes ~2s to cold-start, and the screenshots were taken 1.5s
 after opening the panel. Confirmed by temporarily logging the callback:
 the correct JSON was arriving all along. When this panel looks empty, wait
 longer before concluding anything.
+
+## Speak-window timer outliving its own session
+
+Found by reading the journal after an unusually short (4-second) live
+session, not by a user report. `run()`'s `_delayed_response()` — the fixed
+`speak_window_seconds` timer that fires `response.create` once the user
+has had time to say something — was not guarded against the conversation
+ending first. Sequence from the real log: session connected 17:52:15,
+connection closed 17:52:18, daemon back to listening 17:52:19, and at
+17:52:22 the orphaned timer woke up and called `dc.send()` on the closed
+data channel:
+
+    aiortc.exceptions.InvalidStateError
+    Task exception was never retrieved
+    future: <Task finished ... _delayed_response() ...>
+
+Nothing downstream broke (asyncio swallows it, the next session is a fresh
+`LiveSession` with its own channel), so it was invisible in use — one full
+traceback per short session, buried in the log. Fixed by checking
+`self._hangup.is_set() or dc.readyState != "open"` before sending, which
+is the same condition `RTCDataChannel.send()` itself raises on.
+
+Worth keeping in mind for the VAD work that eventually replaces this
+timer: any deferred task in `run()` needs the same "is this session still
+alive?" check, since a conversation can end at any point inside the
+window.

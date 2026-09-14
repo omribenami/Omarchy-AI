@@ -457,6 +457,17 @@ class LiveSession:
 
             async def _delayed_response():
                 await asyncio.sleep(self.config.speak_window_seconds)
+                # A conversation can end well inside the speak window — a
+                # quick "never mind", the exit phrase, a dropped
+                # connection. Confirmed live: a 4-second session left this
+                # timer to fire 3s after hangup and raise InvalidStateError
+                # into an unretrieved task, one full traceback per short
+                # session. Nothing downstream was broken by it, but an
+                # unhandled exception in a long-lived daemon is exactly
+                # what hides the next real one.
+                if self._hangup.is_set() or dc.readyState != "open":
+                    log.debug("speak window elapsed after hangup, not requesting a response")
+                    return
                 log.info("requesting a response now")
                 dc.send(json.dumps({"type": "response.create"}))
 
