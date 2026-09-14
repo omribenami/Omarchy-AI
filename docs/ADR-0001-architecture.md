@@ -132,6 +132,79 @@ schema. Not a reversal of the tool choice generally — a recognition that
 casting (tight PipeWire+VAAPI integration, GStreamer's actual strength) and
 a simple audio-only client talking to one external API are different jobs.
 
+**D8 — "Which window do you mean?" is answered with real floating labels,
+not speech or a border flash.** When several open windows plausibly match
+what the user said, the assistant needs to ask — and cheaper options (flash
+a border, read out a text list) were considered and rejected per the user's
+explicit request: real per-window name badges, positioned at each
+candidate's actual on-screen rectangle. Built by copying this machine's own
+existing precedent exactly rather than inventing a new mechanism:
+`omarchy-osd` (the volume/brightness HUD) is a user-owned Quickshell plugin
+(`~/.config/omarchy/plugins/<id>/`) that registers an `IpcHandler` on the
+long-running `omarchy-shell` process and is driven by an external script
+calling `omarchy-shell -q <target> <method> '<json>'`. `omarchy-ai.window-
+labels` (`~/.config/omarchy/plugins/omarchy-ai.window-labels/`) follows the
+identical shape — `manifest.json` + one QML file, `IpcHandler { target:
+"windowLabels" }` exposing `show(payloadJson)`/`hide()`/`state()`/`ping()` —
+with two differences from the OSD: it renders one floating chip per window
+(a `Repeater` inside a `Variants{model: Quickshell.screens}` block, the same
+per-output layer-shell pattern `omarchy.notifications`/`omarchy.background`
+use, so a window's global x/y resolves correctly regardless of which
+monitor it's actually on), and it has no auto-hide timer — the caller
+(`hide_window_labels`) owns the lifecycle explicitly, unlike the OSD's
+timed dismiss.
+
+Two real bugs found and fixed getting this live, both confirmed via
+`journalctl --user` (the shell logs to the journal under the
+`omarchy-shell` tag, `QS_DISABLE_FILE_WATCHER=1` in
+`omarchy-launch-shell` only disables Quickshell's own top-level reload-popup
+mechanism, not the file-level plugin-reload path `PluginRegistry` uses):
+
+1. `IpcHandler` needs `import Quickshell.Io` — omitting it fails silently
+   from the CLI's perspective (`omarchy-shell <target> <method>` just prints
+   "Target not found", no hint why) and only surfaces as `IpcHandler is not
+   a type` in the journal.
+2. `qs ipc call` (Quickshell's own IPC CLI, which `omarchy-shell` wraps)
+   **splats a top-level JSON array argument into multiple positional CLI
+   arguments** instead of passing it through as one string — confirmed
+   live: `show '[{...},{...},{...}]'` (3 windows) failed with "Too many
+   arguments provided (1 required but 3 were provided)", while the same
+   call with exactly one array element worked. The OSD never hit this
+   because its payload is always a JSON *object*. Fixed by wrapping the
+   array: the wire payload is `{"windows": [...]}`, not a bare array — the
+   QML `open()` accepts a bare array too (defensive, for any future caller
+   that reaches the `IpcHandler` some other way), but every real caller
+   must send the object form.
+
+Also confirmed live: a plugin that fails to compile (bug 1 above) leaves the
+running `omarchy-shell` process in a bad cached state that
+`omarchy-shell shell rescanPlugins` and even repeated file saves (which do
+correctly re-trigger `PluginRegistry`'s "Local plugin changed, reloading"
+path — that part of hot-reload works) do **not** clear; only a real process
+restart (`omarchy restart shell`) picks up the fix. Worth remembering for
+any future Quickshell plugin work on this machine: if a change stops
+producing new journal warnings but old behavior persists, restart the shell
+process before assuming the fix itself is wrong.
+
+A brand-new third-party plugin also isn't loaded just by existing on disk —
+first-party non-bar plugins default to enabled, but a user-installed one
+needs an explicit `omarchy plugin enable <id>` (which records it in
+`~/.config/omarchy/shell.json`'s top-level `plugins[]` array), confirmed via
+`omarchy-shell shell listPlugins` showing `"enabled": false` until that
+ran.
+
+On the Python side, `show_window_labels`/`hide_window_labels`
+(`src/omarchy_ai/execution/actions.py`) resolve real window geometry via
+`hyprctl clients -j` — the same shape `list_windows` already parses — using
+the identical app/title substring fuzzy-match `focus_window` uses, just
+applied once per target in a list (or every mapped window when no targets
+are given). Confirmed live end-to-end, independent of the voice daemon
+(direct Python call → real IPC → screenshot): with 1, 3, and all-4 open
+terminal windows, correctly-positioned badges appeared at each window's
+actual top-left corner, matching titles, and `hide_window_labels` cleared
+them immediately. See `STATUS.md` for the screenshots' details and the
+`config.py` instructions wiring.
+
 ## Confirmed available, no install needed
 
 - Omarchy 4.0.3, Hyprland 0.56.2
