@@ -151,15 +151,25 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "press_key",
-        "Press a single named key in the focused window — e.g. 'Return' "
-        "to submit/run what was typed, 'Tab', 'Escape', 'BackSpace'.",
+        "Press a key, optionally with modifiers, in the focused window — "
+        "e.g. 'Return' alone to submit/run what was typed, or ctrl+l to "
+        "focus a browser's address bar before typing a URL (window focus "
+        "alone does not focus the address bar specifically — confirmed "
+        "live that typing without this lands nowhere on a fresh new-tab "
+        "page). Other useful combos: ctrl+t (new tab), ctrl+w (close "
+        "tab), ctrl+c/ctrl+v (copy/paste), alt+Tab (switch window).",
         {
             "type": "object",
             "properties": {
                 "key": {
                     "type": "string",
-                    "description": "Key name, e.g. Return, Tab, Escape, BackSpace.",
-                }
+                    "description": "Key name, e.g. Return, Tab, Escape, BackSpace, l, t, w, c, v.",
+                },
+                "modifiers": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["shift", "ctrl", "alt", "super"]},
+                    "description": "Modifiers to hold while pressing the key, e.g. ['ctrl'] for ctrl+l.",
+                },
             },
             "required": ["key"],
         },
