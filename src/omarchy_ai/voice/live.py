@@ -31,6 +31,7 @@ from ..core.history import append_session, load_recent_context
 from ..core.memory import load_preferences
 from ..execution.actions import run_action
 from ..execution.tools import TOOLS
+from . import watchdog
 
 log = logging.getLogger("omarchy_ai.voice.live")
 
@@ -254,8 +255,13 @@ class LiveSession:
         loop = asyncio.get_event_loop()
         window = await loop.run_in_executor(None, self._current_window)
         log.info("tool call: %s(%s)", name, args)
+        # "thinking/calling a tool" per the watchdog overlay's state
+        # vocabulary — reuses this call's own name/args, no new tracking.
+        watchdog.state("thinking")
+        watchdog.tool_call(name, args)
         result = await loop.run_in_executor(None, run_action, name, args)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
+        watchdog.tool_result(name, args, result.ok, result.message)
         if name == "close_window" and result.ok:
             # That window no longer exists — drop its whole history rather
             # than let get_recent_actions keep recalling a closed tile
@@ -336,6 +342,11 @@ class LiveSession:
             return
         etype = event.get("type", "")
         if etype == "session.input_transcript.delta":
+            # Emit the "listening" state only on the first delta of a new
+            # user utterance (buffer was empty before this one), not once
+            # per token — a real per-delta event would storm the overlay.
+            if not self._input_buffer:
+                watchdog.state("listening")
             self._input_buffer += event.get("delta", "")
             if self._output_buffer:
                 self._transcript.append({"role": "assistant", "text": self._output_buffer})
@@ -344,6 +355,10 @@ class LiveSession:
             if self._check_exit_phrase(self._input_buffer):
                 self._hangup.set()
         elif etype == "session.output_transcript.delta":
+            # Same debouncing on the other side of the conversation: only
+            # the first delta of a new assistant utterance flips the state.
+            if not self._output_buffer:
+                watchdog.state("speaking")
             # The model started replying — the user's turn is over. Reset
             # the input buffer so the next utterance is judged on its own.
             if self._input_buffer:
@@ -530,6 +545,8 @@ class LiveSession:
             answer_sdp = response["transport"]["sdp"]
             await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
             log.info("live session connected (%.2fs)", time.monotonic() - t_start)
+            watchdog.start()
+            watchdog.state("listening")
 
             try:
                 await asyncio.wait_for(
@@ -538,6 +555,7 @@ class LiveSession:
             except asyncio.TimeoutError:
                 log.info("session hit max_session_seconds, hanging up")
         finally:
+            watchdog.stop()
             if self._input_buffer:
                 self._transcript.append({"role": "user", "text": self._input_buffer})
             if self._output_buffer:

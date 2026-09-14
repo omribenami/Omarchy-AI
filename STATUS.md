@@ -879,8 +879,8 @@ live voice session).
 4. Confirm whether `tool_choice: auto` made the `end_conversation` tool
    call actually fire, with a clean live test.
 5. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD.
-6. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
-   started).
+6. ~~Watch Dogs/Matrix-style code-rain overlay UI~~ — done, see "Watch Dogs
+   overlay" below.
 7. The policy/tool-registry/audit layer (ADR-0001 D1).
 2. Once video is confirmed continuous, verify audio the same rigorous way
    (webrtcbin RTP stats or GST_DEBUG on the audio branch — see above) and
@@ -894,8 +894,9 @@ live voice session).
 5. Replace the fixed `SPEAK_WINDOW_SECONDS` timer with real local VAD
    (reuse jarvisd's silence-detection approach) so the daemon knows when
    the user actually finished talking, rather than guessing a duration.
-6. Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked, not
-   started) — GPU-light, replaces omavoice's simple waveform panel.
+6. ~~Watch Dogs/Matrix-style code-rain overlay UI (user request, tracked,
+   not started) — GPU-light, replaces omavoice's simple waveform panel.~~
+   Done — see "Watch Dogs overlay" below for the live-test evidence trail.
 7. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
    to the OS yet; this is still a conversation, not an OS-control assistant.
 
@@ -1024,3 +1025,86 @@ previously cut a live session short), the service was restarted only once
 tools in, specifically so the next real conversation would have them
 available. See the commit log around this entry for exactly when that
 restart happened and what the log showed right before it.
+
+## Watch Dogs overlay
+
+The last remaining "not started" line in this file's own next-actions
+list, tracked since early in the project, now done. User's own framing on
+starting it, spoken to the assistant mid-conversation and captured verbatim
+in `journalctl`: *"We'll work on the watchdog UI now."* Full design
+reasoning is in `docs/ADR-0001-architecture.md` D9; this entry is the
+live-test evidence trail, same convention as the window-labels entry above.
+
+**Quickshell side** — new user-owned plugin,
+`~/.config/omarchy/plugins/omarchy-ai.watchdog/` (`manifest.json` +
+`Watchdog.qml`), built by copying `omarchy-ai.window-labels`'s own IPC
+pattern (itself copied from `omarchy-osd`) — see D9 for the differences
+this plugin needed on top of that shape (a stream of `event` calls instead
+of one-shot show/hide, the hacking-terminal color/font skew, the `state`
+QtQuick-reserved-name gotcha). Registered via `omarchy plugin enable
+omarchy-ai.watchdog`, confirmed in `~/.config/omarchy/shell.json`'s
+top-level `plugins[]` array alongside `omarchy-ai.window-labels`.
+
+**Live-tested the mechanism directly**, same approach the window-labels
+entry used and for the same reason — this agent has no way to actually
+speak a wake word, so per the task's own explicit fallback, verification
+went through direct IPC plus screenshots:
+
+1. `omarchy plugin validate ~/.config/omarchy/plugins/omarchy-ai.watchdog`
+   passed (exit 0). `omarchy-shell -q shell rescanPlugins` then
+   `omarchy-shell watchdog ping` → `ok` and `omarchy-shell watchdog state`
+   → `closed` confirmed the QML actually compiled — no repeat of the
+   window-labels round's "not a type" failure mode (the journal showed only
+   normal "Local plugin changed, reloading" lines, no QML errors).
+2. Raw IPC end-to-end: `watchdog start '{}'`, then a sequence of `event`
+   calls (`tool_call`/`tool_result` with `ok`/`err` tones, `state`
+   transitions through connecting/listening/thinking/speaking),
+   screenshotted with `omarchy-capture-screenshot fullscreen` after each
+   batch. Confirmed: the panel renders as a compact bottom-right corner
+   card (not a full-screen takeover), state header shows the current state
+   in the right color with a pulsing dot on busy states
+   (connecting/thinking) and a steady dot once settled
+   (listening/speaking), and the feed shows real-looking lines in the exact
+   format the task's own spec used as examples — `> execute_command
+   ("Browser")` and `> volume_up() -> ok` appeared verbatim. A deliberately
+   long window title and a deliberately long error message both truncated
+   correctly ("…") instead of overflowing the card. `watchdog stop`
+   screenshotted clean — no leftover overlay, `state` back to `closed`.
+3. Python-level test, bypassing raw IPC: imported
+   `omarchy_ai.voice.watchdog` directly in the project's own venv and
+   called `start()`/`state()`/`tool_call()`/`tool_result()`/`stop()` with
+   realistic arguments (including a failing tool result with a message),
+   confirmed no exceptions and the same correct rendering via another
+   screenshot — this is the same code path `live.py` calls, just invoked
+   outside a real conversation.
+
+**Not a fully spoken end-to-end test** (wake word → real conversation →
+real tool calls → hangup), for the same structural reason as the
+window-labels round: no way for this agent to produce real speech.
+Additional real evidence beyond the direct-IPC tests above, though:
+another agent was independently working in this same repo concurrently
+(unrelated wake-word/ONNX model work — visible in `git status` as
+uncommitted changes to `config.py`/`core/daemon.py`/`execution/
+{actions,tools}.py`/`voice/wake.py`, none of which this task touched) and
+restarted `omarchy-ai.service` on their own schedule mid-session. That
+restart picked up this feature's `live.py`/`watchdog.py` changes too (same
+file, same working tree), and the service came back up clean —
+`journalctl` showed the normal ONNX-provider warning, "loaded wake word
+model(s)", "omarchy-ai ready — say any of: ...", no traceback, no
+crash-loop. That's real confirmation the integration (the new `from . import
+watchdog` in `live.py`, the four call sites) loads and runs inside the
+actual daemon process, not just in isolation. This agent deliberately did
+**not** trigger that restart itself, and did not restart the service again
+afterward — per this project's own restart discipline, and specifically
+because a second concurrent process was already mid-task against the same
+live service; forcing another restart on top of that would have risked
+stepping on unrelated, unverified work rather than this feature's own.
+
+**Python side** — `src/omarchy_ai/voice/watchdog.py` (new file) wraps the
+IPC calls; `src/omarchy_ai/voice/live.py` gained one import and four call
+sites (session connect, tool-call start/end in `_run_tool_call`, the two
+transcript-delta branches in `_on_data_message`, and the `finally:` block
+in `run()`). No changes to `execution/actions.py`, `execution/tools.py`, or
+`config.py`'s `instructions` — unlike window-labels, this feature is driven
+entirely by the daemon's own lifecycle, not a tool the model chooses to
+call, so there's nothing for the model to be told about it.
