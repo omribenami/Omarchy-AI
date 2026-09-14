@@ -427,6 +427,7 @@ class LiveSession:
                             "type": "responses",
                             "responses": {
                                 "model": self.config.responses_model,
+                                "reasoning": {"effort": self.config.responses_reasoning_effort},
                                 # Without this the model apparently never
                                 # considers calling the tool at all — zero
                                 # function_call events across a full real
