@@ -84,10 +84,24 @@ Pulled via `adb shell getprop`/`pm list packages`:
   not conclusive on its own, worth a closer look when actually launching
   the receiver Activity (Phase 2), not assumed either way from this.
 
+## Phase 0: complete
+
+- `./gradlew assembleDebug` → real 11.9MB debug APK, confirmed (not just
+  "exit 0" — the file exists and is that size).
+- `adb install` → `adb shell am start` → confirmed via `dumpsys activity
+  activities` that `com.example.omareceiver/.MainActivity` became
+  `mResumedActivity` on the paired TV (192.168.1.86). The full vertical
+  slice the spec asks for as Phase 0's target — build → push via ADB →
+  launch → verify running, no manual TV navigation — works end to end on
+  real hardware.
+- Package name (`com.example.omareceiver`) and Activity name are template
+  defaults; rename to `ai.oma.receiver` (per spec) when receiver
+  development actually starts in Phase 2.
+
 ## Next action
 
-Waiting on the user to run the install command above. Once done: a
-GStreamer spike (`pipewiresrc` → `webrtcbin`, LAN loopback, no Android yet)
-to settle ADR-0001's open WebRTC-library question (D7), then start the
-Android receiver skeleton with `sdkmanager`/Gradle now that both are
-installed.
+Per the user: finish Phase 0 (done, above), then move to **Phase 1 — Local
+Oma assistant**: conversation loop, `gpt-live-1` voice, wake word, typed
+tool registry, Hyprland/system-query tools, the 4-level policy engine, and
+an audit log. Nothing in `src/oma/voice/` or `core/` exists yet beyond
+empty `__init__.py` stubs — that's the actual next work, not a polish pass.
