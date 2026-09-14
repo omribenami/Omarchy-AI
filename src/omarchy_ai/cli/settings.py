@@ -28,12 +28,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 
 import yaml
 
-from ..config import CONFIG_DIR, USER_CONFIG_PATH, WAKE_MODELS_DIR, Config, load_config
+from ..config import (
+    CONFIG_DIR,
+    LEGACY_KEY_PATH,
+    OMARCHY_KEY_PATH,
+    USER_CONFIG_PATH,
+    WAKE_MODELS_DIR,
+    Config,
+    load_config,
+)
 
 # Two log lines daemon.py always emits, in this exact wording, at the two
 # ends of a conversation's lifetime (src/omarchy_ai/core/daemon.py) — used
@@ -97,6 +106,7 @@ def _snapshot() -> dict:
         "watchdog_display_modes": list(WATCHDOG_DISPLAY_MODES),
         "voice_options": voice_options,
         "config_path": str(USER_CONFIG_PATH),
+        "api_key": _api_key_state(),
     }
 
 
@@ -153,6 +163,64 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
         return value.strip()
 
     raise ValidationError(f"unknown or non-settable key: {key!r}")
+
+
+def _api_key_state() -> dict:
+    """Whether a key exists and where — deliberately never the value.
+
+    The settings UI only ever needs "is one set?" to render its field; the
+    secret itself must not round-trip back out to the QML/JS layer, get
+    into a Process's stdout, or land in a log. Same principle as a password
+    field that shows dots for a stored password it can't actually read.
+    """
+    if OMARCHY_KEY_PATH.exists():
+        return {"set": True, "source": "omarchy-ai", "path": str(OMARCHY_KEY_PATH)}
+    if LEGACY_KEY_PATH.exists():
+        return {"set": True, "source": "omavoice", "path": str(LEGACY_KEY_PATH)}
+    return {"set": False, "source": None, "path": str(OMARCHY_KEY_PATH)}
+
+
+def cmd_set_api_key(_args: argparse.Namespace) -> dict:
+    """Store an OpenAI API key at OMARCHY_KEY_PATH, 0600.
+
+    The key is read from the OMARCHY_AI_API_KEY environment variable, or
+    stdin if that's unset — never from argv. A process's argv is
+    world-readable via /proc/<pid>/cmdline, so anyone with a shell on this
+    machine could read a key passed as an argument straight out of `ps`;
+    /proc/<pid>/environ is 0400 owner-only, and a pipe isn't exposed at
+    all. That difference is the whole reason this isn't just another
+    `set <key> <value>` call.
+    """
+    raw = os.environ.get("OMARCHY_AI_API_KEY")
+    if raw is None:
+        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    key = (raw or "").strip()
+
+    if not key:
+        return {"error": "no API key provided"}
+    if len(key) < 20 or any(c.isspace() for c in key):
+        return {"error": "that doesn't look like an API key"}
+    # Deliberately loose: OpenAI has shipped sk-, sk-proj-, and others over
+    # time, and a too-strict check would reject a valid future format. This
+    # only catches obvious paste mistakes. No live API call to verify it —
+    # out of scope, and needlessly exercises a secret to answer a question
+    # the next real session answers anyway.
+    if not key.startswith("sk-"):
+        return {"error": "an OpenAI API key normally starts with 'sk-'"}
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Create with 0600 from the start rather than writing then chmod-ing —
+    # no window where the key sits on disk world-readable.
+    fd = os.open(OMARCHY_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(key + "\n")
+    except Exception:
+        os.close(fd)
+        raise
+    os.chmod(OMARCHY_KEY_PATH, 0o600)
+
+    return _snapshot()
 
 
 def cmd_get(_args: argparse.Namespace) -> dict:
@@ -250,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     p_set = sub.add_parser("set")
     p_set.add_argument("key")
     p_set.add_argument("value")
+    sub.add_parser("set-api-key")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
 
@@ -257,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {
         "get": cmd_get,
         "set": cmd_set,
+        "set-api-key": cmd_set_api_key,
         "restart-status": cmd_restart_status,
         "restart": cmd_restart,
     }[args.command]
