@@ -41,7 +41,9 @@ def _capture() -> Path | None:
     return path if path.exists() else None
 
 
-def describe_screen(question: str, api_key_path: str, model: str = "gpt-5") -> str:
+def describe_screen(
+    question: str, api_key_path: str, model: str = "gpt-5", reasoning_effort: str = "low"
+) -> str:
     """Capture the current screen and ask a vision model about it.
     Returns a plain-text answer, or an error message starting with
     'error:' — never raises, this is called from a tool-result path where
@@ -68,6 +70,12 @@ def describe_screen(question: str, api_key_path: str, model: str = "gpt-5") -> s
     body = json.dumps(
         {
             "model": model,
+            # No reasoning effort here defaults to gpt-5's own default —
+            # confirmed live as real, user-noticed latency (one call took a
+            # full 19s, another timed out at 30s) for what's fundamentally a
+            # quick "what's on screen" lookup. Same lever already used for
+            # the live session's own delegation.responses.
+            "reasoning": {"effort": reasoning_effort},
             "input": [
                 {
                     "role": "user",
