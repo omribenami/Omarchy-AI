@@ -714,3 +714,24 @@ this investigation).
    started) — GPU-light, replaces omavoice's simple waveform panel.
 7. The policy/tool-registry/audit layer (ADR-0001 D1) — nothing calls out
    to the OS yet; this is still a conversation, not an OS-control assistant.
+
+## Android receiver: waiting-screen wallpaper
+
+Cosmetic fix, independent of the casting bug above (per the user's own
+framing — done regardless of how that investigation goes). The waiting
+state (`StatusOverlay` in `android-receiver/app/src/main/java/ai/omarchy/
+receiver/ReceiverScreen.kt`) was plain text on a plain black background;
+user asked for it to use Omarchy's actual desktop wallpaper instead.
+
+Copied `/usr/share/omarchy/themes/catppuccin/backgrounds/omarchy.png`
+(dark navy background, light-blue "OMARCHY" wordmark, 3840x2160 but only
+4.4KB — a flat 2-bit-colormap PNG, negligible APK size cost) into
+`android-receiver/app/src/main/res/drawable/omarchy_wallpaper.png` and
+render it as a full-bleed `Image(contentScale = ContentScale.Crop)` behind
+the existing status text/host field/Connect button in `StatusOverlay`,
+inside a new `Box` so the UI stack is: wallpaper → text/controls. White
+text stays legible — the wallpaper's own background is a nearly-uniform
+dark navy field, matching the app's existing black background closely
+enough that contrast wasn't a concern. `./gradlew assembleDebug` re-run to
+confirm this actually compiles, not just that the diff looks plausible
+(see build output/result noted at commit time).
