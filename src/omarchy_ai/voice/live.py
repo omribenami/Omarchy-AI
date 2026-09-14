@@ -148,6 +148,16 @@ class LiveSession:
         # the *next* session (potentially minutes or days later) can recall
         # it — separate from _action_log, which never leaves memory.
         self._transcript: list[dict] = []
+        # Read once per session — the daemon only reloads config on
+        # restart, so this can't change mid-conversation anyway. Gates the
+        # overlay's visibility (start() call site) and whether the
+        # real-time playback loop bothers computing/dispatching amplitude
+        # levels for the visualizer display mode at all.
+        self._watchdog_on = bool(config.watchdog_enabled)
+        self._watchdog_wants_levels = self._watchdog_on and config.watchdog_display_mode in (
+            "visualizer",
+            "both",
+        )
 
     def _read_key(self) -> str:
         with open(self.config.api_key_path) as f:
@@ -189,6 +199,12 @@ class LiveSession:
         thread.start()
 
         resampler = av.AudioResampler(format="s16", layout="mono", rate=RATE)
+        # Throttle amplitude dispatch to ~10Hz (within the 8-12Hz ask) —
+        # frames arrive every 20ms (50Hz), far more often than the
+        # visualizer needs, and watchdog.level() is fire-and-forget but
+        # still not free (a real Popen call) per invocation.
+        last_level_dispatch = 0.0
+        level_interval = 1.0 / 10.0
         try:
             while True:
                 frame = await track.recv()
@@ -197,6 +213,19 @@ class LiveSession:
                     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                     boosted = np.clip(samples * OUTPUT_GAIN, -32768, 32767).astype(np.int16)
                     q.put_nowait(boosted.tobytes())
+                    if self._watchdog_wants_levels:
+                        now = time.monotonic()
+                        if now - last_level_dispatch >= level_interval:
+                            last_level_dispatch = now
+                            # Normalized against the ~3856 RMS this project
+                            # measured post-gain-fix for normal speech (see
+                            # STATUS.md) — 12000 gives headroom so loud
+                            # passages actually reach the top of the scale
+                            # instead of pinning it constantly.
+                            rms = float(
+                                np.sqrt(np.mean(np.square(boosted.astype(np.float32))))
+                            )
+                            watchdog.level(min(1.0, rms / 12000.0))
         except Exception:  # noqa: BLE001
             log.debug("playback loop ended", exc_info=True)
         finally:
@@ -257,11 +286,13 @@ class LiveSession:
         log.info("tool call: %s(%s)", name, args)
         # "thinking/calling a tool" per the watchdog overlay's state
         # vocabulary — reuses this call's own name/args, no new tracking.
-        watchdog.state("thinking")
-        watchdog.tool_call(name, args)
+        if self._watchdog_on:
+            watchdog.state("thinking")
+            watchdog.tool_call(name, args)
         result = await loop.run_in_executor(None, run_action, name, args)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
-        watchdog.tool_result(name, args, result.ok, result.message)
+        if self._watchdog_on:
+            watchdog.tool_result(name, args, result.ok, result.message)
         if name == "close_window" and result.ok:
             # That window no longer exists — drop its whole history rather
             # than let get_recent_actions keep recalling a closed tile
@@ -345,7 +376,7 @@ class LiveSession:
             # Emit the "listening" state only on the first delta of a new
             # user utterance (buffer was empty before this one), not once
             # per token — a real per-delta event would storm the overlay.
-            if not self._input_buffer:
+            if not self._input_buffer and self._watchdog_on:
                 watchdog.state("listening")
             self._input_buffer += event.get("delta", "")
             if self._output_buffer:
@@ -357,7 +388,7 @@ class LiveSession:
         elif etype == "session.output_transcript.delta":
             # Same debouncing on the other side of the conversation: only
             # the first delta of a new assistant utterance flips the state.
-            if not self._output_buffer:
+            if not self._output_buffer and self._watchdog_on:
                 watchdog.state("speaking")
             # The model started replying — the user's turn is over. Reset
             # the input buffer so the next utterance is judged on its own.
@@ -545,8 +576,9 @@ class LiveSession:
             answer_sdp = response["transport"]["sdp"]
             await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
             log.info("live session connected (%.2fs)", time.monotonic() - t_start)
-            watchdog.start()
-            watchdog.state("listening")
+            if self._watchdog_on:
+                watchdog.start(self.config.watchdog_display_mode)
+                watchdog.state("listening")
 
             try:
                 await asyncio.wait_for(
@@ -555,7 +587,8 @@ class LiveSession:
             except asyncio.TimeoutError:
                 log.info("session hit max_session_seconds, hanging up")
         finally:
-            watchdog.stop()
+            if self._watchdog_on:
+                watchdog.stop()
             if self._input_buffer:
                 self._transcript.append({"role": "user", "text": self._input_buffer})
             if self._output_buffer:

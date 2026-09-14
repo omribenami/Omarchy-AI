@@ -428,6 +428,57 @@ conversation — this is a stronger reason to defer the routine post-change
 restart than the discipline previously accounted for. Deliberately not
 restarted this session; see `STATUS.md`'s next actions.
 
+**D10 — Settings live in `config.yaml`; the panel talks to a Python CLI,
+never YAML directly.** The settings bar panel (`omarchy-ai.settings`,
+`~/.config/omarchy/plugins/omarchy-ai.settings/`) is plain QML/JS with no
+YAML parser or `Config`-merge logic of its own — duplicating
+`config.py`'s merge-over-defaults semantics in JS would drift out of sync
+with the real daemon. Instead every control shells out to a new
+`src/omarchy_ai/cli/settings.py` (the `omarchy-ai-settings` console
+script) via a Quickshell `Process`, the same pattern
+`$OMARCHY_PATH/shell/plugins/panels/dropbox/status.py` already
+establishes for "a panel needs real backend logic beyond what QML/JS
+should own." Only a curated whitelist of `Config` fields is settable this
+way (wake models, `wake_threshold`, `watchdog_enabled`,
+`watchdog_display_mode`, `voice`) — not every dataclass field; internal
+plumbing (`api_key_path`, `context_max_chars`, `instructions`, ...) stays
+off the panel entirely.
+
+**D11 — The panel triggers its own restart, gated by the same
+conversation-lifecycle check this project's agents already apply by
+hand.** `Config` is only loaded once, at `OmaDaemon.__init__` — a config
+write is inert until the daemon restarts, so *some* restart step is
+unavoidable regardless of who initiates it. Chose "the panel's Restart
+button calls `restart`, which replays `daemon.py`'s own `"wake word
+detected..."`/`"session ended..."` log lines over recent `journalctl`
+output to refuse if a conversation is in progress" over "always just tell
+the user to restart manually" — automating a step behind a safety check
+this project already trusts by hand is less friction without materially
+more risk. See `STATUS.md`'s "Settings menu + ASCII visualizer" entry for
+a real gap found in that check after the fact: it only knows about the
+daemon's own conversation lifecycle, not detached subprocesses (e.g. a
+live TV cast) sharing the service's cgroup, which `KillMode=control-group`
+also kills on restart — not yet fixed, no harm done this round only by
+lucky timing against a concurrent restart.
+
+**D12 — The ASCII visualizer is a Watch Dogs *display mode*, not a
+separate overlay.** Reuses D9's existing `IpcHandler{target:"watchdog"}`
+and per-conversation lifecycle (`start`/`event`/`stop`) rather than adding
+a fourth plugin: `start()` now carries a `displayMode` ("feed" |
+"visualizer" | "both") sourced from `Config.watchdog_display_mode`, and a
+new `event {"kind":"level", "level": 0..1}` message (dispatched from
+`live.py`'s `_play_remote_audio` via a **non-blocking**
+`subprocess.Popen(start_new_session=True)` — every other `watchdog.py`
+helper can afford `subprocess.run`'s brief wait, this one sits in a
+real-time audio loop that already had a jitter bug from a blocking call
+once before, see `STATUS.md`'s audio debugging trail) feeds a rolling
+28-sample amplitude buffer rendered as one `Text` element indexed into
+`" ▁▂▃▄▅▆▇█"`. Cleared on any state transition away from `"speaking"` so
+it can't show a stale frozen frame. `watchdog_enabled: bool = True` gates
+the whole overlay (every `watchdog.*` call site in `live.py`, not just
+`start()`) — a user who wants it off entirely gets zero `omarchy-shell`
+IPC calls per conversation, not just "the panel never becomes visible."
+
 ## Confirmed available, no install needed
 
 - Omarchy 4.0.3, Hyprland 0.56.2

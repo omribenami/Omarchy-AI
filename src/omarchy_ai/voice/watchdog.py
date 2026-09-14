@@ -76,9 +76,16 @@ def _format_call(name: str, args: dict) -> str:
     return f"{name}({inner})"
 
 
-def start() -> None:
-    """Show the overlay and reset its scroll content for a fresh session."""
-    _ipc("start", "{}")
+def start(display_mode: str = "feed") -> None:
+    """Show the overlay and reset its scroll content for a fresh session.
+
+    display_mode selects what the panel renders: "feed" (tool-call/state
+    text, the original design), "visualizer" (ASCII/unicode amplitude bars
+    driven by level() below), or "both". Sourced from
+    Config.watchdog_display_mode — the daemon only reads config at startup,
+    so this is decided once per process lifetime, not per call.
+    """
+    _ipc("start", json.dumps({"displayMode": display_mode}))
 
 
 def stop() -> None:
@@ -108,3 +115,28 @@ def tool_result(name: str, args: dict, ok: bool, message: str) -> None:
         outcome = f"error: {_truncate(message, 30)}" if message else "error"
     text = _truncate(f"> {_format_call(name, args)} -> {outcome}", 72)
     _event({"kind": "tool_result", "text": text, "tone": "ok" if ok else "err"})
+
+
+def level(value: float) -> None:
+    """Real-time output amplitude for the ASCII visualizer display mode.
+
+    Called from live.py's _play_remote_audio — a tight real-time audio
+    playback loop that already had a real jitter bug from a blocking call
+    once before (see STATUS.md's audio-quality debugging trail). Unlike
+    every other helper in this module (state/tool_call/tool_result/start/
+    stop — all called from tool-call or state-transition points, where a
+    brief `subprocess.run` wait is affordable), this one CANNOT block:
+    fire-and-forget via Popen(start_new_session=True), no .wait(), no
+    output capture, so a slow/hung `omarchy-shell` process can never stall
+    the audio queue feeding pw-play.
+    """
+    payload = json.dumps({"kind": "level", "level": round(float(value), 3)})
+    try:
+        subprocess.Popen(
+            ["omarchy-shell", "-q", "watchdog", "event", payload],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:  # noqa: BLE001 — real-time loop, must never raise
+        pass

@@ -166,6 +166,19 @@ class Config:
 
     log_level: str = "INFO"
 
+    # Watch Dogs overlay (the hacking-HUD Quickshell panel — see
+    # src/omarchy_ai/voice/watchdog.py and
+    # ~/.config/omarchy/plugins/omarchy-ai.watchdog/). Settable from the
+    # omarchy-ai.settings bar panel; the daemon only reads this at startup
+    # (LiveSession.run()'s watchdog.start() call site), so a change needs a
+    # daemon restart to take effect — see settings.py's restart discipline.
+    watchdog_enabled: bool = True
+    # "feed" (tool-call/state text feed, the original design), "visualizer"
+    # (ASCII/unicode amplitude bars while speaking), or "both". Selected via
+    # the settings panel, sent to the plugin as part of watchdog.start()'s
+    # payload each session.
+    watchdog_display_mode: str = "feed"
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     out = copy.deepcopy(base)
