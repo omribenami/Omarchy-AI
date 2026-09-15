@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.tv-discovery",
+  "name": "TV discovery overlay",
+  "version": "1.0.0",
+  "description": "Small centered device picker shown while the Omarchy AI voice assistant is resolving a cast/mirror target — the same shared device registry the voice agent itself reads, so it's never a second, separately-maintained list.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "TvDiscovery.qml"
+  }
+}

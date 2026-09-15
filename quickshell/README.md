@@ -1,6 +1,6 @@
 # Quickshell plugins
 
-The four Omarchy shell (Quickshell) user plugins this project's desktop UI
+The five Omarchy shell (Quickshell) user plugins this project's desktop UI
 is built from — developed and hot-reloaded in place under
 `~/.config/omarchy/plugins/` for the whole life of this project, brought
 into this repo so a fresh clone doesn't have to rebuild them from scratch:
@@ -11,6 +11,7 @@ into this repo so a fresh clone doesn't have to rebuild them from scratch:
 | `omarchy-ai.watchdog` | The "Watch Dogs" HUD overlay — live tool-call feed and/or an ASCII/braille audio visualizer while a conversation is active. |
 | `omarchy-ai.window-labels` | Floating name-label badges dropped over candidate windows when the assistant needs you to point at (or name) the right one. |
 | `omarchy-ai.myapi` | Separate bar-widget for the MyApi (myapiai.com) integration — connect/disconnect and live per-service usage. Hidden until "Enable" is switched on in `omarchy-ai.settings`. |
+| `omarchy-ai.tv-discovery` | Small centered, click-through-except-itself device picker shown while a cast/mirror target is being resolved — reads/writes the same `display/registry.py` device state the voice agent itself uses, live-updates while open, and can be resolved by voice or by clicking a row. |
 
 ## Installing
 
@@ -21,12 +22,14 @@ cp -r quickshell/plugins/omarchy-ai.settings \
       quickshell/plugins/omarchy-ai.watchdog \
       quickshell/plugins/omarchy-ai.window-labels \
       quickshell/plugins/omarchy-ai.myapi \
+      quickshell/plugins/omarchy-ai.tv-discovery \
       ~/.config/omarchy/plugins/
 
 omarchy plugin enable omarchy-ai.settings
 omarchy plugin enable omarchy-ai.watchdog
 omarchy plugin enable omarchy-ai.window-labels
 omarchy plugin enable omarchy-ai.myapi
+omarchy plugin enable omarchy-ai.tv-discovery
 ```
 
 `omarchy-ai.settings` and `omarchy-ai.myapi` are `bar-widget`s — if either

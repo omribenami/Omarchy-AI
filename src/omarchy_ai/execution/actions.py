@@ -37,11 +37,9 @@ _TIMEOUT = 10
 # actions.py lives at <repo>/src/omarchy_ai/execution/actions.py.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _VENV_PYTHON = str(_REPO_ROOT / ".venv" / "bin" / "python")
-# The one TV that's been manually paired and proven working (STATUS.md's
-# "Hardware-dependent findings" -- adb tcpip 5555, not Wireless Debugging).
-# Used only as the fallback when live mDNS discovery (display/discovery.py)
-# comes back empty -- never the only path, see _resolve_cast_target.
-_TV_ADB_ADDR = "192.168.1.86:5555"
+# The last-known-TV fallback constant used to live here; moved to
+# display/discovery.py (TV_ADB_ADDR) so display/registry.py can use it
+# too without a circular import between registry.py and this file.
 _SIGNALING_PORT = 8765
 _APK_PATH = (
     _REPO_ROOT / "android-receiver" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
@@ -56,6 +54,10 @@ _APK_PATH = (
 _APK_BUILD_MARKER = _APK_PATH.with_suffix(".built-from-hash")
 _cast_process: subprocess.Popen | None = None
 _signaling_process: subprocess.Popen | None = None
+# The bare host (no port) start_casting is currently/last cast to -- what
+# stop_casting uses to tell display/registry.py which entry to mark back
+# to "online". Same module-level-state pattern as _cast_process itself.
+_cast_target_host: str | None = None
 
 
 def _spawn_own_cgroup(argv: list[str], cwd: str) -> subprocess.Popen:
@@ -559,6 +561,10 @@ def _looks_like_address(s: str) -> bool:
 
 
 def _discover_androidtv_devices() -> list[dict]:
+    """Only used by the new-TV pairing flow below (_reachable_target_for_
+    install/install_receiver_on_tv), which is a distinct feature from
+    casting-target resolution -- that path now reads display/registry.py
+    instead, see _resolve_cast_target/list_cast_targets."""
     from ..display import discovery
 
     try:
@@ -571,12 +577,18 @@ def _discover_androidtv_devices() -> list[dict]:
 def _resolve_cast_target(target: str | None) -> tuple[str | None, ActionResult | None]:
     """Resolves a spoken/typed target -- a name from list_cast_targets, a
     raw IP[:port], or nothing -- to a single adb address ("host:port").
-    Real mDNS discovery (_androidtvremote2._tcp) is authoritative: a named
-    target that doesn't match anything real is reported back as a failure
-    rather than silently guessed at. Returns (address, None) on success or
+
+    Reads display/registry.py -- the same shared device state the
+    omarchy-ai.tv-discovery overlay renders -- rather than calling mDNS
+    discovery directly, so a voice-resolved target and whatever the
+    overlay is showing can never drift apart. A named target that doesn't
+    match anything real is reported back as a failure rather than
+    silently guessed at. Returns (address, None) on success or
     (None, ActionResult) with a message for the model to relay/act on
     (ambiguous match, no match, or multiple candidates needing a pick)."""
-    devices = _discover_androidtv_devices()
+    from ..display import registry
+
+    devices = registry.get_or_refresh()
 
     if target:
         needle = target.strip().lower()
@@ -603,47 +615,69 @@ def _resolve_cast_target(target: str | None) -> tuple[str | None, ActionResult |
             False, f"no TV named '{target}' found, and no TVs are currently discoverable on the network"
         )
 
-    if len(devices) == 1:
-        return f"{devices[0]['address']}:5555", None
-    if len(devices) > 1:
-        names = ", ".join(d["name"] for d in devices)
+    # Only ever auto-pick among devices actually seen live -- "unknown"
+    # (the never-confirmed fallback entry) and "offline" ones don't count
+    # toward an unambiguous single choice, they're just kept visible.
+    live = [d for d in devices if d["status"] in ("online", "connecting", "connected")]
+    if len(live) == 1:
+        return f"{live[0]['address']}:5555", None
+    if len(live) > 1:
+        names = ", ".join(d["name"] for d in live)
         return None, ActionResult(
             False,
-            f"found {len(devices)} TVs on the network ({names}) -- call list_cast_targets "
+            f"found {len(live)} TVs on the network ({names}) -- call list_cast_targets "
             "and ask the user which one, then call start_casting again with that name as the target.",
         )
 
-    # Discovery found nothing at all -- fall back to the one TV already
-    # confirmed working today rather than failing the moment mDNS has a
-    # bad day or a TV's remote-control service happens to be off.
-    log.info("no TVs discovered via mDNS; falling back to last-known TV %s", _TV_ADB_ADDR)
-    return _TV_ADB_ADDR, None
+    # Nothing currently live -- fall back to the one TV already confirmed
+    # working before (the "unknown"-status registry entry, see
+    # registry.py) rather than failing the moment mDNS has a bad day or a
+    # TV's remote-control service happens to be off.
+    from ..display import discovery
+
+    log.info("no TVs currently online; falling back to last-known TV %s", discovery.TV_ADB_ADDR)
+    return discovery.TV_ADB_ADDR, None
 
 
 def list_cast_targets(args: dict) -> ActionResult:
-    """Real mDNS discovery of every Android TV currently advertising
-    _androidtvremote2._tcp on the network -- what the model reads out (or
-    uses to disambiguate) when asked "what TVs are available" or when
-    start_casting comes back ambiguous."""
-    devices = _discover_androidtv_devices()
-    if not devices:
-        # Still give a real, useful answer: the one TV already known to
-        # work, so this isn't just an empty list the moment mDNS has a
-        # bad day.
-        devices = [{"name": "previously paired TV", "address": _TV_ADB_ADDR.split(":")[0]}]
-    return ActionResult(True, json.dumps(devices))
+    """The shared device registry (display/registry.py) -- what the model
+    reads out (or uses to disambiguate) when asked "what TVs are
+    available" or when start_casting comes back ambiguous. Same data the
+    omarchy-ai.tv-discovery overlay renders, refreshed here if stale."""
+    from ..display import registry
+
+    return ActionResult(True, json.dumps(registry.get_or_refresh()))
 
 
 def start_casting(args: dict) -> ActionResult:
-    global _cast_process, _signaling_process
+    global _cast_process, _signaling_process, _cast_target_host
 
     if _cast_process is not None and _cast_process.poll() is None:
         return ActionResult(True, "already casting")
 
+    from ..display import registry, tv_overlay
+
+    # Shows the "which TV?" overlay for every real cast attempt, not just
+    # ambiguous ones -- per the task's own "when asked to mirror/cast,
+    # automatically open" ask. Starts its own background refresh loop, so
+    # the overlay is already live-tracking by the time _resolve_cast_target
+    # reads the same registry a moment later.
+    tv_overlay.show_and_track()
+
     target = (args.get("target") or "").strip() or None
     tv_addr, err = _resolve_cast_target(target)
     if err is not None:
+        # Ambiguous/no-match -- deliberately leave the overlay open and
+        # tracking. The model asks the user by voice; the *next*
+        # start_casting call (voice-resolved) or a manual row click in the
+        # overlay (cli/settings.py's select-cast-target, which just calls
+        # this same function) is what resolves and dismisses it.
         return err
+
+    host = tv_addr.split(":")[0]
+    _cast_target_host = host
+    registry.mark_connecting(host)
+    tv_overlay.push_update()
 
     # adb connect can hang for a long time against an unreachable host
     # (confirmed live — a plain 120s-timeout background hang, not a quick
@@ -651,6 +685,10 @@ def start_casting(args: dict) -> ActionResult:
     # adb to fail fast.
     r = _run(["adb", "connect", tv_addr], timeout=8)
     if not r.ok or "connected" not in r.message.lower():
+        registry.mark_failed(host)
+        tv_overlay.push_update()
+        time.sleep(1.2)
+        tv_overlay.hide_tracking()
         return ActionResult(False, f"could not reach {tv_addr} over the network")
 
     _ensure_receiver_current(tv_addr)
@@ -665,6 +703,10 @@ def start_casting(args: dict) -> ActionResult:
                 break
             time.sleep(0.25)
         else:
+            registry.mark_failed(host)
+            tv_overlay.push_update()
+            time.sleep(1.2)
+            tv_overlay.hide_tracking()
             return ActionResult(False, "signaling server failed to start")
 
     _run(
@@ -680,12 +722,24 @@ def start_casting(args: dict) -> ActionResult:
     time.sleep(2)
     if _cast_process.poll() is not None:
         _cast_process = None
+        registry.mark_failed(host)
+        tv_overlay.push_update()
+        time.sleep(1.2)
+        tv_overlay.hide_tracking()
         return ActionResult(False, "casting failed to start")
+
+    registry.mark_connected(host)
+    tv_overlay.select(host)
+    # Grace period so "Connected" is actually visible before the overlay's
+    # own dismiss animation runs — same "let the user see the outcome"
+    # reasoning as the sleeps already in this function.
+    time.sleep(1.2)
+    tv_overlay.hide_tracking()
     return ActionResult(True, f"casting started to the TV at {tv_addr}")
 
 
 def stop_casting(args: dict) -> ActionResult:
-    global _cast_process
+    global _cast_process, _cast_target_host
     if _cast_process is None or _cast_process.poll() is not None:
         _cast_process = None
         return ActionResult(True, "not currently casting")
@@ -695,6 +749,14 @@ def stop_casting(args: dict) -> ActionResult:
     except subprocess.TimeoutExpired:
         _cast_process.kill()
     _cast_process = None
+
+    if _cast_target_host is not None:
+        from ..display import registry, tv_overlay
+
+        registry.mark_disconnected(_cast_target_host)
+        tv_overlay.hide()  # covers the edge case of stopping while it's still up
+        _cast_target_host = None
+
     return ActionResult(True, "casting stopped")
 
 

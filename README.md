@@ -131,6 +131,12 @@ been used for, live:
 - Real-time mDNS auto-discovery of Android TV targets on the LAN
   (`_androidtvremote2._tcp`) — asks which TV you mean if more than one is
   found, remembers the last one otherwise.
+- Asking to cast opens a small centered, glitchy device-picker overlay
+  (`omarchy-ai.tv-discovery`) that stays live-updated while it's open and
+  can be resolved by saying a device's name or by clicking it — it reads
+  and writes the exact same shared device registry (`display/registry.py`)
+  the voice agent itself uses, so the UI and the assistant never disagree
+  about what's online.
 - Guided pairing for a TV that's never been set up before: narrates the
   exact on-device steps (Developer options → Wireless debugging → pairing
   code), then completes ADB pairing/connect/install once you read the code
