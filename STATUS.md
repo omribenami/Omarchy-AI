@@ -1769,3 +1769,248 @@ Verified live via direct IPC before wiring the real daemon calls in:
 `'{"live":false}'`, screenshotted and cropped both times — dot renders
 correctly in both colors at the right position. Daemon restarted
 afterward to load the real connect/hangup wiring.
+
+## Four user-reported casting bugs: HY300 invisible, ONN "not recognized", casting silently fails, receiver UI cleanup
+
+### 1. HY300 projector invisible to `list_cast_targets` — fixed
+
+Root cause, confirmed live: the HY300Pro projector (`192.168.1.86`, this
+project's original Phase 0 test TV) does not advertise
+`_androidtvremote2._tcp` at all (`avahi-browse -a -t` showed nothing for
+it under that service type), so D10's discovery never saw it. It DOES
+advertise plain `_adb._tcp` (Android's classic Wireless-Debugging-on
+signal — a lower bar than the Google Android TV Remote Service, common on
+non-GMS-certified/budget boxes and projectors):
+```
+avahi-browse -r -p -t _adb._tcp
+=;enp0s25;IPv4;adb-52001089a69606f2054;_adb._tcp;local;Android-4.local;192.168.1.86;5555;
+```
+`src/omarchy_ai/display/discovery.py`'s `discover_androidtv_devices()` now
+also browses `_adb._tcp` and folds in any device not already covered by an
+`_androidtvremote2._tcp` result (deduped by IP). Its mDNS instance name
+(`adb-<serial>`) isn't useful to read aloud, so a friendly name is
+resolved via `adb connect <addr>` + `adb shell getprop ro.product.model`
+(new `_resolve_adb_model_name`), each subprocess call capped at
+`_ADB_MODEL_TIMEOUT = 3.0s` and the result cached in-process
+(`_adb_model_name_cache`) since a model name never changes call to call —
+this sits on the voice assistant's hot path (`list_cast_targets`/
+`start_casting` can be called mid-conversation), so a slow/unreachable
+adb-only device degrades to its raw mDNS name rather than stalling
+discovery. On any timeout/error it falls back to the raw mDNS name rather
+than raising.
+
+**Confirmed live, real network, real device:**
+```python
+>>> discovery.discover_androidtv_devices()
+[{'name': 'Living Room TV', 'address': '192.168.1.191'},
+ {'name': 'Idol TV', 'address': '192.168.1.203'},
+ {'name': 'HY300Pro', 'address': '192.168.1.86'}]
+```
+2.13s total (including the adb round trip), and 2.15s again after a
+deliberate `adb disconnect 192.168.1.86:5555` to force a real
+reconnect+resolve rather than reusing an already-open adb session —
+both well inside acceptable hot-path latency. `actions.list_cast_targets({})`
+called through the real production code returns the same three devices.
+
+### 2. "ONN streamer not recognized" — not a discovery bug, no code change
+
+Confirmed (per the task's own pre-verified diagnosis, not re-investigated
+here): the ONN box and "Living Room TV" are the same physical device
+(192.168.1.191) — the user named it "Living Room TV" in Google
+Home/Cast, and that's the name `_androidtvremote2._tcp` advertises. It
+was already discoverable; the user tried targeting it by its model name
+("ONN-A") rather than its discovered name. No code needed — issue 1's
+discovery.py work doesn't touch this path, and the optional
+`_googlecast._tcp` TXT-record model cross-reference suggested as a
+nicety was skipped as genuinely low-priority against the real bugs below.
+
+### 3. Casting reports success but never mirrors — THREE stacked root causes found, two fixed, one needs the user
+
+**Root cause A (the one already diagnosed before this task started) — the
+signaling relay drops the sender's offer if the Android viewer hasn't
+finished cold-starting yet.** `src/omarchy_ai/display/signaling.py`
+relayed messages only while both sender and viewer were simultaneously
+connected and silently dropped anything else
+(`"sender sent offer but no viewer is connected -- dropped"`), confirmed
+live across 7/7 real `start_casting` attempts logged in
+`/tmp/omarchy-signaling.log` before this fix. Fixed by having `Relay`
+buffer the sender's most recent offer and any ICE candidates while no
+viewer is connected, and replay them (in order) the moment a viewer
+registers; a *new* sender connection discards any stale buffered
+offer/ICE from a previous attempt rather than accumulating or replaying
+stale state (see `signaling.py`'s module docstring and `Relay` class for
+the full reasoning, including why only the sender->viewer direction is
+buffered — no evidence of the reverse race on this network).
+
+**Root cause B (found while verifying the fix, not previously known) —
+`ufw` only allows the signaling port from one hardcoded IP.** Real, hard
+evidence: `journalctl -k` showed `[UFW BLOCK] ... DPT=8765` SYN packets
+from Living Room TV (192.168.1.191) being dropped at the kernel firewall,
+repeatedly, across every real cast attempt tonight — including the
+*first* one made this session, at 22:44:23-22:44:31, well before any of
+today's code changes were loaded, and 28 total blocked attempts logged
+since this morning. `/etc/ufw/user.rules` (readable without root) shows
+why: `-A ufw-user-input -p tcp --dport 8765 -s 192.168.1.86 -j ACCEPT` —
+a rule scoped to exactly one IP, the original Phase 0 hardcoded TV,
+almost certainly written before D10's multi-TV auto-discovery existed and
+never widened afterward. This silently blocks the WebSocket handshake for
+any TV other than 192.168.1.86, *regardless* of the signaling fix above —
+confirmed by testing against 192.168.1.86 (which the rule does cover):
+real, sustained video. **Not fixed by this session — this machine has no
+passwordless sudo (`sudo -n ufw status` -> "a password is required") and
+modifying firewall rules isn't something to script around that. Needs the
+user to run, one time:**
+```
+sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp
+```
+(widens the existing single-IP rule to the whole LAN, matching D10's
+multi-TV design; the old narrow rule can be left in place harmlessly or
+deleted with `sudo ufw delete allow from 192.168.1.86 to any port 8765
+proto tcp` — either works, ufw allow rules don't conflict). Until this
+runs, casting to Living Room TV / Idol TV will keep silently failing at
+the TCP level even with every other fix in this entry applied — this is
+the one remaining piece of issue 3 not fully closed.
+
+**Root cause C — not a real bug, a false alarm from this session's own
+test churn.** Verifying root cause A against 192.168.1.86 (the only
+device root cause B doesn't block) initially reproduced what looked like
+a *new* stall: one real frame decoded then a real Android-side crash
+(`FATAL EXCEPTION` on `decoder-texture-thread`,
+`java.lang.IllegalStateException: Rendered texture metadata was null in
+onTextureFrameAvailable`, `org.webrtc.AndroidVideoDecoder.onFrame` ->
+`SurfaceTextureHelper.tryDeliverTextureFrame`, process died). Reasoned
+through and then confirmed by retesting cleanly (letting the app settle
+after one `am start` instead of the rapid force-stop/relaunch cycling
+this session's own diagnosis had been doing to it) that this doesn't
+reproduce — real evidence below. Not chased further as a real bug since
+it didn't recur; noted here in case it ever does (the crash is inside
+`org.webrtc`'s native decoder path, nothing this project's own code
+touches).
+
+**Fix A verified live, real hardware, through the actual production
+`start_casting`/`stop_casting` code path (not the raw spike script)**,
+against 192.168.1.86 (the one device not blocked by root cause B):
+`actions.start_casting({"target": "HY300Pro"})` -> `ok=True`. Android
+`EglRenderer` log, ten consecutive 4-second windows after ICE connected:
+```
+Frames received: 60. Dropped: 0. Rendered: 61. Render fps: 14.8. ...
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0. ...
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0. ...
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0. ...
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0. ...
+Frames received: 61. Dropped: 0. Rendered: 61. Render fps: 15.2. ...
+Frames received: 60. Dropped: 0. Rendered: 59. Render fps: 14.7. ...
+Frames received: 60. Dropped: 0. Rendered: 61. Render fps: 15.2. ...
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0. ...
+Frames received: 60. Dropped: 0. Rendered: 60. Render fps: 15.0. ...
+```
+Locked to the requested 15fps, 0 drops, for the entire run — before this
+fix, the exact same setup produced zero frames, ever, on 7/7 attempts.
+Sender-side log confirms the mechanism directly: `local offer created ...
+sending to signaling server` immediately followed (same run) by `got
+remote answer` a few hundred ms after the Android app's own cold-start
+delay — the offer was buffered and replayed, not dropped.
+
+### Extending the fix: casting must survive conversation end AND daemon restarts, not just be independently timed
+
+Two additional real requirements surfaced while verifying the above (the
+second was an actual live near-miss caught during this session, not
+theoretical):
+
+**Casting already does not stop when a conversation ends** — verified,
+not assumed. `grep -rn "stop_casting\|_cast_process" src/` shows
+`stop_casting`/`_cast_process` referenced only inside
+`execution/actions.py` itself (the tool implementation) and
+`execution/tools.py`/`config.py` (the tool's schema/instructions) —
+`voice/live.py`'s hangup path (`_hangup` event, both `finally:` blocks),
+`core/daemon.py`, and `voice/watchdog.py` never reference either. Real
+trace confirming this structurally-expected behavior actually held live:
+a genuine user conversation tonight called `start_casting({'target':
+'Living Room TV'})` at 22:45:22 (spawning `spike_cast_sender.py` pid
+376026); the conversation hit a farewell and `journalctl` logged
+`"session ended, back to listening"` at 22:45:59; pid 376026 was still
+running, still connected to the signaling relay, 5+ minutes later when
+checked (`ps -o pid,etimes,cmd`) — never touched by the hangup.
+
+**Casting used to NOT survive a daemon restart — fixed.** Real problem
+found while preparing to verify the above: `systemctl --user show
+omarchy-ai -p KillMode` is the systemd default, `control-group`, and the
+cast subprocesses (`_cast_process`/`_signaling_process`, spawned via plain
+`subprocess.Popen(..., start_new_session=True)`) were still members of
+that same cgroup despite `start_new_session=True` giving them their own
+process group/session (confirmed originally back in the D10 work,
+`/proc/<pid>/cgroup` showing the service's own path) — so restarting the
+daemon to load *any* fix, including the ones in this very entry, would
+have killed an active cast too. Fixed with a new `_spawn_own_cgroup`
+helper in `actions.py`: both cast subprocesses now launch via `systemd-run
+--user --scope --collect --quiet -- <argv>` instead of a plain `Popen`.
+Confirmed live, empirically, before wiring it in: `systemd-run --scope`
+execs straight into the target argv (no wrapper process) —
+`Popen.pid` matched the payload's own real pid (checked via
+`/proc/<pid>/cmdline`), and `poll()`/`terminate()` on the returned `Popen`
+behaved exactly as on a plain one — while placing that pid in its own
+transient scope unit (`/proc/<pid>/cgroup` ->
+`.../app.slice/run-p<pid>-*.scope`), not the service's. Falls back to a
+plain `Popen` (today's cgroup-coupled behavior) if `systemd-run` isn't on
+PATH, rather than failing casting outright.
+
+**Verified live, for real, through the actual production code path, with
+a real daemon restart mid-cast:**
+1. `actions.start_casting({"target": "HY300Pro"})` — confirmed both
+   spawned processes in independent scopes: `run-p381206-i385325.scope`
+   (signaling) and `run-p381226-i382073.scope` (sender), neither under
+   `omarchy-ai.service`.
+2. While video was actively flowing (`EglRenderer`: 60/60 frames, 15fps,
+   confirmed in the window immediately before), ran `systemctl --user
+   restart omarchy-ai.service` for real (the user explicitly authorized
+   disruptive testing this session: *"you can kill what you need, I want
+   to see the fixes"*). `journalctl` confirmed the daemon came back up
+   clean (new PID, "omarchy-ai ready...").
+3. Both cast subprocesses were still running afterward, untouched
+   (`ps aux` showed the same two pids, same start times).
+4. `EglRenderer` log straddling the restart moment: frames continued
+   landing every ~4s, 59-61 per window, 0 drops, with no gap — the
+   restart at 22:56:57 is invisible in the video stream entirely.
+
+### 4. Android receiver UI cleanup — done, rebuilt, verified visually
+
+Per the user's own words: *"on the receiver remove the IP fields and
+connect button no need for them and also all the states and prints should
+be at the bottom of the receiver's screen."* `ReceiverScreen.kt`'s
+`StatusOverlay`: removed the `OutlinedTextField`(Sender IP)/`Button`
+(Connect) entirely — the app already auto-connects on launch
+(`ReceiverViewModel.init`) using the remembered/default host, so there was
+never anything for a person to do with them; `hostInput`/`onHostChange`/
+`onConnect` params dropped from `StatusOverlay`'s signature along with the
+now-unused imports (`Row`, `OutlinedTextField`, `Button`, `widthIn`,
+`width`). The status `Column`'s `verticalArrangement` changed from
+`Arrangement.Center` to `Arrangement.Bottom` so the title/status text sits
+near the bottom of the screen instead of dead center — the wallpaper
+background (added in an earlier round, user-requested, kept as-is) is
+unaffected.
+
+`./gradlew assembleDebug` — `BUILD SUCCESSFUL`, real APK rebuilt
+(`libjingle_peerconnection_so.so` still linking per the "unable to strip"
+build-log line, same as every prior successful build). Installed on the
+HY300Pro (`adb install -r`), force-stopped and relaunched for a clean
+process, screenshotted (`adb shell screencap`): confirms no IP field, no
+Connect button anywhere on screen, and the "Omarchy AI Receiver" title +
+status line ("Failed: Failed to connect to /192.168.1.65:8765" — the
+signaling relay was deliberately down for this specific screenshot, to
+exercise the real status-text path rather than the streaming state) both
+render near the bottom of the screen with the Omarchy wallpaper intact
+behind them, exactly as asked.
+
+### Still open
+
+1. **Root cause B (the `ufw` rule scoped to one IP)** — needs the user to
+   run the one `sudo ufw allow ...` command above; until then, casting to
+   Living Room TV/Idol TV (anything other than 192.168.1.86) will still
+   silently fail at the TCP level regardless of every fix in this entry.
+2. Not independently re-verified this round: a full spoken, wake-word-triggered
+   conversation that calls `start_casting` against Living Room TV specifically
+   (blocked on open item 1) — everything here was verified either through
+   the real production code path directly (bypassing voice, this
+   project's established pattern for changes that can't be triggered by a
+   spoken wake word in an unattended session) or through a real user
+   conversation's own trace in `journalctl`.

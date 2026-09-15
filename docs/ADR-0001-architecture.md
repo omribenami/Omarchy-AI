@@ -479,6 +479,65 @@ the whole overlay (every `watchdog.*` call site in `live.py`, not just
 `start()`) — a user who wants it off entirely gets zero `omarchy-shell`
 IPC calls per conversation, not just "the panel never becomes visible."
 
+**D13 — Signaling buffers the sender's offer/ICE instead of dropping them,
+and cast subprocesses run in their own systemd scope instead of the
+daemon's cgroup.** Two related fixes for "casting reports success but
+never actually mirrors" (real live evidence, full trail in STATUS.md);
+design reasoning here.
+
+*Buffering, not a longer sleep.* The relay (`display/signaling.py`) used
+to relay sender<->viewer messages only while both were simultaneously
+connected, dropping anything else. Confirmed live (7/7 real attempts) this
+isn't a rare race: the sender creates its WebRTC offer in 300-700ms, but
+a cold Android app start (APK load, ART, native WebRTC init, its own
+signaling connect) reliably takes longer — so the offer was dropped
+*every* time, not occasionally. A fixed longer delay in `start_casting`
+was rejected as the fix: it doesn't address the actual design flaw (no
+retry/buffer), degrades UX (adds latency even on a warm start), and is
+still fragile against a genuinely slow TV/network. Instead `Relay` buffers
+the sender's most recent offer plus any ICE candidates while no viewer is
+connected, replaying them in order the instant one registers. Only
+sender->viewer is buffered — the project's own evidence is 100%
+sender-before-viewer, no observed case of the reverse, so buffering that
+direction too was judged unnecessary complexity rather than added
+defensively. A fresh sender connection (new cast attempt) discards any
+stale buffered state rather than accumulating it or replaying it into a
+later, unrelated session — keyed to connection lifecycle, not a timer.
+
+*Cast subprocesses decoupled from `omarchy-ai.service`'s cgroup.*
+Separate, real problem found while verifying the above: the service's
+`KillMode` is systemd's default, `control-group`, and `_cast_process`/
+`_signaling_process` — spawned via plain `subprocess.Popen(...,
+start_new_session=True)` — were still members of that cgroup despite
+`start_new_session=True` (confirmed via `/proc/<pid>/cgroup`), so
+restarting the daemon to load *any* code change would kill an active cast
+too, directly contradicting the requirement that casting only ever stops
+via an explicit `stop_casting` call. Fixed with `_spawn_own_cgroup` in
+`actions.py`: casts now launch via `systemd-run --user --scope --collect
+--quiet -- <argv>`. Confirmed live before wiring it in that `--scope`
+execs straight into the target (no wrapper process — `Popen.pid` is the
+real payload pid, `poll()`/`terminate()` behave identically to a plain
+`Popen`) while the process lands in its own transient scope unit under
+`user.slice`, not the service's. Falls back to a plain `Popen` if
+`systemd-run` is missing rather than failing casting outright. Verified
+live end to end, including an actual `systemctl --user restart
+omarchy-ai.service` fired mid-cast (user-authorized disruptive testing):
+video kept flowing, 0 drops, straight through the restart — see
+STATUS.md for the full frame-log evidence.
+
+*A third, independent root cause found during verification, not fixed
+here:* this machine's `ufw` only allows inbound TCP on the signaling port
+from one hardcoded IP (`192.168.1.86`, the original Phase 0 TV) —
+`/etc/ufw/user.rules`: `-A ufw-user-input -p tcp --dport 8765 -s
+192.168.1.86 -j ACCEPT`, almost certainly predating D10's multi-TV
+discovery and never widened. `journalctl -k` showed real `[UFW BLOCK]`
+lines for Living Room TV's SYN packets to port 8765, including on the
+very first cast attempt of this session, before any of today's code
+changes loaded — proving this has silently sabotaged every cast to any
+TV other than 192.168.1.86 regardless of the signaling fix. Not fixable
+by this session (no passwordless sudo); see STATUS.md for the exact
+one-line command the user needs to run.
+
 ## Confirmed available, no install needed
 
 - Omarchy 4.0.3, Hyprland 0.56.2
