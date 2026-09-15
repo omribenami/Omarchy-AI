@@ -1,4 +1,4 @@
-"""Phone bridge: a local HTTP server letting a phone on the same LAN talk
+"""Phone bridge: an HTTPS server letting a paired phone on LAN or Tailscale talk
 to Omarchy from a browser page.
 
 The browser does its own WebRTC directly to OpenAI's Live API (real audio
@@ -23,6 +23,7 @@ stop — this is the real access boundary, not just a UI nicety. See
 from __future__ import annotations
 
 import http.cookies
+import ipaddress
 import json
 import logging
 import secrets
@@ -39,6 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ..config import CONFIG_DIR, Config
+from . import cast_audio
 from ..execution.actions import run_action
 from ..voice.live import build_session_config
 
@@ -85,8 +87,11 @@ def mint_pairing_token(config: Config) -> dict:
     expires_at = time.time() + _PAIR_TOKEN_TTL_SECONDS
     _write_json_0600(_PAIR_TOKEN_PATH, {"token": token, "expires_at": expires_at, "used": False})
     ip = _primary_lan_ip() or "127.0.0.1"
-    url = f"https://{ip}:{config.phone_bridge_port}/pair?token={token}"
-    return {"token": token, "url": url, "expires_at": expires_at}
+    lan_url = f"https://{ip}:{config.phone_bridge_port}/pair?token={token}"
+    tail_ip, _ = _tailscale_address()
+    tail_url = f"https://{tail_ip}:{config.phone_bridge_port}/pair?token={token}" if tail_ip else None
+    return {"token": token, "url": tail_url or lan_url, "lan_url": lan_url,
+            "tailscale_url": tail_url, "expires_at": expires_at}
 
 
 def _load_sessions() -> list[str]:
@@ -120,13 +125,37 @@ def _primary_lan_ip() -> str | None:
         s = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
+    except OSError:
+        return None
     finally:
         s.close()
 
 
+def _tailscale_address() -> tuple[str | None, str | None]:
+    """Discover a running tailnet without requiring it for LAN operation."""
+    try:
+        result = subprocess.run(["tailscale", "status", "--json"],
+                                capture_output=True, text=True, timeout=3)
+        if result.returncode:
+            return None, None
+        status = json.loads(result.stdout)
+        if status.get("BackendState") != "Running":
+            return None, None
+        node = status.get("Self") or {}
+        addresses = [str(ipaddress.ip_address(ip)) for ip in node.get("TailscaleIPs", [])]
+        ipv4 = next((ip for ip in addresses if ":" not in ip), None)
+        dns = node.get("DNSName", "").rstrip(".")
+        # Only validated hostnames go into OpenSSL's extension expression.
+        if not dns or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-" for c in dns):
+            dns = None
+        return ipv4, dns
+    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+        return None, None
+
+
 def _ensure_self_signed_cert() -> tuple[str, str] | None:
     """(Re)generates a self-signed TLS cert/key each daemon start, valid
-    for whatever this machine's current LAN IP is.
+    for this machine's current LAN and Tailscale addresses.
 
     Needed because `getUserMedia` (the mic) is refused outright, with no
     permission prompt at all, on anything but a "secure context" — https,
@@ -149,7 +178,12 @@ def _ensure_self_signed_cert() -> tuple[str, str] | None:
         log.warning("phone bridge: openssl not found, cannot generate a TLS cert — staying on plain HTTP (mic access will fail)")
         return None
     ip = _primary_lan_ip()
-    san = f"subjectAltName=IP:127.0.0.1,DNS:localhost{f',IP:{ip}' if ip else ''}"
+    tail_ip, tail_dns = _tailscale_address()
+    names = ["IP:127.0.0.1", "DNS:localhost"]
+    names += [f"IP:{address}" for address in dict.fromkeys([ip, tail_ip]) if address]
+    if tail_dns:
+        names.append(f"DNS:{tail_dns}")
+    san = "subjectAltName=" + ",".join(names)
     _CERT_DIR.mkdir(parents=True, exist_ok=True)
     try:
         _CERT_DIR.chmod(0o700)
@@ -276,6 +310,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_pair(urllib.parse.parse_qs(parsed.query))
             return
 
+        if path == "/api/audio/status":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            self._send_json(200, {"available": cast_audio.available()})
+            return
+
         if path == "/api/paired":
             # Polled by not_paired.html — a real, live confusion this
             # round: pairing had genuinely succeeded (confirmed in the
@@ -364,6 +405,28 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib method name
         path = self.path.split("?", 1)[0]
+        if path == "/api/audio/pcm":
+            if not self._is_paired():
+                self.close_connection = True
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 8192 or length % 2:
+                    raise ValueError("invalid PCM length")
+                self.connection.settimeout(3)
+                data = self.rfile.read(length)
+                if len(data) != length:
+                    raise ValueError("incomplete PCM")
+                cast_audio.send_pcm(data)
+                self._send_json(200, {"ok": True})
+            except ValueError as e:
+                self.close_connection = True
+                self._send_json(400, {"error": str(e)})
+            except OSError:
+                self.close_connection = True
+                self._send_json(409, {"error": "TV mirroring is not connected"})
+            return
         if path == "/api/live/offer":
             if not self._is_paired():
                 self._send_json(403, {"error": "not paired"})

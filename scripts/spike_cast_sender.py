@@ -59,6 +59,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import socket
+from omarchy_ai.phone.cast_audio import socket_path
 import logging
 import sys
 import threading
@@ -89,6 +91,7 @@ class Sender:
         self.loop = GLib.MainLoop()
         self.pipeline: Gst.Pipeline | None = None
         self.webrtc: Gst.Element | None = None
+        self.voice_socket = None
         self.appsrc: Gst.Element | None = None
         self.ws = None
         self.ws_loop: asyncio.AbstractEventLoop | None = None
@@ -283,7 +286,13 @@ class Sender:
         audio = (
             f"pipewiresrc target-object={a.audio_source} do-timestamp=true ! "
             "audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! "
-            "queue max-size-buffers=50 leaky=downstream ! "
+            "queue max-size-buffers=50 leaky=downstream ! voice_mix. "
+            'appsrc name=phonevoice is-live=true format=time do-timestamp=true '
+            'caps="audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved" '
+            'max-bytes=16384 leaky-type=downstream ! audioconvert ! audioresample ! '
+            'queue max-size-buffers=4 leaky=downstream ! voice_mix. '
+            'audiomixer name=voice_mix ignore-inactive-pads=true ! '
+            'audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! '
             "opusenc bitrate=64000 ! rtpopuspay pt=111 ! "
             "queue ! webrtc.sink_1"
         )
@@ -373,6 +382,45 @@ class Sender:
     def _on_conn_state(self, element, _pspec):
         state = element.get_property("connection-state")
         log.info("WebRTC connection state -> %s", state)
+        if state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
+            self._start_phone_audio()
+        else:
+            self._stop_phone_audio()
+
+    def _start_phone_audio(self):
+        if self.voice_socket is not None:
+            return
+        path = socket_path()
+        path.unlink(missing_ok=True)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.bind(str(path))
+        path.chmod(0o600)
+        sock.settimeout(.5)
+        self.voice_socket = sock
+        source = self.pipeline.get_by_name("phonevoice")
+
+        def receive():
+            while self.voice_socket is sock:
+                try:
+                    data = sock.recv(8193)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if not data or len(data) > 8192 or len(data) % 2:
+                    continue
+                buf = Gst.Buffer.new_allocate(None, len(data), None)
+                buf.fill(0, data)
+                buf.duration = len(data) // 2 * Gst.SECOND // 48000
+                source.emit("push-buffer", buf)
+
+        threading.Thread(target=receive, daemon=True, name="phone-cast-audio").start()
+
+    def _stop_phone_audio(self):
+        sock, self.voice_socket = self.voice_socket, None
+        if sock is not None:
+            sock.close()
+            socket_path().unlink(missing_ok=True)
 
     def run(self):
         self.start_signaling_thread()
@@ -380,6 +428,7 @@ class Sender:
         try:
             self.loop.run()
         finally:
+            self._stop_phone_audio()
             if self.pipeline:
                 self.pipeline.set_state(Gst.State.NULL)
             # Same explicit-disconnect fix as spike_cast_wlr_screencopy.py:

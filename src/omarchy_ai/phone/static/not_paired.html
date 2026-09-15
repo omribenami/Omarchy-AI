@@ -36,11 +36,12 @@
 </head>
 <body>
   <img src="omarchy-logo.png" alt="">
-  <h1>NOT PAIRED</h1>
-  <p>This phone hasn't been paired with Omarchy yet.</p>
+  <h1>PAIR THIS ADDRESS</h1>
+  <p>This browser has no pairing cookie for <strong id="address"></strong>. If you switched from LAN to Tailscale, pair once at this address too. Open the QR link in this same browser.</p>
   <code>Desktop → Settings → Phone Bridge → Pair a Phone</code>
 </body>
 <script>
+  document.getElementById('address').textContent = location.host;
   // This page has no way to know pairing succeeded somewhere else (a
   // different tab, or the actual pairing redirect landing in a separate
   // browser context) unless it checks — real confusion this caused:
