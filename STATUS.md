@@ -1677,3 +1677,22 @@ settings are outside of the box"). Fixed by dropping the fixed cap
 entirely and relying on `KeyboardPanel`'s own screen-relative
 `availableCardHeight`, which was already the real safety bound.
 Screenshot-verified.
+
+## Settings bar icon: Omarchy logo instead of a generic gear
+
+User's own request: "the settings should be a different icon, preferably
+omarchy logo if not ai." Tried the obvious source first — `/usr/share/
+omarchy/logo.svg`, the full wordmark (1215x285, spelling "Omarchy" in
+blocky letterforms) — and it rendered as illegible noise at bar-icon
+size (confirmed by screenshot: a wordmark's fine strokes don't survive
+that much downscaling). Switched to `/usr/share/pixmaps/omarchy.png`
+instead — the actual square app-icon mark (300x300, confirmed via
+`magick ... -format %[pixel:...]` that the green maze pattern is opaque
+alpha and everything else is fully transparent), which is already built
+to read at icon scale. Rendered via `BarIconButton`'s `iconComponent`
+slot (a `QtQuick.Effects`/`MultiEffect`-free plain `Image`, kept in its
+native brand green rather than tinted to the bar's monochrome-glyph
+convention — more recognizably "the Omarchy logo" this way, and this
+project's own tray-adjacent icons in this bar already show real
+per-app colors, not just Nerd Font glyphs). Screenshot-confirmed sharp
+and recognizable in the bar.
