@@ -22,6 +22,12 @@ uv sync
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-ai"
 mkdir -p "$CONFIG_DIR"
+
+WAKE_MODELS_DIR="$CONFIG_DIR/wake_models"
+mkdir -p "$WAKE_MODELS_DIR"
+echo "==> Installing trained wake-word models (omachy/omri/roni)"
+cp -n wake_models/*.onnx "$WAKE_MODELS_DIR/" 2>/dev/null || true
+
 if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
   cat >"$CONFIG_DIR/config.yaml" <<'EOF'
 # Overrides for src/omarchy_ai/config.py's defaults — only list what you
@@ -55,5 +61,5 @@ echo "Setup complete. Next steps:"
 echo "  systemctl --user enable --now omarchy-ai"
 echo "  journalctl --user -u omarchy-ai -f"
 echo
-echo "Say 'hey jarvis' (placeholder wake word — see STATUS.md) to talk."
+echo "Say 'omachy' (or 'omri'/'roni' — all three are trained and active) to talk."
 echo "End a conversation by saying goodbye/stop/that's all."

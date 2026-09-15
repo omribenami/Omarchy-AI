@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.window-labels",
+  "name": "Window labels",
+  "version": "1.0.0",
+  "description": "Floating name-label badges pinned over candidate windows, shown by the Omarchy AI voice assistant while it asks which window the user means.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "WindowLabels.qml"
+  }
+}
