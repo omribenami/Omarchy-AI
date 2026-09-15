@@ -44,6 +44,28 @@ once the user has turned it on *on the TV itself* -- confirmed live on
 this network: both come back empty right now, matching that no TV
 currently has it enabled. There is no way to skip that first on-device
 step; see `install_receiver_on_tv` for the guided flow built around it.
+
+**A fourth service type, added after a real device was found invisible to
+the above:** the user's HY300Pro Android projector (`_TV_ADB_ADDR`,
+192.168.1.86 -- the very first TV this project ever paired, back in
+Phase 0) advertises none of the three service types above -- confirmed
+live, `avahi-browse -a -t` showed zero results for it under
+`_androidtvremote2._tcp`, `_adb-tls-pairing._tcp`, or `_adb-tls-connect
+._tcp`. It DOES advertise plain `_adb._tcp` (Android's classic
+ADB-over-network service -- confirmed live: `avahi-browse -r -p -t
+_adb._tcp` -> `adb-52001089a69606f2054;_adb._tcp;...;192.168.1.86;5555`,
+and a direct query against that address, `adb shell getprop
+ro.product.model`, returned `HY300Pro`, proving it really is the same
+device). This is common on non-GMS-certified/budget Android boxes and
+projectors: Wireless Debugging (which is all `_adb._tcp` signals -- the
+device already has it toggled on) is a lower bar than being a
+GMS-certified Android TV OS build that ships the Google Android TV Remote
+Service. `discover_androidtv_devices()` below now also browses
+`_adb._tcp` and folds in any device not already covered by an
+`_androidtvremote2._tcp` result (deduped by IP) so devices like this one
+still show up as real cast targets -- see that function's docstring for
+how its (unhelpful, serial-based) mDNS name is resolved to something
+usable.
 """
 
 from __future__ import annotations
@@ -133,14 +155,90 @@ def _dedupe_prefer_ipv4(records: list[dict]) -> list[dict]:
     return list(by_name.values())
 
 
+# Per-subprocess timeout for the adb calls used to resolve a friendly name
+# for an _adb._tcp-only device (adb connect, then getprop). This sits on
+# the voice assistant's hot path (list_cast_targets/start_casting can be
+# called mid-conversation), so each call gets a short, hard timeout rather
+# than adb's own default -- a device that's slow/unreachable falls back to
+# the raw mDNS instance name instead of stalling discovery. `adb connect`
+# against an already-connected device returns near-instantly (confirmed
+# live: "already connected"), so this is generous, not tight.
+_ADB_MODEL_TIMEOUT = 3.0
+
+# Resolved model names are cached for the life of the process -- a device's
+# model doesn't change between calls, and re-running two adb round trips on
+# every single list_cast_targets call (this repo's own discovery.py hot-path
+# concern) would be wasted work for a handful of stable home-network
+# devices. Deliberately unbounded/no TTL: correctness-first, small list,
+# per the task's own "don't over-engineer" call.
+_adb_model_name_cache: dict[str, str] = {}
+
+
+def _resolve_adb_model_name(address: str, port: int | None, fallback: str) -> str:
+    """Best-effort friendly name for a device only seen via `_adb._tcp`
+    (whose mDNS instance name is just `adb-<serial>`, not useful to read
+    out loud) -- queries `ro.product.model` over adb. Falls back to
+    `fallback` (the raw mDNS name) on any timeout/error rather than ever
+    raising or blocking discovery."""
+    addr = f"{address}:{port or 5555}"
+    cached = _adb_model_name_cache.get(addr)
+    if cached is not None:
+        return cached
+
+    name = fallback
+    try:
+        subprocess.run(
+            ["adb", "connect", addr],
+            capture_output=True, text=True, timeout=_ADB_MODEL_TIMEOUT, check=False,
+        )
+        proc = subprocess.run(
+            ["adb", "-s", addr, "shell", "getprop", "ro.product.model"],
+            capture_output=True, text=True, timeout=_ADB_MODEL_TIMEOUT, check=False,
+        )
+        model = proc.stdout.strip()
+        if proc.returncode == 0 and model:
+            name = model
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        log.warning("could not resolve model name for %s via adb, using mDNS name %r", addr, fallback)
+
+    _adb_model_name_cache[addr] = name
+    return name
+
+
+def discover_adb_tcp_devices() -> list[dict]:
+    """Every plain `_adb._tcp` device currently on the network -- Android's
+    classic Wireless-Debugging-on / ADB-over-network advertisement, a lower
+    bar than `_androidtvremote2._tcp` (see module docstring for the real
+    HY300Pro projector this was added for). [{"name", "address", "port"},
+    ...], deduped IPv4-preferred like the other discover_* functions."""
+    records = _dedupe_prefer_ipv4(_run_avahi_browse("_adb._tcp"))
+    return [{"name": r["name"], "address": r["address"], "port": r["port"]} for r in records]
+
+
 def discover_androidtv_devices() -> list[dict]:
-    """Real mDNS discovery: every `_androidtvremote2._tcp` device currently
-    on the network, one entry per device name -- [{"name", "address"}, ...].
-    Not cached, not hardcoded: reflects whatever is actually broadcasting
-    at call time. Returns [] on any discovery failure or if nothing is
-    found; callers decide the fallback."""
-    records = _dedupe_prefer_ipv4(_run_avahi_browse("_androidtvremote2._tcp"))
-    return [{"name": r["name"], "address": r["address"]} for r in records]
+    """Real mDNS discovery of cast targets: every `_androidtvremote2._tcp`
+    device (the primary signal -- see module docstring), PLUS any
+    `_adb._tcp`-only device not already covered by one of those (deduped by
+    IP) -- devices with Wireless Debugging on but no Google Android TV
+    Remote Service (common on non-GMS-certified/budget Android boxes and
+    projectors, confirmed live against the HY300Pro projector). One entry
+    per device -- [{"name", "address"}, ...]. Not cached (the merge itself
+    is not cached), not hardcoded: reflects whatever is actually
+    broadcasting at call time, except that an `_adb._tcp`-only device's
+    *name* is resolved once via adb and cached (see
+    `_resolve_adb_model_name`). Returns [] on any discovery failure or if
+    nothing is found; callers decide the fallback."""
+    androidtvremote = _dedupe_prefer_ipv4(_run_avahi_browse("_androidtvremote2._tcp"))
+    devices = [{"name": r["name"], "address": r["address"]} for r in androidtvremote]
+
+    known_addresses = {r["address"] for r in androidtvremote}
+    for r in _dedupe_prefer_ipv4(_run_avahi_browse("_adb._tcp")):
+        if r["address"] in known_addresses:
+            continue  # already have a nicer androidtvremote2 name for this IP
+        name = _resolve_adb_model_name(r["address"], r["port"], fallback=r["name"])
+        devices.append({"name": name, "address": r["address"]})
+
+    return devices
 
 
 def discover_adb_tls_pairing() -> list[dict]:
