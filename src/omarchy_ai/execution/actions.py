@@ -42,6 +42,53 @@ _APK_PATH = (
 )
 _cast_process: subprocess.Popen | None = None
 _signaling_process: subprocess.Popen | None = None
+
+
+def _spawn_own_cgroup(argv: list[str], cwd: str) -> subprocess.Popen:
+    """Launches argv fully decoupled from omarchy-ai.service's own cgroup,
+    via a transient `systemd-run --user --scope`.
+
+    Needed because the service's `KillMode` is the systemd default
+    (`control-group`): a plain `subprocess.Popen(..., start_new_session=
+    True)` still ends up as a member of the service's cgroup (confirmed
+    live via /proc/<pid>/cgroup on a real cast subprocess) despite getting
+    its own process group/session -- so restarting the daemon to load a
+    code fix would kill an actively-streaming cast too. That's directly
+    against the real requirement here: casting stops only via
+    `stop_casting`, never as a side effect of anything else (a
+    conversation ending -- already true, see `voice/live.py`'s hangup path
+    never touching `_cast_process` -- or a daemon restart to pick up a
+    fix, which wasn't true before this).
+
+    `systemd-run --scope` execs straight into argv rather than forking a
+    wrapper around it -- confirmed live: `Popen.pid` was argv's own real
+    pid (matched via /proc/<pid>/cmdline), and `poll()`/`terminate()` on
+    the returned Popen behaved exactly as they would on a plain Popen --
+    while placing that pid in its own transient scope unit under
+    user.slice instead of the service's cgroup (confirmed live via
+    /proc/<pid>/cgroup showing `.../app.slice/run-p<pid>-*.scope`, not
+    `.../omarchy-ai.service`). `--collect` cleans up the transient unit
+    once the process exits so these don't accumulate. Falls back to a
+    plain detached Popen (today's cgroup-coupled behavior) if
+    `systemd-run` isn't on PATH, rather than failing casting outright over
+    a decoupling nicety."""
+    try:
+        return subprocess.Popen(
+            ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", *argv],
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        log.warning("systemd-run not on PATH -- casting subprocess will stay in omarchy-ai.service's cgroup")
+        return subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 # Set by install_receiver_on_tv's discovery step, consumed by its pairing
 # step on the next call -- same "module-level state across separate tool
 # calls" pattern _cast_process already uses.
@@ -572,12 +619,9 @@ def start_casting(args: dict) -> ActionResult:
         return ActionResult(False, f"could not reach {tv_addr} over the network")
 
     if not _port_listening(_SIGNALING_PORT):
-        _signaling_process = subprocess.Popen(
+        _signaling_process = _spawn_own_cgroup(
             [_VENV_PYTHON, "-m", "omarchy_ai.display.signaling"],
             cwd=str(_REPO_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
         )
         for _ in range(20):
             if _port_listening(_SIGNALING_PORT):
@@ -592,12 +636,9 @@ def start_casting(args: dict) -> ActionResult:
     )
     time.sleep(1)
 
-    _cast_process = subprocess.Popen(
+    _cast_process = _spawn_own_cgroup(
         [_VENV_PYTHON, "-u", str(_REPO_ROOT / "scripts" / "spike_cast_sender.py")],
         cwd=str(_REPO_ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
     )
     time.sleep(2)
     if _cast_process.poll() is not None:
