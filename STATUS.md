@@ -1605,3 +1605,27 @@ Worth keeping in mind for the VAD work that eventually replaces this
 timer: any deferred task in `run()` needs the same "is this session still
 alive?" check, since a conversation can end at any point inside the
 window.
+
+## Settings panel: content rendering outside its own box
+
+User report: "the settings box is having issues, some settings are
+outside of te box." Real bug, screenshot-confirmed: `Panel.qml`'s
+`KeyboardPanel` had a hardcoded `contentHeight: panel.fittedContentHeight
+(column.implicitHeight, Style.space(560))` — a fixed 560px cap set when
+the panel was first built, before the OpenAI API key section existed.
+Once that section was added, the Column's real content grew past 560px,
+but the drawn card stayed capped at it — the API key field, Save button,
+Restart button, and config-path text all rendered *below* the visible
+blue-bordered box instead of the box growing to contain them.
+
+Fixed by dropping the hardcoded cap entirely: `fittedContentHeight`'s own
+`availableCardHeight` (screen-relative, computed by `KeyboardPanel` itself)
+is already the real safety bound against the panel growing off-screen, so
+a second fixed number was redundant and, worse, silently wrong the moment
+actual content outgrew it. `contentHeight: panel.fittedContentHeight
+(column.implicitHeight)` now sizes the panel to its content, bounded only
+by the screen. Screenshot-verified: everything now sits inside the box.
+
+Worth remembering for the next addition to this panel: don't reintroduce
+a fixed cap without checking it against real content height first, or
+just leave it uncapped like this.
