@@ -237,15 +237,36 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _is_paired(self) -> bool:
         raw_cookie = self.headers.get("Cookie", "")
+        # Temporary diagnostic — real user report ("still says not
+        # paired" right after a pairing the daemon's own log shows as
+        # accepted) with no reproduction available locally (self-signed
+        # cert / mobile browser cookie behavior isn't something this dev
+        # machine can exercise the same way a phone does). Logging enough
+        # to tell "no Cookie header at all" apart from "Cookie header
+        # present but doesn't match any paired session" from "matches
+        # fine" -- three different real causes, three different fixes.
+        if not raw_cookie:
+            log.info("phone bridge: GET %s from %s -- no Cookie header at all (UA: %s)",
+                      self.path, self.address_string(), self.headers.get("User-Agent", "?"))
         jar = http.cookies.SimpleCookie()
         try:
             jar.load(raw_cookie)
         except http.cookies.CookieError:
+            log.info("phone bridge: GET %s from %s -- Cookie header present but unparseable: %r",
+                      self.path, self.address_string(), raw_cookie)
             return False
         morsel = jar.get(_SESSION_COOKIE)
         if morsel is None:
+            if raw_cookie:
+                log.info("phone bridge: GET %s from %s -- Cookie header present but no %s in it: %r",
+                          self.path, self.address_string(), _SESSION_COOKIE, raw_cookie)
             return False
-        return morsel.value in _load_sessions()
+        sessions = _load_sessions()
+        if morsel.value not in sessions:
+            log.info("phone bridge: GET %s from %s -- session id present but not in paired_sessions.json (%d paired)",
+                      self.path, self.address_string(), len(sessions))
+            return False
+        return True
 
     def do_GET(self) -> None:  # noqa: N802 — stdlib method name
         parsed = urllib.parse.urlsplit(self.path)
@@ -253,6 +274,17 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/pair":
             self._handle_pair(urllib.parse.parse_qs(parsed.query))
+            return
+
+        if path == "/api/paired":
+            # Polled by not_paired.html — a real, live confusion this
+            # round: pairing had genuinely succeeded (confirmed in the
+            # daemon's own log), but the browser tab/window being looked
+            # at was a *different* one that never carried the cookie from
+            # the actual /pair redirect, so it kept showing "not paired"
+            # forever with nothing to make it re-check. This closes that
+            # gap regardless of which specific tab ends up paired.
+            self._send_json(200, {"paired": self._is_paired()})
             return
 
         if path in ("/", "/index.html"):

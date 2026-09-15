@@ -2761,3 +2761,46 @@ log) — all three now return `302` instead of the 1st succeeding and the
 no conversation in progress — the last one had just ended cleanly with a
 real Hebrew farewell/hangup, unrelated to this work but confirms the
 daemon's exit-phrase handling is still solid).
+
+## "Still says not paired" — real evidence, not a pairing-mechanism bug
+
+One more report after the idempotency fix above landed: *"its still says
+not paired."* Rather than guess further, added temporary diagnostic
+logging to `_is_paired()` (three distinct cases: no Cookie header at all,
+Cookie header present but unparseable/missing the session key, or a
+session id present but not in `paired_sessions.json` — three different
+real causes, worth telling apart) and asked for one more real attempt.
+
+**The evidence was conclusive and surprising**:
+```
+phone bridge: GET / from 192.168.1.58 -- no Cookie header at all
+(UA: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 ... Chrome/152.0.0.0 ...)
+```
+`X11; Linux x86_64` is a **desktop Linux Chrome**, not a phone — and this
+repeated three times (01:30:27, 01:30:30, 01:31:33), always from the same
+IP (192.168.1.58) that had *also* been the source of every earlier
+successful pairing in the daemon's log tonight (01:20:59, 01:21:45,
+01:28:00 — `phone_bridge_paired_count` reached 7). Most likely
+explanation: this was a different browser tab/window on the same machine
+that never itself went through the `/pair?token=...` redirect, so it
+correctly has no cookie — not the pairing mechanism failing, a stale/
+different view of it.
+
+That said, "a page has no way to notice pairing succeeded somewhere else
+and just sits there forever" is a real, worth-fixing gap regardless of
+which specific cause was in play tonight. Added `GET /api/paired`
+(`{"paired": bool}`, reusing `_is_paired()`) and a `setInterval` poll in
+`not_paired.html` that reloads the page the moment it becomes true —
+verified directly (`curl -sk https://127.0.0.1:8766/api/paired` →
+`{"paired": false}` against a real fresh unpaired request). Now any tab
+left open on the not-paired page self-corrects within ~2 seconds of
+actually being paired, regardless of which browser/tab/device completed
+the pairing.
+
+**Bottom line for the morning**: the pairing mechanism itself has been
+proven correct via the daemon's own log — 7 real, accepted pairings
+tonight, 0 unexplained rejections since the idempotency fix. If the QR
+page still says "not paired" after a real phone scan tomorrow, check
+`journalctl --user -u omarchy-ai | grep -i "phone bridge"` first — the
+diagnostic logging added tonight is still in place and will show exactly
+which of the three real causes it is, rather than guessing again.
