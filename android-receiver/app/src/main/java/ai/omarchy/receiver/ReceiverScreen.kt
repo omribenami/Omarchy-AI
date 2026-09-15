@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.webrtc.RendererCommon
@@ -75,6 +76,22 @@ fun ReceiverScreen(viewModel: ReceiverViewModel) {
         if (!connectionState.isStreaming()) {
             StatusOverlay(connectionState = connectionState)
         }
+
+        // Build version, always visible (even while actively streaming --
+        // unlike the status text below, which hides once mirroring starts)
+        // so it can be read off the screen at any time, e.g. via `adb
+        // shell screencap`, without needing to interrupt a live cast.
+        // Small/dim, top-right corner, deliberately unobtrusive -- see
+        // STATUS.md's receiver-version-tracking entry for why this exists
+        // (there was previously no on-screen way to tell an old install
+        // apart from a freshly built one). BuildConfig.VERSION_NAME is the
+        // git-derived value set in app/build.gradle.kts.
+        Text(
+            text = "v${BuildConfig.VERSION_NAME}",
+            color = Color.White.copy(alpha = 0.35f),
+            fontSize = 12.sp,
+            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+        )
     }
 }
 
