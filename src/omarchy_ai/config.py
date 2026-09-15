@@ -227,6 +227,19 @@ class Config:
     # payload each session.
     watchdog_display_mode: str = "feed"
 
+    # Phone bridge (src/omarchy_ai/phone/server.py) — a local HTTP server
+    # letting a phone on the same LAN open a live conversation from a
+    # browser page (WebRTC direct to OpenAI; this server only relays the
+    # SDP offer/answer and executes tool calls, no audio passes through
+    # Python). User's own request, explicitly framed as a beta: no
+    # pairing/auth yet (that's planned as a later QR-code-through-the-PC
+    # step) — while enabled, ANYONE who can reach this machine on the LAN
+    # can open a conversation and drive the desktop through it. Default
+    # off for that reason; this repo's own instance has it on for the
+    # beta test itself, via config.yaml, not this source default.
+    phone_bridge_enabled: bool = False
+    phone_bridge_port: int = 8766
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     out = copy.deepcopy(base)

@@ -11,6 +11,7 @@ import logging
 import threading
 
 from ..config import Config, ensure_dirs, load_config
+from ..phone import server as phone_server
 from ..voice import feedback
 from ..voice.live import LiveSession
 from ..voice.wake import WakeWordDetector
@@ -24,6 +25,11 @@ class OmaDaemon:
         self.config: Config = load_config()
         self.wake_detector = WakeWordDetector(self.config)
         self._stop = threading.Event()
+        # Runs the whole time the daemon is up (not per-conversation like
+        # LiveSession) — a phone tap should work any time, no wake word
+        # needed. start() itself is a no-op returning None when
+        # config.phone_bridge_enabled is off.
+        self._phone_server = phone_server.start(self.config)
 
     async def run(self) -> None:
         log.info(
@@ -52,6 +58,8 @@ class OmaDaemon:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._phone_server is not None:
+            self._phone_server.shutdown()
 
 
 def main() -> None:

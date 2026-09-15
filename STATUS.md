@@ -2241,3 +2241,120 @@ stub code was removed rather than left in unused (manifest reverted via
 `git checkout`, stub `.kt`/`.xml` files deleted) since nothing currently
 exercises it and it requested a sensitive permission for no active
 benefit -- this write-up is the record of the attempt, not the code.
+
+## Phone bridge (beta) — a phone on the LAN can now talk to Omarchy
+
+User's request, while waiting on a USB mic for the TV remote-mic path:
+*"in the meanwhile I want also to allow talking to omarchy through a
+local server omarchy will run and can be connected locally through a
+phone. lets do a beta test for such service and later on we will do some
+sort of one time qrcode pairing through the PC."* Explicitly scoped as a
+beta with no pairing yet -- that's future work.
+
+### Design
+
+The obvious-looking approach (relay raw audio through this Python process
+between phone and OpenAI) was rejected in favor of something much
+simpler once the real session-creation call was read closely: gpt-live-1
+here isn't the classic OpenAI Realtime API's ephemeral-token pattern, it's
+a custom `POST https://api.openai.com/v1/live/sessions` that takes a
+*complete* SDP offer in the request body and returns a complete SDP
+answer (see `voice/live.py`'s existing desktop flow) -- there's no
+separate "mint a short-lived token, then the client negotiates on its
+own" step to reuse directly, since the browser can't hold the real API
+key to call that endpoint itself. So the phone's browser does its own
+real WebRTC connection **directly to OpenAI** (audio never touches this
+Python process at all) — this machine's only two jobs are relaying that
+one SDP offer/answer exchange (needs the real key) and executing tool
+calls server-side when the model makes them mid-conversation, the exact
+same `execution.actions.run_action` the desktop's `LiveSession` already
+uses. Much less code than a real audio relay would have needed, and no
+new audio-jitter surface to debug.
+
+Refactored `voice/live.py` first: extracted `build_session_config(config)`
+(instructions + learned preferences + recent context + tools/model) out
+of `LiveSession.run()` into a standalone function, so the desktop client
+and the new phone bridge build the *exact* same session shape from one
+place rather than two copies that could quietly drift.
+
+### What was built
+
+- `src/omarchy_ai/phone/server.py` — stdlib-only (`http.server`'s
+  `ThreadingHTTPServer`, no new dependency for what's really just a
+  handful of small JSON/static endpoints): `GET /` serves the mobile
+  page; `POST /api/live/offer` relays the browser's SDP offer to
+  `/v1/live/sessions` (via `build_session_config`) and returns the
+  answer; `POST /api/tool` executes a tool call via `run_action` and
+  returns the result — `get_recent_actions` special-cased to return an
+  empty list rather than an unknown-action error, since the phone bridge
+  has no per-session action log to draw one from (a real, known gap, not
+  silently papered over).
+- `src/omarchy_ai/phone/static/index.html` — single-file mobile page,
+  dark theme matching the rest of this project's UI: a tap-to-talk/tap-to-
+  hang-up circular button, live transcript, `<audio autoplay>` for
+  playback (the browser handles this natively — no manual `pw-play`
+  pipeline needed like the desktop side). JS mirrors `live.py`'s event
+  handling: `session.input_transcript.delta`/`output_transcript.delta`
+  for the transcript, `response.event` → `response.output_item.done` →
+  `item.type == "function_call"` for tool calls (posted to `/api/tool`,
+  result sent back as `response.item.create` + `response.create`, same
+  two-message pattern as the desktop), `end_conversation` (either event
+  shape) closes the connection. Same fixed
+  `speak_window_seconds`-equivalent stopgap as the desktop client before
+  firing the first `response.create`.
+- `config.py`: `phone_bridge_enabled` (default `false` in source — this
+  repo's own `~/.config/omarchy-ai/config.yaml` has it `true` for the
+  beta test itself) and `phone_bridge_port` (`8766`, distinct from the
+  casting signaling relay's `8765`).
+- `core/daemon.py`: starts the phone bridge once at daemon startup (not
+  per-conversation like `LiveSession` — a phone tap should work any time,
+  no wake word needed), stops it in `stop()`.
+
+### Verified live, for real
+
+1. `build_session_config` produces the same session shape as before the
+   refactor (42 tools, correct model/voice) — confirmed directly.
+2. Started the server standalone: `GET /` returns the real page (200,
+   contains the Talk button); `POST /api/tool` with `battery_status`
+   returns a real result through the real `run_action` path.
+3. **Real end-to-end proof, not just a shape check:** used `aiortc`
+   (already a project dependency) to build a genuine SDP offer, POSTed it
+   to `/api/live/offer`, got back a real answer SDP from OpenAI (1538
+   bytes) through the relay, and successfully called
+   `setRemoteDescription` with it — an actual Live API session was
+   created through this exact code path, not simulated.
+4. Enabled in the live daemon's config, restarted (`journalctl` checked
+   first, no conversation in progress), confirmed listening on
+   `0.0.0.0:8766` (`ss -tlnp`) and serving the real page from the running
+   service, not just a standalone test.
+
+### Known gaps (beta, by design or not yet done)
+
+1. **No pairing/auth at all yet.** Anyone who can reach this machine on
+   the LAN can open the page and drive the whole desktop through it while
+   `phone_bridge_enabled` is true. The user explicitly framed this as
+   future work (a one-time QR-code pairing flow through the PC) — noted
+   here so it isn't mistaken for an oversight.
+2. **Farewell-phrase/exit-phrase safety net not ported to the browser
+   client.** The desktop's `_check_exit_phrase`/`_check_farewell` fuzzy
+   matching exists because `end_conversation` was found unreliable on
+   this API (a real, previously-documented bug: zero function_call events
+   across a full session where the user clearly said goodbye). The phone
+   client only hangs up on an actual `end_conversation` tool call or the
+   manual button for now — if that tool call doesn't fire, the
+   conversation can be left open until the user notices and taps the
+   button themselves. Real gap, not fixed in this beta.
+3. **Firewall unverified.** This session earlier found `ufw` blocking the
+   casting signaling port (8765) from anything but one specific IP — the
+   same could easily be true of 8766 for a phone on a different IP.
+   Couldn't check `ufw status` (no passwordless sudo for it); if the
+   phone can't reach `http://192.168.1.65:8766/`, this is the first thing
+   to check (`sudo ufw allow from 192.168.1.0/24 to any port 8766 proto
+   tcp`, same pattern as the earlier 8765 fix).
+4. **No visual indicator wiring.** Unlike the desktop's `LiveSession`,
+   the phone bridge doesn't call `status_icon.set_live()`/`watchdog.*` —
+   the bar icon's live/idle dot and the Watch Dogs overlay don't reflect
+   a phone-only conversation. Not attempted this round; would need a
+   `/api/session-started`/`ended` round trip from the browser (best-effort
+   only, since a phone can lose network or have its tab killed without
+   ever calling "ended").

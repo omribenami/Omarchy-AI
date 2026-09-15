@@ -42,6 +42,72 @@ PREBUFFER_FRAMES = 25  # ~500ms — see STATUS.md "Residual static" for why
 REBUFFER_GRACE_EMPTY_POLLS = 3
 
 
+def build_session_config(config: Config) -> dict:
+    """Assembles the `session` object for the /v1/live/sessions POST body
+    -- instructions (base + learned preferences + recent context) plus the
+    model/tools config. Shared by the desktop LiveSession below (aiortc)
+    and the phone bridge (phone/server.py, browser WebRTC) -- both talk to
+    the exact same OpenAI session shape, so this has to stay one function,
+    not two copies that can quietly drift apart."""
+    instructions = config.instructions
+    preferences = load_preferences()
+    if preferences:
+        # Standing corrections saved via remember_preference in past
+        # conversations — folded in fresh every session so they persist
+        # across restarts, not just within one conversation.
+        instructions += "\n\nLearned preferences from past conversations:\n" + "\n".join(
+            f"- {p}" for p in preferences
+        )
+    recent_context = load_recent_context(config.context_retention_hours, config.context_max_chars)
+    if recent_context:
+        # What was actually said in recent past sessions (within
+        # context_retention_hours) — user explicitly asked for this: a new
+        # session used to know nothing about a conversation from even a
+        # minute earlier in the previous wake-word cycle.
+        instructions += (
+            "\n\nRecent conversation history (for your context only — "
+            "don't recite it back unprompted, just use it to avoid asking "
+            "the user to repeat themselves):\n" + recent_context
+        )
+
+    return {
+        "model": config.live_model,
+        "delegation": {
+            "type": "responses",
+            "responses": {
+                "model": config.responses_model,
+                "reasoning": {"effort": config.responses_reasoning_effort},
+                # Without this the model apparently never considers calling
+                # the tool at all — zero function_call events across a full
+                # real conversation where the user clearly asked to end it.
+                # "auto" makes tool use available rather than off by default.
+                "tool_choice": "auto",
+                # Confirmed by probing the real API: tools live under
+                # delegation.responses, not at the session top level
+                # (session.tools is rejected as unknown_parameter).
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "end_conversation",
+                        "description": (
+                            "Call this when the user indicates they want to "
+                            "end the conversation — e.g. saying goodbye, "
+                            "stop, that's all, or similar — in whatever "
+                            "language they used. Do not call it for "
+                            "unrelated use of similar words (e.g. 'can we "
+                            "stop for a second')."
+                        ),
+                        "parameters": {"type": "object", "properties": {}, "required": []},
+                    },
+                    *TOOLS,
+                ],
+            },
+        },
+        "instructions": instructions,
+        "audio": {"output": {"voice": config.voice}},
+    }
+
+
 class MicTrack(MediaStreamTrack):
     kind = "audio"
 
@@ -518,77 +584,9 @@ class LiveSession:
             while pc.iceGatheringState != "complete":
                 await asyncio.sleep(0.1)
 
-            instructions = self.config.instructions
-            preferences = load_preferences()
-            if preferences:
-                # Standing corrections saved via remember_preference in past
-                # conversations — folded in fresh every session so they
-                # persist across restarts, not just within one conversation.
-                instructions += "\n\nLearned preferences from past conversations:\n" + "\n".join(
-                    f"- {p}" for p in preferences
-                )
-            recent_context = load_recent_context(
-                self.config.context_retention_hours, self.config.context_max_chars
-            )
-            if recent_context:
-                # What was actually said in recent past sessions (within
-                # context_retention_hours) — user explicitly asked for this:
-                # a new session used to know nothing about a conversation
-                # from even a minute earlier in the previous wake-word cycle.
-                instructions += (
-                    "\n\nRecent conversation history (for your context only — "
-                    "don't recite it back unprompted, just use it to avoid "
-                    "asking the user to repeat themselves):\n" + recent_context
-                )
-
             body = json.dumps(
                 {
-                    "session": {
-                        "model": self.config.live_model,
-                        "delegation": {
-                            "type": "responses",
-                            "responses": {
-                                "model": self.config.responses_model,
-                                "reasoning": {"effort": self.config.responses_reasoning_effort},
-                                # Without this the model apparently never
-                                # considers calling the tool at all — zero
-                                # function_call events across a full real
-                                # conversation where the user clearly asked
-                                # to end it. "auto" makes tool use available
-                                # rather than off by default.
-                                "tool_choice": "auto",
-                                # Confirmed by probing the real API: tools
-                                # live under delegation.responses, not at
-                                # the session top level (session.tools is
-                                # rejected as unknown_parameter).
-                                "tools": [
-                                    {
-                                        "type": "function",
-                                        "name": "end_conversation",
-                                        "description": (
-                                            "Call this when the user "
-                                            "indicates they want to end the "
-                                            "conversation — e.g. saying "
-                                            "goodbye, stop, that's all, or "
-                                            "similar — in whatever language "
-                                            "they used. Do not call it for "
-                                            "unrelated use of similar words "
-                                            "(e.g. 'can we stop for a "
-                                            "second')."
-                                        ),
-                                        "parameters": {
-                                            "type": "object",
-                                            "properties": {},
-                                            "required": [],
-                                        },
-                                    },
-                                    *TOOLS,
-                                ],
-                            },
-                        },
-                        "instructions": instructions,
-                        "audio": {"output": {"voice": self.config.voice}},
-                    },
+                    "session": build_session_config(self.config),
                     "transport": {"type": "webrtc", "sdp": pc.localDescription.sdp},
                 }
             ).encode()

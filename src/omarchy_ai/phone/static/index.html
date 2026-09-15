@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Omarchy</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #0b0e14;
+    color: #d7dce2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: env(safe-area-inset-top, 24px) 20px env(safe-area-inset-bottom, 24px);
+  }
+  h1 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #7dd3fc;
+    margin: 12px 0 4px;
+  }
+  #status {
+    font-size: 0.9rem;
+    color: #8891a0;
+    min-height: 1.3em;
+    text-align: center;
+    margin-bottom: 24px;
+  }
+  #talkBtn {
+    width: 40vw;
+    height: 40vw;
+    max-width: 220px;
+    max-height: 220px;
+    min-width: 140px;
+    min-height: 140px;
+    border-radius: 50%;
+    border: 2px solid #2a3140;
+    background: radial-gradient(circle at 35% 30%, #1a2130, #0d1119);
+    color: #d7dce2;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #talkBtn.live {
+    border-color: #39ff88;
+    box-shadow: 0 0 24px rgba(57, 255, 136, 0.25);
+  }
+  #talkBtn.connecting {
+    border-color: #f2c744;
+    box-shadow: 0 0 20px rgba(242, 199, 68, 0.2);
+  }
+  #talkBtn:active { transform: scale(0.97); }
+  #transcript {
+    width: 100%;
+    max-width: 480px;
+    margin-top: 28px;
+    flex: 1;
+    overflow-y: auto;
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+  .line { margin-bottom: 10px; }
+  .line .who {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #5b6473;
+    display: block;
+  }
+  .line.user .who { color: #7dd3fc; }
+  .line.assistant .who { color: #39ff88; }
+  #err {
+    color: #ff5f5f;
+    font-size: 0.85rem;
+    text-align: center;
+    min-height: 1.2em;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+  <h1>OMARCHY</h1>
+  <div id="status">tap to talk</div>
+  <button id="talkBtn">Talk</button>
+  <div id="err"></div>
+  <div id="transcript"></div>
+
+  <audio id="remoteAudio" autoplay playsinline></audio>
+
+<script>
+const SPEAK_WINDOW_MS = 6000; // mirrors config.speak_window_seconds
+
+const talkBtn = document.getElementById('talkBtn');
+const statusEl = document.getElementById('status');
+const errEl = document.getElementById('err');
+const transcriptEl = document.getElementById('transcript');
+const remoteAudio = document.getElementById('remoteAudio');
+
+let pc = null;
+let dc = null;
+let localStream = null;
+let handledCallIds = new Set();
+let userLine = null;
+let assistantLine = null;
+let live = false;
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  talkBtn.className = cls || '';
+}
+
+function setError(text) {
+  errEl.textContent = text || '';
+}
+
+function appendTranscript(role, delta) {
+  if (!delta) return;
+  if (role === 'user') {
+    if (!userLine) {
+      userLine = document.createElement('div');
+      userLine.className = 'line user';
+      userLine.innerHTML = '<span class="who">You</span>';
+      transcriptEl.appendChild(userLine);
+    }
+    userLine.append(delta);
+  } else {
+    if (!assistantLine) {
+      assistantLine = document.createElement('div');
+      assistantLine.className = 'line assistant';
+      assistantLine.innerHTML = '<span class="who">Omarchy</span>';
+      transcriptEl.appendChild(assistantLine);
+    }
+    assistantLine.append(delta);
+  }
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+async function callTool(name, args) {
+  try {
+    const res = await fetch('/api/tool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, arguments: args || {} }),
+    });
+    return await res.json();
+  } catch (e) {
+    return { ok: false, message: 'tool call failed: ' + e };
+  }
+}
+
+function sendFunctionResult(callId, ok, message) {
+  if (!dc || dc.readyState !== 'open') return;
+  dc.send(JSON.stringify({
+    type: 'response.item.create',
+    item: {
+      type: 'function_call_output',
+      call_id: callId,
+      output: JSON.stringify({ ok, message }),
+    },
+  }));
+  // Submitting the result doesn't make the model continue on its own —
+  // same "explicit trigger needed" behavior as the desktop client.
+  dc.send(JSON.stringify({ type: 'response.create' }));
+}
+
+async function checkFunctionCall(event) {
+  const inner = event.event || {};
+  if (inner.type !== 'response.output_item.done') return;
+  const item = inner.item || {};
+  if (item.type !== 'function_call') return;
+  const callId = item.call_id || item.id;
+  if (!callId || handledCallIds.has(callId)) return;
+  handledCallIds.add(callId);
+
+  if (item.name === 'end_conversation') {
+    hangup();
+    return;
+  }
+
+  let args = {};
+  try { args = item.arguments ? JSON.parse(item.arguments) : {}; } catch (e) { /* leave {} */ }
+  const result = await callTool(item.name, args);
+  sendFunctionResult(callId, !!result.ok, result.message || '');
+}
+
+function onDataMessage(raw) {
+  let event;
+  try { event = JSON.parse(raw); } catch (e) { return; }
+  const etype = event.type || '';
+  if (etype === 'session.input_transcript.delta') {
+    setStatus('listening…', 'live');
+    assistantLine = null;
+    appendTranscript('user', event.delta);
+  } else if (etype === 'session.output_transcript.delta') {
+    setStatus('speaking…', 'live');
+    userLine = null;
+    appendTranscript('assistant', event.delta);
+  } else if (etype === 'response.event') {
+    checkFunctionCall(event);
+  } else if (etype === 'response.function_call_arguments.done' && event.name === 'end_conversation') {
+    hangup();
+  } else if (etype === 'error') {
+    const err = event.error || {};
+    console.warn('gpt-live-1 error event', err);
+    const code = (err.code || '').toLowerCase();
+    if (code.includes('quota') || code.includes('billing')) {
+      setError(err.message || 'billing/quota error');
+      hangup();
+    }
+  }
+}
+
+async function start() {
+  setError('');
+  handledCallIds = new Set();
+  userLine = null;
+  assistantLine = null;
+  transcriptEl.innerHTML = '';
+  setStatus('connecting…', 'connecting');
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    setStatus('tap to talk');
+    setError('microphone permission denied');
+    return;
+  }
+
+  // No iceServers, matching the desktop client: host candidates alone
+  // have been enough there (outbound-only connection to OpenAI), and
+  // skipping STUN avoids the gathering wait.
+  pc = new RTCPeerConnection({ iceServers: [] });
+  localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+
+  pc.ontrack = (e) => {
+    remoteAudio.srcObject = e.streams[0];
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) {
+      hangup();
+    }
+  };
+
+  dc = pc.createDataChannel('oai-events');
+  dc.onopen = () => {
+    live = true;
+    setStatus('listening…', 'live');
+    talkBtn.textContent = 'Hang up';
+    // Same fixed speak-window stopgap as the desktop client, until
+    // there's real VAD-based "user finished talking" detection.
+    setTimeout(() => {
+      if (dc && dc.readyState === 'open') {
+        dc.send(JSON.stringify({ type: 'response.create' }));
+      }
+    }, SPEAK_WINDOW_MS);
+  };
+  dc.onmessage = (e) => onDataMessage(e.data);
+
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      const check = () => {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', check);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', check);
+      setTimeout(resolve, 3000); // don't hang forever if gathering stalls
+    });
+
+    const res = await fetch('/api/live/offer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || ('HTTP ' + res.status));
+    }
+    const { sdp } = await res.json();
+    await pc.setRemoteDescription({ type: 'answer', sdp });
+  } catch (e) {
+    setError('connection failed: ' + e.message);
+    hangup();
+  }
+}
+
+function hangup() {
+  live = false;
+  if (dc) { try { dc.close(); } catch (e) {} dc = null; }
+  if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  if (localStream) {
+    localStream.getTracks().forEach((t) => t.stop());
+    localStream = null;
+  }
+  remoteAudio.srcObject = null;
+  setStatus('tap to talk');
+  talkBtn.textContent = 'Talk';
+}
+
+talkBtn.addEventListener('click', () => {
+  if (live) {
+    hangup();
+  } else {
+    start();
+  }
+});
+
+window.addEventListener('pagehide', hangup);
+</script>
+</body>
+</html>
