@@ -1696,3 +1696,48 @@ convention — more recognizably "the Omarchy logo" this way, and this
 project's own tray-adjacent icons in this bar already show real
 per-app colors, not just Nerd Font glyphs). Screenshot-confirmed sharp
 and recognizable in the bar.
+
+## Language-agnostic conversation ending (Hebrew, confirmed live)
+
+User report: asking to end the conversation in Hebrew never actually hung
+up. Root cause matched the long-standing "next action" item in this file:
+both mechanisms that can trigger a hangup — `_check_exit_phrase` (fuzzy-
+matches the *user's* words against `config.exit_phrases`) and
+`_check_farewell` (substring-matches the *model's own* farewell against
+`live.py`'s `_FAREWELL_MARKERS`) — were English-only word lists. Neither
+algorithm cares what language it's comparing (`fuzz.ratio` is plain edit
+distance; the farewell check is plain substring `in`), so the fix is
+adding real words, not new logic.
+
+Two-part fix:
+1. **Instructions strengthened**: the `end_conversation` tool call is the
+   only genuinely language-agnostic mechanism (a structured function
+   call, not a text pattern) — and it's been confirmed firing live for
+   real tonight for the first time. Made calling it in the same turn as
+   any goodbye explicitly non-optional in the instructions, regardless of
+   language, rather than one clause in a longer list.
+2. **Hebrew words added as a concrete safety net** to both lists —
+   תפסיק/תפסיקי/מספיק/סיימנו/ביי/להתראות/זהו in `exit_phrases`,
+   להתראות/נתראה/ביי in `_FAREWELL_MARKERS`. Deliberately excluded "שלום"
+   from the farewell markers — it means both "hello" and "goodbye"/
+   "peace", the same kind of real ambiguity that already excluded
+   "take care" from the English list (the model saying "let me take care
+   of that" mid-task had false-positived before).
+
+Verified directly (not live-conversation-tested yet, daemon restart is
+being held back — see below): `fuzz.ratio` against realistic Hebrew
+exit phrases (exact short utterances match at 100; a longer phrase like
+"תפסיקי בבקשה" only scores 66.7, below the 82 threshold — the same
+whole-string-ratio limitation that already applies to the English list,
+not a new regression) and `_check_farewell` against five realistic
+sentences including the ambiguous "שלום, מה שלומך" (hello, how are you) —
+correctly does NOT trigger, while "בסדר, להתראות!" / "ביי ביי, נדבר
+בקרוב" / "תודה רבה, נתראה" / "Sure, goodbye!" all correctly do.
+
+**Not yet loaded into the live daemon.** A real cast to the TV was active
+when this was ready to ship, and `omarchy-ai.service` has no explicit
+`KillMode` (defaults to `control-group`) — restarting it would kill that
+cast too, directly contradicting the user's own fresh requirement that
+casting survive everything except an explicit stop. Holding the restart
+until either the cast finishes/is stopped, or the in-flight casting fix
+decouples the sender from the daemon's cgroup (flagged to that work).
