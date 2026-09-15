@@ -22,6 +22,9 @@ Commands:
                                  identity (see ../myapi/)
   disconnect-myapi           -> delete the local MyApi identity
   myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
+  select-cast-target <addr>  -> manual click in the omarchy-ai.tv-discovery
+                                 overlay; runs the real start_casting
+  refresh-cast-targets       -> the overlay's "Refresh" button
 
 Only a small, deliberately curated whitelist of Config fields is settable
 here (SETTABLE) — not every dataclass field. Internal plumbing
@@ -263,6 +266,34 @@ def cmd_myapi_usage(_args: argparse.Namespace) -> dict:
     return {"services": myapi_usage.aggregate()}
 
 
+def cmd_select_cast_target(args: argparse.Namespace) -> dict:
+    """Manual click on a device row in the omarchy-ai.tv-discovery overlay
+    — calls the exact same execution.actions.start_casting the voice path
+    calls, so a click and a spoken answer are provably the same action,
+    not two implementations that could drift apart. Runs in this
+    short-lived CLI process, not the daemon — fine, since start_casting
+    only touches module-level state in execution/actions.py and the
+    shared display/registry.py, neither of which is daemon-process-bound."""
+    from ..execution.actions import start_casting
+
+    address = (args.address or "").strip()
+    if not address:
+        return {"error": "no address given"}
+    result = start_casting({"target": address})
+    return {"ok": result.ok, "message": result.message}
+
+
+def cmd_refresh_cast_targets(_args: argparse.Namespace) -> dict:
+    """The overlay's "Refresh" button — one real discovery pass through
+    the shared registry, pushed back to the overlay immediately rather
+    than waiting for its own background poll tick."""
+    from ..display import registry, tv_overlay
+
+    devices = registry.refresh()
+    tv_overlay.push_update()
+    return {"devices": devices}
+
+
 def cmd_set_api_key(_args: argparse.Namespace) -> dict:
     """Store an OpenAI API key at OMARCHY_KEY_PATH, 0600.
 
@@ -456,6 +487,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("connect-myapi")
     sub.add_parser("disconnect-myapi")
     sub.add_parser("myapi-usage")
+    p_select_cast = sub.add_parser("select-cast-target")
+    p_select_cast.add_argument("address")
+    sub.add_parser("refresh-cast-targets")
 
     args = parser.parse_args(argv)
     handler = {
@@ -468,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
         "connect-myapi": cmd_connect_myapi,
         "disconnect-myapi": cmd_disconnect_myapi,
         "myapi-usage": cmd_myapi_usage,
+        "select-cast-target": cmd_select_cast_target,
+        "refresh-cast-targets": cmd_refresh_cast_targets,
         "restart": cmd_restart,
     }[args.command]
     result = handler(args)

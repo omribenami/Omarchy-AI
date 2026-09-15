@@ -76,6 +76,13 @@ import subprocess
 
 log = logging.getLogger("omarchy_ai.display.discovery")
 
+# The one TV that's been manually paired and proven working since Phase 0
+# (STATUS.md's "Hardware-dependent findings" -- adb tcpip 5555, not
+# Wireless Debugging). Lives here (not execution/actions.py, its original
+# home) so both actions.py and registry.py can depend on discovery.py
+# without a circular import between the two of them.
+TV_ADB_ADDR = "192.168.1.86:5555"
+
 # `avahi-browse -r -p -t` resolves every currently-advertised instance of a
 # service type before terminating (the `-t` flag). A record that fails to
 # resolve still costs a real wait -- confirmed live, timing this exact

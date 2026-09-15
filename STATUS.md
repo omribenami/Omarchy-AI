@@ -3232,3 +3232,107 @@ now has the same title+subtitle shape as `omarchy-ai.settings/Panel.qml`'s
 own header, and its "USAGE" label switched from an ad-hoc `Text` to the
 shared `PanelSectionHeader` component every other section header in this
 shell (including this project's own settings panel) already uses.
+
+## TV/display discovery overlay: shared registry, no separate device lists
+
+The casting flow had no visual feedback at all — `start_casting` ran a
+fresh, throwaway `avahi-browse` pass synchronously inside the tool call
+and either connected or returned an ambiguous-candidates message for the
+model to read out. User wanted a real on-screen device picker: small,
+centered, glitchy, live-updating, resolvable by voice or by clicking a
+row — with the hard requirement that the overlay and the voice agent
+never maintain two separate device lists.
+
+There was also no persistent device registry before this — both
+`_resolve_cast_target` and `list_cast_targets` called
+`discovery.discover_androidtv_devices()` fresh every time and threw the
+result away. New `display/registry.py` is the one real, process-lifetime
+device registry now: `refresh()` upserts mDNS results keyed by address
+(status `online`/`offline`/`unknown`/`connecting`/`connected`), never
+drops a known device (status flips to `offline` instead — "keep known
+offline devices visible"), and protects `connecting`/`connected` entries
+from being flickered back to `online` by a concurrent refresh. Moved the
+one hardcoded fallback TV address (`192.168.1.86:5555`, the
+manually-paired TV from Phase 0) out of `execution/actions.py` and into
+`display/discovery.py` as `TV_ADB_ADDR`, since both `actions.py` and the
+new `registry.py` need it and `registry.py` must not import from
+`actions.py` (circular).
+
+`execution/actions.py`'s `_resolve_cast_target`/`list_cast_targets` now
+read `registry.get_or_refresh()`/`registry.snapshot()` instead of calling
+discovery directly — so the voice tool-call path and the overlay are, by
+construction, reading the same data structure, not parallel copies.
+`start_casting` calls a new `display/tv_overlay.show_and_track()` as its
+first action on every cast attempt (not just ambiguous ones), marks the
+resolved address `connecting` → `connected`/`failed` at each real step of
+the existing adb/signaling/sender sequence (unchanged), and hides the
+overlay ~1.2s after a resolution. On an ambiguous/no-match result the
+overlay is deliberately left open and tracking rather than closed, so a
+follow-up voice answer or a manual click can still resolve it.
+`stop_casting` now also calls `registry.mark_disconnected()` +
+`tv_overlay.hide()`.
+
+New Quickshell plugin `omarchy-ai.tv-discovery` (`kinds: ["panel"]`,
+`keepLoaded: true`, no bar icon — same shape as `omarchy-ai.watchdog`,
+confirmed via its manifest.json). Built directly on `Watchdog.qml`'s
+existing visual language (same accent palette, same glitch/scanline
+idiom) rather than a new one. Unlike Watchdog/WindowLabels, this overlay
+needs real mouse interaction on a small region, not full click-through —
+confirmed the exact existing idiom for that in this shell
+(`plugins/notifications/Service.qml`'s `mask: Region { item: popupColumn }`)
+rather than guessing, and used `mask: Region { item: card }` so the
+full-screen transparent `PanelWindow` stays click-through everywhere
+except the small centered card. `IpcHandler { target: "tvDiscovery" }`
+exposes `show`/`update`/`select`/`hide`/`state`/`ping`, pushed from
+Python via the same `omarchy-shell -q <target> <method> '<json>'` pattern
+`voice/watchdog.py` already uses. Manual row clicks and the Refresh
+button shell out to two new `omarchy-ai-settings` subcommands,
+`select-cast-target <address>` and `refresh-cast-targets` —
+`select-cast-target` calls `execution.actions.start_casting(...)`
+directly, the *same* function a voice-resolved tool call invokes, so a
+manual click and a spoken answer are provably the same code path, not two
+implementations that could drift apart.
+
+"Real-time while the window is open" is implemented as a background
+poll thread (`registry.refresh()` + an `update` IPC push every ~4s while
+the overlay is open, started by `show_and_track()`) rather than a real
+mDNS event stream — `avahi-browse`'s continuous non-terminating output
+would need a real rewrite of `discovery.py`'s parsing model for a
+difference nobody would perceive (mDNS devices don't change state faster
+than a few seconds in practice). Flagged as a deliberate trade-off, not
+an oversight.
+
+Live-verified end to end, not just code-complete: `registry.refresh()`
+against the real network returned the 3 real known devices
+(HY300Pro/Idol TV/Living Room TV); confirmed a device missing from a
+fresh refresh flips to `offline` without being dropped from the registry
+(injected a fake device to prove it); confirmed a `connected` device
+survives a concurrent refresh without flickering back to `online`.
+Installed the plugin live into `~/.config/omarchy/plugins/`, validated
+(`omarchy plugin validate`, exit 0) and enabled; direct IPC calls
+(`omarchy-shell -q tvDiscovery <method> '<json>'`) confirmed via
+screenshots (env gotcha: this agent's shell doesn't inherit
+`HYPRLAND_INSTANCE_SIGNATURE`/`WAYLAND_DISPLAY`, had to export both from
+`/run/user/1000/` in the same Bash call as `omarchy-capture-screenshot`
+each time) that `show` renders a centered translucent green-bordered card
+with correct name/status/color per row and a fully click-through
+background, `update` live-re-renders a status change (tested
+online→connecting, cyan), and `select` highlights the chosen row then
+auto-dismisses after ~1.2s. A real end-to-end cast triggered through the
+new manual path (`omarchy-ai-settings select-cast-target 192.168.1.191`)
+succeeded exactly like the pre-existing voice path
+(`{"ok": true, "message": "casting started to the TV at
+192.168.1.191:5555"}`), confirmed by real `spike_cast_sender.py`
+processes actually running — this does not regress the already-proven
+casting path, it just adds visual feedback and a second selection
+surface on top of the same function. `omarchy-ai.service` restarted
+afterward so the live daemon actually runs this code, not just the CLI
+test harness.
+
+Not yet visually confirmed by the user on their own live desktop for the
+open/close glitch animations specifically (the IPC-driven screenshots
+above confirm the states render correctly; the transition animations
+themselves are QML `Behavior`/`Timer` declarations that were
+brace-balance-checked and exercised via real state changes, but never
+watched in motion by this agent) — same standing caveat as every other
+Quickshell feature in this project.
