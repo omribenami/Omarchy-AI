@@ -150,20 +150,36 @@ class Config:
         "you should behave going forward — not just for this "
         "conversation — call remember_preference so you keep doing it in "
         "future conversations too. "
-        "Briefly confirm what you did after calling a "
-        "tool. When they indicate they want to end the conversation "
-        "(goodbye, stop, that's all, or similar, in whatever language "
-        "they're using), say a brief goodbye and call the "
-        "end_conversation tool."
+        "Briefly confirm what you did after calling a tool. "
+        "Ending the conversation: when they indicate they want to stop — "
+        "goodbye, stop, that's all, or similar — in ANY language, "
+        "including languages other than English (e.g. Hebrew), this is "
+        "not optional: say a brief goodbye in the language they were "
+        "using and then you MUST call the end_conversation tool in that "
+        "same turn. Don't just reply with a farewell and wait — actually "
+        "call the tool, every time, regardless of what language the "
+        "conversation has been in."
     )
 
     # How a session ends: the user saying one of these (fuzzy-matched
     # against the live input transcript) hangs up immediately and returns
     # to wake-word listening, same as omavoice's "Q" / stop command.
+    # English-only for a long time — real gap, confirmed live: a Hebrew
+    # "stop"/goodbye never matched any of these, so the conversation never
+    # hung up on its own. fuzz.ratio (used to score these) is a plain
+    # edit-distance comparison, language-agnostic at the algorithm level;
+    # the list itself just needs real words in the languages actually
+    # spoken here. Hebrew added as the concrete case in hand — extend with
+    # more languages the same way if they come up, rather than trying to
+    # build a fully general solution up front.
     exit_phrases: list[str] = field(
         default_factory=lambda: [
             "stop", "bye", "goodbye", "good bye", "finish",
             "end conversation", "that's all", "thats all", "never mind",
+            # Hebrew: תפסיק/תפסיקי (stop, m/f), מספיק (enough), סיימנו
+            # (we're done), ביי (bye, common loanword), להתראות (goodbye),
+            # זהו (that's it).
+            "תפסיק", "תפסיקי", "מספיק", "סיימנו", "ביי", "להתראות", "זהו",
         ]
     )
     exit_phrase_score_threshold: float = 82.0

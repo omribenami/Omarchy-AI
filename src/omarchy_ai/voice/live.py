@@ -128,6 +128,14 @@ class LiveSession:
         "goodbye", "good bye", "bye for now", "bye!", "bye.",
         "farewell", "talk to you later", "take care of yourself",
         "take care now",
+        # Hebrew — this mechanism was English-only, confirmed live as a
+        # real gap: the model's own Hebrew farewell never matched, so a
+        # Hebrew conversation never hung up via this path either.
+        # להתראות/נתראה (goodbye/see you — essentially unambiguous, always
+        # a farewell) and ביי (bye, a common loanword). "שלום" deliberately
+        # excluded — it means both "hello" and "goodbye"/"peace", the same
+        # kind of genuine ambiguity that excluded "take care" above.
+        "להתראות", "נתראה", "ביי",
     )
 
     def __init__(self, config: Config):
