@@ -31,7 +31,7 @@ from ..core.history import append_session, load_recent_context
 from ..core.memory import load_preferences
 from ..execution.actions import run_action
 from ..execution.tools import TOOLS
-from . import watchdog
+from . import status_icon, watchdog
 
 log = logging.getLogger("omarchy_ai.voice.live")
 
@@ -611,6 +611,10 @@ class LiveSession:
             answer_sdp = response["transport"]["sdp"]
             await pc.setRemoteDescription(RTCSessionDescription(sdp=answer_sdp, type="answer"))
             log.info("live session connected (%.2fs)", time.monotonic() - t_start)
+            # Bar-icon status dot — unconditional, not gated by
+            # _watchdog_on: this reflects true connection state regardless
+            # of whether the optional Watch Dogs overlay is enabled.
+            status_icon.set_live(True)
             if self._watchdog_on:
                 watchdog.start(self.config.watchdog_display_mode)
                 self._watchdog_state = None  # fresh session, no state sent yet
@@ -623,6 +627,7 @@ class LiveSession:
             except asyncio.TimeoutError:
                 log.info("session hit max_session_seconds, hanging up")
         finally:
+            status_icon.set_live(False)
             if self._watchdog_on:
                 watchdog.stop()
             if self._input_buffer:

@@ -1741,3 +1741,31 @@ cast too, directly contradicting the user's own fresh requirement that
 casting survive everything except an explicit stop. Holding the restart
 until either the cast finishes/is stopped, or the in-flight casting fix
 decouples the sender from the daemon's cgroup (flagged to that work).
+
+## Bar icon live/idle status dot
+
+User's own request: the bar icon should signal whether the assistant is
+actually live right now — red when idle, green during an actual
+connected conversation. Added `src/omarchy_ai/voice/status_icon.py`
+(same `omarchy-shell -q <target> <method>` IPC pattern as `watchdog.py`,
+but a deliberately separate module/target: `omarchy-ai.settings`, not
+`watchdog`) — `set_live(bool)` is called unconditionally at session
+connect and in the `finally:` hangup block in `live.py`, NOT gated by
+`watchdog_enabled`, since this indicator needs to reflect true connection
+state regardless of whether the optional Watch Dogs overlay is on.
+
+On the QML side, `omarchy-ai.settings/Panel.qml` gained its own
+`IpcHandler` (same pattern `$OMARCHY_PATH/shell/plugins/agents/Panel.qml`
+uses for its extra `refresh`/`next` methods — re-forward the base
+open/close/show/hide/toggle, add the new method) with `setLive`, plus a
+small colored status dot rendered in the bottom-right corner of the
+existing Omarchy-logo icon (green `#39ff88/red `#ff5f5f`, matching the
+Watch Dogs palette) — a corner dot rather than recoloring the whole icon,
+so the actual logo (added earlier this session, user-requested) stays
+fully visible rather than being replaced by a solid color block.
+
+Verified live via direct IPC before wiring the real daemon calls in:
+`omarchy-shell omarchy-ai.settings setLive '{"live":true}'` then
+`'{"live":false}'`, screenshotted and cropped both times — dot renders
+correctly in both colors at the right position. Daemon restarted
+afterward to load the real connect/hangup wiring.
