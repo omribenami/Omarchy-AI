@@ -182,6 +182,8 @@ src/omarchy_ai/
   cli/        the omarchy-ai-settings CLI the settings panel shells out to
   policy/     scaffolded, not yet built (see "Known gaps" below)
 android-receiver/   Kotlin/Compose Android TV receiver app (Gradle project)
+quickshell/         the 3 Quickshell/QML user plugins (HUD overlay, window
+                    labels, settings panel) — see quickshell/README.md
 systemd/            omarchy-ai.service unit template
 docs/                architecture decision record (ADR-0001) + dependency list
 scripts/             the original WebRTC/API reverse-engineering spikes,
@@ -192,9 +194,10 @@ scripts/             the original WebRTC/API reverse-engineering spikes,
   system Python (needs `--system-site-packages` for `python-gobject`/
   GStreamer bindings — see below).
 - **Quickshell/QML** for every on-screen desktop UI piece (the HUD overlay,
-  the window-label badges, the settings panel) — these live as Omarchy
-  *user plugins* under `~/.config/omarchy/plugins/`, not inside this Python
-  package (see "Known gaps").
+  the window-label badges, the settings panel) — these are Omarchy *user
+  plugins*, developed in place under `~/.config/omarchy/plugins/` and kept
+  in this repo under [`quickshell/`](quickshell/) (see
+  [`quickshell/README.md`](quickshell/README.md) for installing them).
 - **`aiortc`** (pure Python) for the desktop voice client's own WebRTC
   connection to `gpt-live-1`.
 - **`pywayland`** talking to `wlr-screencopy-unstable-v1` directly for
@@ -253,11 +256,11 @@ echo -n "sk-..." | .venv/bin/omarchy-ai-settings set-api-key
 (Piped via stdin deliberately — never as a command-line argument, since
 argv is readable by any process on the machine via `/proc/<pid>/cmdline`.)
 
-**4. Wake word:** ships with openWakeWord's pretrained "hey jarvis" model
-as a placeholder (no dedicated "omarchy" model has been trained yet — see
-Known gaps). Drop any number of custom `.onnx` models into
-`~/.config/omarchy-ai/wake_models/` to use your own instead; any of them
-loaded will wake it.
+**4. Wake word:** three real, trained openWakeWord models ship in
+[`wake_models/`](wake_models/) — "omachy" (the default), "omri", and
+"roni" — installed to `~/.config/omarchy-ai/wake_models/` automatically by
+`setup.sh`. Any of the three wakes it; drop in more `.onnx` models of your
+own there to add to the set, or remove these to replace them entirely.
 
 **5. Enable and start the service:**
 
@@ -286,25 +289,13 @@ pinned in `mise.toml` — run `mise install` in that directory first.
 
 Documented honestly rather than papered over:
 
-- **The Quickshell/QML UI plugins are not in this repository.** The Watch
-  Dogs HUD overlay, the floating window-label badges, and the settings bar
-  panel are real, working Omarchy user plugins
-  (`omarchy-ai.watchdog`/`omarchy-ai.window-labels`/`omarchy-ai.settings`)
-  that were developed directly under `~/.config/omarchy/plugins/` on the
-  original machine — a separate location from this Python package that
-  never got checked into this git history. Cloning this repo today gives
-  you the full voice/execution/casting/phone-bridge daemon, but **not**
-  those three visual pieces; the daemon degrades gracefully without them
-  (the IPC calls just log a warning and continue), but you won't see the
-  HUD, the window badges, or have a graphical settings panel until they're
-  recreated and installed via `omarchy plugin enable <name>`. Bringing them
-  into this repo (e.g. under a `quickshell/` directory) is a reasonable
-  next step, not done here to avoid pushing untested, hastily-relocated
-  code at 3am.
 - **No installer package.** Manual steps above are the real, current path.
-- **No dedicated "Omarchy" wake-word model.** Training one (openWakeWord
-  supports custom training) is separate, not-yet-done work; the pretrained
-  "hey jarvis" model is the practical default today.
+- **The daemon degrades gracefully without the Quickshell plugins enabled**
+  (the IPC calls to the HUD/window-labels/status-dot just log a warning and
+  continue) — but note that `omarchy-ai.settings/Panel.qml`'s path to the
+  settings CLI is hardcoded to this project's original checkout location;
+  see [`quickshell/README.md`](quickshell/README.md) if you cloned
+  somewhere else.
 - **The policy/permission layer described in `docs/ADR-0001-architecture.md`
   (read-only / reversible / confirm-required / denied-by-default tool
   tiers) is designed but not implemented as a separate enforcement layer**

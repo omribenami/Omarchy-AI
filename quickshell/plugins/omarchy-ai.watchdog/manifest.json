@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.watchdog",
+  "name": "Watch Dogs overlay",
+  "version": "1.0.0",
+  "description": "Matrix/Watch-Dogs-style hacking-terminal overlay showing live conversation state and real tool-call activity while the Omarchy AI voice assistant is in a session.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Watchdog.qml"
+  }
+}

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Omarchy</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #0b0e14;
+    color: #d7dce2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+  }
+  img { width: 72px; height: 72px; opacity: 0.85; margin-bottom: 20px; }
+  h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.03em; color: #7dd3fc; margin: 0 0 12px; }
+  p { max-width: 340px; color: #8891a0; font-size: 0.92rem; line-height: 1.6; margin: 0; }
+  code {
+    display: block;
+    margin-top: 18px;
+    color: #39ff88;
+    font-size: 0.85rem;
+    background: #10151f;
+    border: 1px solid #232b3a;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+</style>
+</head>
+<body>
+  <img src="omarchy-logo.png" alt="">
+  <h1>NOT PAIRED</h1>
+  <p>This phone hasn't been paired with Omarchy yet.</p>
+  <code>Desktop → Settings → Phone Bridge → Pair a Phone</code>
+</body>
+<script>
+  // This page has no way to know pairing succeeded somewhere else (a
+  // different tab, or the actual pairing redirect landing in a separate
+  // browser context) unless it checks — real confusion this caused:
+  // pairing had genuinely gone through, but a stale "not paired" view
+  // stayed up with nothing to make it re-check itself. Polling and
+  // reloading once paired closes that gap regardless of which tab ends
+  // up holding the cookie.
+  setInterval(async () => {
+    try {
+      const res = await fetch('/api/paired');
+      const data = await res.json();
+      if (data.paired) location.reload();
+    } catch (e) { /* offline/unreachable — just keep trying */ }
+  }, 2000);
+</script>
+</html>
