@@ -35,6 +35,19 @@ OMARCHY_KEY_PATH = CONFIG_DIR / "key"
 # re-enter a key they already had on disk.
 LEGACY_KEY_PATH = Path("~/.config/omavoice/key").expanduser()
 
+# MyApi (myapiai.com) integration — see src/omarchy_ai/myapi/. Ed25519
+# identity minted by the ASC Quick Connect flow (cli/settings.py's
+# connect-myapi), never a bearer token, so it's safe to keep 0600 next to
+# the OpenAI key rather than in some separate secrets store. Nested
+# subdirectory under CONFIG_DIR, same shape as phone_bridge's own state
+# dir.
+MYAPI_DIR = CONFIG_DIR / "myapi"
+MYAPI_IDENTITY_PATH = MYAPI_DIR / "identity.json"
+# Local usage log for the terminal dashboard (src/omarchy_ai/cli/dashboard.py)
+# — state, not cache: it's meant to accumulate across restarts, same
+# reasoning as conversation_history.jsonl in core/history.py.
+MYAPI_USAGE_PATH = STATE_DIR / "myapi_usage.jsonl"
+
 
 def _default_key_path() -> Path:
     """Prefer this project's own key; fall back to the borrowed omavoice
@@ -154,11 +167,16 @@ class Config:
         "screen, since parts of that setup (enabling Developer options and "
         "Wireless debugging, reading a pairing code) genuinely have to "
         "happen on the TV itself with the user looking at it. "
-        "For desktop customization — changing the theme, setting a "
-        "reminder, toggling night light, moving a bar widget, taking a "
-        "screenshot/recording — use run_omarchy_command with the "
-        "matching omarchy CLI args (e.g. ['theme', 'set', 'catppuccin'] "
-        "or ['reminder', '15', 'Pickup Jack']); nightlight_toggle is its "
+        "Setting/checking/clearing a reminder — Omarchy's own lightweight "
+        "notification-popup reminders — use set_reminder/list_reminders/"
+        "clear_reminders, not run_omarchy_command. set_reminder only "
+        "takes minutes from now, so convert whatever time the user gave "
+        "('in 20 minutes', 'in an hour', 'at 3pm') into a minute count "
+        "yourself first. "
+        "For other desktop customization — changing the theme, toggling "
+        "night light, moving a bar widget, taking a screenshot/recording "
+        "— use run_omarchy_command with the matching omarchy CLI args "
+        "(e.g. ['theme', 'set', 'catppuccin']); nightlight_toggle is its "
         "own dedicated tool, prefer it over run_omarchy_command for that "
         "one case. Only theme/toggle/reminder/bar/capture actually run "
         "through it — if the user asks for something outside those "
@@ -252,6 +270,37 @@ class Config:
     # beta test itself, via config.yaml, not this source default.
     phone_bridge_enabled: bool = False
     phone_bridge_port: int = 8766
+
+    # MyApi (myapiai.com) — connect state itself lives in
+    # MYAPI_IDENTITY_PATH (connect-myapi/disconnect-myapi in cli/settings.py
+    # write/delete it), not here. This is the master on/off switch: it's
+    # what makes the separate omarchy-ai.myapi bar icon/panel appear at
+    # all (hidden by default — opt-in, same "off until asked for"
+    # reasoning as phone_bridge_enabled above) and what gates the MyApi
+    # tools/instructions being exposed to the model even once connected.
+    myapi_enabled: bool = False
+
+
+# Appended to Config.instructions at session-build time, only when MyApi is
+# actually connected (see voice/live.py's build_session_config) — same
+# "prefer the fast structured path over a vision call, but the vision path
+# still covers what it doesn't" shape as the read_tile_log/describe_screen
+# guidance above, just one level up: a connected service instead of the
+# browser.
+MYAPI_INSTRUCTIONS = (
+    "If a request can be answered through a connected MyApi service — "
+    "email, calendar, files, Notion, Slack, and whatever else is "
+    "connected — prefer that over opening a browser and using "
+    "describe_screen: call myapi_list_services if you're not sure what's "
+    "connected, myapi_service_methods before a service's first use, then "
+    "myapi_call to actually make the request. It's structured data, no "
+    "vision call needed, and much faster and cheaper than a screenshot. "
+    "myapi_call can only read (GET) for now, not send/create/delete "
+    "anything — if asked to do something that would need that, say "
+    "plainly you can't do that yet rather than trying. Only fall back to "
+    "the browser/describe_screen path when nothing connected covers the "
+    "request."
+)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

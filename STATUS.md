@@ -3037,3 +3037,198 @@ track received exactly “Text connection works.” First probe received backend
 text but timed out waiting for audio; corrected implementation displays the
 backend text directly and keeps text mode silent. Protocol reference:
 https://developers.openai.com/api/docs/guides/live-delegation#accept-typed-input
+
+## MyApi (myapiai.com) integration — connect other services, from scratch
+
+New `src/omarchy_ai/myapi/` package connects Omarchy AI to a user's MyApi
+account (Gmail, Calendar, Drive, Notion, Slack, 200+ services) so the
+assistant can call a real API instead of opening a browser and paying for a
+`describe_screen` vision call. Built after reading MyApi's own private
+`agentic.js` source (via the GitHub proxy) rather than guessing at the
+mechanism.
+
+**Connection mechanism: ASC Quick Connect**, MyApi's own third-party-agent
+pattern, not OAuth. The user mints a short one-time code on their MyApi
+dashboard; Omarchy AI generates an Ed25519 keypair locally
+(`cryptography.hazmat.primitives.asymmetric.ed25519`, promoted from a
+transitive `aiortc`/`pyopenssl` dependency to a direct one) and calls the
+public, unauthenticated `POST /api/v1/agentic/asc/enroll` with
+`{code, public_key}` — minting the code on MyApi's side *is* the approval,
+there's no separate click. No bearer token is ever stored: every later call
+is signed instead (`X-Agent-PublicKey`/`X-Agent-Signature`/
+`X-Agent-Timestamp` headers, signed message
+`f"{timestamp}:{key_fingerprint}"`). Identity lives at
+`~/.config/omarchy-ai/myapi/identity.json`, written 0600 via the same
+create-with-mode idiom as the OpenAI key file. Requires MyApi's
+Pro/Heavy/Enterprise plan, enforced on MyApi's side.
+
+**Real bug found and fixed via live testing, not guessed:** the very first
+live call to `POST /agentic/asc/enroll` (a deliberately invalid code, to
+exercise the error path) came back `403` with an opaque body
+(`error code: 1010`) instead of MyApi's real JSON error. Isolated by
+comparing a raw `urllib.request` call against an identical `curl` call to
+the same endpoint with the same body — curl got MyApi's real `400` +
+`{"error": "Invalid, expired, or already-used enrollment code", ...}`,
+urllib got Cloudflare's block page. Root cause: myapiai.com's Cloudflare
+WAF blocks the default `Python-urllib/x.y` User-Agent outright, before the
+request reaches the app. Confirmed by re-running the identical urllib
+request with a real `User-Agent` header set — reached the app, got the
+real error JSON. Fixed by setting `User-Agent: omarchy-ai/0.1
+(+https://github.com/omribenami/Omarchy-AI)` on every request in
+`myapi/client.py`; re-verified live through the actual `omarchy-ai-settings
+connect-myapi` CLI path afterward, not just the isolated repro.
+
+**Tools/instructions, gated on connection state.** Three new tools
+(`myapi_list_services`, `myapi_service_methods`, `myapi_call`) registered
+in `execution/actions.py`/`tools.py` the same way as every other action —
+but kept in a separate `MYAPI_TOOLS` list, spread into the session's tool
+array only when `config.myapi_enabled and myapi.is_connected()`
+(`voice/live.py`'s `build_session_config`, shared by both the desktop
+client and the phone bridge). Same reasoning for the added instructions
+paragraph (`config.MYAPI_INSTRUCTIONS`). `myapi_call` only allows `GET` —
+same "no real confirm/policy layer exists yet" bar every other action in
+this file holds to (see `execution/actions.py`'s module docstring and
+`run_omarchy_command`'s own allowlist) — the tool schema doesn't even
+expose a `method` parameter, so the model can't attempt anything else.
+
+**Usage tracking + terminal dashboard.** `myapi/usage.py` is a local
+JSONL call log modeled directly on `core/history.py`'s
+JSONL-with-retention shape (not a new pattern). `myapi_call` records to it
+itself before returning — no changes needed to the shared dispatch code in
+`voice/live.py`/`phone/server.py`, both already funnel any new `ACTIONS`
+entry through automatically. New `omarchy-ai-dashboard` CLI
+(`cli/dashboard.py`, first use of `rich` in this project) live-renders
+per-service call counts/success-rate/last-used plus a per-tool breakdown,
+refreshing the local log every ~1.5s and the real connected-services list
+every 60s. Verified live: seeded fake usage records, confirmed the table
+populated correctly (counts, success %, relative-volume bars); ran the
+real dashboard process end-to-end with a real `SIGINT` (not just
+`timeout`'s `SIGTERM`, which — confirmed separately — doesn't reach
+Python's `except KeyboardInterrupt` and looked like a hang/empty-output
+bug until root-caused) and got a clean exit, correctly-rendered not-
+connected state.
+
+Settings panel: new "CONNECT SERVICES TO OMARCHY AI" section in
+`Panel.qml`, same shape as the phone-pairing section (status text, inline
+controls, no separate popup) — a button that opens myapiai.com, a code
+field, Connect/Disconnect. `cli/settings.py` gained `connect-myapi`
+(code via `OMARCHY_AI_MYAPI_CODE` env var, never argv, same reasoning as
+`set-api-key`) and `disconnect-myapi`. Not yet visually confirmed inside a
+real running Quickshell session (needs the user's own desktop) — QML brace
+balance checked mechanically, but that's not the same as a real render.
+
+Still open: an actual end-to-end live test with a real Quick Connect code
+from the user's own MyApi dashboard (steps 2, 4, 5, 6, 7 of this feature's
+plan file) hasn't run yet — everything up to and including hitting the
+real API with an intentionally-invalid code is confirmed live; a valid
+code, a real voice request routed through `myapi_call`, and the settings
+panel's actual on-screen appearance all still need the user present.
+
+### Follow-up: split into its own bar panel, styled after the Agents panel
+
+User feedback mid-build, two rounds: (1) the MyApi connect UI shouldn't
+live inside `omarchy-ai.settings/Panel.qml` at all — it should be a
+separate bar icon/panel, visible only once explicitly enabled; (2) its
+usage view should look like Omarchy's own built-in Agents panel
+(`/usr/share/omarchy/shell/plugins/agents/`, "Claude Code, Codex, and
+Fireworks usage, limits, and pace").
+
+Read `agents/Panel.qml` (942 lines) to actually match its conventions
+rather than guess: its `ModelRow` component is a row whose own background
+fills to the *proportion of the total* that row represents (label left,
+count right) — not a separate bar column. Reused that shape directly for
+both surfaces:
+
+- New `quickshell/plugins/omarchy-ai.myapi/` plugin (own `manifest.json`,
+  `Panel.qml`) — a `bar-widget` whose `visible`/`implicitWidth`/
+  `implicitHeight` are all driven by `myapi_enabled` (polled every 5s via
+  `Timer` + `omarchy-ai-settings get`, not pushed over IPC — config
+  changes are infrequent, and this avoids new cross-plugin wiring for a
+  few seconds of lag). No MyApi logo asset exists, so its bar icon is a
+  plain circular "M" monogram in the project's own `#39ff88` accent
+  (same visual weight as the live-status dot on the main icon) rather
+  than guessing at a brand mark. Connect/disconnect flow (code field,
+  buttons) moved here verbatim from the old inline section; a new
+  "USAGE" block renders each service as a proportional-fill row exactly
+  like `agents/Panel.qml`'s `ModelRow`.
+- `cli/settings.py` gained `myapi-usage` (returns
+  `myapi.usage.aggregate()` as JSON) — a separate command from `get`
+  since this panel polls it on its own faster cadence, not tied to the
+  main panel's field-change flow.
+- `omarchy-ai.settings/Panel.qml`'s own MyApi section shrank to a single
+  `Toggle` ("Enable" — off by default, matching `phone_bridge_enabled`'s
+  own opt-in precedent) with a one-line explanation; `config.py`'s
+  `myapi_enabled` default changed from `True` to `False` to match
+  (verified live: `omarchy-ai-settings get`/`set myapi_enabled ...`
+  round-trips correctly, `config.yaml` stays clean — the key is omitted
+  entirely when it equals the default, confirmed by inspecting the file
+  after toggling on then back off).
+- `cli/dashboard.py`'s terminal view switched from a max-relative bar to
+  the same share-of-total semantics (`_bar_share`), so the terminal and
+  bar-panel usage views agree conceptually even though one is ANSI blocks
+  and the other is real QML.
+
+Not yet visually confirmed inside a running Quickshell session (needs the
+user's own desktop, same caveat as the original settings-panel section) —
+brace-balance-checked mechanically only.
+
+## Dedicated reminder tools (set_reminder/list_reminders/clear_reminders)
+
+Reminders were already technically reachable through `run_omarchy_command`
+(`reminder` was already in its allowlist, and the system prompt already had
+a `['reminder', '15', 'Pickup Jack']` example) — but same reasoning as
+`nightlight_toggle`: a common, well-defined action gets its own typed tool
+instead of leaning on the model to hand-format generic CLI args correctly
+every time.
+
+Confirmed live against the real `omarchy-reminder` binary before wiring
+anything (`omarchy reminder --help`): relative minutes-from-now only, no
+absolute/natural-language time support on Omarchy's own side — the model
+converts "in 20 minutes"/"at 3pm"/etc. into a minute count itself, per
+updated instructions in `config.py`. Full round trip tested live through
+`run_action` (the same dispatch path the daemon and phone bridge both use):
+set a real 1-minute reminder with a message, confirmed it via
+`list_reminders`'s JSON (`omarchy reminder show --json` — count/active/
+reminders array with minutes/message/remainingSeconds/atTime), cleared it,
+confirmed empty after. Negative and non-numeric `minutes` both correctly
+rejected before ever shelling out. `run_omarchy_command`'s own tool
+description and the system prompt both updated to point at the new tools
+instead of its own reminder examples.
+
+## MyApi panel design pass: real bar icon, colored QR, shared components
+
+User feedback: the MyApi panel's icon was a guessed-at "M" monogram, not
+the lightning bolt MyApi is actually associated with; the phone-bridge
+pairing QR was qrencode's plain black-on-white default instead of this
+project's own look; and both panels should read as siblings of the rest
+of the shell's panels, not one-offs.
+
+Icon: rather than guess at a glyph, installed `fonttools` in a throwaway
+venv and read the actual cmap of `/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf`
+for every bolt/lightning/flash-named glyph, then decoded the Agents
+panel's own bar icon codepoint (`text: "󱚣"` → `0xF16A3`, `md-robot_excited`)
+to confirm which icon family this shell's first-party panels actually draw
+from — Material Design Icons (`nf-md-*`), not a plain Unicode "⚡" or a
+different Nerd Font subset. Used `nf-md-lightning_bolt` (`U+F140B`)
+accordingly, rendered via the shared `OpticalGlyph` component (the same
+one `BarIconButton` uses internally) rather than a custom Image/Rectangle
+composite. Verified the exact codepoint actually landed in the file (not
+just assumed) by reading it back and checking `ord()`.
+
+QR color: `qrencode --help` confirmed `--foreground=RRGGBB`/
+`--background=RRGGBB` (PNG output only, no `#`). Recolored to this
+project's own `#39ff88`/`#0d1a12` (the same accent used everywhere else —
+Watch Dogs overlay, phone bridge page, status dots) instead of
+qrencode's black-on-white default. Verified live, twice: once generating
+a standalone test QR and checking its palette with
+`magick -unique-colors` (exactly 2 colors, `#0D1A12`/`#39FF88`), then
+again through the real `omarchy-ai-settings pair-phone` command end to
+end (decoded the actual returned base64 PNG, same two colors) — not just
+the standalone repro.
+
+Both panels' headers/sections also brought in line with the shared
+`Ui` components other panels use: `omarchy-ai.myapi/Panel.qml`'s title
+now has the same title+subtitle shape as `omarchy-ai.settings/Panel.qml`'s
+own header, and its "USAGE" label switched from an ad-hoc `Text` to the
+shared `PanelSectionHeader` component every other section header in this
+shell (including this project's own settings panel) already uses.

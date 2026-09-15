@@ -26,11 +26,12 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamTrack
 from rapidfuzz import fuzz
 
-from ..config import Config
+from .. import myapi
+from ..config import MYAPI_INSTRUCTIONS, Config
 from ..core.history import append_session, load_recent_context
 from ..core.memory import load_preferences
 from ..execution.actions import run_action
-from ..execution.tools import TOOLS
+from ..execution.tools import MYAPI_TOOLS, TOOLS
 from . import status_icon, watchdog
 
 log = logging.getLogger("omarchy_ai.voice.live")
@@ -50,6 +51,12 @@ def build_session_config(config: Config) -> dict:
     the exact same OpenAI session shape, so this has to stay one function,
     not two copies that can quietly drift apart."""
     instructions = config.instructions
+    myapi_on = config.myapi_enabled and myapi.is_connected()
+    if myapi_on:
+        # Only mentioned/exposed at all once a connection actually exists
+        # — see execution/tools.py's MYAPI_TOOLS docstring for why this
+        # isn't just folded into the static TOOLS list.
+        instructions += "\n\n" + MYAPI_INSTRUCTIONS
     preferences = load_preferences()
     if preferences:
         # Standing corrections saved via remember_preference in past
@@ -100,6 +107,7 @@ def build_session_config(config: Config) -> dict:
                         "parameters": {"type": "object", "properties": {}, "required": []},
                     },
                     *TOOLS,
+                    *(MYAPI_TOOLS if myapi_on else []),
                 ],
             },
         },

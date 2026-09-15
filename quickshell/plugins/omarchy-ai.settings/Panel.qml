@@ -717,6 +717,32 @@ Panel {
         }
         PanelSeparator { foreground: root.fg }
 
+        // ---------- MyApi (connect other services) ----------
+        // Deliberately just a switch here, not the actual connect flow —
+        // that lives in its own bar icon/panel (omarchy-ai.myapi),
+        // separate from this one and only visible once this toggle is on.
+        // Keeps this panel from growing a third increasingly-different
+        // subsystem's full UI, and gives MyApi connection status/usage a
+        // bar icon of its own the way the phone bridge and the daemon's
+        // live-status dot already each have.
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader { text: "CONNECT SERVICES TO OMARCHY AI"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+
+          Toggle {
+            id: myapiToggle
+            width: parent.width
+            label: "Enable"
+            description: "Powered by MyApi (myapiai.com) — adds a separate bar icon for connecting Gmail, Calendar, Drive, Notion, Slack, and 200+ other services. Requires a MyApi Pro, Heavy, or Enterprise plan."
+            foreground: root.fg
+            checked: root.fields.myapi_enabled !== undefined ? !!root.fields.myapi_enabled : false
+            onClicked: root.setField("myapi_enabled", myapiToggle.checked ? "false" : "true", "MyApi " + (myapiToggle.checked ? "disabled" : "enabled — look for its icon in the bar"))
+          }
+        }
+        PanelSeparator { foreground: root.fg }
+
         // ---------- Footer: status + restart ----------
         Column {
           width: parent.width

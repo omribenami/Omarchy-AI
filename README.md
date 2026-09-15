@@ -59,8 +59,10 @@ been used for, live:
   paired Android TV or projector over WebRTC, picks the right TV if more
   than one is on the network, and can walk you through pairing a brand new
   one it's never seen before.
-- *"Set a reminder for 3pm"* / *"switch to the catppuccin theme"* — routed
-  straight through Omarchy's own 228 built-in commands.
+- *"Remind me in 20 minutes to check the oven"* — a real desktop
+  notification via Omarchy's own reminder mechanism, not a fake promise.
+- *"Switch to the catppuccin theme"* — routed straight through Omarchy's
+  own 228 built-in commands.
 - *"What did that build in the terminal end up doing?"* — reads the real
   text a terminal it opened has printed, instead of taking (and paying for)
   a vision-model screenshot.
@@ -87,6 +89,10 @@ been used for, live:
 **Real desktop control** — ~25 typed tools plus Omarchy's full command set:
 - Volume/mute, mic mute, brightness, night light, Bluetooth, battery,
   media playback.
+- `set_reminder`/`list_reminders`/`clear_reminders` — Omarchy's own
+  lightweight notification-popup reminders, not a new mechanism. Only
+  understands minutes from now, so the assistant converts whatever time
+  you gave ("in 20 minutes", "at 3pm") into a minute count itself.
 - Workspace switching, window listing/focusing, fullscreen toggle, close,
   screenshots, screen lock.
 - Launchers: terminal, browser, files, editor.
@@ -167,6 +173,24 @@ been used for, live:
   actual `gpt-live-1` session is connected, otherwise idle) independent of
   whether the HUD overlay itself is enabled.
 
+**Connect other services (MyApi)**
+- An "Enable" switch in the settings panel turns on a separate MyApi bar
+  icon/panel (off by default) — from there, one code pasted from your
+  [MyApi](https://www.myapiai.com) dashboard connects Gmail, Calendar,
+  Drive, Notion, Slack, and 200+ other services (no OAuth redirect, no
+  token ever shown). Requires a MyApi Pro/Heavy/Enterprise plan.
+- That panel also shows live per-service usage — a proportional-share
+  breakdown styled after Omarchy's own Agents bar panel, so it reads as a
+  sibling of it rather than a one-off look.
+- Once connected, the assistant prefers a real API call through MyApi over
+  opening a browser and taking a screenshot whenever a request is covered
+  by a connected service ("check my email" reads Gmail directly rather
+  than paying for a vision call) — read-only for now, it can't send,
+  create, or delete anything yet.
+- `omarchy-ai-dashboard` — a live terminal dashboard (built with `rich`)
+  showing which services are connected and how much each has actually been
+  used, refreshed in real time from a local call log.
+
 ## Architecture, briefly
 
 ```
@@ -179,11 +203,15 @@ src/omarchy_ai/
               to the model, per-terminal output logs, the vision fallback
   display/    mDNS device discovery, the WebRTC signaling relay for casting
   phone/      the local HTTPS phone-bridge server + paired web page
-  cli/        the omarchy-ai-settings CLI the settings panel shells out to
+  myapi/      the MyApi (myapiai.com) client — ASC Quick Connect, signed
+              requests, the local usage log the terminal dashboard reads
+  cli/        the omarchy-ai-settings CLI the settings panel shells out to,
+              and omarchy-ai-dashboard (live MyApi usage in the terminal)
   policy/     scaffolded, not yet built (see "Known gaps" below)
 android-receiver/   Kotlin/Compose Android TV receiver app (Gradle project)
-quickshell/         the 3 Quickshell/QML user plugins (HUD overlay, window
-                    labels, settings panel) — see quickshell/README.md
+quickshell/         the 4 Quickshell/QML user plugins (HUD overlay, window
+                    labels, settings panel, MyApi panel) — see
+                    quickshell/README.md
 systemd/            omarchy-ai.service unit template
 docs/                architecture decision record (ADR-0001) + dependency list
 scripts/             the original WebRTC/API reverse-engineering spikes,
@@ -285,6 +313,20 @@ automatically on first `install_receiver_on_tv` call, or manually via
 `cd android-receiver && ./gradlew assembleDebug`. Needs the JDK/Android SDK
 pinned in `mise.toml` — run `mise install` in that directory first.
 
+**8. Connect services via MyApi** (optional, needs a
+[MyApi](https://www.myapiai.com) Pro/Heavy/Enterprise account): flip
+"Enable" in the settings panel's "Connect services to Omarchy AI" section
+— a separate MyApi bar icon appears — open it, click through to
+myapiai.com to generate a one-time connection code from your dashboard,
+paste it in, and click Connect. Without the Quickshell panels installed,
+the same mechanism is reachable directly:
+
+```bash
+echo -n "MYAPI-XXXXXXXX-XXXXXXXX" | .venv/bin/omarchy-ai-settings connect-myapi
+```
+
+Then `omarchy-ai-dashboard` shows live per-service usage in a terminal.
+
 ### Known gaps
 
 Documented honestly rather than papered over:
@@ -308,6 +350,13 @@ Documented honestly rather than papered over:
 - **Audio quality on casting** is verified for video (steady 15fps, zero
   drops in testing) but not yet measured with the same rigor for the audio
   branch.
+- **MyApi calls are read-only (GET) for now** — same "no confirm/policy
+  layer exists yet" reasoning as everything else in this list; sending an
+  email or creating a calendar event through MyApi isn't wired up.
+  Disconnecting from the Omarchy AI settings panel only stops this machine
+  from using the connection — no programmatic revoke was found on MyApi's
+  side, so fully cutting access also means removing the device from your
+  MyApi dashboard.
 
 See [`STATUS.md`](STATUS.md) for the full, unabridged debugging history —
 every bug found, how it was diagnosed, and how it was fixed — and
