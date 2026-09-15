@@ -2103,19 +2103,22 @@ Root causes, confirmed by reading the code before touching anything:
    target still produces the old narration) rather than a silent one —
    noted below, not yet closed.
 
-**Real side effect caught and fixed in the same session:** Living Room TV
-was actively mid-cast (`spike_cast_sender.py` running, started 23:58:36)
-when step 3's `adb install -r` ran — force-stopping the installed app
-during a reinstall is normal Android behavior, and it did drop the
-receiver out of the foreground activity list (confirmed via `adb shell
-dumpsys activity activities` — no `ai.omarchy.receiver` entry). Relaunched
-it with `adb shell am start -n ai.omarchy.receiver/.MainActivity`; the
-sender process's offer/ICE was still buffered server-side (the earlier
-signaling-relay fix, see the casting-race entry above), so mirroring
-resumed without needing `start_casting` to run again. Not independently
-re-confirmed after the fact that the video was visibly flowing again
-(same reasoning as the note above — this was verified through the
-production code path and `dumpsys`, not a live spoken conversation).
+**Initially misdiagnosed as a live-cast disruption -- corrected after
+checking `journalctl`.** A `spike_cast_sender.py` process was running
+throughout step 3's `adb install -r`, and Living Room TV's receiver
+wasn't in the foreground activity list afterward (confirmed via `adb
+shell dumpsys activity activities`), which read at the time like the
+reinstall had force-stopped an actively-streaming receiver mid-cast.
+Checked `journalctl --user -u omarchy-ai` before writing this up, since
+that's the standard this project holds evidence to: every `start_casting`
+call in the live log that session (23:52-23:58) targeted HY300Pro
+(192.168.1.86), never Living Room TV — the running sender process was
+casting to HY300Pro the whole time, so Living Room TV's receiver wasn't
+in the foreground for an unrelated reason (nothing was being streamed to
+it), not because the reinstall interrupted anything. Relaunched it with
+`adb shell am start -n ai.omarchy.receiver/.MainActivity` regardless, as
+reasonable cleanup after a forced reinstall — just not the recovery from
+a real disruption it first looked like.
 
 ### Separately added: `run_omarchy_command` (Claude Code's "omarchy" skill, ported to voice)
 
