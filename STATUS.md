@@ -2581,3 +2581,48 @@ independently screenshot-verified** (see the phone-bridge entry above for
 why — `omarchy-shell -q omarchy-ai.settings open`/`toggle` isn't
 producing a layer via IPC in this environment, unrelated to this fix);
 the user's own next real click is the actual verification this needs.
+
+## Settings panel still unreachable after the popup fix — real fix: scope the scroll
+
+The popup restructure above (QR moved out of the main column) reduced the
+panel's content height but not enough — the user reported back: *"I can
+see theres a button with the texe 'Enable' on it, its cut off and it
+wont scroll."* Confirms the earlier diagnosis was right (content still
+exceeds `availableCardHeight`, no way to reach the rest) even after
+trimming the QR out.
+
+Also raised in the same round: *"maybe we should restart the service?"*
+— worth naming why that wouldn't have helped even if the panel really
+were stale: the settings panel is rendered by `omarchy-shell`
+(Quickshell), a completely separate process from `omarchy-ai.service`
+(the Python voice daemon) — restarting the daemon has no effect on QML
+rendering at all. `omarchy restart shell` is the real equivalent action
+here, and was used twice this round (once before this fix, once after)
+to force a cold reload rather than relying on hot-reload alone, given hot
+-reload had looked clean in the log both previous rounds without the
+user actually seeing the change either time.
+
+**Real fix, this time scoped correctly**: a `Flickable` wraps only
+everything from the "Watch Dogs overlay" section downward (Watch Dogs,
+Voice, API key, Phone Bridge, Footer) — the Header and Wake word section,
+including `thresholdSlider`, stay permanently outside any scrollable
+region, in a fixed, always-visible area above it. This is the structural
+fix the earlier whole-panel Flickable attempt was missing: it's not that
+Sliders-in-Flickables are fundamentally impossible, it's that *this*
+Slider specifically can never again be a child of a scrollable container,
+full stop, so the two literally cannot compete for the same drag gesture
+regardless of how the rest of the panel grows in the future. The
+Flickable's own height is capped to a fixed `Style.space(360)` budget
+(generous enough that most configurations fit without scrolling at all)
+rather than computed from `availableCardHeight` directly, sidestepping a
+circular binding between the Flickable's height and the outer
+`KeyboardPanel.contentHeight` binding that also depends on the column's
+total implicit height.
+
+Verified: brace/paren counts balanced (137/137, 176/176) before either
+restart; both `omarchy restart shell` calls produced a clean cold load
+with no new errors in the freshly-restarted process's own log (checked
+against the new PID specifically both times, not just a generic
+journalctl tail). Still not independently screenshot-verified for the
+same IPC-open limitation as every entry above — the user's own next
+click is what actually confirms this.
