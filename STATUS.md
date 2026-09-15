@@ -2358,3 +2358,46 @@ place rather than two copies that could quietly drift.
    `/api/session-started`/`ended` round trip from the browser (best-effort
    only, since a phone can lose network or have its tab killed without
    ever calling "ended").
+
+## Firewall rules needed — checklist for a future install/packaging script
+
+User's own request: *"all this firewall rules remember them for the
+package installation later on."* This machine's `ufw` has no general
+"allow this LAN" rule — every port this project listens on needs its own
+explicit allow, discovered the hard way twice now (8765 via the casting
+mirroring-failure investigation, 8766 just now for the phone bridge, both
+confirmed live via real `[UFW BLOCK]` kernel-log entries, not guessed).
+No passwordless sudo for `ufw` on this machine (`sudo -n ufw status` ->
+"a password is required"), so none of these can be run by an agent —
+whatever eventually installs/packages this project needs to either run
+them (with the user present for the sudo prompt) or document them as a
+manual post-install step.
+
+**Every port this project currently opens**, and the rule each one needs
+(LAN-wide, `192.168.1.0/24` — narrower than the original single-IP
+`-s 192.168.1.86` rule found for 8765, which broke the moment casting to
+any *other* IP was attempted, see below):
+
+1. **8765 — `display/signaling.py`'s WebRTC signaling relay** (casting
+   to Android TVs/projectors, spawned on demand by `start_casting`).
+   Original state found on this machine: `/etc/ufw/user.rules` had
+   `-A ufw-user-input -p tcp --dport 8765 -s 192.168.1.86 -j ACCEPT` —
+   allowed only the one TV already manually tested against, silently
+   dropping every other TV's connection at the TCP level regardless of
+   any application-level fix (root cause B of the mirroring-failure
+   investigation, this file's casting-race entry above).
+   ```
+   sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp
+   ```
+2. **8766 — `phone/server.py`'s phone bridge** (beta, see above). Real
+   blocked packets confirmed via `journalctl -k`: `SRC=192.168.1.58
+   DST=192.168.1.65 ... DPT=8766 ... SYN` logged as `[UFW BLOCK]`.
+   ```
+   sudo ufw allow from 192.168.1.0/24 to any port 8766 proto tcp
+   ```
+
+An install script could reasonably loop over a small table of `{port,
+proto, purpose}` and run one `ufw allow` per row rather than hardcoding
+two calls — worth designing that way given a third port (or a port
+becoming configurable, like `phone_bridge_port` already is) is a real
+possibility, not a one-off.
