@@ -424,21 +424,59 @@ TOOLS: list[dict] = [
         },
     ),
     _tool(
+        "set_reminder",
+        "Sets a lightweight desktop notification reminder that pops up "
+        "after a number of minutes — Omarchy's own built-in reminder "
+        "mechanism (`omarchy reminder`), not a new invention. It only "
+        "understands minutes from now, not absolute times or dates: "
+        "convert whatever the user said ('in 20 minutes', 'in an hour', "
+        "'at 3pm') into a minute count yourself before calling this. "
+        "Prefer this over run_omarchy_command for reminders.",
+        {
+            "type": "object",
+            "properties": {
+                "minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many minutes from now the reminder should fire.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "What the reminder should say. Omit for a plain reminder with no message.",
+                },
+            },
+            "required": ["minutes"],
+        },
+    ),
+    _tool(
+        "list_reminders",
+        "Lists reminders that are currently set and haven't fired yet, "
+        "with their message and how long until each one fires. Call this "
+        "if asked what reminders are set, or whether one was actually "
+        "set, rather than assuming.",
+    ),
+    _tool(
+        "clear_reminders",
+        "Cancels every currently-set reminder. There's no way to cancel "
+        "just one — say so if the user only wants one specific reminder "
+        "gone and more than one is set (list_reminders first to check).",
+    ),
+    _tool(
         "run_omarchy_command",
         "Runs an `omarchy` CLI command — the same command-line tool used "
-        "for Omarchy desktop customization (themes, reminders, bar "
-        "layout, toggles like night light/bluetooth). Only a fixed "
-        "allowlist of safe command groups can actually run through this "
-        "(theme, toggle, reminder, bar, capture) — anything involving "
-        "packages, system updates, reinstalling, hooks, plugins, or "
-        "system power is refused. Pass args as the full argv after "
-        "'omarchy' itself, e.g. ['theme', 'set', 'catppuccin'], "
-        "['reminder', '15', 'Pickup Jack'], ['reminder', 'show'], "
-        "['toggle', 'nightlight'], ['bar', 'move', 'omarchy.clock', "
-        "'--section', 'right']. Use this for anything the user asks for "
-        "that matches one of those areas and isn't already covered by a "
-        "more specific tool (nightlight_toggle already exists and is "
-        "preferred over this for that one case).",
+        "for Omarchy desktop customization (themes, bar layout, toggles "
+        "like night light/bluetooth). Only a fixed allowlist of safe "
+        "command groups can actually run through this (theme, toggle, "
+        "reminder, bar, capture) — anything involving packages, system "
+        "updates, reinstalling, hooks, plugins, or system power is "
+        "refused. Pass args as the full argv after 'omarchy' itself, "
+        "e.g. ['theme', 'set', 'catppuccin'], ['toggle', 'nightlight'], "
+        "['bar', 'move', 'omarchy.clock', '--section', 'right']. Use "
+        "this for anything the user asks for that matches one of those "
+        "areas and isn't already covered by a more specific tool — "
+        "nightlight_toggle and set_reminder/list_reminders/"
+        "clear_reminders already exist and are preferred over this for "
+        "those cases.",
         {
             "type": "object",
             "properties": {
@@ -454,6 +492,79 @@ TOOLS: list[dict] = [
                 }
             },
             "required": ["args"],
+        },
+    ),
+]
+
+# --- MyApi (myapiai.com) tools --------------------------------------------
+# Kept out of TOOLS deliberately: these are only meaningful once a MyApi
+# connection actually exists, so voice/live.py's build_session_config
+# spreads this list in conditionally (myapi.is_connected()) instead of
+# unconditionally like everything above — an unconnected user should never
+# see the model attempt (and fail) a MyApi call it has no way to make
+# succeed. myapi_call is GET-only for the same "no confirm/policy layer
+# yet" reasoning as run_omarchy_command's own allowlist above; see
+# execution/actions.py's myapi_call for the enforcement.
+MYAPI_TOOLS: list[dict] = [
+    _tool(
+        "myapi_list_services",
+        "Lists the services connected to the user's MyApi account (Gmail, "
+        "Calendar, Drive, Notion, Slack, and whatever else they've "
+        "connected at myapiai.com). Call this first if you're not sure "
+        "what's available before assuming a request can or can't be "
+        "answered through MyApi.",
+    ),
+    _tool(
+        "myapi_service_methods",
+        "Looks up what operations are actually callable on one connected "
+        "MyApi service — call this before a service's first use in a "
+        "conversation so you know the right path/shape to pass to "
+        "myapi_call, rather than guessing at a REST path.",
+        {
+            "type": "object",
+            "properties": {
+                "service": {
+                    "type": "string",
+                    "description": (
+                        "The service's id as returned by myapi_list_services, "
+                        "e.g. 'gmail', 'googlecalendar', 'notion'."
+                    ),
+                }
+            },
+            "required": ["service"],
+        },
+    ),
+    _tool(
+        "myapi_call",
+        "Reads data from a connected MyApi service — e.g. checking email, "
+        "looking up a calendar, searching Drive/Notion. Prefer this over "
+        "opening a browser and using describe_screen whenever the request "
+        "is covered by a connected service: it's structured data, no "
+        "vision call needed, and much faster. Only GET requests work here "
+        "— this cannot send, create, update, or delete anything yet (no "
+        "email sending, no calendar-event creation); say so plainly if "
+        "asked for that rather than attempting it.",
+        {
+            "type": "object",
+            "properties": {
+                "service": {
+                    "type": "string",
+                    "description": "The service id, e.g. 'gmail', 'googlecalendar', 'notion' — see myapi_list_services.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "The service's own REST path to read, e.g. "
+                        "'/messages' for gmail — see myapi_service_methods "
+                        "for what's available on this service."
+                    ),
+                },
+                "query": {
+                    "type": "object",
+                    "description": "Optional query-string parameters for the request, as key/value pairs.",
+                },
+            },
+            "required": ["service", "path"],
         },
     ),
 ]

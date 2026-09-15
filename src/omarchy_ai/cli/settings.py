@@ -16,6 +16,12 @@ Commands:
                                  print the fresh snapshot (same shape as get)
   restart-status             -> {"busy": bool, "reason": str}
   restart                    -> restart omarchy-ai.service iff not busy
+  pair-phone / revoke-phones -> phone bridge QR pairing (see phone/server.py)
+  connect-myapi               -> exchange an ASC Quick Connect code (env
+                                 var OMARCHY_AI_MYAPI_CODE) for a MyApi
+                                 identity (see ../myapi/)
+  disconnect-myapi           -> delete the local MyApi identity
+  myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
 
 Only a small, deliberately curated whitelist of Config fields is settable
 here (SETTABLE) — not every dataclass field. Internal plumbing
@@ -36,6 +42,8 @@ import sys
 
 import yaml
 
+from .. import myapi
+from ..myapi import usage as myapi_usage
 from ..config import (
     CONFIG_DIR,
     LEGACY_KEY_PATH,
@@ -59,6 +67,13 @@ SERVICE = "omarchy-ai.service"
 
 WATCHDOG_DISPLAY_MODES = ("feed", "visualizer", "both")
 
+# This project's own accent, used everywhere else already (Watch Dogs
+# overlay, phone bridge page, status dots) — reused here so the pairing QR
+# reads as this project's own rather than a generic black-and-white code
+# pasted in from qrencode's default. qrencode wants bare RRGGBB, no '#'.
+QR_FOREGROUND = "39ff88"
+QR_BACKGROUND = "0d1a12"
+
 # name -> (validate_and_normalize(raw_json_value, current_config) -> value, description)
 SETTABLE = (
     "custom_wake_model_paths",
@@ -67,6 +82,7 @@ SETTABLE = (
     "watchdog_display_mode",
     "voice",
     "phone_bridge_enabled",
+    "myapi_enabled",
 )
 
 # A curated set of realtime voices this project has seen documented/used —
@@ -113,6 +129,7 @@ def _snapshot() -> dict:
         "config_path": str(USER_CONFIG_PATH),
         "api_key": _api_key_state(),
         "phone_bridge_paired_count": paired_count(),
+        "myapi": _myapi_state(),
     }
 
 
@@ -173,6 +190,11 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
             raise ValidationError("phone_bridge_enabled must be a boolean")
         return value
 
+    if key == "myapi_enabled":
+        if not isinstance(value, bool):
+            raise ValidationError("myapi_enabled must be a boolean")
+        return value
+
     raise ValidationError(f"unknown or non-settable key: {key!r}")
 
 
@@ -189,6 +211,56 @@ def _api_key_state() -> dict:
     if LEGACY_KEY_PATH.exists():
         return {"set": True, "source": "omavoice", "path": str(LEGACY_KEY_PATH)}
     return {"set": False, "source": None, "path": str(OMARCHY_KEY_PATH)}
+
+
+def _myapi_state() -> dict:
+    """Connection status for the panel to bind to — cheap/local only, same
+    "presence check, never a network call" discipline as _api_key_state()
+    (this runs from the settings CLI's hot path, not somewhere a
+    myapiai.com round-trip is welcome)."""
+    client = myapi.MyApiClient()
+    return {
+        "connected": client.connected,
+        "scope": client.scope,
+        "account": client.account,
+    }
+
+
+def cmd_connect_myapi(_args: argparse.Namespace) -> dict:
+    """Exchange a one-time ASC Quick Connect code (minted on the user's
+    MyApi dashboard, myapiai.com) for a local Ed25519 identity.
+
+    The code is read from the OMARCHY_AI_MYAPI_CODE environment variable,
+    never argv — same reasoning as cmd_set_api_key, even though a Quick
+    Connect code is short-lived and single-use rather than a durable
+    secret, the private key minted alongside it is not.
+    """
+    raw = os.environ.get("OMARCHY_AI_MYAPI_CODE")
+    if raw is None:
+        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    code = (raw or "").strip()
+    if not code:
+        return {"error": "no connection code provided"}
+
+    try:
+        myapi.MyApiClient().enroll(code)
+    except myapi.MyApiError as e:
+        return {"error": str(e)}
+
+    return _snapshot()
+
+
+def cmd_disconnect_myapi(_args: argparse.Namespace) -> dict:
+    myapi.disconnect()
+    return _snapshot()
+
+
+def cmd_myapi_usage(_args: argparse.Namespace) -> dict:
+    """Per-service call counts for the omarchy-ai.myapi bar panel's usage
+    view — separate from `get`'s snapshot since this is a different
+    refresh cadence (polled on a timer by that panel, not on every field
+    change) and not something the main settings panel needs at all."""
+    return {"services": myapi_usage.aggregate()}
 
 
 def cmd_set_api_key(_args: argparse.Namespace) -> dict:
@@ -339,7 +411,17 @@ def cmd_pair_phone(_args: argparse.Namespace) -> dict:
 
     info = mint_pairing_token(cfg)
     proc = subprocess.run(
-        ["qrencode", "-t", "PNG", "-s", "8", "-o", "-", info["url"]],
+        [
+            "qrencode", "-t", "PNG", "-s", "8",
+            # Recolored to this project's own accent instead of qrencode's
+            # plain black-on-white default — confirmed live with
+            # `magick -unique-colors` that this actually produces a real
+            # 2-color (accent/dark) PNG, not just plausible-looking flags.
+            # High-contrast pair (bright green on near-black), so this
+            # doesn't trade away real-world scannability for the look.
+            f"--foreground={QR_FOREGROUND}", f"--background={QR_BACKGROUND}",
+            "-o", "-", info["url"],
+        ],
         capture_output=True, check=False,
     )
     if proc.returncode != 0 or not proc.stdout:
@@ -371,6 +453,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("restart")
     sub.add_parser("pair-phone")
     sub.add_parser("revoke-phones")
+    sub.add_parser("connect-myapi")
+    sub.add_parser("disconnect-myapi")
+    sub.add_parser("myapi-usage")
 
     args = parser.parse_args(argv)
     handler = {
@@ -380,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
         "restart-status": cmd_restart_status,
         "pair-phone": cmd_pair_phone,
         "revoke-phones": cmd_revoke_phones,
+        "connect-myapi": cmd_connect_myapi,
+        "disconnect-myapi": cmd_disconnect_myapi,
+        "myapi-usage": cmd_myapi_usage,
         "restart": cmd_restart,
     }[args.command]
     result = handler(args)

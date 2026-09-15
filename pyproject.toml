@@ -8,12 +8,19 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "aiortc>=1.15.0",
+    # Already resolved transitively (aiortc/pyopenssl need it) — promoted
+    # to a direct dependency because src/omarchy_ai/myapi/client.py relies
+    # on its Ed25519 primitives directly, not just incidentally.
+    "cryptography>=42.0",
     "numpy>=2.5.3",
     "onnxruntime>=1.30.0",
     "openwakeword>=0.4.0",
     "pywayland>=0.4.19",
     "pyyaml>=6.0.3",
     "rapidfuzz>=3.14.6",
+    # cli/dashboard.py's live MyApi usage view — this project's first real
+    # TUI dependency, pure-Python, no new system packages needed.
+    "rich>=13.7",
     "websockets>=17.1",
 ]
 
@@ -24,6 +31,9 @@ omarchy-ai = "omarchy_ai:main"
 # absolute .venv/bin path from QML (same reasoning as the systemd unit's
 # @VENV@/bin/python), this entry point just makes it easy to run by hand.
 omarchy-ai-settings = "omarchy_ai.cli.settings:main"
+# Live terminal dashboard for the MyApi integration — see
+# src/omarchy_ai/cli/dashboard.py's module docstring.
+omarchy-ai-dashboard = "omarchy_ai.cli.dashboard:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

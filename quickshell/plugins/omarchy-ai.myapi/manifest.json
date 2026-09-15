@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.myapi",
+  "name": "Omarchy AI — MyApi",
+  "version": "1.0.0",
+  "author": "omarchy-ai",
+  "description": "Connect Gmail, Calendar, Drive, Notion, Slack, and other services to Omarchy AI via MyApi (myapiai.com), and see live per-service usage.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "MyApi",
+    "description": "Connect services to Omarchy AI via MyApi and see live per-service usage.",
+    "category": "AI",
+    "aliases": ["myapi"],
+    "allowMultiple": false
+  }
+}

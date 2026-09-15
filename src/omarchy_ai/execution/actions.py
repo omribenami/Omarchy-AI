@@ -26,6 +26,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import myapi
+from ..myapi import usage as myapi_usage
+
 log = logging.getLogger("omarchy_ai.execution.actions")
 
 _TIMEOUT = 10
@@ -1009,6 +1012,46 @@ def install_receiver_on_tv(args: dict) -> ActionResult:
     )
 
 
+# --- Reminders (dedicated wrapper around `omarchy reminder`) -----------
+# Already reachable through run_omarchy_command below (reminder is in its
+# allowlist), but same reasoning as nightlight_toggle: a common, well-
+# defined action gets its own typed tool rather than leaning on the model
+# to hand-format generic CLI args correctly every time. Confirmed live
+# against the real omarchy-reminder binary (`omarchy reminder --help`):
+# relative minutes-from-now only, no absolute/natural-language time
+# support on its side -- the model converts "in 20 minutes"/"at 3pm"/etc.
+# into a minute count itself before calling this.
+
+
+def set_reminder(args: dict) -> ActionResult:
+    minutes = args.get("minutes")
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0:
+        return ActionResult(False, "minutes must be a positive number")
+    minutes = int(minutes)
+    message = args.get("message")
+    if message is not None and not isinstance(message, str):
+        return ActionResult(False, "message must be a string")
+    argv = ["omarchy", "reminder", str(minutes)]
+    if message:
+        argv.append(message)
+    result = _run(argv, timeout=15)
+    if not result.ok:
+        return result
+    unit = "minute" if minutes == 1 else "minutes"
+    return ActionResult(True, f"Reminder set for {minutes} {unit} from now" + (f": {message}" if message else "."))
+
+
+def list_reminders(args: dict) -> ActionResult:
+    return _run(["omarchy", "reminder", "show", "--json"], timeout=15)
+
+
+def clear_reminders(args: dict) -> ActionResult:
+    result = _run(["omarchy", "reminder", "clear"], timeout=15)
+    if not result.ok:
+        return result
+    return ActionResult(True, "All reminders cleared.")
+
+
 # --- Omarchy CLI passthrough (skill parity) -----------------------------
 # The Claude Code "omarchy" skill (~/.claude/skills/omarchy/SKILL.md) gives
 # an agent editing this machine's desktop config the full `omarchy` CLI --
@@ -1069,6 +1112,81 @@ def run_omarchy_command(args: dict) -> ActionResult:
     return _run(["omarchy", *argv], timeout=30)
 
 
+# --- MyApi (myapiai.com) passthrough ------------------------------------
+# See src/omarchy_ai/myapi/. Only added to the model's tool list at all
+# when a connection actually exists (voice/live.py's build_session_config
+# checks myapi.is_connected() before including these) -- they still guard
+# for "not connected" themselves too, since this same ACTIONS dict is also
+# reachable from the phone bridge (phone/server.py), which doesn't share
+# that per-session check.
+#
+# myapi_call only allows GET: same "no real confirm/policy layer exists
+# yet, so only Level 1 (read-only) is voice-reachable" bar every other
+# action in this file holds to -- see the module docstring and
+# run_omarchy_command's own allowlist just above.
+
+
+def myapi_list_services(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
+    try:
+        result = myapi.MyApiClient().list_services()
+    except myapi.MyApiError as e:
+        return ActionResult(False, f"couldn't reach MyApi: {e}")
+    return ActionResult(True, json.dumps(result))
+
+
+def myapi_service_methods(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
+    service = args.get("service")
+    if not isinstance(service, str) or not service.strip():
+        return ActionResult(False, "no service given")
+    try:
+        result = myapi.MyApiClient().service_methods(service.strip())
+    except myapi.MyApiError as e:
+        return ActionResult(False, f"couldn't reach MyApi: {e}")
+    return ActionResult(True, json.dumps(result))
+
+
+def myapi_call(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
+    service = args.get("service")
+    path = args.get("path")
+    method = str(args.get("method") or "GET").strip().upper()
+    if not isinstance(service, str) or not service.strip():
+        return ActionResult(False, "no service given")
+    if not isinstance(path, str) or not path.strip():
+        return ActionResult(False, "no path given")
+    if method != "GET":
+        return ActionResult(
+            False,
+            f"'{method}' isn't voice-reachable through MyApi yet -- only "
+            "reading (GET) is, since there's no confirm/policy layer for "
+            "anything that would send, create, or delete something on the "
+            "user's behalf. Tell the user you can't do that yet, don't "
+            "attempt it a different way.",
+        )
+    query = args.get("query")
+    if query is not None and not isinstance(query, dict):
+        return ActionResult(False, "query must be an object")
+
+    started = time.monotonic()
+    ok = False
+    try:
+        result = myapi.MyApiClient().call_service(service.strip(), path.strip(), method, query=query)
+        ok = True
+        return ActionResult(True, json.dumps(result))
+    except myapi.MyApiError as e:
+        return ActionResult(False, f"MyApi call failed: {e}")
+    finally:
+        myapi_usage.record(
+            service=service.strip(), path=path.strip(), method=method,
+            ok=ok, duration_ms=(time.monotonic() - started) * 1000,
+        )
+
+
 ACTIONS = {
     "volume_up": volume_up,
     "volume_down": volume_down,
@@ -1111,6 +1229,12 @@ ACTIONS = {
     "list_cast_targets": list_cast_targets,
     "install_receiver_on_tv": install_receiver_on_tv,
     "run_omarchy_command": run_omarchy_command,
+    "set_reminder": set_reminder,
+    "list_reminders": list_reminders,
+    "clear_reminders": clear_reminders,
+    "myapi_list_services": myapi_list_services,
+    "myapi_service_methods": myapi_service_methods,
+    "myapi_call": myapi_call,
 }
 
 

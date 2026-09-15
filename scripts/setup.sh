@@ -63,3 +63,8 @@ echo "  journalctl --user -u omarchy-ai -f"
 echo
 echo "Say 'omachy' (or 'omri'/'roni' — all three are trained and active) to talk."
 echo "End a conversation by saying goodbye/stop/that's all."
+echo
+echo "Optional: connect Gmail/Calendar/Drive/Notion/Slack and more via MyApi"
+echo "(myapiai.com) from the Omarchy AI settings panel's \"Connect services"
+echo "to Omarchy AI\" section, then watch live usage with:"
+echo "  omarchy-ai-dashboard"
