@@ -2671,3 +2671,49 @@ duplicate-IpcHandler warning happened to log in the captured window) —
 the cleanest reload of this whole round. `phone_bridge_enabled` confirmed
 still `true` in `config.yaml` afterward, so the QR button is enabled for
 the user's next real test.
+
+## PopupCard reverted entirely — bar-level popout coordination, not a layout bug
+
+The relocation fix above made the click register, but revealed the real,
+deeper problem: *"bpressing QR makes the menu disappear and thats it
+nothing happens."* The QR popup never showed at all — pressing it closed
+the whole settings menu instead.
+
+Root cause: `PopupCard.onOpenChanged` calls `bar.requestPopout(...)` /
+`bar.releasePopout(...)` — a shell-wide "only one popout open at a time"
+coordinator that every bar popup uses, *including this settings panel's
+own main `KeyboardPanel`*. The settings panel and `qrPopup` are both
+registered as popouts against the same bar; opening the second one made
+the bar close the first as a side effect of that coordination, not a bug
+in either popup individually. This is a fundamentally different problem
+from the earlier layout-nesting bug (that one was about `PopupCard`
+occupying space it shouldn't in a `Column`) — this one is inherent to
+what `PopupCard` *is*: designed for "one popup replaces another," not
+"a sub-dialog stacked on top of an already-open one." No amount of
+repositioning the `PopupCard` declaration was going to fix this, since
+it's the component's own coordination logic, not where it's declared.
+
+**Fix**: dropped `PopupCard` for this entirely. The QR now renders
+inline again, directly inside the Phone Bridge section's own `Column` —
+exactly the shape this started as, before the popup detour. The
+difference from that very first attempt is real, though: this section
+sits inside the `scrollArea` `Flickable` added a few rounds ago (scoped
+to below `thresholdSlider` specifically to avoid the earlier drag-gesture
+conflict), so the QR image growing the section's height now just makes
+that region scroll a little further — it can't push anything off-screen
+unreachably the way it could before that Flickable existed. Added a
+"Hide" button (clears `qrImageBase64`) since there's no popup-close
+affordance to reuse anymore.
+
+Net result of this whole multi-round saga, for anyone reading this later
+rather than living through it: **don't use `PopupCard` for a stacked
+sub-dialog while another popout (including another `PopupCard` or this
+project's own `KeyboardPanel`) is already open** — it will silently
+close the other one via `bar.requestPopout`. Inline content inside an
+already-open panel's own (scoped) `Flickable` is the right tool for that
+job in this shell, not a second popout.
+
+Verified: brace/paren counts balanced (131/131, 170/170) after removing
+~80 lines of `PopupCard`/`qrColumn` and restoring the inline block;
+`omarchy restart shell` produced a clean cold load with zero errors
+against the fresh PID.
