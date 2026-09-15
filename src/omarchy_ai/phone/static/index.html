@@ -5,125 +5,44 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Omarchy</title>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    min-height: 100vh;
-    background: #0b0e14;
-    color: #d7dce2;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: env(safe-area-inset-top, 20px) 20px env(safe-area-inset-bottom, 20px);
-  }
-
-  /* ---- header: logo + wordmark, same green as the rest of this project's UI (Watch Dogs overlay, settings panel status dot) ---- */
-  #logo { width: 40px; height: 40px; margin-top: 6px; opacity: 0.95; }
-  h1 {
-    font-size: 0.95rem;
-    font-weight: 700;
-    letter-spacing: 0.18em;
-    color: #39ff88;
-    text-shadow: 0 0 12px rgba(57, 255, 136, 0.35);
-    margin: 8px 0 2px;
-  }
-  #status {
-    font-size: 0.85rem;
-    color: #5b6473;
-    min-height: 1.3em;
-    text-align: center;
-    letter-spacing: 0.02em;
-  }
-
-  /* ---- visualizer: same block/braille/glitch glyph mix as the desktop Watch Dogs overlay (Watchdog.qml), ported to a monospace <pre> driven by the Web Audio API instead of an RMS value piped over IPC ---- */
-  #visualizerWrap {
-    width: 100%;
-    max-width: 480px;
-    flex: 0 0 auto;
-    margin: 28px 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  #visualizer {
-    margin: 0;
-    font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace;
-    font-size: clamp(1.6rem, 8vw, 2.6rem);
-    letter-spacing: 0.08em;
-    color: #39ff88;
-    text-shadow: 0 0 18px rgba(57, 255, 136, 0.45);
-    white-space: pre;
-  }
-
-  #talkBtn {
-    width: 34vw;
-    height: 34vw;
-    max-width: 180px;
-    max-height: 180px;
-    min-width: 120px;
-    min-height: 120px;
-    border-radius: 50%;
-    border: 2px solid #2a3140;
-    background: radial-gradient(circle at 35% 30%, #1a2130, #0d1119);
-    color: #d7dce2;
-    font-size: 0.95rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: border-color 0.2s, box-shadow 0.2s;
-    -webkit-tap-highlight-color: transparent;
-  }
-  #talkBtn.live {
-    border-color: #39ff88;
-    box-shadow: 0 0 24px rgba(57, 255, 136, 0.25);
-  }
-  #talkBtn.connecting {
-    border-color: #f2c744;
-    box-shadow: 0 0 20px rgba(242, 199, 68, 0.2);
-  }
-  #talkBtn:active { transform: scale(0.97); }
-
-  #transcript {
-    width: 100%;
-    max-width: 480px;
-    margin-top: 24px;
-    flex: 1;
-    overflow-y: auto;
-    font-size: 0.9rem;
-    line-height: 1.5;
-  }
-  .line { margin-bottom: 10px; }
-  .line .who {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: #5b6473;
-    display: block;
-  }
-  .line.user .who { color: #39e6ff; }
-  .line.assistant .who { color: #39ff88; }
-
-  #err {
-    color: #ff5f5f;
-    font-size: 0.85rem;
-    text-align: center;
-    min-height: 1.2em;
-    margin-top: 8px;
-  }
+:root { color-scheme: dark; font-family: monospace; background: #05080d; color: #e2edf3; }
+* { box-sizing: border-box; }
+body { margin: 0; height: 100dvh; overflow: hidden; }
+#field { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#talkBtn { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; cursor: pointer; color: transparent; -webkit-tap-highlight-color: transparent; }
+#talkBtn:focus-visible { outline: 2px solid #39e6ff; outline-offset: -8px; }
+header { position: fixed; top: max(24px, env(safe-area-inset-top)); left: 24px; pointer-events: none; }
+h1 { font-size: 13px; letter-spacing: .3em; margin: 0 0 10px; }
+#status { font-size: 12px; letter-spacing: .12em; color: #ff5f5f; }
+body[data-state="live"] #status { color: #39e6ff; }
+body[data-state="connecting"] #status { color: #39ff88; }
+footer { position: fixed; bottom: max(24px, env(safe-area-inset-bottom)); left: 24px; right: 24px; pointer-events: none; }
+#composer { pointer-events: auto; display: flex; gap: 8px; margin: 12px 0; }
+#composer[hidden] { display: none; }
+#messageInput { flex: 1; min-width: 0; padding: 12px; border: 1px solid #344958; border-radius: 6px; background: #05080df2; color: #e2edf3; font: 16px monospace; }
+#sendBtn { padding: 12px; border: 1px solid #39e6ff; border-radius: 6px; background: #102630; color: #39e6ff; font: inherit; }
+#sendBtn:disabled { opacity: .5; }
+.controls { display: flex; gap: 10px; flex-wrap: wrap; }
+.controls button { pointer-events: auto; border: 1px solid #344958; border-radius: 6px; padding: 12px 16px; background: #05080de8; color: #d7e9f2; font: inherit; }
+.controls button:disabled { opacity: .55; cursor: default; }
+button:focus-visible { outline: 2px solid #39e6ff; }
+#err { color: #ff8585; font-size: 12px; background: #05080dcc; }
+#err:empty { display: none; }
+#transcript { pointer-events: auto; max-height: 30dvh; overflow: auto; background: #05080de8; font-size: 13px; line-height: 1.6; margin-bottom: 14px; padding: 12px; }
+#transcript[hidden] { display: none; }
+.line { margin-bottom: 10px; } .who { color: #39e6ff; display: block; font-size: 10px; text-transform: uppercase; }
 </style>
 </head>
-<body>
-  <img id="logo" src="omarchy-logo.png" alt="">
-  <h1>OMARCHY</h1>
-  <div id="status">tap to talk</div>
-
-  <div id="visualizerWrap"><pre id="visualizer"></pre></div>
-
-  <button id="talkBtn">Talk</button>
-  <div id="err"></div>
-  <div id="transcript"></div>
-
+<body data-state="idle">
+  <canvas id="field" aria-hidden="true"></canvas>
+  <button id="talkBtn" aria-label="Start conversation">Talk</button>
+  <header><h1>OMARCHY // ASSISTANT</h1><div id="status" role="status">TAP ANYWHERE TO CONNECT</div></header>
+  <footer>
+    <div id="transcript" hidden aria-live="polite"></div>
+    <form id="composer" hidden><input id="messageInput" aria-label="Message Omarchy" placeholder="Message Omarchy…" maxlength="8000" autocomplete="off" enterkeyhint="send" required><button id="sendBtn" type="submit">Send</button></form>
+    <div class="controls"><button id="modeBtn" aria-pressed="false">Text</button><button id="outputBtn">Audio: phone</button><button id="transcriptBtn" aria-expanded="false">Transcript</button></div>
+    <p id="err" role="alert"></p>
+  </footer>
   <audio id="remoteAudio" autoplay playsinline></audio>
 
 <script>
@@ -134,7 +53,23 @@ const statusEl = document.getElementById('status');
 const errEl = document.getElementById('err');
 const transcriptEl = document.getElementById('transcript');
 const remoteAudio = document.getElementById('remoteAudio');
-const visualizerEl = document.getElementById('visualizer');
+const canvas = document.getElementById('field');
+const ctx = canvas.getContext('2d');
+let connecting = false;
+let speakTimer = null;
+let connectTimer = null;
+let mode = 'voice';
+let micSender = null;
+let connectionReady = null;
+let settleConnection = null;
+let replyBusy = false;
+let hasBackendText = false;
+let pendingTools = 0;
+let modeChanging = false;
+const composer = document.getElementById('composer');
+const messageInput = document.getElementById('messageInput');
+const sendBtn = document.getElementById('sendBtn');
+const modeBtn = document.getElementById('modeBtn');
 
 let pc = null;
 let dc = null;
@@ -155,44 +90,70 @@ let convState = 'idle'; // idle | listening | speaking — same vocabulary as wa
 const BLOCK_CHARS = " ▁▂▃▄▅▆▇█";
 const BRAILLE_CHARS = ["⠀", "⠁", "⠃", "⠇", "⡇", "⡏", "⡟", "⡿", "⣿"];
 const GLITCH_CHARS = "▓▒░╳┃╎";
-const MAX_LEVELS = 10;
-let levels = [];
 let audioCtx = null;
 let analyser = null;
 let analyserData = null;
-
-function pushLevel(v) {
-  const n = isNaN(v) ? 0 : Math.max(0, Math.min(1, v));
-  levels.push(n);
-  if (levels.length > MAX_LEVELS) levels = levels.slice(levels.length - MAX_LEVELS);
+let ripples = [];
+let activationRipple = null;
+let width = 0, height = 0, lastFrame = 0, amplitude = 0;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function resize() {
+  width = innerWidth; height = innerHeight;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.width = width * dpr; canvas.height = height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-
-function visualizerLine() {
-  if (levels.length === 0) {
-    let idle = '';
-    for (let j = 0; j < MAX_LEVELS; j++) {
-      idle += (Math.random() < 0.22 ? '⠂' : (Math.random() < 0.12 ? '⠁' : ' '));
-    }
-    return idle;
-  }
-  let s = '';
-  for (let i = 0; i < levels.length; i++) {
-    const idx = Math.max(0, Math.min(8, Math.round(levels[i] * 8)));
-    const r = Math.random();
-    if (r < 0.04 && idx > 0) {
-      s += GLITCH_CHARS.charAt(Math.floor(Math.random() * GLITCH_CHARS.length));
-    } else if (r < 0.62) {
-      s += BRAILLE_CHARS[idx];
-    } else {
-      s += BLOCK_CHARS.charAt(idx);
-    }
-  }
-  return s;
+addEventListener('resize', resize); resize();
+function ripple(x, y) {
+  const ring = {x, y, time: performance.now()};
+  ripples.push(ring);
+  ripples = ripples.slice(-5);
+  if (!live && !connecting) activationRipple = ring;
 }
+function draw(now) {
+  requestAnimationFrame(draw);
+  if (document.hidden || now - lastFrame < (reducedMotion.matches ? 160 : 50)) return;
+  lastFrame = now;
+  amplitude += (sampleOutputLevel() - amplitude) * .35;
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = '14px monospace';
+  ripples = ripples.filter(r => now - r.time < 2200);
+  const t = reducedMotion.matches ? 0 : now / 1000;
+  for (let y = 12; y < height; y += 17) {
+    for (let x = 0; x < width; x += 11) {
+      const distance = Math.hypot(x - width/2, (y - height/2) * .8);
+      const flow = Math.sin(x * .021 + t * .8) * Math.cos(y * .025 - t * .6);
+      const voice = amplitude * (.5 + .5 * Math.sin(distance * .045 - t * 8));
+      let wave = 0;
+      for (const r of ripples) {
+        const age = (now - r.time) / 1000;
+        const d = Math.hypot(x-r.x, y-r.y);
+        wave = Math.max(wave, Math.exp(-Math.pow((d-age*340)/32, 2)) * (1-age/2.2));
+      }
+      const energy = Math.min(1, .16 + (flow+1)*.18 + voice*.9 + wave);
+      const idx = Math.max(1, Math.round(energy*8));
+      const hash = Math.abs(Math.sin(x*12.9+y*78.2+Math.floor(t*9))*43758.5)%1;
+      const char = hash < .04 ? GLITCH_CHARS[Math.floor(hash*150)%GLITCH_CHARS.length] : hash < .62 ? BRAILLE_CHARS[idx] : BLOCK_CHARS[idx];
+      // The activation front paints cyan behind its green crest, even
+      // while the voice connection is still being established.
+      const inside = activationRipple && (live || connecting) &&
+        Math.hypot(x - activationRipple.x, y - activationRipple.y) <
+        (now - activationRipple.time) / 1000 * 340;
+      const blue = activationRipple ? inside : live;
+      const speechWave = live && blue && voice > .06;
+      ctx.fillStyle = wave > .08 || speechWave ? '#39ff88' : blue ? '#39e6ff' : '#ff5f5f';
+      ctx.globalAlpha = Math.min(1, .2 + energy*.65 + wave*.6);
+      ctx.fillText(char, x, y);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+requestAnimationFrame(draw);
 
 function setupAnalyser(remoteStream) {
   try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)({sampleRate: 48000});
+    audioCtx.resume().catch(() => {});
     const source = audioCtx.createMediaStreamSource(remoteStream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 512;
@@ -218,18 +179,6 @@ function sampleOutputLevel() {
   return Math.min(1, rms * 5);
 }
 
-// One continuous ~10Hz loop for the whole page lifetime — matches
-// visualizerLine()'s own idle-vs-real-levels branching, so there's no
-// separate "idle animation" code path to keep in sync with the real one.
-setInterval(() => {
-  if (convState === 'speaking') {
-    pushLevel(sampleOutputLevel());
-  } else if (levels.length > 0) {
-    levels = [];
-  }
-  visualizerEl.textContent = visualizerLine();
-}, 100);
-
 function setConvState(next) {
   convState = next;
 }
@@ -237,6 +186,8 @@ function setConvState(next) {
 function setStatus(text, cls) {
   statusEl.textContent = text;
   talkBtn.className = cls || '';
+  document.body.dataset.state = cls || 'idle';
+  talkBtn.setAttribute('aria-label', cls === 'live' ? 'End conversation' : cls === 'connecting' ? 'Connecting' : 'Start conversation');
 }
 
 function setError(text) {
@@ -309,8 +260,15 @@ async function checkFunctionCall(event) {
 
   let args = {};
   try { args = item.arguments ? JSON.parse(item.arguments) : {}; } catch (e) { /* leave {} */ }
+  const channel = dc;
+  pendingTools++;
+  updateComposer();
   const result = await callTool(item.name, args);
+  if (dc !== channel) return;
+  pendingTools--;
+  replyBusy = true;
   sendFunctionResult(callId, !!result.ok, result.message || '');
+  updateComposer();
 }
 
 function onDataMessage(raw) {
@@ -326,14 +284,31 @@ function onDataMessage(raw) {
     setStatus('speaking…', 'live');
     setConvState('speaking');
     userLine = null;
-    appendTranscript('assistant', event.delta);
+    if (mode !== 'text' || !hasBackendText) appendTranscript('assistant', event.delta);
   } else if (etype === 'response.event') {
+    const inner = event.event || {};
+    const innerType = inner.type;
+    if (mode === 'text' && innerType === 'response.output_text.delta') {
+      hasBackendText = true;
+      userLine = null;
+      appendTranscript('assistant', inner.delta);
+    }
+    if (innerType === 'response.created') replyBusy = true;
+    if (['response.completed', 'response.failed', 'response.incomplete'].includes(innerType)) {
+      replyBusy = false;
+      if (mode === 'text') setStatus(readyStatus(), 'live');
+      if (innerType !== 'response.completed') setError('The reply could not finish. You can send another message.');
+    }
+    updateComposer();
     checkFunctionCall(event);
   } else if (etype === 'response.function_call_arguments.done' && event.name === 'end_conversation') {
     hangup();
   } else if (etype === 'error') {
     const err = event.error || {};
     console.warn('gpt-live-1 error event', err);
+    replyBusy = false;
+    updateComposer();
+    setError(err.message || 'The assistant could not process that message.');
     const code = (err.code || '').toLowerCase();
     if (code.includes('quota') || code.includes('billing')) {
       setError(err.message || 'billing/quota error');
@@ -342,92 +317,140 @@ function onDataMessage(raw) {
   }
 }
 
+function updateComposer() {
+  sendBtn.disabled = connecting || replyBusy || pendingTools > 0 || modeChanging;
+  sendBtn.textContent = connecting ? 'Connecting…' : (replyBusy || pendingTools > 0) ? 'Replying…' : 'Send';
+}
+function idleStatus() {
+  return mode === 'text' ? 'type a message to connect' : 'tap to talk';
+}
+function readyStatus() {
+  return mode === 'text' ? 'text connected · microphone off' : 'listening…';
+}
+function scheduleVoiceResponse() {
+  clearTimeout(speakTimer);
+  if (mode !== 'voice') return;
+  speakTimer = setTimeout(() => {
+    if (dc && dc.readyState === 'open' && mode === 'voice') {
+      dc.send(JSON.stringify({type: 'response.create'}));
+    }
+  }, SPEAK_WINDOW_MS);
+}
+
 async function start() {
+  if (live) return true;
+  if (connecting) return connectionReady;
+  connecting = true;
+  connectionReady = new Promise(resolve => { settleConnection = resolve; });
+  const ready = connectionReady;
+  talkBtn.disabled = true;
+  modeBtn.disabled = true;
+  updateComposer();
   setError('');
   handledCallIds = new Set();
   userLine = null;
   assistantLine = null;
-  transcriptEl.innerHTML = '';
   setStatus('connecting…', 'connecting');
+  const peer = new RTCPeerConnection({iceServers: []});
+  pc = peer;
+  connectTimer = setTimeout(() => {
+    if (pc === peer) { setError('Connection timed out. Try again.'); hangup(); }
+  }, 25000);
 
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    setStatus('tap to talk');
-    setError('microphone permission denied');
-    return;
-  }
-
-  // No iceServers, matching the desktop client: host candidates alone
-  // have been enough there (outbound-only connection to OpenAI), and
-  // skipping STUN avoids the gathering wait.
-  pc = new RTCPeerConnection({ iceServers: [] });
-  localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
-
-  pc.ontrack = (e) => {
-    remoteAudio.srcObject = e.streams[0];
-    setupAnalyser(e.streams[0]);
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) {
-      hangup();
+    // A sendrecv transceiver allows adding a microphone later without
+    // renegotiating. Text mode never requests microphone permission.
+    micSender = peer.addTransceiver('audio', {direction: 'sendrecv'}).sender;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 48000});
+    await audioCtx.resume();
+    if (pc !== peer) return false;
+    if (mode === 'voice') {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      if (pc !== peer) { stream.getTracks().forEach(t => t.stop()); return false; }
+      localStream = stream;
+      await micSender.replaceTrack(stream.getAudioTracks()[0]);
     }
-  };
-
-  dc = pc.createDataChannel('oai-events');
-  dc.onopen = () => {
-    live = true;
-    setStatus('listening…', 'live');
-    setConvState('listening');
-    talkBtn.textContent = 'Hang up';
-    // Same fixed speak-window stopgap as the desktop client, until
-    // there's real VAD-based "user finished talking" detection.
-    setTimeout(() => {
-      if (dc && dc.readyState === 'open') {
-        dc.send(JSON.stringify({ type: 'response.create' }));
-      }
-    }, SPEAK_WINDOW_MS);
-  };
-  dc.onmessage = (e) => onDataMessage(e.data);
-
-  try {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await new Promise((resolve) => {
-      if (pc.iceGatheringState === 'complete') return resolve();
+    peer.ontrack = (e) => {
+      if (pc !== peer) return;
+      const stream = e.streams[0] || new MediaStream([e.track]);
+      remoteAudio.srcObject = stream;
+      remoteAudio.muted = mode === 'text';
+      remoteAudio.play().catch(() => { if (mode === 'voice') setError('Audio playback was blocked. Reconnect to try again.'); });
+      setupAnalyser(stream);
+    };
+    peer.onconnectionstatechange = () => {
+      if (pc === peer && ['failed', 'closed'].includes(peer.connectionState)) hangup();
+    };
+    const channel = peer.createDataChannel('oai-events');
+    dc = channel;
+    channel.onopen = () => {
+      if (pc !== peer) return;
+      clearTimeout(connectTimer);
+      live = true;
+      connecting = false;
+      talkBtn.disabled = false;
+      modeBtn.disabled = false;
+      setStatus(readyStatus(), 'live');
+      setConvState('listening');
+      talkBtn.textContent = 'Hang up';
+      updateComposer();
+      scheduleVoiceResponse();
+      settleConnection?.(true);
+      settleConnection = null;
+    };
+    channel.onclose = () => { if (pc === peer) hangup(); };
+    channel.onmessage = (e) => { if (pc === peer) onDataMessage(e.data); };
+    await peer.setLocalDescription(await peer.createOffer());
+    await new Promise(resolve => {
+      if (peer.iceGatheringState === 'complete') return resolve();
       const check = () => {
-        if (pc.iceGatheringState === 'complete') {
-          pc.removeEventListener('icegatheringstatechange', check);
+        if (peer.iceGatheringState === 'complete') {
+          peer.removeEventListener('icegatheringstatechange', check);
           resolve();
         }
       };
-      pc.addEventListener('icegatheringstatechange', check);
-      setTimeout(resolve, 3000); // don't hang forever if gathering stalls
+      peer.addEventListener('icegatheringstatechange', check);
+      setTimeout(() => { peer.removeEventListener('icegatheringstatechange', check); resolve(); }, 3000);
     });
-
+    if (pc !== peer) return false;
     const res = await fetch('/api/live/offer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sdp: peer.localDescription.sdp}),
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || ('HTTP ' + res.status));
     }
-    const { sdp } = await res.json();
-    await pc.setRemoteDescription({ type: 'answer', sdp });
+    const {sdp} = await res.json();
+    if (pc !== peer) return false;
+    await peer.setRemoteDescription({type: 'answer', sdp});
+    return await ready;
   } catch (e) {
-    setError('connection failed: ' + e.message);
-    hangup();
+    if (pc === peer) { setError('Connection failed: ' + e.message); hangup(); }
+    return false;
   }
 }
 
 function hangup() {
+  settleConnection?.(false);
+  settleConnection = null;
+  connectionReady = null;
+  replyBusy = false;
+  pendingTools = 0;
+  modeBtn.disabled = false;
+  activationRipple = null;
+  clearTimeout(speakTimer);
+  clearTimeout(connectTimer);
+  usePhone();
   live = false;
+  connecting = false;
+  talkBtn.disabled = false;
   setConvState('idle');
-  if (dc) { try { dc.close(); } catch (e) {} dc = null; }
-  if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  const oldDC = dc, oldPC = pc;
+  dc = null; pc = null; micSender = null;
+  if (oldDC) { try { oldDC.close(); } catch (e) {} }
+  if (oldPC) { try { oldPC.close(); } catch (e) {} }
   if (localStream) {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
@@ -436,18 +459,167 @@ function hangup() {
   analyser = null;
   analyserData = null;
   remoteAudio.srcObject = null;
-  setStatus('tap to talk');
+  setStatus(idleStatus());
   talkBtn.textContent = 'Talk';
+  updateComposer();
 }
 
-talkBtn.addEventListener('click', () => {
+talkBtn.addEventListener('click', (event) => {
+  ripple(event.clientX || width/2, event.clientY || height/2);
   if (live) {
     hangup();
+  } else if (mode === 'text') {
+    messageInput.focus();
   } else {
     start();
   }
 });
 
+const outputBtn = document.getElementById('outputBtn');
+let castNode = null, castSource = null, castAvailable = false, castActive = false;
+let routeGeneration = 0;
+function usePhone() {
+  routeGeneration++;
+  castActive = false;
+  if (castSource) castSource.disconnect();
+  if (castNode) { castNode.port.onmessage = null; castNode.disconnect(); }
+  castSource = castNode = null;
+  remoteAudio.muted = mode === 'text';
+  outputBtn.textContent = 'Audio: phone';
+}
+async function refreshCast() {
+  try {
+    const res = await fetch('/api/audio/status');
+    if (!res.ok) throw new Error('status unavailable');
+    castAvailable = (await res.json()).available;
+  } catch { castAvailable = false; }
+  if (!castAvailable && castActive) {
+    usePhone(); setError('TV disconnected. Audio returned to phone.');
+  }
+  outputBtn.disabled = !castActive && (!castAvailable || !live || (mode === 'text'));
+  outputBtn.title = castAvailable ? 'Switch between phone and mirrored TV' : 'Start TV mirroring to use TV speakers';
+  if (!castActive) outputBtn.textContent = castAvailable ? 'Audio: phone → TV' : 'TV audio: mirror first';
+}
+outputBtn.addEventListener('click', async () => {
+  if (castActive) { usePhone(); return; }
+  if (!live || !castAvailable || !remoteAudio.srcObject || !audioCtx) return;
+  const generation = ++routeGeneration;
+  outputBtn.disabled = true;
+  try {
+    const context = audioCtx;
+    await context.audioWorklet.addModule('/cast-worklet.js');
+    if (generation !== routeGeneration || !live) return;
+    castNode = new AudioWorkletNode(context, 'cast-pcm');
+    castSource = context.createMediaStreamSource(remoteAudio.srcObject);
+    castSource.connect(castNode);
+    castNode.connect(context.destination); // processor emits silence, keeps processing alive
+    castActive = true;
+    let sending = false;
+    castNode.port.onmessage = async ({data}) => {
+      // Drop a packet if the previous request is still in flight; never queue stale speech.
+      if (sending || !castActive || generation !== routeGeneration) return;
+      sending = true;
+      try {
+        const res = await fetch('/api/audio/pcm', {method: 'POST',
+          headers: {'Content-Type': 'application/octet-stream'}, body: data,
+          signal: AbortSignal.timeout(2000)});
+        if (!res.ok) throw new Error('TV audio unavailable');
+        if (generation === routeGeneration && castActive) {
+          remoteAudio.muted = true;
+          outputBtn.textContent = 'Audio: TV';
+        }
+      } catch (e) {
+        if (generation === routeGeneration) { usePhone(); setError(e.message + '. Audio returned to phone.'); }
+      } finally { sending = false; }
+    };
+  } catch (e) { usePhone(); setError('TV audio could not start: ' + e.message); }
+  finally { outputBtn.disabled = false; }
+});
+setInterval(refreshCast, 2000);
+refreshCast();
+
+function showTranscript() {
+  transcriptEl.hidden = false;
+  document.getElementById('transcriptBtn').setAttribute('aria-expanded', 'true');
+}
+modeBtn.addEventListener('click', async () => {
+  if (connecting || modeChanging) return;
+  modeChanging = true;
+  modeBtn.disabled = true;
+  updateComposer();
+  const next = mode === 'text' ? 'voice' : 'text';
+  const peer = pc;
+  try {
+    if (live && next === 'voice') {
+      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      if (pc !== peer) { stream.getTracks().forEach(t => t.stop()); return; }
+      localStream = stream;
+      await micSender.replaceTrack(stream.getAudioTracks()[0]);
+    } else if (next === 'text') {
+      clearTimeout(speakTimer);
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+      if (micSender) await micSender.replaceTrack(null);
+    }
+    mode = next;
+    usePhone();
+    composer.hidden = mode !== 'text';
+    modeBtn.textContent = mode === 'text' ? 'Voice' : 'Text';
+    modeBtn.setAttribute('aria-pressed', String(mode === 'text'));
+    setStatus(live ? readyStatus() : idleStatus(), live ? 'live' : '');
+    if (mode === 'text') { showTranscript(); messageInput.focus(); }
+    else if (live) scheduleVoiceResponse();
+    refreshCast();
+  } catch (e) {
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+    setError('Could not switch microphone: ' + e.message);
+  } finally {
+    modeChanging = false;
+    modeBtn.disabled = false;
+    updateComposer();
+  }
+});
+composer.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const text = messageInput.value.trim();
+  if (!text || connecting || replyBusy || pendingTools > 0 || modeChanging) return;
+  setError('');
+  showTranscript();
+  if (!live) {
+    ripple(width / 2, height * .7);
+    if (!await start()) return; // Keep the draft on connection failure.
+  }
+  if (!dc || dc.readyState !== 'open') { setError('Disconnected. Try sending again.'); return; }
+  try {
+    clearTimeout(speakTimer);
+    dc.send(JSON.stringify({type: 'response.item.create', item: {
+      type: 'message', role: 'user', content: [{type: 'input_text', text}],
+    }}));
+    dc.send(JSON.stringify({type: 'response.create'}));
+    userLine = null; assistantLine = null; hasBackendText = false;
+    appendTranscript('user', text);
+    userLine = null;
+    messageInput.value = '';
+    replyBusy = true;
+    updateComposer();
+    setStatus('thinking…', 'live');
+  } catch (e) { setError('Message was not sent: ' + e.message); }
+});
+// Keep the composer above the mobile keyboard, including browsers whose
+// fixed layout viewport does not shrink when the keyboard opens.
+function fitKeyboard() {
+  const viewport = window.visualViewport;
+  const inset = viewport ? Math.max(0, innerHeight - viewport.height - viewport.offsetTop) : 0;
+  document.querySelector('footer').style.transform = `translateY(-${inset}px)`;
+}
+window.visualViewport?.addEventListener('resize', fitKeyboard);
+window.visualViewport?.addEventListener('scroll', fitKeyboard);
+
+document.getElementById('transcriptBtn').addEventListener('click', (event) => {
+  transcriptEl.hidden = !transcriptEl.hidden;
+  event.currentTarget.setAttribute('aria-expanded', String(!transcriptEl.hidden));
+});
 window.addEventListener('pagehide', hangup);
 </script>
 </body>

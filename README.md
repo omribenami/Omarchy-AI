@@ -317,3 +317,30 @@ architecture decisions behind all of the above.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Phone voice over Tailscale and mirrored-TV audio
+
+The HTTPS phone bridge listens on port **8766** on LAN and Tailscale.
+When Tailscale is connected, a newly generated **Pair phone** QR uses its
+IPv4 address; otherwise it uses LAN. The TLS certificate includes both
+addresses and the Tailscale DNS name. Pair again when changing hostname/IP:
+browser pairing cookies belong to the address used. Restart the assistant
+service if Tailscale is first connected after the service started, to refresh
+the certificate. Both devices must be on the tailnet and its access rules
+must permit TCP 8766. Direct access uses the existing self-signed certificate.
+
+The mobile page is a full-screen glyph field: red when idle, green ripples
+where you tap, and desktop cyan while live, responding to assistant audio.
+Tap the field to start/end a conversation; transcripts are optional.
+
+During a connected screen mirror, **Audio: phone → TV** routes assistant
+speech into the casting sender's existing audio track. Tap **Audio: TV** to
+return to the phone. Ending mirroring or a failed audio upload automatically
+returns playback to the phone. This uses the existing Android receiver and
+requires no new APK. Start a fresh mirror after updating the sender script.
+The phone must support AudioWorklet (HTTPS); PCM uploads are bounded and drop
+packets on slow links to avoid accumulating delayed speech.
+
+Tap **Text** to type without microphone access. Replies stream into the
+transcript and text mode stays silent. **Voice** switches the same connected
+session back to microphone input. Connection failures preserve the draft.

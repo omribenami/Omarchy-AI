@@ -2986,3 +2986,54 @@ with this repo's real local commits, so a plain push would be rejected
 as non-fast-forward; force-pushing over a single placeholder commit in a
 repo the user just created moments ago, with nothing else depending on
 it, is the correct and safe use of it.
+
+## 2026-09-15 — Tailscale phone voice, full-screen glyphs, cast audio
+
+Implemented in phone/server.py and phone/static/: Tailscale IPv4 discovery,
+LAN fallback for pairing, and both networks plus MagicDNS in TLS SANs.
+Confirmed live HTTPS with certificate verification at 100.67.131.5:8766,
+paired page/new worklet delivery, and authenticated cast status. Initial
+sandbox-only `tailscale status` falsely suggested tailscaled was stopped;
+unsandboxed status confirmed Running. Restarted omarchy-ai.service.
+
+Replaced the small visualizer with a full-viewport canvas rendering the
+Watchdog block/braille/glitch glyphs. Idle red, touch-centered green rings,
+live #39e6ff with remote-stream RMS animation; reduced-motion support,
+keyboard-accessible full-page talk control, optional transcript overlay.
+
+TV audio means the thin receiver during screen mirroring (user clarified),
+not an HDMI/Bluetooth device. The sender now mixes an additional 48k mono
+PCM appsrc into its existing Opus track. Only a CONNECTED sender binds a
+0600 Unix datagram socket; disconnect closes it. Paired phone endpoints
+probe that socket and forward bounded PCM. AudioWorklet packets upload one
+at a time; failure/disconnect restores phone playback. No receiver changes.
+
+Validation: five Python unit tests (Tailscale discovery/offline, pairing,
+certificate SANs, PCM bounds); Python/JS syntax; actual GStreamer audio
+pipeline parse; silent live mixer integration produced amplitude 9000 from
+injected PCM and disabled availability after disconnect. Real phone/TV
+playback remains unverified; network packet dropping can affect quality on
+high-latency links. Existing mirrors need restarting to load the new sender.
+
+Follow-up: user saw NOT PAIRED from their phone over Tailscale. Live logs
+confirmed requests from the phone's tailnet IP carried no Cookie header;
+existing nine saved pairings were intact. Generated a fresh tailnet pairing
+link for the user. Updated the unpaired page to name the current host and
+explain per-address browser cookies and same-browser pairing.
+
+## Phone text input
+
+Added Text/Voice switching, a keyboard-aware composer, silent text replies,
+and mode changes within the same WebRTC session. Text starts with an empty
+sendrecv audio transceiver and never calls getUserMedia. Typed input uses
+response.item.create with user input_text, then response.create; replies
+render from nested response.output_text.delta. Voice mode restores the mic.
+No daemon restart needed: HTML is served from disk on every refresh.
+
+Validated three JS behavior tests (no microphone for text, same-session mode
+switching, failed-connect draft preservation, empty/duplicate send guards),
+JS syntax and diff whitespace. Actual live WebRTC test with no microphone
+track received exactly “Text connection works.” First probe received backend
+text but timed out waiting for audio; corrected implementation displays the
+backend text directly and keeps text mode silent. Protocol reference:
+https://developers.openai.com/api/docs/guides/live-delegation#accept-typed-input
