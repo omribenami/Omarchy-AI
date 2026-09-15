@@ -2401,3 +2401,130 @@ proto, purpose}` and run one `ufw allow` per row rather than hardcoding
 two calls — worth designing that way given a third port (or a port
 becoming configurable, like `phone_bridge_port` already is) is a real
 possibility, not a one-off.
+
+## Phone bridge: QR pairing + Omarchy-styled page with a real visualizer
+
+User's follow-up, right after confirming the phone bridge beta actually
+worked end-to-end (real `start_casting`/`stop_casting` tool calls from a
+phone, logged live): *"create a full QR code pairing mechanism which
+without cant pair to the local website... that QR connection will be in
+the settings"*, then, mid-build: *"and give the local sit an Omarchy
+design and in the middle the ASCII voice visualizer."*
+
+### Pairing — the real access boundary, not a UI nicety
+
+`phone/server.py`:
+- `mint_pairing_token(config)` — single-use, 5-minute-TTL token written
+  to `~/.config/omarchy-ai/phone_bridge/pending_pair_token.json` (0600,
+  same creation pattern as the API key file). Called from
+  `cli/settings.py`'s new `pair-phone` command, a *separate, short-lived*
+  process from the daemon — writing a shared file rather than adding an
+  internal HTTP call between the two matches how this project already
+  does cross-process communication (`config.yaml` itself).
+- `GET /pair?token=...`: validates (exists, `secrets.compare_digest`
+  match, unused, unexpired) → marks used, mints a real session id
+  (`secrets.token_urlsafe(32)`), appends it to
+  `paired_sessions.json` (0600), sets a `Secure; HttpOnly; SameSite=Strict`
+  cookie with a 1-year `Max-Age` (pairing should survive phone restarts —
+  revoke explicitly instead), 302s to `/`.
+- `_is_paired()` checks that cookie against the sessions file on **every**
+  request — `GET /` serves `not_paired.html` instead of the real app for
+  an unpaired request, and `/api/live/offer`/`/api/tool` both return a
+  flat 403 `{"error": "not paired"}`. This is the actual enforcement
+  point, independent of whatever the page itself does — matches the
+  user's own framing ("without which can't pair").
+- `revoke_all_sessions()` (`cli/settings.py`'s `revoke-phones`) clears the
+  sessions file, kicking every paired phone out at once.
+- `cli/settings.py`: `phone_bridge_enabled` added to `SETTABLE` (a real
+  toggle now, not just a config field with no UI); `pair-phone` shells
+  out to `qrencode` (confirmed installed, `pacman`-provided) to turn the
+  pairing URL into a PNG, returned as base64 for the panel to render
+  directly via `Image { source: "data:image/png;base64,..." }` — no new
+  Python dependency, no writing a temp file for the panel to read back.
+
+**Verified live, real HTTP requests against the running daemon, not
+mocked** — 8 assertions covering the full lifecycle: unpaired `GET /`
+serves the not-paired page; unpaired tool call 403s; a minted token pairs
+successfully (cookie + 302); *reusing the same token fails* (single-use
+enforced, confirmed via the server's own rejection log line firing);
+paired `GET /` serves the real app; a paired tool call executes for real
+(`battery_status` → real result); `revoke-phones` immediately invalidates
+the existing cookie. Also confirmed cross-process: a token minted by the
+`cli/settings.py` CLI (a fresh process) validated correctly against the
+already-running daemon's `phone/server.py` after a restart — the
+shared-file handoff works as designed, not just within one process.
+
+**Real side effect caught, not silently absorbed**: shipping this onto
+the already-live (unauthenticated-beta) daemon immediately logged out the
+phone that had been actively using it minutes earlier — expected and
+correct (there was no session cookie to grandfather in, since pairing
+didn't exist yet when that phone first connected), but worth naming
+explicitly since it's a real, user-visible consequence of the restart,
+not a bug.
+
+### Settings panel UI (`Panel.qml`)
+
+New "PHONE BRIDGE" section: an `Enable` toggle (`phone_bridge_enabled`,
+same `Toggle` pattern as the Watch Dogs section), a paired-phone count,
+"Pair a Phone" (calls `pair-phone`, renders the returned QR PNG inline,
+180×180, with a "scan within 5 minutes, one scan only" caption) and
+"Revoke All" buttons. Hot-reloaded cleanly (`DEBUG qml: Local plugin
+changed, reloading: omarchy-ai.settings`, no errors in the shell's log)
+and brace/paren-balance-checked. **Not independently screenshot-verified
+this round** — opening the panel via `omarchy-shell -q omarchy-ai.settings
+open`/`toggle` didn't produce a layer-shell surface in `hyprctl layers`
+this time (no error either; possibly popup positioning needs a real
+bar-icon click's event context rather than a bare IPC call — not
+something chased further given the actual pairing logic is independently
+verified through real HTTP requests either way). Needs a real look from
+the user at the machine to confirm the section renders/behaves as
+expected visually.
+
+### Omarchy-styled page + real ASCII/braille visualizer
+
+Redesigned `phone/static/index.html`: the Omarchy logo (copied from
+`/usr/share/pixmaps/omarchy.png` into `phone/static/`, served through a
+new small allowlisted static-file route in `do_GET` — resolves the
+request path against `_STATIC_DIR` and rejects anything that resolves
+outside it, so this can't be used to read arbitrary files) plus the exact
+same green (`#39ff88`) accent and glow used everywhere else in this
+project's UI (Watch Dogs overlay, the settings panel's live-status dot).
+
+The visualizer itself is a faithful port of `Watchdog.qml`'s
+`visualizerLine()`/`pushLevel()` — identical glyph sets (`blockChars`,
+`brailleChars`, `glitchChars`) and identical mixing probabilities (4%
+glitch, 62% braille, else block; the same two-independent-`Math.random()`
+idle-baseline sparkle when there's nothing to show), so a phone
+conversation reads visually consistent with the desktop overlay rather
+than inventing a second visual language. Driven differently, though:
+there's no server-side RMS to pipe over IPC here (the browser plays the
+remote audio itself), so it reads the live amplitude directly client-side
+via a Web Audio `AnalyserNode` attached to the incoming WebRTC track,
+sampled at the same ~10Hz the desktop throttles `watchdog.level()` to,
+accumulating only while `convState === 'speaking'` (mirrors the QML
+property's own doc comment: "Only accumulated while convState ===
+speaking... so a conversation that goes quiet doesn't leave a stale
+frozen frame").
+
+Verified: embedded JS parses cleanly (`node -e "new Function(...)"` on
+the extracted `<script>` body — cheap syntax check, not a runtime test of
+the audio-driven rendering, which needs a real phone/mic to exercise);
+real HTTP request through the running daemon with a valid paired cookie
+confirms the page serves with the `#visualizer` element and the logo
+reference present, and `GET /omarchy-logo.png` returns the image with
+the correct content type.
+
+### Known gaps
+
+1. Settings panel's new section not screenshot-verified (see above) —
+   ask the user to confirm it visually.
+2. The visualizer's audio-driven rendering itself (as opposed to its
+   idle baseline, which is pure JS with no audio input) hasn't been
+   exercised against a real phone conversation yet — the gain/headroom
+   constant (`rms * 5`) is a first guess by ear, not measured the way the
+   desktop's `OUTPUT_GAIN`/`/12000` normalization was (see STATUS.md's
+   earlier residual-static entries) — may need tuning once actually
+   watched live.
+3. All test pairing sessions created while verifying this were revoked
+   (`revoke-phones`) before handing off — `phone_bridge_paired_count: 0`
+   confirmed — so the very first real pairing is still the user's own.

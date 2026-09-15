@@ -27,8 +27,10 @@ reasoning.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -64,6 +66,7 @@ SETTABLE = (
     "watchdog_enabled",
     "watchdog_display_mode",
     "voice",
+    "phone_bridge_enabled",
 )
 
 # A curated set of realtime voices this project has seen documented/used —
@@ -99,6 +102,8 @@ def _snapshot() -> dict:
     voice_options = list(KNOWN_VOICES)
     if cfg.voice not in voice_options:
         voice_options.append(cfg.voice)
+    from ..phone.server import paired_count
+
     return {
         "fields": fields,
         "defaults": default_fields,
@@ -107,6 +112,7 @@ def _snapshot() -> dict:
         "voice_options": voice_options,
         "config_path": str(USER_CONFIG_PATH),
         "api_key": _api_key_state(),
+        "phone_bridge_paired_count": paired_count(),
     }
 
 
@@ -161,6 +167,11 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
         if not isinstance(value, str) or not value.strip():
             raise ValidationError("voice must be a non-empty string")
         return value.strip()
+
+    if key == "phone_bridge_enabled":
+        if not isinstance(value, bool):
+            raise ValidationError("phone_bridge_enabled must be a boolean")
+        return value
 
     raise ValidationError(f"unknown or non-settable key: {key!r}")
 
@@ -311,6 +322,43 @@ def cmd_restart(_args: argparse.Namespace) -> dict:
     return {"restarted": True, "reason": reason}
 
 
+def cmd_pair_phone(_args: argparse.Namespace) -> dict:
+    """Mints a single-use, 5-minute pairing token and turns its URL into
+    a QR PNG the panel can display directly. The daemon (a separate,
+    long-running process) reads the token file this writes when a phone
+    hits `GET /pair?token=...` — see phone/server.py's module docstring
+    for why this is a shared file rather than a call between the two
+    processes."""
+    cfg = load_config()
+    if not cfg.phone_bridge_enabled:
+        return {"error": "phone bridge is turned off — enable it above first"}
+    if shutil.which("qrencode") is None:
+        return {"error": "qrencode is not installed (pacman -S qrencode)"}
+
+    from ..phone.server import mint_pairing_token
+
+    info = mint_pairing_token(cfg)
+    proc = subprocess.run(
+        ["qrencode", "-t", "PNG", "-s", "8", "-o", "-", info["url"]],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        return {"error": (proc.stderr or b"qrencode failed").decode(errors="replace").strip()}
+
+    return {
+        "url": info["url"],
+        "expires_at": info["expires_at"],
+        "qr_png_base64": base64.b64encode(proc.stdout).decode(),
+    }
+
+
+def cmd_revoke_phones(_args: argparse.Namespace) -> dict:
+    from ..phone.server import revoke_all_sessions
+
+    revoke_all_sessions()
+    return _snapshot()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="omarchy-ai-settings")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -321,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("set-api-key")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
+    sub.add_parser("pair-phone")
+    sub.add_parser("revoke-phones")
 
     args = parser.parse_args(argv)
     handler = {
@@ -328,6 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         "set": cmd_set,
         "set-api-key": cmd_set_api_key,
         "restart-status": cmd_restart_status,
+        "pair-phone": cmd_pair_phone,
+        "revoke-phones": cmd_revoke_phones,
         "restart": cmd_restart,
     }[args.command]
     result = handler(args)
