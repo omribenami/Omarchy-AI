@@ -78,9 +78,9 @@ def mint_pairing_token(config: Config) -> dict:
     short-lived process — this just writes a file the long-running daemon
     reads, the same "settings writes shared state, daemon reads it"
     pattern config.yaml itself already uses, rather than adding an
-    internal HTTP call between the two processes). Single-use, 5-minute
-    TTL: `_handle_pair` marks it used on the first (and only valid)
-    redemption."""
+    internal HTTP call between the two processes). 5-minute TTL,
+    idempotent within it rather than strictly single-use — see
+    `_handle_pair`'s own comment for why."""
     token = secrets.token_urlsafe(24)
     expires_at = time.time() + _PAIR_TOKEN_TTL_SECONDS
     _write_json_0600(_PAIR_TOKEN_PATH, {"token": token, "expires_at": expires_at, "used": False})
@@ -285,20 +285,30 @@ class _Handler(BaseHTTPRequestHandler):
         except (FileNotFoundError, json.JSONDecodeError):
             pending = None
 
+        # Deliberately idempotent within the TTL, not strictly single-use
+        # (a real bug, confirmed live via journalctl: a phone's QR
+        # scanner/browser fired the same link 3 times within 2 seconds --
+        # common camera-app "tap to open" preview behavior -- and the
+        # 2nd/3rd hits landed on pair_failed.html even though the 1st had
+        # already succeeded, which is what the user actually saw). Doesn't
+        # meaningfully weaken security: the token is still single-flight
+        # in the sense that pressing "QR" again immediately invalidates it
+        # (mint_pairing_token overwrites this same file), and it still
+        # hard-expires after 5 minutes either way.
         valid = (
             pending is not None
             and token
             and secrets.compare_digest(pending.get("token", ""), token)
-            and not pending.get("used")
             and time.time() < pending.get("expires_at", 0)
         )
         if not valid:
-            log.warning("phone bridge: pairing attempt rejected (bad/expired/used token) from %s", self.address_string())
+            log.warning("phone bridge: pairing attempt rejected (bad/expired token) from %s", self.address_string())
             self._send_file(_STATIC_DIR / "pair_failed.html", "text/html; charset=utf-8", status=403)
             return
 
-        pending["used"] = True
-        _write_json_0600(_PAIR_TOKEN_PATH, pending)
+        if not pending.get("used"):
+            pending["used"] = True
+            _write_json_0600(_PAIR_TOKEN_PATH, pending)
 
         session_id = secrets.token_urlsafe(32)
         sessions = _load_sessions()

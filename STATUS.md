@@ -2717,3 +2717,47 @@ Verified: brace/paren counts balanced (131/131, 170/170) after removing
 ~80 lines of `PopupCard`/`qrColumn` and restoring the inline block;
 `omarchy restart shell` produced a clean cold load with zero errors
 against the fresh PID.
+
+## Pairing token was too strictly single-use — real phone double-fire caught in the daemon log
+
+Next real report: *"1st try wont pair second try says expired."* This
+time the daemon's own log (not the shell's) had the answer, and it
+wasn't what either description suggested:
+
+```
+01:20:59 phone bridge: new pairing accepted from 192.168.1.58
+01:21:14 phone bridge: pairing attempt rejected (bad/expired/used token) from 192.168.1.58
+01:21:16 phone bridge: pairing attempt rejected (bad/expired/used token) from 192.168.1.58
+01:21:45 phone bridge: new pairing accepted from 192.168.1.58
+```
+
+Both of the user's actual attempts *succeeded* (`phone_bridge_paired_count`
+was 2, confirmed) — the two rejections in between are the same QR link
+being hit again 15 and 17 seconds after its first (successful) use, most
+likely the phone's camera/QR-scanner app re-firing the same link (a
+common "preview card, tap to open" pattern that can register more than
+one open). Because tokens were strictly single-use, that harmless re-fire
+got a hard 403 `pair_failed.html` — and since browsers don't guarantee
+which of several near-simultaneous responses ends up rendered, what the
+user actually *saw* was very plausibly one of these rejections, not the
+success that happened a moment earlier.
+
+**Fix**: `_handle_pair` no longer requires `not pending.get("used")` to
+accept a token — only that it matches and hasn't hit its 5-minute
+`expires_at`. Still effectively single-token-in-flight in every way that
+matters for security: pressing "QR" again immediately invalidates
+whatever token was showing before (`mint_pairing_token` overwrites the
+same file), and the hard TTL is untouched — this only removes the
+strict "exactly one HTTP hit, ever" requirement, which was never the
+actual security property, just an accidental side effect of how it was
+implemented. Updated the two "one scan only"/"one-time code" UI strings
+in `Panel.qml` to match (`"Scan within 5 minutes"` — QR is no longer
+falsely disposable-looking).
+
+Verified live: minted a real token, hit `/pair?token=...` three times in
+immediate succession (simulating the exact double/triple-fire from the
+log) — all three now return `302` instead of the 1st succeeding and the
+2nd/3rd 403ing. Daemon restarted to load it (`journalctl` checked first,
+no conversation in progress — the last one had just ended cleanly with a
+real Hebrew farewell/hangup, unrelated to this work but confirms the
+daemon's exit-phrase handling is still solid).
