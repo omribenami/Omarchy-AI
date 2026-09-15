@@ -158,6 +158,26 @@ class LiveSession:
             "visualizer",
             "both",
         )
+        # Last state actually sent to the overlay. Real bug this caught:
+        # the "speaking" transition used to be gated on
+        # `not self._output_buffer` (a proxy for "first delta of a new
+        # utterance") rather than on whether the overlay was already
+        # showing "speaking" — so a tool call mid-response (state
+        # "thinking") interleaved with speech (the exact pattern this
+        # project's own instructions ask for: "briefly confirm what you
+        # did after calling a tool") left the buffer non-empty when speech
+        # resumed, the emptiness check never passed again, and the
+        # visualizer got stuck on "thinking" — cleared and dark — for the
+        # rest of that response. Deduping on the actual last-sent state
+        # instead of a buffer-emptiness proxy fixes every call site at
+        # once, not just this one.
+        self._watchdog_state: str | None = None
+
+    def _set_watchdog_state(self, label: str) -> None:
+        if not self._watchdog_on or label == self._watchdog_state:
+            return
+        self._watchdog_state = label
+        watchdog.state(label)
 
     def _read_key(self) -> str:
         with open(self.config.api_key_path) as f:
@@ -286,8 +306,8 @@ class LiveSession:
         log.info("tool call: %s(%s)", name, args)
         # "thinking/calling a tool" per the watchdog overlay's state
         # vocabulary — reuses this call's own name/args, no new tracking.
+        self._set_watchdog_state("thinking")
         if self._watchdog_on:
-            watchdog.state("thinking")
             watchdog.tool_call(name, args)
         result = await loop.run_in_executor(None, run_action, name, args)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
@@ -373,11 +393,10 @@ class LiveSession:
             return
         etype = event.get("type", "")
         if etype == "session.input_transcript.delta":
-            # Emit the "listening" state only on the first delta of a new
-            # user utterance (buffer was empty before this one), not once
-            # per token — a real per-delta event would storm the overlay.
-            if not self._input_buffer and self._watchdog_on:
-                watchdog.state("listening")
+            # _set_watchdog_state itself dedupes on the *actual* last-sent
+            # state now, not buffer emptiness — safe to call on every
+            # delta, only the real transitions reach the overlay.
+            self._set_watchdog_state("listening")
             self._input_buffer += event.get("delta", "")
             if self._output_buffer:
                 self._transcript.append({"role": "assistant", "text": self._output_buffer})
@@ -386,10 +405,7 @@ class LiveSession:
             if self._check_exit_phrase(self._input_buffer):
                 self._hangup.set()
         elif etype == "session.output_transcript.delta":
-            # Same debouncing on the other side of the conversation: only
-            # the first delta of a new assistant utterance flips the state.
-            if not self._output_buffer and self._watchdog_on:
-                watchdog.state("speaking")
+            self._set_watchdog_state("speaking")
             # The model started replying — the user's turn is over. Reset
             # the input buffer so the next utterance is judged on its own.
             if self._input_buffer:
@@ -589,7 +605,8 @@ class LiveSession:
             log.info("live session connected (%.2fs)", time.monotonic() - t_start)
             if self._watchdog_on:
                 watchdog.start(self.config.watchdog_display_mode)
-                watchdog.state("listening")
+                self._watchdog_state = None  # fresh session, no state sent yet
+            self._set_watchdog_state("listening")
 
             try:
                 await asyncio.wait_for(

@@ -1629,3 +1629,51 @@ by the screen. Screenshot-verified: everything now sits inside the box.
 Worth remembering for the next addition to this panel: don't reintroduce
 a fixed cap without checking it against real content height first, or
 just leave it uncapped like this.
+
+## Visualizer going dark after a tool call interleaved with speech
+
+The real cause of "I can't see the voice visualization now": every
+`watchdog.state()` call site had its OWN debounce logic, each based on a
+different proxy for "is this actually a new state" rather than tracking
+the real last-sent state:
+
+- `_run_tool_call` fired `state("thinking")` unconditionally, every call.
+- The output-transcript-delta handler only fired `state("speaking")` when
+  `self._output_buffer` was empty — a proxy for "first delta of a new
+  utterance", not "the overlay isn't already showing speaking".
+
+Those two don't compose. `_output_buffer` only resets on the *next user
+utterance*, not after a tool call. So the very pattern this project's own
+`instructions` ask the model to do — "briefly confirm what you did after
+calling a tool" (tool call, then a bit of speech, possibly another tool
+call, then more speech) — sets `thinking` before the tool, then never
+gets back to `speaking` after it, because the buffer is no longer empty
+by the time speech resumes. The visualizer (and the Watch Dogs card's
+state dot) go dark for the rest of that response and never recover until
+the user's next utterance flips it back to `listening`. Given how much of
+this session's real usage was exactly this pattern (`start_casting` /
+`list_cast_targets` / narration, repeatedly, in single conversations —
+see the TV-casting round above), this was very likely live for most of
+today's testing without being caught until reported directly.
+
+Fixed by replacing every ad hoc debounce with one real tracker:
+`self._watchdog_state` plus a `_set_watchdog_state(label)` helper that
+only calls `watchdog.state()` when `label` differs from the last one
+actually sent, reset to `None` at each new session's connect. All four
+call sites (session connect, tool-call start, input-delta, output-delta)
+now route through it. Verified directly (not by screenshot luck this
+time): a scripted reproduction of the exact interleaved sequence —
+`listening -> thinking -> speaking -> thinking -> speaking` (tool call,
+speech, another tool call, more speech) — now emits all five transitions
+correctly; the old code would have silently dropped the second
+`speaking`.
+
+Separately, real bug this round: `Panel.qml`'s settings panel had a
+hardcoded `Style.space(560)` content-height cap left over from before the
+OpenAI API key section existed — once that section pushed real content
+height past it, the extra content rendered outside the panel's own drawn
+border instead of the border growing to contain it (user report: "some
+settings are outside of the box"). Fixed by dropping the fixed cap
+entirely and relying on `KeyboardPanel`'s own screen-relative
+`availableCardHeight`, which was already the real safety bound.
+Screenshot-verified.
