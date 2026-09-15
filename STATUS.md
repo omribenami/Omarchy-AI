@@ -2912,3 +2912,77 @@ glossed over.
 Daemon restarted to load it (`journalctl` checked first — only benign
 `ConnectionResetError` noise from an idle keep-alive, no conversation in
 progress). Live and ready for the morning.
+
+## GitHub push — README live, full code push needs a real git credential
+
+User's request: push this repo to `omribenami/Omarchy-AI` (created fresh,
+empty) and write a real README. No local git push credential exists on
+this machine (no SSH key, `gh` not authenticated, no GitHub PAT in the
+MyApi vault — all confirmed) — the only authenticated path available is
+MyApi's own GitHub connection (Composio-backed), reachable via API only,
+not `git push`.
+
+**What's actually live on GitHub right now**: a real, good README.md
+(written by a dispatched agent from `STATUS.md`/ADR-0001/`tools.py`,
+pushed via GitHub's Contents API before that agent hit its monthly spend
+limit) — verified via `curl https://raw.githubusercontent.com/.../README.md`
+directly. Reviewed it in full afterward and found (and fixed, locally)
+two real inaccuracies: it said the Quickshell/QML plugins and a trained
+wake-word model didn't exist in usable form. Both actually do — see
+below.
+
+**What's committed locally but not yet pushed**: everything else. Two
+real, valuable additions made tonight while reviewing the pushed
+README against the actual running system, both now committed locally
+(`498868a`):
+1. **The 3 Quickshell/QML plugins** (`omarchy-ai.settings`/`.watchdog`/
+   `.window-labels`) — these had *never* been part of this repo's git
+   history at all; they were developed and hot-reloaded in place under
+   `~/.config/omarchy/plugins/` for the whole project's life, a separate
+   directory tree entirely. Copied into `quickshell/plugins/`, with a new
+   `quickshell/README.md` covering install (`omarchy plugin enable`) and
+   the one real portability gap (`Panel.qml`'s hardcoded absolute path to
+   this specific checkout's settings CLI).
+2. **The 3 real trained wake-word models** (omachy/omri/roni,
+   `~/.config/omarchy-ai/wake_models/*.onnx`) — the pushed README claimed
+   no dedicated model existed yet ("hey jarvis" placeholder), which was
+   stale/wrong; these three are real, trained, and are the actual
+   configured default (`config.py`'s `wake_word = "omachy"`). Added under
+   `wake_models/`, wired into `scripts/setup.sh` so a fresh install
+   copies them into place automatically instead of leaving a stale
+   placeholder-word instruction in the setup output.
+
+**Why the rest wasn't also pushed via the API tonight**: tried, and
+stopped deliberately after measuring the real cost. Pushing everything
+via GitHub's Git Data API (no git credential means blobs/trees/commits
+via REST calls, not a real `git push`) means every byte of every file —
+text *and* especially the ~950KB of base64-encoded binary content (3
+wake models at ~274KB each, Android icons, the gradle wrapper jar) — has
+to pass through as literal tool-call content. A live test reading and
+re-embedding just a few of the smaller binary files alone consumed
+~50,000 tokens; the full set would have been well into the hundreds of
+thousands, for a result *strictly worse* than the alternative (a single
+flattened commit, no real history) — and this exact mechanism is almost
+certainly why both background agents dispatched for this task hit their
+monthly spend limit mid-run rather than completing.
+
+**The actual right fix, once anyone is at the keyboard**: a real
+`git push` needs a real credential, which takes 30 seconds for a human
+(`gh auth login`, or an SSH key already trusted by GitHub) and costs
+nothing to run, and pushes everything — full 60-commit local history,
+every binary, no reconstruction needed — in one shot, strictly better
+than anything achievable through the API path. `git remote origin` was
+added locally already (`https://github.com/omribenami/Omarchy-AI.git`)
+so the only remaining step is:
+
+```bash
+gh auth login   # if git push below asks for credentials and none are configured
+git push -u origin main --force
+```
+
+`--force` is genuinely needed here (not a routine habit) — the remote's
+one existing commit (the README, pushed via the API) shares no history
+with this repo's real local commits, so a plain push would be rejected
+as non-fast-forward; force-pushing over a single placeholder commit in a
+repo the user just created moments ago, with nothing else depending on
+it, is the correct and safe use of it.
