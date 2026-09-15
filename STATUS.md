@@ -2165,3 +2165,79 @@ Night"`); `{"args": ["reminder", "show"]}` → real result.
    above (`config.py`/`actions.py`/`tools.py`) — not yet done as of this
    entry; see the restart-discipline notes elsewhere in this file
    (`journalctl` check first, `settings.py`'s conversation-busy guard).
+
+(Both items above resolved later the same session: daemon restarted
+cleanly, the live HY300Pro cast survived it. See below for what came
+next.)
+
+## Remote mic button — investigated live, real negative result, closed for now
+
+The user's own follow-up question was whether Living Room TV's remote mic
+button could be harnessed to talk to the assistant, then, after being told
+most Android TV platforms reserve it for the system assistant (ADR-0001's
+own risk note #2), pushed back with a real point: *"thats not true...
+apps use it for serch fields and such... we need to harness it for our
+app."* That's true for a different mechanism (an app's own on-screen
+search-box mic icon calling `RecognizerIntent` on tap) than the physical
+remote button, but the pushback was fair enough to actually test rather
+than defer to the ADR's original untested assumption.
+
+**Round 1 -- initial button press, logcat captured:** launched
+`com.google.android.katniss` (`SearchResultActivity`), `LAUNCH_SINGLE_INSTANCE`
+from uid 10044 (katniss's own uid) with `BAL_ALLOW_SAW_PERMISSION`.
+`settings list secure` showed `assistant` and `voice_interaction_service`
+both set to `com.google.android.katniss/.search.serviceapi.KatnissVoiceInteractionService`
+-- the completely standard Android Assist (`VoiceInteractionService`)
+role, not something TV-specific. Device: "onn. Full HD Streaming Device"
+(Walmart), Android 14.
+
+**Feasibility looked real at this point:** `WRITE_SECURE_SETTINGS` is
+grantable via `adb shell pm grant` once an app declares it in its
+manifest (confirmed: it refuses to grant an undeclared permission, not a
+deeper restriction). Built a minimal feasibility stub -- a
+`VoiceInteractionService` + `VoiceInteractionSessionService` in the
+receiver app, declared in the manifest, with a `res/xml` service
+descriptor (two real build errors hit and fixed along the way: XML
+comments can't contain `--` at all, anywhere, not just as delimiters; and
+a free top-level Kotlin function in `build.gradle.kts` has no implicit
+`Project`/`rootDir` receiver, unrelated to this stub but hit again here
+confirming the earlier version-tracking fix's own note about it).
+Installed, granted the permission, overrode `assistant` and
+`voice_interaction_service` via `adb shell settings put secure` to point
+at the new stub -- both read back correctly.
+
+**Round 2 -- button pressed again with the override live:** identical
+result. Katniss launched again, this time visibly via
+`android.speech.action.WEB_SEARCH` with an *explicit* component
+(`cmp=com.google.android.katniss/...SearchActivityTrampoline`) from uid
+1000 (`system_server` itself, `BAL_ALLOW_ALLOWLISTED_UID`). The
+`assistant`/`voice_interaction_service` override had zero effect.
+
+**Root cause of the negative result:** `dumpsys package
+com.google.android.katniss` shows Katniss registered as the sole
+`android.intent.category.DEFAULT` handler for three separate actions --
+`android.speech.action.WEB_SEARCH`, `android.intent.action.ASSIST`, and
+`android.search.action.GLOBAL_SEARCH` -- all resolved through ordinary
+implicit-intent `PackageManager` resolution, not through
+`VoiceInteractionManagerService`/the assistant role at all. The physical
+mic key on this remote triggers one of those three (most likely
+`WEB_SEARCH`, matching the second capture), a completely different,
+harder-to-override mechanism than the Assist role: Katniss is a
+privileged system app with no competing registered handler, so it wins
+resolution outright. Unseating it would need either root (to change the
+underlying resource/config picking the default handler) or registering a
+competing intent-filter and hoping Android doesn't just pop up a
+disambiguation chooser on every press instead of picking one silently --
+bad UX even if it technically worked, and not attempted.
+
+**Verdict: real, tested, negative.** Not a "most platforms don't allow
+this" assumption anymore -- an actual override was attempted, read back
+as applied, and made no observable difference on a second real button
+press. Closed for now; a paired phone/tablet mic remains the realistic
+path to talk to the assistant while looking at the TV, not further
+remote-button interception. Settings restored to Katniss afterward
+(`assistant`/`voice_interaction_service` both set back); the feasibility
+stub code was removed rather than left in unused (manifest reverted via
+`git checkout`, stub `.kt`/`.xml` files deleted) since nothing currently
+exercises it and it requested a sensitive permission for no active
+benefit -- this write-up is the record of the attempt, not the code.
