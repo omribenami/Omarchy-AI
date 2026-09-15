@@ -1,0 +1,30 @@
+[project]
+name = "omarchy-ai"
+version = "0.1.0"
+description = "Independent voice assistant for Omarchy with Android TV/tablet casting"
+authors = [
+    { name = "omribenami", email = "benami.omri@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "aiortc>=1.15.0",
+    "numpy>=2.5.3",
+    "onnxruntime>=1.30.0",
+    "openwakeword>=0.4.0",
+    "pywayland>=0.4.19",
+    "pyyaml>=6.0.3",
+    "rapidfuzz>=3.14.6",
+    "websockets>=17.1",
+]
+
+[project.scripts]
+omarchy-ai = "omarchy_ai:main"
+# Backend for the omarchy-ai.settings Quickshell panel — see
+# src/omarchy_ai/cli/settings.py's module docstring. Invoked with an
+# absolute .venv/bin path from QML (same reasoning as the systemd unit's
+# @VENV@ substitution), this entry point just makes it easy to run by hand.
+omarchy-ai-settings = "omarchy_ai.cli.settings:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"

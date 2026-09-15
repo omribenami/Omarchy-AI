@@ -1,0 +1,24 @@
+# Template. scripts/setup.sh substitutes the @PLACEHOLDERS@ and installs
+# the result into ~/.config/systemd/user/. Editing this file does nothing
+# until setup.sh runs again.
+[Unit]
+Description=Omarchy AI — voice assistant daemon
+Documentation=https://github.com/omribenami/omarchy-ai
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=@VENV@/bin/python -m omarchy_ai
+WorkingDirectory=@PROJECT_DIR@
+Restart=on-failure
+RestartSec=2
+# gpt-live-1 needs a real API key. The key file itself
+# (~/.config/omavoice/key by default) is read directly by the daemon, not
+# loaded into the unit's environment — same reasoning as omavoice/jarvisd:
+# an env var is visible to every process sharing this UID via
+# /proc/<pid>/environ, a file the daemon opens itself is not.
+Environment=PATH=@PATH@
+
+[Install]
+WantedBy=default.target

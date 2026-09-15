@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+*.egg-info/
+
+# Android (once the receiver toolchain is set up)
+android-receiver/.gradle/
+android-receiver/build/
+android-receiver/local.properties
