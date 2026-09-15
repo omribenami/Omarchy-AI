@@ -2528,3 +2528,56 @@ the correct content type.
 3. All test pairing sessions created while verifying this were revoked
    (`revoke-phones`) before handing off — `phone_bridge_paired_count: 0`
    confirmed — so the very first real pairing is still the user's own.
+
+## Settings panel: Flickable-scroll attempt reverted, QR moved to its own popup
+
+Real user-reported bug, twice in the same round: first *"it wont scroll,
+instead it moves the sensetivity bar"*, then, correcting their own
+report, *"I was wrong the sensitivity moves by itself."* — i.e. an
+attempt to scroll the panel (mouse wheel or drag) over the
+`wake_threshold` Slider instead dragged the slider itself, because
+wrapping the whole panel content in a `Flickable` (the first fix
+attempted, for the earlier "Phone Bridge section unreachable" bug) put a
+vertical-drag-to-scroll gesture in direct conflict with the Slider's own
+horizontal-drag-to-set-value gesture over the same pointer input — a real
+regression the Flickable approach introduced, not a pre-existing bug.
+
+**Reverted** the Flickable/ScrollBar wrapper entirely, back to the plain
+anchored `Column` — confirmed no orphaned `QtQuick.Controls` import or
+dangling braces left behind (brace/paren count re-balanced, hot-reloaded
+clean).
+
+**Fixed the root cause instead**, matching what the user asked for
+directly: *"it should be a 'Connect you phone to Omarchy AI' area with a
+'QR' button which when pressed shows the QR."* The inline QR
+Image+caption (the thing that had pushed the panel's content past
+`availableCardHeight` in the first place) moved out of the main content
+`Column` entirely, into its own `PopupCard` (`qrPopup`, anchored to the
+new "QR" button) — `qs.Ui`'s own second-popup component, already used
+elsewhere in this shell (`Tray.qml`'s manage-icons popup, same pattern
+copied here: `anchorItem`/`bar`/`fittedContentWidth`/`fittedContentHeight`).
+Since it's a genuinely separate layer-shell surface with its own
+independent size/height budget, it can never again make the *settings*
+panel's own content grow past the screen — the two are decoupled by
+construction now, not just by careful sizing.
+
+The "PHONE BRIDGE" section is now just a compact header, the enable
+toggle, a paired-count line, and two small buttons ("QR" / "Revoke All")
+— renamed to "CONNECT YOUR PHONE TO OMARCHY AI" per the user's own
+wording. One real subtlety in wiring the popup's outside-click dismissal:
+`PopupCard.close()` calls `owner.close()` if the `owner` property has one
+— the existing main `KeyboardPanel` in this same file sets `owner: root`
+(our settings panel's own root), which has its own `close()` that closes
+the *whole settings panel*; blindly copying that for the QR popup would
+have made clicking outside the QR code close the entire settings panel
+along with it. Given a small inline `QtObject { function close() {
+root.qrPopupOpen = false } }` as `owner` instead, scoped to just this
+one popup.
+
+Hot-reloaded clean both times (revert, then the popup restructure) — no
+new errors in the shell's log beyond the same pre-existing duplicate-
+IpcHandler warning this file has had since before tonight. **Still not
+independently screenshot-verified** (see the phone-bridge entry above for
+why — `omarchy-shell -q omarchy-ai.settings open`/`toggle` isn't
+producing a layer via IPC in this environment, unrelated to this fix);
+the user's own next real click is the actual verification this needs.
