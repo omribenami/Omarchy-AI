@@ -5,16 +5,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -43,7 +38,6 @@ import org.webrtc.SurfaceViewRenderer
 fun ReceiverScreen(viewModel: ReceiverViewModel) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val remoteVideoTrack by viewModel.remoteVideoTrack.collectAsStateWithLifecycle()
-    val hostInput by viewModel.hostInput.collectAsStateWithLifecycle()
     var rendererRef by remember { mutableStateOf<SurfaceViewRenderer?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -79,23 +73,13 @@ fun ReceiverScreen(viewModel: ReceiverViewModel) {
         }
 
         if (!connectionState.isStreaming()) {
-            StatusOverlay(
-                connectionState = connectionState,
-                hostInput = hostInput,
-                onHostChange = viewModel::updateHost,
-                onConnect = { viewModel.connect(hostInput) },
-            )
+            StatusOverlay(connectionState = connectionState)
         }
     }
 }
 
 @Composable
-private fun StatusOverlay(
-    connectionState: CastConnectionState,
-    hostInput: String,
-    onHostChange: (String) -> Unit,
-    onConnect: () -> Unit,
-) {
+private fun StatusOverlay(connectionState: CastConnectionState) {
     Box(modifier = Modifier.fillMaxSize()) {
         // Omarchy's own Catppuccin wallpaper as the waiting-screen
         // background (user request -- was plain black before). Sourced
@@ -109,9 +93,15 @@ private fun StatusOverlay(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
         )
+        // No IP field / Connect button -- the app always auto-connects on
+        // launch (ReceiverViewModel.init), per the user's own request to
+        // remove them; there's nothing for a person to do here. All
+        // status/state text lives at the bottom of the screen instead of
+        // center, also per the user's own request, so it reads like a
+        // status bar/log rather than the focal point of the screen.
         Column(
             modifier = Modifier.fillMaxSize().padding(48.dp),
-            verticalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -121,18 +111,6 @@ private fun StatusOverlay(
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(text = statusText(connectionState), color = Color.White)
-            Spacer(modifier = Modifier.height(24.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = hostInput,
-                    onValueChange = onHostChange,
-                    label = { Text("Sender IP") },
-                    singleLine = true,
-                    modifier = Modifier.widthIn(min = 220.dp),
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Button(onClick = onConnect) { Text("Connect") }
-            }
         }
     }
 }
