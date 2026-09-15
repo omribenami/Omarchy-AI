@@ -13,22 +13,32 @@ handful of small JSON/static-file endpoints, not a real API surface.
 `ThreadingHTTPServer` so one phone's tool call (e.g. describe_screen,
 multi-second) can't stall another concurrent request.
 
-Beta, no pairing/auth yet — see config.py's `phone_bridge_enabled` comment
-and STATUS.md. Bound to 0.0.0.0 so a phone on the LAN can actually reach
-it; that also means anyone else on the LAN can, while it's running.
+Pairing (QR code, minted from the settings panel — see cli/settings.py's
+`pair-phone` command): a phone with no valid session cookie gets the
+"not paired" page for `GET /`, and a 403 from both API endpoints, full
+stop — this is the real access boundary, not just a UI nicety. See
+`mint_pairing_token`/`_handle_pair`/`_is_paired` below for the flow.
 """
 
 from __future__ import annotations
 
+import http.cookies
 import json
 import logging
+import secrets
+import shutil
+import socket as socket_mod
+import ssl
+import subprocess
 import threading
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from ..config import Config
+from ..config import CONFIG_DIR, Config
 from ..execution.actions import run_action
 from ..voice.live import build_session_config
 
@@ -36,6 +46,132 @@ log = logging.getLogger("omarchy_ai.phone.server")
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _LIVE_SESSIONS_URL = "https://api.openai.com/v1/live/sessions"
+
+_CERT_DIR = CONFIG_DIR / "phone_bridge"
+_CERT_PATH = _CERT_DIR / "cert.pem"
+_KEY_PATH = _CERT_DIR / "key.pem"
+_PAIR_TOKEN_PATH = _CERT_DIR / "pending_pair_token.json"
+_SESSIONS_PATH = _CERT_DIR / "paired_sessions.json"
+_SESSION_COOKIE = "omarchy_session"
+_PAIR_TOKEN_TTL_SECONDS = 300  # 5 minutes — long enough to scan, short enough that a stale QR left on screen isn't a standing risk
+_SESSION_MAX_AGE_SECONDS = 365 * 24 * 3600  # pairing should survive phone restarts; revoke explicitly instead
+
+
+def _write_json_0600(path: Path, data: dict | list) -> None:
+    """Same 0600-from-creation pattern as cli/settings.py's API key write
+    — no window where a pairing token or session id sits on disk
+    world-readable."""
+    import os
+
+    _CERT_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def mint_pairing_token(config: Config) -> dict:
+    """Called from cli/settings.py's `pair-phone` command (a separate,
+    short-lived process — this just writes a file the long-running daemon
+    reads, the same "settings writes shared state, daemon reads it"
+    pattern config.yaml itself already uses, rather than adding an
+    internal HTTP call between the two processes). Single-use, 5-minute
+    TTL: `_handle_pair` marks it used on the first (and only valid)
+    redemption."""
+    token = secrets.token_urlsafe(24)
+    expires_at = time.time() + _PAIR_TOKEN_TTL_SECONDS
+    _write_json_0600(_PAIR_TOKEN_PATH, {"token": token, "expires_at": expires_at, "used": False})
+    ip = _primary_lan_ip() or "127.0.0.1"
+    url = f"https://{ip}:{config.phone_bridge_port}/pair?token={token}"
+    return {"token": token, "url": url, "expires_at": expires_at}
+
+
+def _load_sessions() -> list[str]:
+    try:
+        with open(_SESSIONS_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def revoke_all_sessions() -> None:
+    """Called from cli/settings.py's `revoke-phones` command — kicks
+    every currently-paired phone out at once (each one's cookie stops
+    matching anything in this file on its next request)."""
+    _write_json_0600(_SESSIONS_PATH, [])
+
+
+def paired_count() -> int:
+    return len(_load_sessions())
+
+
+def _primary_lan_ip() -> str | None:
+    """The IP this machine would use to reach the internet — a UDP
+    "connect" just picks a route, sends nothing, so this needs no real
+    connectivity to 8.8.8.8. Used only to put a real, reachable IP in the
+    cert's subjectAltName; browsers reject a cert whose SAN doesn't match
+    the address in the URL bar even when the user would otherwise click
+    through a self-signed warning."""
+    try:
+        s = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def _ensure_self_signed_cert() -> tuple[str, str] | None:
+    """(Re)generates a self-signed TLS cert/key each daemon start, valid
+    for whatever this machine's current LAN IP is.
+
+    Needed because `getUserMedia` (the mic) is refused outright, with no
+    permission prompt at all, on anything but a "secure context" — https,
+    or localhost — confirmed live: the phone got "microphone permission
+    denied" without ever seeing Android/iOS's usual mic-access prompt,
+    because a plain http://<lan-ip> page from another device is not a
+    secure context in any mainstream mobile browser. A real CA-signed
+    cert isn't an option for a bare LAN IP with no domain; a self-signed
+    one is the standard fix for exactly this "local device, no domain"
+    case — the browser still shows a one-time "connection isn't private"
+    warning to click through (unavoidable without installing a CA on the
+    phone, out of scope for a beta), but getUserMedia itself then works.
+
+    Regenerated on every start rather than cached/reused: this machine's
+    LAN IP can change (DHCP), and a cert whose SAN doesn't match the
+    current URL's host is refused outright — cheap (<1s) to just always
+    generate a fresh one for the IP detected right now.
+    """
+    if shutil.which("openssl") is None:
+        log.warning("phone bridge: openssl not found, cannot generate a TLS cert — staying on plain HTTP (mic access will fail)")
+        return None
+    ip = _primary_lan_ip()
+    san = f"subjectAltName=IP:127.0.0.1,DNS:localhost{f',IP:{ip}' if ip else ''}"
+    _CERT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _CERT_DIR.chmod(0o700)
+    except OSError:
+        pass
+    r = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(_KEY_PATH), "-out", str(_CERT_PATH),
+            "-days", "3650", "-subj", "/CN=omarchy-phone-bridge",
+            "-addext", san,
+        ],
+        capture_output=True, text=True, timeout=15,
+    )
+    if r.returncode != 0:
+        log.warning("phone bridge: cert generation failed (%s), staying on plain HTTP", r.stderr.strip()[:300])
+        return None
+    try:
+        _KEY_PATH.chmod(0o600)
+    except OSError:
+        pass
+    return str(_CERT_PATH), str(_KEY_PATH)
 
 
 def _read_api_key(config: Config) -> str:
@@ -87,29 +223,115 @@ class _Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw or b"{}")
 
-    def do_GET(self) -> None:  # noqa: N802 — stdlib method name
-        path = self.path.split("?", 1)[0]
-        if path in ("/", "/index.html"):
-            index = _STATIC_DIR / "index.html"
-            try:
-                body = index.read_bytes()
-            except FileNotFoundError:
-                self._send_json(500, {"error": "phone bridge static page missing"})
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+    def _send_file(self, path: Path, content_type: str, status: int = 200) -> None:
+        try:
+            body = path.read_bytes()
+        except FileNotFoundError:
+            self._send_json(500, {"error": f"{path.name} missing"})
             return
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _is_paired(self) -> bool:
+        raw_cookie = self.headers.get("Cookie", "")
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(raw_cookie)
+        except http.cookies.CookieError:
+            return False
+        morsel = jar.get(_SESSION_COOKIE)
+        if morsel is None:
+            return False
+        return morsel.value in _load_sessions()
+
+    def do_GET(self) -> None:  # noqa: N802 — stdlib method name
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+
+        if path == "/pair":
+            self._handle_pair(urllib.parse.parse_qs(parsed.query))
+            return
+
+        if path in ("/", "/index.html"):
+            if not self._is_paired():
+                self._send_file(_STATIC_DIR / "not_paired.html", "text/html; charset=utf-8")
+                return
+            self._send_file(_STATIC_DIR / "index.html", "text/html; charset=utf-8")
+            return
+
+        # A small allowlist of extra static assets (logo image, visualizer
+        # JS/CSS pulled out of index.html) — resolved against _STATIC_DIR
+        # and rejected if that resolution steps outside it, so a path like
+        # /../../etc/passwd can't be used to read arbitrary files.
+        candidate = (_STATIC_DIR / path.lstrip("/")).resolve()
+        if candidate.is_file() and _STATIC_DIR in candidate.parents:
+            content_type = {
+                ".png": "image/png", ".svg": "image/svg+xml",
+                ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+            }.get(candidate.suffix, "application/octet-stream")
+            self._send_file(candidate, content_type)
+            return
+
         self._send_json(404, {"error": "not found"})
+
+    def _handle_pair(self, query: dict) -> None:
+        token = (query.get("token") or [""])[0]
+        try:
+            with open(_PAIR_TOKEN_PATH) as f:
+                pending = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pending = None
+
+        valid = (
+            pending is not None
+            and token
+            and secrets.compare_digest(pending.get("token", ""), token)
+            and not pending.get("used")
+            and time.time() < pending.get("expires_at", 0)
+        )
+        if not valid:
+            log.warning("phone bridge: pairing attempt rejected (bad/expired/used token) from %s", self.address_string())
+            self._send_file(_STATIC_DIR / "pair_failed.html", "text/html; charset=utf-8", status=403)
+            return
+
+        pending["used"] = True
+        _write_json_0600(_PAIR_TOKEN_PATH, pending)
+
+        session_id = secrets.token_urlsafe(32)
+        sessions = _load_sessions()
+        sessions.append(session_id)
+        _write_json_0600(_SESSIONS_PATH, sessions)
+        log.info("phone bridge: new pairing accepted from %s", self.address_string())
+
+        cookie = http.cookies.SimpleCookie()
+        cookie[_SESSION_COOKIE] = session_id
+        cookie[_SESSION_COOKIE]["path"] = "/"
+        cookie[_SESSION_COOKIE]["secure"] = True
+        cookie[_SESSION_COOKIE]["httponly"] = True
+        cookie[_SESSION_COOKIE]["samesite"] = "Strict"
+        cookie[_SESSION_COOKIE]["max-age"] = _SESSION_MAX_AGE_SECONDS
+
+        self.send_response(302)
+        self.send_header("Set-Cookie", cookie[_SESSION_COOKIE].OutputString())
+        self.send_header("Location", "/")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib method name
         path = self.path.split("?", 1)[0]
         if path == "/api/live/offer":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
             self._handle_offer()
             return
         if path == "/api/tool":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
             self._handle_tool()
             return
         self._send_json(404, {"error": "not found"})
@@ -168,10 +390,22 @@ def start(config: Config) -> ThreadingHTTPServer | None:
         return None
     _Handler.config = config
     server = ThreadingHTTPServer(("0.0.0.0", config.phone_bridge_port), _Handler)
+
+    cert = _ensure_self_signed_cert()
+    scheme = "http"
+    if cert is not None:
+        cert_path, key_path = cert
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="phone-bridge")
     thread.start()
+    ip = _primary_lan_ip() or "0.0.0.0"
     log.info(
-        "phone bridge listening on 0.0.0.0:%d (beta, no pairing/auth yet)",
-        config.phone_bridge_port,
+        "phone bridge listening on %s://%s:%d (%d phone(s) currently paired)%s",
+        scheme, ip, config.phone_bridge_port, paired_count(),
+        "" if cert else " -- PLAIN HTTP, mic access will not work on a phone",
     )
     return server
