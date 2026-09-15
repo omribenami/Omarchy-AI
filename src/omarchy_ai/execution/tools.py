@@ -339,37 +339,95 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "install_receiver_on_tv",
-        "Guided setup to get the receiver app onto a TV that's never been "
-        "used for casting before. This is a real back-and-forth, not a "
-        "single automatic step: Android requires the user to personally "
-        "enable Developer options and Wireless debugging on the TV's own "
-        "screen first — that cannot be done remotely or skipped. Call this "
-        "with no pairing_code first: if no TV is mid-setup yet, it returns "
-        "the exact steps to narrate to the user (Settings > About > tap "
-        "the build entry repeatedly to unlock Developer options > "
-        "Developer options > Wireless debugging on > Pair device with "
-        "pairing code); once the user says they see a pairing screen, "
-        "call it again (still no pairing_code) to check whether it's now "
-        "discoverable. Once found, ask the user to read the code shown on "
-        "the TV out loud (or type it), then call this a final time with "
-        "that code as pairing_code — it will pair, connect, and install "
-        "the app, or explain exactly what went wrong if something fails. "
-        "Building the APK first if it isn't already built can take a "
-        "while — say so rather than going quiet.",
+        "Install or update the receiver app on a TV. Two very different "
+        "cases, both handled by this one tool: (1) the TV named by target "
+        "(or the only TV currently reachable, if target is omitted) is "
+        "already paired and known — this just checks its installed "
+        "version against the latest build and reinstalls only if it's "
+        "out of date, instantly, no back-and-forth at all; use this for "
+        "'update the receiver', 'install the newer version', or similar "
+        "on a TV that's already been cast to before. (2) target doesn't "
+        "match any TV currently known/reachable — treated as a brand-new "
+        "TV that's never been set up, and this becomes a real guided, "
+        "multi-step back-and-forth: Android requires the user to "
+        "personally enable Developer options and Wireless debugging on "
+        "the TV's own screen first, which cannot be done remotely or "
+        "skipped. Call this with no pairing_code first: if no TV is "
+        "mid-setup yet, it returns the exact steps to narrate to the user "
+        "(Settings > About > tap the build entry repeatedly to unlock "
+        "Developer options > Developer options > Wireless debugging on > "
+        "Pair device with pairing code); once the user says they see a "
+        "pairing screen, call it again (still no pairing_code, same "
+        "target) to check whether it's now discoverable. Once found, ask "
+        "the user to read the code shown on the TV out loud (or type "
+        "it), then call this a final time with that code as pairing_code "
+        "— it will pair, connect, and install the app, or explain "
+        "exactly what went wrong if something fails. Building the APK "
+        "first if it isn't already built (or has changed since the last "
+        "build) can take a while — say so rather than going quiet.",
         {
             "type": "object",
             "properties": {
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Which TV — a device name as returned by "
+                        "list_cast_targets (e.g. 'Living Room TV'), or a "
+                        "raw IP address. Omit if the user didn't name one; "
+                        "with no target, an already-paired, uniquely "
+                        "reachable TV is still detected and updated in "
+                        "place, so this is safe to omit for 'update the "
+                        "receiver' when there's no ambiguity about which "
+                        "TV is meant."
+                    ),
+                },
                 "pairing_code": {
                     "type": "string",
                     "description": (
                         "The pairing code currently shown on the TV's "
-                        "screen, read out or typed by the user. Omit to "
-                        "just check/discover a pairing-in-progress TV and "
-                        "get the narrated setup steps."
+                        "screen, read out or typed by the user. Only "
+                        "relevant for a genuinely new TV (case 2 above) — "
+                        "omit for an update/reinstall on an already-paired "
+                        "TV, and omit the first time through a new TV's "
+                        "setup too, to just check/discover a "
+                        "pairing-in-progress TV and get the narrated steps."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    ),
+    _tool(
+        "run_omarchy_command",
+        "Runs an `omarchy` CLI command — the same command-line tool used "
+        "for Omarchy desktop customization (themes, reminders, bar "
+        "layout, toggles like night light/bluetooth). Only a fixed "
+        "allowlist of safe command groups can actually run through this "
+        "(theme, toggle, reminder, bar, capture) — anything involving "
+        "packages, system updates, reinstalling, hooks, plugins, or "
+        "system power is refused. Pass args as the full argv after "
+        "'omarchy' itself, e.g. ['theme', 'set', 'catppuccin'], "
+        "['reminder', '15', 'Pickup Jack'], ['reminder', 'show'], "
+        "['toggle', 'nightlight'], ['bar', 'move', 'omarchy.clock', "
+        "'--section', 'right']. Use this for anything the user asks for "
+        "that matches one of those areas and isn't already covered by a "
+        "more specific tool (nightlight_toggle already exists and is "
+        "preferred over this for that one case).",
+        {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "The omarchy CLI arguments, in order, as separate "
+                        "strings — first element is the command group "
+                        "(theme/toggle/reminder/bar/capture), the rest are "
+                        "whatever that group's subcommand takes."
                     ),
                 }
             },
-            "required": [],
+            "required": ["args"],
         },
     ),
 ]

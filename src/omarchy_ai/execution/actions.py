@@ -13,9 +13,12 @@ model's tool-call arguments, and that is untrusted input same as any other.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
+import os
+import re
 import shutil
 import socket
 import subprocess
@@ -40,6 +43,14 @@ _SIGNALING_PORT = 8765
 _APK_PATH = (
     _REPO_ROOT / "android-receiver" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"
 )
+# Records the source fingerprint (see _source_fingerprint) the APK at
+# _APK_PATH was actually built from, so _ensure_receiver_apk_built can tell
+# "already built" apart from "built once, long since gone stale" -- before
+# this it only ever checked whether the file existed, so an APK built
+# months ago (versionCode/versionName hardcoded then too, see
+# android-receiver/app/build.gradle.kts) would never get rebuilt no matter
+# how much source changed.
+_APK_BUILD_MARKER = _APK_PATH.with_suffix(".built-from-hash")
 _cast_process: subprocess.Popen | None = None
 _signaling_process: subprocess.Popen | None = None
 
@@ -101,10 +112,10 @@ class ActionResult:
     message: str = ""
 
 
-def _run(argv: list[str], timeout: float = _TIMEOUT) -> ActionResult:
+def _run(argv: list[str], timeout: float = _TIMEOUT, cwd: str | None = None) -> ActionResult:
     try:
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, check=False
+            argv, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd
         )
     except FileNotFoundError:
         return ActionResult(False, f"{argv[0]} is not installed")
@@ -618,6 +629,8 @@ def start_casting(args: dict) -> ActionResult:
     if not r.ok or "connected" not in r.message.lower():
         return ActionResult(False, f"could not reach {tv_addr} over the network")
 
+    _ensure_receiver_current(tv_addr)
+
     if not _port_listening(_SIGNALING_PORT):
         _signaling_process = _spawn_own_cgroup(
             [_VENV_PYTHON, "-m", "omarchy_ai.display.signaling"],
@@ -661,21 +674,182 @@ def stop_casting(args: dict) -> ActionResult:
     return ActionResult(True, "casting stopped")
 
 
+def _source_fingerprint() -> str:
+    """Hashes every file under android-receiver/app/src plus build.gradle.kts
+    -- what _ensure_receiver_apk_built compares against the last successful
+    build's marker to decide "stale, needs a rebuild" vs. "already current".
+    Deliberately content-based, not git-HEAD-based: this machine builds
+    locally (see build.gradle.kts's own versionName comment), so a real,
+    live case is uncommitted source changes that HEAD wouldn't move for
+    at all -- and that's exactly the state this repo is in right now."""
+    h = hashlib.sha256()
+    src_dir = _REPO_ROOT / "android-receiver" / "app" / "src"
+    build_file = _REPO_ROOT / "android-receiver" / "app" / "build.gradle.kts"
+    if src_dir.is_dir():
+        for p in sorted(src_dir.rglob("*")):
+            if p.is_file():
+                h.update(str(p.relative_to(_REPO_ROOT)).encode())
+                h.update(p.read_bytes())
+    if build_file.exists():
+        h.update(build_file.read_bytes())
+    return h.hexdigest()
+
+
+def _aapt_path() -> str | None:
+    sdk_root = Path(os.environ.get("ANDROID_SDK_ROOT") or (Path.home() / "Android" / "Sdk"))
+    build_tools = sdk_root / "build-tools"
+    if not build_tools.is_dir():
+        return None
+    for d in sorted(build_tools.iterdir(), reverse=True):
+        aapt = d / "aapt"
+        if aapt.exists():
+            return str(aapt)
+    return None
+
+
+def _local_apk_version() -> str | None:
+    """versionName baked into the locally built APK -- what a TV's install
+    should match once it's current."""
+    aapt = _aapt_path()
+    if not aapt or not _APK_PATH.exists():
+        return None
+    r = _run([aapt, "dump", "badging", str(_APK_PATH)], timeout=15)
+    if not r.ok:
+        return None
+    m = re.search(r"versionName='([^']+)'", r.message)
+    return m.group(1) if m else None
+
+
+def _installed_receiver_version(adb_addr: str) -> str | None:
+    """versionName currently installed on a given TV, read live via
+    dumpsys -- never cached, since the whole point is catching drift."""
+    r = _run(["adb", "-s", adb_addr, "shell", "dumpsys", "package", "ai.omarchy.receiver"], timeout=10)
+    if not r.ok:
+        return None
+    m = re.search(r"versionName=(\S+)", r.message)
+    return m.group(1) if m else None
+
+
 def _ensure_receiver_apk_built() -> ActionResult:
-    if _APK_PATH.exists():
-        return ActionResult(True, f"receiver APK already built ({_APK_PATH.stat().st_size} bytes)")
+    fingerprint = _source_fingerprint()
+    marker = _APK_BUILD_MARKER.read_text().strip() if _APK_BUILD_MARKER.exists() else None
+    if _APK_PATH.exists() and fingerprint and marker == fingerprint:
+        return ActionResult(True, f"receiver APK already built and current ({_APK_PATH.stat().st_size} bytes)")
     gradlew = _REPO_ROOT / "android-receiver" / "gradlew"
     if not gradlew.exists():
+        if _APK_PATH.exists():
+            return ActionResult(
+                True,
+                f"receiver APK exists but android-receiver/gradlew is missing -- "
+                f"can't confirm it's current ({_APK_PATH.stat().st_size} bytes)",
+            )
         return ActionResult(False, "android-receiver/gradlew not found -- can't build the receiver app")
-    log.info("receiver APK missing, building via ./gradlew assembleDebug")
-    r = _run([str(gradlew), "assembleDebug"], timeout=300)
+    log.info(
+        "receiver APK %s; building via ./gradlew assembleDebug",
+        "missing" if not _APK_PATH.exists() else "stale (source changed since last build)",
+    )
+    # cwd matters here, confirmed live: gradlew invoked by absolute path
+    # with no cwd fails with "Directory '...' does not contain a Gradle
+    # build" (it doesn't self-locate its project root from $0) -- a
+    # latent bug in this function since before today's changes, just
+    # never exercised because the APK already existed every time this
+    # ran before now.
+    r = _run([str(gradlew), "assembleDebug"], timeout=300, cwd=str(gradlew.parent))
     if not r.ok or not _APK_PATH.exists():
         return ActionResult(False, f"building the receiver APK failed: {r.message}")
+    if fingerprint:
+        _APK_BUILD_MARKER.write_text(fingerprint)
     return ActionResult(True, "built the receiver APK")
 
 
+def _install_or_update_receiver(adb_addr: str) -> ActionResult:
+    """Reinstalls the receiver on an already-known, already-reachable TV
+    if (and only if) its installed version doesn't match the local build
+    -- the real "just update it" path, with none of install_receiver_on_tv's
+    brand-new-device pairing narration (there's nothing to pair, it's
+    already paired)."""
+    apk = _ensure_receiver_apk_built()
+    if not apk.ok:
+        return apk
+    local_version = _local_apk_version()
+    installed_version = _installed_receiver_version(adb_addr)
+    if local_version and installed_version and local_version == installed_version:
+        return ActionResult(True, f"receiver on {adb_addr} is already up to date (v{installed_version})")
+    r = _run(["adb", "-s", adb_addr, "install", "-r", str(_APK_PATH)], timeout=120)
+    if not r.ok:
+        return ActionResult(
+            False, f"found the receiver already set up on {adb_addr}, but reinstalling it failed: {r.message}"
+        )
+    new_version = local_version or "unknown"
+    was = f"v{installed_version}" if installed_version else "an earlier build"
+    return ActionResult(
+        True,
+        f"updated the receiver on {adb_addr} from {was} to v{new_version} "
+        "(it was already paired, so no Developer-options setup was needed)",
+    )
+
+
+def _ensure_receiver_current(adb_addr: str) -> None:
+    """Best-effort version check/update run before every cast starts, so a
+    cast never silently runs against a stale receiver build. Never blocks
+    or fails casting on its own account -- same fire-and-forget policy as
+    _discover_androidtv_devices. The common case (already up to date) stays
+    fast: a source-fingerprint hash plus one dumpsys read; the rebuild/
+    reinstall cost is only paid when something's actually stale."""
+    try:
+        r = _install_or_update_receiver(adb_addr)
+        if not r.ok:
+            log.warning("receiver version check/update on %s: %s", adb_addr, r.message)
+        else:
+            log.info("receiver version check on %s: %s", adb_addr, r.message)
+    except Exception:  # noqa: BLE001 -- cosmetic w.r.t. casting itself
+        log.exception("receiver version check/update failed")
+
+
+def _reachable_target_for_install(target: str | None) -> str | None:
+    """Returns an adb "host:port" address if `target` (or, when omitted,
+    the single currently-discovered TV) names a device this project
+    already knows about AND is reachable over adb right now -- the real
+    signal that this is a reinstall/update on an already-paired TV, not a
+    brand-new one that still needs the Developer-options dance. Returns
+    None for anything else, including "ambiguous, multiple devices" or
+    "named but not currently discoverable" -- those fall through to the
+    existing pairing flow below rather than being resolved here.
+
+    This is the direct fix for a real, live bug: asking to "install the
+    newer receiver" on Living Room TV -- a TV that's been paired and
+    working for a while -- produced "here's how to open Developer
+    options" instructions, which made no sense for a device already set
+    up. See STATUS.md's receiver-version-tracking entry."""
+    devices = _discover_androidtv_devices()
+    addr = None
+    if target:
+        needle = target.strip().lower()
+        matches = [d for d in devices if needle in d["name"].lower()]
+        if len(matches) == 1:
+            addr = f"{matches[0]['address']}:5555"
+        elif _looks_like_address(target):
+            host = target.split(":")[0]
+            port = target.split(":")[1] if ":" in target else "5555"
+            addr = f"{host}:{port}"
+        else:
+            return None
+    elif len(devices) == 1:
+        addr = f"{devices[0]['address']}:5555"
+    else:
+        return None
+
+    r = _run(["adb", "connect", addr], timeout=8)
+    if r.ok and "connected" in r.message.lower():
+        return addr
+    return None
+
+
 def install_receiver_on_tv(args: dict) -> ActionResult:
-    """Guided new-TV setup, real step by step.
+    """Guided new-TV setup, real step by step -- OR, when `target` names
+    (or there's no ambiguity about) a TV that's already paired and
+    adb-reachable, a plain reinstall/update with none of the pairing
+    narration (see _reachable_target_for_install).
 
     Hard, real Android constraint (checked live on this network -- not
     worked around, because it can't be): a brand-new, never-paired TV
@@ -694,11 +868,18 @@ def install_receiver_on_tv(args: dict) -> ActionResult:
     """
     global _pending_pair_target
 
+    pairing_code = (args.get("pairing_code") or "").strip() or None
+    target = (args.get("target") or "").strip() or None
+
+    if pairing_code is None:
+        already_paired_addr = _reachable_target_for_install(target)
+        if already_paired_addr:
+            return _install_or_update_receiver(already_paired_addr)
+
     apk = _ensure_receiver_apk_built()
     if not apk.ok:
         return apk
 
-    pairing_code = (args.get("pairing_code") or "").strip() or None
     from ..display import discovery
 
     if pairing_code is None:
@@ -807,6 +988,66 @@ def install_receiver_on_tv(args: dict) -> ActionResult:
     )
 
 
+# --- Omarchy CLI passthrough (skill parity) -----------------------------
+# The Claude Code "omarchy" skill (~/.claude/skills/omarchy/SKILL.md) gives
+# an agent editing this machine's desktop config the full `omarchy` CLI --
+# themes, reminders, bar layout, toggles, hooks, plugins, packages, system
+# power, etc. The voice assistant had none of that, only the fixed,
+# hand-picked actions in this file. This gives it a real slice of the same
+# capability, deliberately narrower: an explicit allowlist of the command
+# groups that are genuinely Level 2 (reversible, no real Level 3+ blast
+# radius) per ADR-0001's policy table -- the same bar every other tool in
+# this file (and tools.py's own header comment) already holds to.
+#
+# Left out on purpose, same reasoning as excluding logout/reboot/shutdown
+# above: `pkg`/`update`/`reinstall`/`dev`/`system` (package/OS-level
+# changes -- Level 3+, no confirm layer exists for voice yet); `refresh`
+# (config reset -- the skill's own instructions require a human to
+# confirm before running it, which a voice tool can't honor without a
+# real policy layer); `hook`/`plugin` (install code that runs
+# automatically on future system events -- a persistent blast radius,
+# not a single reversible command like the rest of this allowlist).
+_OMARCHY_SAFE_GROUPS = {"theme", "toggle", "reminder", "bar", "capture"}
+
+# Even within an otherwise-safe group, some subcommands don't belong here.
+# Confirmed live by reading their actual source (omarchy-theme-install):
+# `theme install <git-repo-url>` runs a real `git clone` of a URL that, on
+# a voice assistant, would come straight from a speech transcript --
+# untrusted input driving a network fetch onto this machine, the same
+# category of risk this file's own module docstring calls out for every
+# other action. `theme remove`/`theme update` are lower-risk (no new
+# remote content) but still destructive/network operations on
+# already-installed themes -- excluded for the same "stay inside genuinely
+# reversible, no-surprises territory" reasoning as the group-level list.
+_OMARCHY_BLOCKED_SUBCOMMANDS = {
+    "theme": {"install", "remove", "update"},
+}
+
+
+def run_omarchy_command(args: dict) -> ActionResult:
+    argv = args.get("args")
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) and a for a in argv):
+        return ActionResult(False, "no command given")
+    group = argv[0].strip().lower()
+    if group not in _OMARCHY_SAFE_GROUPS:
+        return ActionResult(
+            False,
+            f"'{group}' isn't one of the command groups this tool is allowed "
+            f"to run ({', '.join(sorted(_OMARCHY_SAFE_GROUPS))} only) -- "
+            "packages, updates, reinstalling, hooks, plugins, and system "
+            "power aren't voice-reachable.",
+        )
+    blocked = _OMARCHY_BLOCKED_SUBCOMMANDS.get(group, set())
+    if len(argv) > 1 and argv[1].strip().lower() in blocked:
+        return ActionResult(
+            False,
+            f"'{group} {argv[1]}' isn't voice-reachable (it fetches/removes "
+            "content rather than just changing a setting) -- ask the user "
+            "to run that one themselves.",
+        )
+    return _run(["omarchy", *argv], timeout=30)
+
+
 ACTIONS = {
     "volume_up": volume_up,
     "volume_down": volume_down,
@@ -847,6 +1088,7 @@ ACTIONS = {
     "stop_casting": stop_casting,
     "list_cast_targets": list_cast_targets,
     "install_receiver_on_tv": install_receiver_on_tv,
+    "run_omarchy_command": run_omarchy_command,
 }
 
 
