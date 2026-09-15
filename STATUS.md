@@ -2014,3 +2014,151 @@ behind them, exactly as asked.
    project's established pattern for changes that can't be triggered by a
    spoken wake word in an unattended session) or through a real user
    conversation's own trace in `journalctl`.
+
+## Receiver version tracking + irrelevant pairing narration — fixed, verified live
+
+User's own report: *"right now the livingroom tv shows the old version
+(lets also add a visible SW ver to the reciver on one of the corners of
+the sw so we can follow on it) when I asked omarchy to install the newer
+reciver she gave me instructions to how to oped deveoper settings which is
+iirrelevant."*
+
+Root causes, confirmed by reading the code before touching anything:
+
+1. `android-receiver/app/build.gradle.kts` had `versionCode = 1` /
+   `versionName = "1.0"` hardcoded since the very first build months ago
+   — every build produced the same version, so nothing (human or code)
+   could tell an old install apart from a new one.
+2. `_ensure_receiver_apk_built()` (`execution/actions.py`) only rebuilt
+   when the APK file was *missing*, never when source had changed.
+3. `install_receiver_on_tv` had no branch for a target that's already
+   adb-reachable — it always assumed a brand-new, never-paired TV and
+   walked straight into the Developer-options narration, which is exactly
+   what the user hit asking to update Living Room TV (already paired,
+   already casting to for a while).
+
+### What changed
+
+- `versionName` now derives from `git rev-parse --short HEAD` (`-dirty`
+  suffix for uncommitted local builds — this project builds locally, not
+  via CI, so that's a real case); `versionCode` from `git rev-list --count
+  HEAD` (Android requires a real monotonically increasing integer, a hash
+  isn't one). Computed via `providers.exec {}` in `build.gradle.kts`, not
+  a plain `project.exec {}`/`ProcessBuilder` — both of the latter were
+  tried first and failed: a free top-level Kotlin function has no
+  implicit `Project` receiver (`exec`/`rootDir` unresolved), and even once
+  that was fixed with a captured `repoRoot` val, Gradle 9.1's
+  configuration cache refuses a raw external process started directly at
+  configuration time ("Starting an external process ... during
+  configuration time is unsupported" — confirmed live). `providers.exec`
+  registers the process as a tracked config-cache input instead.
+- `ReceiverScreen.kt`: a small, dim `v${BuildConfig.VERSION_NAME}` label
+  in the top-right corner, always visible (even mid-stream, unlike the
+  status text below it which hides once mirroring starts) so it can be
+  read via `adb shell screencap` without interrupting a live cast.
+  `buildConfig = true` enabled in `build.gradle.kts` to generate it.
+- `_ensure_receiver_apk_built()`: now hashes every file under
+  `android-receiver/app/src` + `build.gradle.kts` (`_source_fingerprint`)
+  and compares it against a marker file (`app-debug.built-from-hash`)
+  written after the last successful build — rebuilds whenever they
+  diverge, not just when the APK is missing. Exposed a real latent bug
+  while testing this for the first time with a genuine rebuild: the
+  `gradlew` subprocess call never set `cwd`, so it only ever worked by
+  accident of the caller's own working directory — failed live with
+  "Directory '/home/ben-ami/Git/omarchy-ai' does not contain a Gradle
+  build" once actually exercised. Fixed by adding a `cwd` parameter to
+  `_run()` and passing `gradlew.parent`.
+- `install_receiver_on_tv` now takes an optional `target` (same
+  name-or-IP matching as `start_casting`'s). When that (or the single
+  unambiguous currently-reachable TV, if omitted) is already adb-reachable
+  right now, it skips straight to `_install_or_update_receiver` — checks
+  the installed version (`adb shell dumpsys package
+  ai.omarchy.receiver`) against the local build's version (`aapt dump
+  badging`, resolved from `$ANDROID_SDK_ROOT/build-tools/<highest>/aapt`)
+  and only reinstalls if they differ. No pairing narration at all for
+  this path. `start_casting` now runs the same check-and-update
+  (`_ensure_receiver_current`) before every cast, fire-and-forget, so a
+  cast never silently runs against a stale build; it's genuinely cheap in
+  the common case (one dumpsys read + one aapt read once the fingerprint
+  confirms the local APK itself doesn't need rebuilding).
+
+### Verified live against Living Room TV (192.168.1.191:5555, real hardware)
+
+1. Before: `_installed_receiver_version("192.168.1.191:5555")` → `"1.0"`.
+2. Rebuilt the APK for real (`./gradlew assembleDebug`, `providers.exec`
+   fix above) — `aapt dump badging` on the result: `versionName='d14b50d-dirty'`,
+   `versionCode='43'`.
+3. `install_receiver_on_tv({"target": "Living Room TV"})` through the
+   real production function (not a mock) — no pairing_code, no
+   Developer-options narration, went straight to reinstall: `"updated the
+   receiver on 192.168.1.191:5555 from v1.0 to vd14b50d-dirty (it was
+   already paired, so no Developer-options setup was needed)"`.
+4. Re-running the same call reported `"receiver on 192.168.1.191:5555 is
+   already up to date (vd14b50d-dirty)"` instead of reinstalling again.
+5. `install_receiver_on_tv({})` (no target) with mDNS discovery finding 0
+   devices at that instant *did* fall through to the pairing narration —
+   expected and correct given the no-target path only takes the shortcut
+   when there's exactly one unambiguous, currently-discoverable device;
+   this is a real, known gap (a flaky/empty mDNS moment plus no named
+   target still produces the old narration) rather than a silent one —
+   noted below, not yet closed.
+
+**Real side effect caught and fixed in the same session:** Living Room TV
+was actively mid-cast (`spike_cast_sender.py` running, started 23:58:36)
+when step 3's `adb install -r` ran — force-stopping the installed app
+during a reinstall is normal Android behavior, and it did drop the
+receiver out of the foreground activity list (confirmed via `adb shell
+dumpsys activity activities` — no `ai.omarchy.receiver` entry). Relaunched
+it with `adb shell am start -n ai.omarchy.receiver/.MainActivity`; the
+sender process's offer/ICE was still buffered server-side (the earlier
+signaling-relay fix, see the casting-race entry above), so mirroring
+resumed without needing `start_casting` to run again. Not independently
+re-confirmed after the fact that the video was visibly flowing again
+(same reasoning as the note above — this was verified through the
+production code path and `dumpsys`, not a live spoken conversation).
+
+### Separately added: `run_omarchy_command` (Claude Code's "omarchy" skill, ported to voice)
+
+The user asked directly for this: *"I want you also to add the Omarchy
+skill you have to omarchy assistant"* — i.e. give the voice assistant a
+real slice of what the Claude Code "omarchy" skill
+(`~/.claude/skills/omarchy/SKILL.md`) already lets an agent do on this
+machine (themes, reminders, bar layout, toggles, and more, via the
+`omarchy` CLI).
+
+Scoped deliberately narrow, same bar as every other voice-reachable tool
+in this file (`tools.py`'s own header comment: only Level 1/2 per
+ADR-0001's policy table, nothing Level 3+ without a real confirm/policy
+layer, which doesn't exist yet): only the `theme`, `toggle`, `reminder`,
+`bar`, and `capture` command groups are runnable at all, and even within
+`theme`, the `install`/`remove`/`update` subcommands are blocked
+specifically — confirmed by reading `omarchy-theme-install`'s actual
+source that `theme install <url>` runs a real `git clone` of that URL,
+which on a voice assistant would come directly from an untrusted speech
+transcript, not something typed by a person who can eyeball it first.
+`pkg`/`update`/`reinstall`/`dev`/`system` (package/OS-level, Level 3+),
+`refresh` (the skill's own instructions require human confirmation before
+running it — no way to honor that from voice yet), and `hook`/`plugin`
+(install code that runs automatically on future system events) are
+excluded at the group level entirely.
+
+Verified live: `run_omarchy_command({"args": ["pkg", "add", "evil"]})` →
+refused with the allowed-groups list; `{"args": ["theme", "install",
+"http://evil.example/x.git"]}` → refused specifically for that
+subcommand; `{"args": ["theme", "current"]}` → real result (`"Tokyo
+Night"`); `{"args": ["reminder", "show"]}` → real result.
+
+### Still open
+
+1. `install_receiver_on_tv` with no `target` and zero currently-discoverable
+   TVs still falls through to the brand-new-device pairing narration, even
+   for a TV that's genuinely already paired — it just can't tell the
+   difference between "genuinely new" and "known TV, mDNS had a bad
+   moment" without a name to check against. Not hit in the reported bug
+   (the user was almost certainly naming Living Room TV, whether via an
+   explicit target or conversational context), but worth tightening if it
+   recurs.
+2. The daemon needs a restart to pick up all of the Python-side changes
+   above (`config.py`/`actions.py`/`tools.py`) — not yet done as of this
+   entry; see the restart-discipline notes elsewhere in this file
+   (`journalctl` check first, `settings.py`'s conversation-busy guard).
