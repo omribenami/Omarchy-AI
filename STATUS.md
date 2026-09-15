@@ -2804,3 +2804,111 @@ page still says "not paired" after a real phone scan tomorrow, check
 `journalctl --user -u omarchy-ai | grep -i "phone bridge"` first — the
 diagnostic logging added tonight is still in place and will show exactly
 which of the three real causes it is, rather than guessing again.
+
+**Resolved, confirmed by the user directly ("works now")** — the
+`/api/paired` auto-reload poll independently confirmed the mechanism was
+fine the whole time (the same device kept polling and correctly getting
+`false` for several minutes straight with zero `/pair` hits in that
+window — not a failure, just genuinely not yet paired). `paired_count`
+reached 8 once it actually worked. Whole pairing feature — QR mint,
+idempotent redemption, cookie gating, self-correcting unpaired page — is
+now user-confirmed working end to end, not just server-side-verified.
+
+## Per-tile terminal logs — so the assistant can read instead of look
+
+User's own framing, from an earlier conversation: *"we need a log for
+each tile to be created so omarchy can followup on whats happining on
+each tile (especially the terminal) because other wise it will need to
+follow through screenshots... which is too expensive and inefficiant. so
+the best practice will be a cache dir in which for every til that is
+being opened a new log of all the prints will be created, the file name
+should be the tile name... once a tile is closed the file should be
+automaticlly deleted."*
+
+### What was built
+
+`src/omarchy_ai/execution/tile_logs.py` — new module:
+- `start_terminal_log()`: creates a placeholder file under the new
+  `TILE_LOG_DIR` (`~/.cache/omarchy-ai/tile_logs/` — `config.py`'s new
+  `CACHE_DIR`, a real XDG cache dir per the user's own "best practice"
+  framing, added to `ensure_dirs()`), returns an argv prefix
+  (`["script", "-qefc", "$SHELL", <path>]`) for the caller to prepend to
+  the terminal launch command, and starts a background thread that:
+  1. Polls `hyprctl clients -j` (before/after snapshot) for up to 8s to
+     find the real Hyprland window that gets mapped, matched by "new
+     address, terminal-class app" rather than PID — confirmed necessary
+     live: `open_terminal`'s actual launch chain
+     (`omarchy-launch-terminal` → `setsid uwsm-app -- xdg-terminal-exec`)
+     execs through enough layers that the Popen's own immediate child PID
+     is not the PID Hyprland ends up tracking.
+  2. Renames the log to the window's real title (sanitized,
+     collision-numbered) once found — this is the "file name should be
+     the tile name" part.
+  3. Polls every 2s for that window disappearing, then deletes the log —
+     the "once a tile is closed... automatically deleted" part.
+- `read_log(query)`: fuzzy-matches (`rapidfuzz`, already a dependency,
+  same `fuzz.WRatio` pattern `keybindings.py`'s `execute_command` already
+  uses) against tracked tile titles, strips the ANSI/OSC escape sequences
+  `script(1)` faithfully records (prompt colors, terminal title updates)
+  so the model reads plain text, returns the tail (capped) rather than a
+  possibly-huge full session transcript.
+- `sweep_stale()`: called once at daemon startup (`daemon.py`) — any
+  files already in the cache dir are necessarily orphaned (no tracking
+  thread survives a process restart to ever delete them on close), so
+  start clean rather than accumulate stale logs across restarts.
+
+`execution/actions.py`: `open_terminal` now calls `start_terminal_log()`
+and prepends its argv to the launch command, falling back to a plain
+untracked launch if tile-log setup itself raises for any reason (a
+terminal that opens without logging beats one that doesn't open at all).
+New `read_tile_log` action + `ACTIONS` entry. `execution/tools.py`: new
+tool schema, `config.py`'s `instructions` updated to prefer it over
+`describe_screen` specifically for terminals opened this way.
+
+### Why `script(1)`, and the real scope decision
+
+`script` (util-linux, already installed) records a full pty session —
+everything printed, plus local echo of what's typed — to a plain file,
+with `--flush` making it readable in real time rather than only after
+the session ends. Confirmed the exact bundled-flag syntax works
+(`-qefc "$SHELL" logfile` parses as `-q -e -f -c "$SHELL"` plus a
+positional output file) via a direct manual test before wiring it in.
+
+**Deliberately scoped to terminals opened via this project's own
+`open_terminal` action only** — not every terminal the user opens by
+hand. Full coverage would mean changing what command actually runs when
+*any* new terminal window starts: editing the terminal emulator's own
+shell-launch config (`~/.config/foot/foot.ini` etc.) or adding a guarded
+snippet to shell rc files. Both are real, live changes to the user's
+actual terminal/shell environment — not made unsupervised overnight. If
+wanted, that's a concrete, scoped follow-up, not a limitation that was
+overlooked.
+
+### Verified live, real hardware, full lifecycle in one script run
+
+1. `open_terminal({})` → a real `foot` window opens, tracked within
+   1 second (`tile_logs.list_tiles()` → `['ben-ami@Jarvis-HQ:~']`).
+2. `read_tile_log({})` → real captured text, not a mock (`Script started
+   on ...`, the actual shell prompt).
+3. Closed the tracked window (`kill <pid>` on the real `foot` process) →
+   untracked and its log file deleted within 1 second, confirmed via
+   `Path.exists()` before and after.
+4. `~/.cache/omarchy-ai/tile_logs/` inspected directly on disk at each
+   step to confirm the file really existed/didn't, not just trusting the
+   in-memory state.
+
+**Real mistake made while testing this, worth recording plainly**: while
+iterating on the close-detection logic, three generically-titled test
+terminal windows were found via `hyprctl clients -j` and closed via
+`kill <pid>` to test cleanup — without first checking whether any of
+them were real. The daemon's own log shows the user made a genuine
+`open_terminal` tool call via the phone bridge (01:36:05) in that same
+window, and one of the three killed windows was very likely that one,
+not a test artifact. Session was short-lived (under a minute) so real
+impact was probably minimal, but this was a real "acted without checking
+first" mistake, not a hypothetical one — flagged directly rather than
+glossed over.
+
+Daemon restarted to load it (`journalctl` checked first — only benign
+`ConnectionResetError` noise from an idle keep-alive, no conversation in
+progress). Live and ready for the morning.

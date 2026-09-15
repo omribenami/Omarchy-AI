@@ -63,6 +63,32 @@ TOOLS: list[dict] = [
     _tool("open_files", "Open the file manager."),
     _tool("open_editor", "Open the default text editor."),
     _tool(
+        "read_tile_log",
+        "Read the real text output of a terminal this assistant opened "
+        "with open_terminal — everything printed in it, plus what was "
+        "typed. Use this instead of describe_screen to check on a "
+        "terminal's output or whether a command finished — it's real "
+        "text, not a vision call, so it's much faster. Only tracks "
+        "terminals opened via open_terminal, not every terminal window "
+        "on screen — if nothing matches, the result says so and lists "
+        "what is currently tracked.",
+        {
+            "type": "object",
+            "properties": {
+                "window": {
+                    "type": "string",
+                    "description": (
+                        "Which terminal, matched fuzzily against its "
+                        "window title (e.g. a directory name or running "
+                        "command shown in the title). Omit if only one "
+                        "tracked terminal is open."
+                    ),
+                }
+            },
+            "required": [],
+        },
+    ),
+    _tool(
         "workspace_switch",
         "Switch to a specific numbered workspace.",
         {
