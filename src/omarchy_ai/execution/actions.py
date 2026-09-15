@@ -211,7 +211,28 @@ def lock_screen(args: dict) -> ActionResult:
 
 
 def open_terminal(args: dict) -> ActionResult:
-    return _run_detached(["omarchy-launch-terminal"])
+    # Wraps the launch so this terminal's output gets tracked in a
+    # per-tile log (see tile_logs.py) — read_tile_log can then answer
+    # "what happened in that terminal" from real text instead of a
+    # describe_screen vision call. Falls back to a plain, untracked
+    # launch if tile-log setup itself fails for any reason; a terminal
+    # that opens without logging is far better than one that doesn't
+    # open at all.
+    try:
+        from . import tile_logs
+
+        _initial_log_path, argv_prefix = tile_logs.start_terminal_log()
+        return _run_detached(["omarchy-launch-terminal", *argv_prefix])
+    except Exception:  # noqa: BLE001
+        log.exception("tile_logs setup failed, opening terminal untracked")
+        return _run_detached(["omarchy-launch-terminal"])
+
+
+def read_tile_log(args: dict) -> ActionResult:
+    from . import tile_logs
+
+    text = tile_logs.read_log(args.get("window"))
+    return ActionResult(True, text)
 
 
 def open_browser(args: dict) -> ActionResult:
@@ -1060,6 +1081,7 @@ ACTIONS = {
     "screenshot": screenshot,
     "lock_screen": lock_screen,
     "open_terminal": open_terminal,
+    "read_tile_log": read_tile_log,
     "open_browser": open_browser,
     "open_files": open_files,
     "open_editor": open_editor,

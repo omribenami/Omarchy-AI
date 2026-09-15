@@ -11,6 +11,7 @@ import logging
 import threading
 
 from ..config import Config, ensure_dirs, load_config
+from ..execution import tile_logs
 from ..phone import server as phone_server
 from ..voice import feedback
 from ..voice.live import LiveSession
@@ -22,6 +23,10 @@ log = logging.getLogger("omarchy_ai.core.daemon")
 class OmaDaemon:
     def __init__(self) -> None:
         ensure_dirs()
+        # Any files already in the tile-log cache dir are from a previous
+        # process — no tracking thread survives a restart to ever delete
+        # them on close, so start clean rather than accumulate orphans.
+        tile_logs.sweep_stale()
         self.config: Config = load_config()
         self.wake_detector = WakeWordDetector(self.config)
         self._stop = threading.Event()

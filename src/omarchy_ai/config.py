@@ -15,6 +15,12 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() /
 WAKE_MODELS_DIR = CONFIG_DIR / "wake_models"
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "omarchy-ai"
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "omarchy-ai"
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "omarchy-ai"
+# Per-window ("tile") terminal output logs — see execution/tile_logs.py.
+# Cache, not state: every entry is meant to be ephemeral (one per
+# currently-open tracked terminal, deleted when it closes) and safe to
+# wipe entirely on every daemon startup (sweep_stale()).
+TILE_LOG_DIR = CACHE_DIR / "tile_logs"
 
 USER_CONFIG_PATH = CONFIG_DIR / "config.yaml"
 SOCKET_PATH = RUNTIME_DIR / "omarchy-ai.sock"
@@ -108,7 +114,14 @@ class Config:
         "it's slower (it can take several seconds), so only reach for it "
         "when genuinely needed, not by default, and say something brief "
         "like 'let me take a look' right before calling it so the user "
-        "knows you're working rather than stalled. "
+        "knows you're working rather than stalled. If the question is "
+        "specifically about a terminal you opened with open_terminal — "
+        "did a command finish, what did it print — call read_tile_log "
+        "instead of describe_screen: it's the terminal's real text "
+        "output, effectively instant, and doesn't need a vision call at "
+        "all. It only covers terminals opened that way, not every window "
+        "on screen — describe_screen is still the right tool for "
+        "anything else visual. "
         "For anything not covered by your other specific tools, "
         "search list_commands — it covers Omarchy's full set of bound "
         "commands (app launchers, menus, capture, clipboard, themes, and "
@@ -261,5 +274,5 @@ def load_config() -> Config:
 
 
 def ensure_dirs() -> None:
-    for d in (CONFIG_DIR, STATE_DIR, RUNTIME_DIR):
+    for d in (CONFIG_DIR, STATE_DIR, RUNTIME_DIR, TILE_LOG_DIR):
         d.mkdir(parents=True, exist_ok=True)
