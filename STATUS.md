@@ -2626,3 +2626,48 @@ against the new PID specifically both times, not just a generic
 journalctl tail). Still not independently screenshot-verified for the
 same IPC-open limitation as every entry above — the user's own next
 click is what actually confirms this.
+
+## Real root cause found: Enable toggle and QR button were dead, not just hidden
+
+Scrolling now reached the section (previous fix worked), but the user
+reported the actual controls didn't do anything: *"the enable button
+doesnt change when pressed, the qr button doesnt do anything as well."*
+
+Manually running the exact CLI call the Enable toggle makes
+(`omarchy-ai-settings set phone_bridge_enabled false`) worked perfectly
+and round-tripped correctly — ruled out the Python backend immediately,
+this was purely a QML bug. `config.yaml`'s own mtime showed
+`watchdog_enabled` *had* been successfully toggled moments earlier by a
+real click, which initially looked like it ruled out "Flickable eats
+child clicks" as the cause (same Flickable, a different toggle inside it
+worked) — the real culprit was specific to this section, not the
+Flickable itself.
+
+**Root cause**: `qrPopup` (`PopupCard`, which extends `PopupWindow`) had
+been declared as a child of the "Phone Bridge" `Column` — but
+`PopupWindow` carries a real `implicitWidth`/`implicitHeight`
+(`contentWidth`/`contentHeight`), so a `Column` doing normal layout
+treats it like any other sized child and reserves real space for it,
+shifting and overlapping the Enable toggle and QR button next to it in
+the layout even while `open: false` kept it visually hidden — an invisible
+component still occupying and intercepting the button's actual coordinates
+is exactly what made both controls stop responding to clicks. Confirmed
+by checking how this shell's own working examples place `PopupCard`
+elsewhere (`Tray.qml`'s icon-manage popup, and this file's own main
+`panel`/`KeyboardPanel` itself): always a **top-level sibling**, never
+nested inside a layout `Column`/`Row`.
+
+**Fix**: moved `qrPopup`'s entire declaration out of the Phone Bridge
+`Column` to be a top-level sibling of `panel` (the main `KeyboardPanel`),
+matching every real usage elsewhere in this shell — `anchorItem:
+qrButton` still resolves correctly regardless of where in the file
+`qrPopup` itself is declared (QML ids resolve by scope, not document
+position), so this needed no other changes to keep working.
+
+Verified: brace/paren counts balanced (137/137, 179/179) after the move;
+`omarchy restart shell` produced a completely clean cold load with zero
+lines logged against the new process at all (not even the usual harmless
+duplicate-IpcHandler warning happened to log in the captured window) —
+the cleanest reload of this whole round. `phone_bridge_enabled` confirmed
+still `true` in `config.yaml` afterward, so the QR button is enabled for
+the user's next real test.
