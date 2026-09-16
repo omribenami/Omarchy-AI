@@ -62,6 +62,10 @@ import json
 import socket
 from omarchy_ai.phone.cast_audio import socket_path
 import logging
+import signal
+import array
+from omarchy_ai.display import session
+from omarchy_ai.voice import tv_mic
 import sys
 import threading
 import time
@@ -88,6 +92,15 @@ DEFAULT_AUDIO_MONITOR = "alsa_output.pci-0000_00_1b.0.analog-stereo.monitor"
 class Sender:
     def __init__(self, args):
         self.args = args
+        self.failed = False
+        self.connected = False
+        self.video_ready = False
+        self.mic_last_report = 0.0
+        self.mic_packets = 0
+        self.mic_peak = 0
+        self.tv_mic_enabled = False
+        self.mic_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.mic_socket.setblocking(False)
         self.loop = GLib.MainLoop()
         self.pipeline: Gst.Pipeline | None = None
         self.webrtc: Gst.Element | None = None
@@ -120,7 +133,13 @@ class Sender:
             sys.exit(1)
 
     def _signaling_thread_main(self):
-        asyncio.run(self._signaling_main())
+        try:
+            asyncio.run(self._signaling_main())
+        except Exception as exc:
+            log.exception("signaling failed")
+            GLib.idle_add(self.fail, f"signaling failed: {exc}")
+        else:
+            GLib.idle_add(self.fail, "signaling connection closed")
 
     async def _signaling_main(self):
         self.ws_loop = asyncio.get_running_loop()
@@ -161,8 +180,18 @@ class Sender:
             self.webrtc.emit(
                 "add-ice-candidate", msg.get("sdpMLineIndex", 0), msg.get("candidate", "")
             )
+        elif kind == "video-ready":
+            self.video_ready = True
+            if self.connected:
+                session.write_state("connected")
+            log.info("receiver confirmed its first decoded frame")
+        elif kind == "microphone":
+            self.tv_mic_enabled = bool(msg.get("enabled"))
+            if not self.tv_mic_enabled:
+                tv_mic.forward(self.mic_socket, b"")
+            log.info("TV microphone %s", "enabled" if self.tv_mic_enabled else "disabled")
         elif kind == "bye":
-            log.info("viewer said bye")
+            self.fail("receiver disconnected")
         else:
             log.warning("unhandled signaling message type: %s", kind)
         return False  # GLib.idle_add: don't repeat
@@ -245,10 +274,7 @@ class Sender:
             self._window_frames, self._window_frames, now - self._window_start, self._window_fails,
         )
         if self._window_frames == 0:
-            log.error(
-                "[capture] STALL: zero frames captured in the last window -- this is the "
-                "exact symptom the wlr-screencopy path was supposed to avoid"
-            )
+            self.fail("screen capture stalled: no frames for four seconds")
         self._window_frames = 0
         self._window_fails = 0
         self._window_start = now
@@ -301,6 +327,7 @@ class Sender:
         self.pipeline = Gst.parse_launch(launch)
         self.appsrc = self.pipeline.get_by_name("vidsrc")
         self.webrtc = self.pipeline.get_by_name("webrtc")
+        self.webrtc.connect("pad-added", self._on_remote_pad)
         self.webrtc.connect("on-negotiation-needed", self._on_negotiation_needed)
         self.webrtc.connect("on-ice-candidate", self._on_ice_candidate)
         self.webrtc.connect("notify::ice-connection-state", self._on_ice_state)
@@ -349,9 +376,45 @@ class Sender:
             log.info("PROBE %-14s buffer #%d pts=%.3fs", name, n, pts)
         return Gst.PadProbeReturn.OK
 
+    def _on_remote_pad(self, _webrtc, pad):
+        if pad.direction != Gst.PadDirection.SRC:
+            return
+        log.info("receiving TV return-audio stream")
+        # Only audio is sent by the TV. Decode into a private PCM handoff;
+        # never play the microphone back through the TV's own speakers.
+        branch = Gst.parse_bin_from_description(
+            "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! "
+            "audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! "
+            "appsink name=tvmic emit-signals=true sync=false max-buffers=5 drop=true", True)
+        sink = branch.get_by_name("tvmic")
+        sink.connect("new-sample", self._on_mic_sample)
+        self.pipeline.add(branch)
+        branch.sync_state_with_parent()
+        pad.link(branch.get_static_pad("sink"))
+
+    def _on_mic_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is not None and self.tv_mic_enabled:
+            buf = sample.get_buffer()
+            data = buf.extract_dup(0, buf.get_size())
+            self.mic_packets += 1
+            values = array.array("h", data)
+            if values:
+                self.mic_peak = max(self.mic_peak, max(abs(v) for v in values))
+            now = time.monotonic()
+            if now - self.mic_last_report >= 5:
+                log.info("TV microphone received %d PCM packets; peak=%d", self.mic_packets, self.mic_peak)
+                self.mic_packets = 0
+                self.mic_peak = 0
+                self.mic_last_report = now
+            for offset in range(0, len(data), 8192):
+                tv_mic.forward(self.mic_socket, data[offset:offset + 8192])
+        return Gst.FlowReturn.OK
+
     def _on_bus_error(self, _bus, message):
         err, debug = message.parse_error()
         log.error("GStreamer ERROR: %s (%s)", err, debug)
+        self.fail(f"GStreamer: {err}")
 
     def _on_bus_warning(self, _bus, message):
         err, debug = message.parse_warning()
@@ -382,10 +445,18 @@ class Sender:
     def _on_conn_state(self, element, _pspec):
         state = element.get_property("connection-state")
         log.info("WebRTC connection state -> %s", state)
-        if state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
+        self.connected = state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED
+        if self.connected:
+            session.write_state("connected" if self.video_ready else "connecting",
+                                "" if self.video_ready else "waiting for the receiver to decode video")
             self._start_phone_audio()
         else:
             self._stop_phone_audio()
+            session.write_state("connecting", f"WebRTC state: {state.value_nick}")
+            if state == GstWebRTC.WebRTCPeerConnectionState.FAILED:
+                GLib.idle_add(self.fail, "WebRTC connection failed")
+            elif state == GstWebRTC.WebRTCPeerConnectionState.DISCONNECTED:
+                GLib.timeout_add_seconds(8, self._check_disconnected)
 
     def _start_phone_audio(self):
         if self.voice_socket is not None:
@@ -422,20 +493,50 @@ class Sender:
             sock.close()
             socket_path().unlink(missing_ok=True)
 
+    def fail(self, detail):
+        if not self.failed:
+            self.failed = True
+            log.error("cast stopped: %s", detail)
+            session.write_state("failed", detail)
+        self.loop.quit()
+        return False
+
+    def _check_disconnected(self):
+        if not self.connected:
+            self.fail("receiver did not reconnect within 8 seconds")
+        return False
+
+    def _check_startup(self):
+        if not self.connected or not self.video_ready:
+            self.fail("receiver did not connect and decode video within 25 seconds")
+        return False
+
+    def _stop_requested(self):
+        self.loop.quit()
+        return False
+
     def run(self):
-        self.start_signaling_thread()
-        self.start_video_capture()
+        session.write_state("starting")
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self._stop_requested)
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self._stop_requested)
         try:
+            self.start_signaling_thread()
+            self.start_video_capture()
+            GLib.timeout_add_seconds(25, self._check_startup)
             self.loop.run()
+        except Exception as exc:
+            log.exception("sender failed")
+            self.fail(str(exc))
         finally:
             self._stop_phone_audio()
+            tv_mic.forward(self.mic_socket, b"")
             if self.pipeline:
                 self.pipeline.set_state(Gst.State.NULL)
-            # Same explicit-disconnect fix as spike_cast_wlr_screencopy.py:
-            # leaving Wayland proxy cleanup to GC at interpreter shutdown
-            # segfaults (confirmed live via coredumpctl). Must run before
-            # process exit.
+            self.mic_socket.close()
             self.grabber.disconnect()
+            if not self.failed:
+                session.write_state("stopped")
+        return 1 if self.failed else 0
 
 
 def main():
@@ -452,7 +553,7 @@ def main():
         help="log a buffer-arrival count at vidsrc/videorate/openh264enc",
     )
     args = p.parse_args()
-    Sender(args).run()
+    sys.exit(Sender(args).run())
 
 
 if __name__ == "__main__":

@@ -37,13 +37,14 @@ class SignalingClient(private val url: String, private val listener: Listener) {
         fun onConnected()
         fun onOffer(sdp: SessionDescription)
         fun onIceCandidate(candidate: IceCandidate)
+        fun onSenderStopped()
         fun onDisconnected(reason: String)
         fun onError(message: String)
     }
 
     private val client = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
     private var socket: WebSocket? = null
-    private var closedByUs = false
+    @Volatile private var closedByUs = false
 
     fun connect() {
         closedByUs = false
@@ -52,13 +53,14 @@ class SignalingClient(private val url: String, private val listener: Listener) {
             request,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (closedByUs) { webSocket.close(1000, null); return }
                     Log.i(TAG, "connected to $url")
                     webSocket.send(JSONObject().put("role", "viewer").toString())
                     listener.onConnected()
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    handleMessage(text)
+                    if (!closedByUs) handleMessage(text)
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -72,6 +74,7 @@ class SignalingClient(private val url: String, private val listener: Listener) {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (closedByUs) return
                     Log.e(TAG, "signaling failure", t)
                     listener.onError(t.message ?: t.javaClass.simpleName)
                 }
@@ -97,9 +100,17 @@ class SignalingClient(private val url: String, private val listener: Listener) {
                     msg.optString("candidate"),
                 ),
             )
-            "bye" -> listener.onDisconnected("sender said bye")
+            "bye" -> listener.onSenderStopped()
             else -> Log.w(TAG, "unhandled signaling message type: $type")
         }
+    }
+
+    fun sendVideoReady() {
+        send(JSONObject().put("type", "video-ready"))
+    }
+
+    fun sendMicrophoneState(enabled: Boolean) {
+        send(JSONObject().put("type", "microphone").put("enabled", enabled))
     }
 
     fun sendAnswer(sdp: SessionDescription) {
@@ -117,8 +128,8 @@ class SignalingClient(private val url: String, private val listener: Listener) {
     }
 
     fun close() {
-        val ws = socket ?: return
         closedByUs = true
+        val ws = socket ?: return
         send(JSONObject().put("type", "bye"))
         ws.close(1000, "viewer closing")
         socket = null

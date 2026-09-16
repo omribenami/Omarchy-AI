@@ -47,6 +47,7 @@ import yaml
 
 from .. import myapi
 from ..myapi import usage as myapi_usage
+from ..voice import control
 from ..config import (
     CONFIG_DIR,
     LEGACY_KEY_PATH,
@@ -133,6 +134,7 @@ def _snapshot() -> dict:
         "api_key": _api_key_state(),
         "phone_bridge_paired_count": paired_count(),
         "myapi": _myapi_state(),
+        "assistant": control.request('status'),
     }
 
 
@@ -472,6 +474,18 @@ def cmd_revoke_phones(_args: argparse.Namespace) -> dict:
     return _snapshot()
 
 
+def cmd_activate(_args):
+    return control.request('activate')
+
+
+def cmd_myapi_dashboard(args):
+    from ..myapi.dashboard import fetch
+    try:
+        return fetch(args.period)
+    except (myapi.MyApiError, OSError, ValueError) as error:
+        return {'error': str(error)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="omarchy-ai-settings")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -487,6 +501,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("connect-myapi")
     sub.add_parser("disconnect-myapi")
     sub.add_parser("myapi-usage")
+    p_dashboard = sub.add_parser('myapi-dashboard')
+    p_dashboard.add_argument('period', choices=('24h', '7d', '30d'), default='7d', nargs='?')
+    sub.add_parser('activate')
     p_select_cast = sub.add_parser("select-cast-target")
     p_select_cast.add_argument("address")
     sub.add_parser("refresh-cast-targets")
@@ -502,6 +519,8 @@ def main(argv: list[str] | None = None) -> int:
         "connect-myapi": cmd_connect_myapi,
         "disconnect-myapi": cmd_disconnect_myapi,
         "myapi-usage": cmd_myapi_usage,
+        "myapi-dashboard": cmd_myapi_dashboard,
+        "activate": cmd_activate,
         "select-cast-target": cmd_select_cast_target,
         "refresh-cast-targets": cmd_refresh_cast_targets,
         "restart": cmd_restart,

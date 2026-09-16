@@ -15,7 +15,11 @@ into this repo so a fresh clone doesn't have to rebuild them from scratch:
 
 ## Installing
 
-Copy each plugin folder into Omarchy's user plugin directory, then enable it:
+Run `bash scripts/install-plugins.sh` from the repository root to install or update
+all five plugins (with backups) and register the MyApi bar widget. `scripts/setup.sh`
+also runs this installer. The MyApi icon stays hidden until enabled in settings.
+
+For manual installation, copy each plugin folder into Omarchy's user plugin directory, then enable it:
 
 ```bash
 cp -r quickshell/plugins/omarchy-ai.settings \

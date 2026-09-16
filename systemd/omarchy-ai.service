@@ -19,6 +19,8 @@ RestartSec=2
 # an env var is visible to every process sharing this UID via
 # /proc/<pid>/environ, a file the daemon opens itself is not.
 Environment=PATH=@PATH@
+# The shell IPC helper requires this even outside an interactive session.
+Environment=OMARCHY_PATH=@OMARCHY_PATH@
 
 [Install]
 WantedBy=default.target

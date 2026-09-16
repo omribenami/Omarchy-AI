@@ -33,6 +33,7 @@ from ..core.memory import load_preferences
 from ..execution.actions import run_action
 from ..execution.tools import MYAPI_TOOLS, TOOLS
 from . import status_icon, watchdog
+from .tv_mic import Receiver as TvMicReceiver
 
 log = logging.getLogger("omarchy_ai.voice.live")
 
@@ -119,7 +120,7 @@ def build_session_config(config: Config) -> dict:
 class MicTrack(MediaStreamTrack):
     kind = "audio"
 
-    def __init__(self, device: str | None = None):
+    def __init__(self, device: str | None = None, *, source: str = "desktop"):
         super().__init__()
         argv = [
             "pw-record", "--rate", str(RATE), "--channels", "1",
@@ -129,6 +130,7 @@ class MicTrack(MediaStreamTrack):
             argv += ["--target", device]
         argv.append("-")
         self._proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self._tv_mic = TvMicReceiver(RATE) if source == "tv" else None
         self._samples_sent = 0
         self._frame_bytes = FRAME_SAMPLES * 2
 
@@ -142,6 +144,9 @@ class MicTrack(MediaStreamTrack):
             if not chunk:
                 break
             buf += chunk
+        remote = self._tv_mic.read(self._frame_bytes) if self._tv_mic is not None else None
+        if remote is not None:
+            buf = remote
         frame = av.AudioFrame(format="s16", layout="mono", samples=FRAME_SAMPLES)
         frame.planes[0].update(buf.ljust(self._frame_bytes, b"\x00"))
         frame.sample_rate = RATE
@@ -152,6 +157,8 @@ class MicTrack(MediaStreamTrack):
 
     def stop(self) -> None:
         super().stop()
+        if self._tv_mic is not None:
+            self._tv_mic.close()
         if self._proc.poll() is None:
             self._proc.terminate()
 
@@ -212,8 +219,9 @@ class LiveSession:
         "להתראות", "נתראה", "ביי",
     )
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, *, mic_source: str = "desktop"):
         self.config = config
+        self.mic_source = mic_source
         self._pc: RTCPeerConnection | None = None
         self._hangup = asyncio.Event()
         self._input_buffer = ""
@@ -535,7 +543,7 @@ class LiveSession:
         # candidate), so skip STUN entirely rather than wait for it.
         pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self._pc = pc
-        mic = MicTrack(self.config.mic_device)
+        mic = MicTrack(self.config.mic_device, source=self.mic_source)
         pc.addTrack(mic)
         dc = pc.createDataChannel("oai-events")
         self._dc = dc

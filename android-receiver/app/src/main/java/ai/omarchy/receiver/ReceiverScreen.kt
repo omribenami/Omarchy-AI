@@ -39,6 +39,7 @@ import org.webrtc.SurfaceViewRenderer
 fun ReceiverScreen(viewModel: ReceiverViewModel) {
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val remoteVideoTrack by viewModel.remoteVideoTrack.collectAsStateWithLifecycle()
+    val microphoneActive by viewModel.microphoneActive.collectAsStateWithLifecycle()
     var rendererRef by remember { mutableStateOf<SurfaceViewRenderer?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -75,6 +76,15 @@ fun ReceiverScreen(viewModel: ReceiverViewModel) {
 
         if (!connectionState.isStreaming()) {
             StatusOverlay(connectionState = connectionState)
+        }
+
+        if (microphoneActive) {
+            Text(
+                text = "TV microphone active · Say Omachy",
+                color = Color(0xFF39FF88),
+                fontSize = 14.sp,
+                modifier = Modifier.align(Alignment.TopStart).background(Color.Black.copy(alpha = 0.7f)).padding(12.dp),
+            )
         }
 
         // Build version, always visible (even while actively streaming --

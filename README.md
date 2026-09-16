@@ -41,8 +41,9 @@ own code.
 > as a systemd service today, has controlled a real desktop over dozens of
 > live voice sessions, and casts a real desktop to a real Android TV over
 > WebRTC. It was also built in one long, evidence-driven session (see
-> [`STATUS.md`](STATUS.md) for the blow-by-blow) and has no installer
-> package yet. Manual install only, for now — see below.
+> [`STATUS.md`](STATUS.md) for the implementation history. A release bundle
+> includes the Python distributions, locked source, desktop plugins, wake
+> models, service unit, and Android receiver APK.
 
 ---
 
@@ -243,12 +244,28 @@ scripts/             the original WebRTC/API reverse-engineering spikes,
 Full reasoning behind each of these choices — including the dead ends — is
 in [`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md).
 
-## Manual installation
+## Installation
 
-There is no installer package yet — this is the real, current path a
-technical user needs on a fresh Omarchy machine.
+### Release package
 
-**1. System packages** (needs `sudo`; see
+Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` file
+from the matching GitHub release, verify it, then unpack and install:
+
+```bash
+sha256sum -c omarchy-ai-<version>-linux-x86_64.tar.gz.sha256
+tar -xzf omarchy-ai-<version>-linux-x86_64.tar.gz
+cd omarchy-ai-<version>-linux-x86_64
+./install.sh
+```
+
+The bundle includes the Android receiver at
+`android/omarchy-ai-receiver.apk`. The installer sets up the desktop service
+and plugins; it does not silently install system packages or alter firewall
+rules. It prints the exact `adb install -r` command for the receiver.
+
+### From source
+
+**1. Native dependencies** (needs `sudo`; see
 [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) for the full list and why
 each is needed):
 
@@ -263,7 +280,7 @@ GStreamer, PipeWire, `xdg-desktop-portal-hyprland`, `avahi-daemon`, and
 below checks rather than assumes, but doesn't install them for you if
 they're somehow missing.
 
-**2. Clone and sync the Python environment:**
+**2. Clone and install:**
 
 ```bash
 git clone https://github.com/omribenami/Omarchy-AI.git ~/Git/omarchy-ai
@@ -314,10 +331,12 @@ sudo ufw allow from 192.168.1.0/24 to any port 8766 proto tcp  # phone bridge
 
 (Adjust the subnet to your own LAN.)
 
-**7. Android receiver app** (only needed for TV/projector casting): built
+**7. Android receiver app** (only needed for TV/projector casting): the
+release package includes a ready-to-install APK. From source, it is built
 automatically on first `install_receiver_on_tv` call, or manually via
-`cd android-receiver && ./gradlew assembleDebug`. Needs the JDK/Android SDK
-pinned in `mise.toml` — run `mise install` in that directory first.
+`cd android-receiver && mise exec -- ./gradlew :app:assembleDebug`. Building
+from source needs the JDK/Android SDK pinned in `mise.toml` — run `mise
+install` in that directory first.
 
 **8. Connect services via MyApi** (optional, needs a
 [MyApi](https://www.myapiai.com) Pro/Heavy/Enterprise account): flip
@@ -333,11 +352,25 @@ echo -n "MYAPI-XXXXXXXX-XXXXXXXX" | .venv/bin/omarchy-ai-settings connect-myapi
 
 Then `omarchy-ai-dashboard` shows live per-service usage in a terminal.
 
+### Build a release package
+
+Maintainers can build the exact offline-installable archive from a clean,
+committed checkout:
+
+```bash
+./scripts/build-install-package.sh
+```
+
+This writes `dist/omarchy-ai-<version>-linux-x86_64.tar.gz` and a SHA-256
+checksum. It builds the Python wheel and source distribution, a fresh Android
+receiver APK, and packages all tracked runtime files. Native Omarchy packages
+are verified by `scripts/check-dependencies.sh` during installation and remain
+listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
+
 ### Known gaps
 
 Documented honestly rather than papered over:
 
-- **No installer package.** Manual steps above are the real, current path.
 - **The daemon degrades gracefully without the Quickshell plugins enabled**
   (the IPC calls to the HUD/window-labels/status-dot just log a warning and
   continue) — but note that `omarchy-ai.settings/Panel.qml`'s path to the
@@ -399,3 +432,20 @@ packets on slow links to avoid accumulating delayed speech.
 Tap **Text** to type without microphone access. Replies stream into the
 transcript and text mode stays silent. **Voice** switches the same connected
 session back to microphone input. Connection failures preserve the draft.
+
+### Mirror recovery and TV microphones
+
+Mirroring runs in `omarchy-ai-cast.service`, independently of voice conversations
+and assistant restarts. Ask the assistant to start/stop casting as usual.
+Connection failures and bounded retries are recorded in:
+
+```sh
+journalctl --user -u omarchy-ai-cast.service -u omarchy-ai-signaling.service -f
+```
+
+A USB microphone or wired headset with a microphone plugged into the receiver
+can supply the assistant's wake word and conversation audio. Grant the receiver's
+microphone permission; **TV microphone active** appears when the external input
+is available. Desktop and TV wake-word detection run independently. A conversation
+uses the microphone that heard its wake word; losing TV audio falls back to the
+desktop microphone. An attached TV microphone never disables desktop wake detection.

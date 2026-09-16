@@ -3336,3 +3336,182 @@ themselves are QML `Behavior`/`Timer` declarations that were
 brace-balance-checked and exercised via real state changes, but never
 watched in motion by this agent) — same standing caveat as every other
 Quickshell feature in this project.
+
+
+## 2026-09-15 — Restore desktop overlays and install MyApi settings
+
+Confirmed the live daemon lacked OMARCHY_PATH; omarchy-shell requires it,
+and its -q mode silently returns success when it is absent. Added the path
+to the service template and installed unit, reloaded systemd and restarted
+the assistant. IPC using the restarted daemon’s actual environment returned
+ok. A local screenshot confirmed both the Watch Dogs card and bottom-center
+visualizer render; dismissed the test afterward. Watchdog remains enabled
+with display mode both.
+
+The installed settings QML predated the MyApi section, and the MyApi plugin
+was absent entirely. Installed current repository plugins and registered
+MyApi beside settings; myapi_enabled remains false and its icon is hidden.
+The existing widget polls that setting every five seconds. Added a backed-up
+plugin installer to setup so future installs include the desktop UI. Shell
+syntax and git diff whitespace checks passed. Live voice audio amplitude
+was not retested; the rendering check used a synthetic level event.
+
+## 2026-09-15 — Mirror lifecycle, MyApi proxy, and TV microphone
+
+The reported 18:09–18:13 casting attempts exited within ~2 seconds. Their
+stderr had been redirected to /dev/null, so the original exception cannot
+be recovered from the journal. A later direct sender diagnostic successfully
+negotiated WebRTC and captured frames; avoid claiming a decoder or Wayland
+failure as the proven cause of those earlier exits.
+
+Replaced per-process sender ownership with the named omarchy-ai-cast.service
+and a cross-process runtime lock/state/target. Voice, phone, and the short-lived
+settings CLI now share ownership. Start waits for actual WebRTC connection;
+startup/stream errors retain details, failures start at most three times per
+three minutes, disconnect gets an eight-second grace period, and a capture stall
+fails instead of silently remaining “connected.” Stop controls the service
+from a fresh process. Casting and signaling run independently of the assistant;
+the signaling service now retains its own journal. Target resolution precedes
+“already casting,” so a request for a different TV cannot silently succeed
+against the old one. Receiver launch checks ADB/activity errors and passes the
+current routed desktop IP, including to an already-open singleTop activity.
+
+The Android receiver creates fresh SDP/ICE state per offer, marshals callbacks
+onto its main handler, rejects stale callbacks, and retries signaling with
+bounded backoff. Relay disconnects clear stale pending offers and notify peers.
+Receiver versions include a source-content hash, so two uncommitted builds no
+longer look identical to the automatic installer.
+
+Added external USB/wired-headset microphone return audio: Android detects input
+devices and permission, prefers the plugged-in input, publishes an audio track,
+and shows “TV microphone active · Say Omachy.” Desktop decodes incoming Opus
+into private bounded PCM sockets consumed by wake detection (16kHz) and live
+voice (48kHz). Disabled/unplugged/stale input returns to desktop capture; return
+mic PCM is never played into the outgoing TV mix. Unit tests exercise PCM
+resampling and fallback. Physical USB microphone verification is recorded in the follow-up below.
+
+MyApi's real Gmail failure was Composio rejecting numeric maxResults:
+“payload.parameters.0.value: Expected string, received number.” Normalize query
+values to strings, omit nulls, expose nested validation details, and reject
+provider error envelopes even with HTTP 200. The original inbox query now
+returns HTTP 200 and one message; the assistant action itself also succeeds.
+Corrected the tool schema's misleading Gmail '/messages' example. No email
+content was printed during the diagnostic.
+
+Settings follow-up: hot reload left an old bar widget live; a shell restart
+actually replaced it. Moved a clearly named Enable MyApi control to the first
+scroll section, confirmed by screenshot. Disabled the base Panel IPC handler
+because this plugin already provides its own, and fixed the CLI queue's exit/
+stdout race in both settings panels. User's current MyApi toggle is preserved.
+
+Validation: receiver assembleDebug succeeds; all 14 Python tests pass, including
+real local WebSocket/socket tests. HY300Pro negotiated and continuously captured
+frames with zero capture failures. Mirroring survived an assistant restart and
+was recognized from a new CLI process; MyApi fix is loaded in the daemon.
+
+
+### Live recovery and USB microphone follow-up
+
+The forced sender-crash test reproduced the previously dismissed HY300 crash:
+AndroidVideoDecoder.onFrame threw “Rendered texture metadata was null in
+onTextureFrameAvailable” on decoder-texture-thread. This is a real reconnect
+bug, not merely test churn. Passing a null decoder EGL context selects the
+MediaCodec byte-buffer output path (confirmed against the installed WebRTC
+classes), bypassing that faulty SurfaceTexture delivery path. Hardware decoding
+remains enabled. The receiver also acknowledges the first decoded video frame;
+start no longer claims success before that acknowledgement.
+
+Rebuilt and installed on HY300Pro. A real SIGKILL of the sender now recovers to
+a new sender PID, negotiates, and receives the first-frame acknowledgement.
+A TV screencap confirms the mirrored desktop, and decoder logs confirm byte-
+buffer output. The mirror remains running. All 14 Python tests and the final
+Android build pass.
+
+The user plugged in a USB microphone. /proc/asound and dumpsys usb identified
+C-Media USB PnP Sound Device, input-only, 48kHz mono S16LE, while this firmware
+omits it from AudioManager.getDevices(). Added detection of real USB audio-
+streaming IN endpoints and USB attach/detach broadcasts; for that firmware
+case use its default input route. RECORD_AUDIO is granted. The physical
+microphone now reaches the desktop at ~250 PCM packets per five seconds with
+nonzero sample peaks. No speech recording was saved. Input selection logs
+identify TV vs desktop fallback at both consumer sample rates.
+
+
+### Wake-word regression correction
+
+The user reported no response after attaching the TV mic. Logs showed the
+TV stream selected continuously, with no subsequent wake detections. The first
+implementation replaced every desktop wake frame (and every live input frame)
+with TV PCM whenever packets arrived, even if they contained only silence. That
+removed the previously working desktop input. Nonzero packet/PCM verification
+was insufficient to prove wake recognition, and the earlier completion claim
+was too broad.
+
+Restored read_frame to desktop PCM. WakeWordDetector now keeps separate models,
+feature histories and consecutive-score counters for desktop and TV, evaluating
+both independently. It records which source actually fired; OmaDaemon passes
+that source into LiveSession/MicTrack, so desktop-triggered conversations cannot
+be overridden by TV audio. TV-triggered sessions retain desktop fallback on loss.
+User-selected wake models and sensitivity are preserved. Tests cover silent-TV
+noninterference, either source waking, no cross-source score accumulation, and
+conversation input routing. The daemon is restarted; awaiting spoken validation.
+
+All 21 Python tests pass after the routing correction, including real local
+socket tests and both conversation-source tests. Live daemon reports ready.
+No post-fix spoken wake detection has appeared yet; user was asked for one
+computer-microphone test. Do not represent mocked detector tests as proof of
+physical wake-word recognition.
+
+### HY300 wake diagnostics (still unresolved)
+
+Laptop wake is now confirmed by the user and real desktop-source detections
+(scores 0.83 and 0.90). HY300 USB-mic attempts produced substantial RMS/peak
+increases but TV wake scores remained near 0.001, including a diagnostic-only
+4x gain model. Do not lower the threshold to these background-level scores.
+Added PCM counters, gated in wake logs by OMARCHY_AI_WAKE_DIAGNOSTICS=1:
+the live 16kHz consumer received 81,920 samples in 5.12 seconds, with zero
+dropped or padded samples and a stable 2,864-sample buffer. Local transport
+timing is therefore healthy in that measurement; speech quality and Android
+capture processing still need investigation. No recording has been made.
+The diagnostics environment flag is currently enabled in the user manager.
+
+The user authorized one 10-second local recording. Captured 48kHz mono PCM to
+/tmp/hy300-microphone-10s.wav (0600); no audio was uploaded. Capture process has
+exited and its 48kHz socket is removed. Peak 5096, no clipping; sound activity
+appears in seconds 5–9. Offline replay through the actual configured model
+peaks at 0.529 (SciPy resampling) / 0.544 (the production PyAV resampler),
+with only one frame above the configured 0.48 threshold. Trigger requires 3.
+Live TV score in the same window peaked at 0.2992. Shifting offline 80ms
+chunk alignment by 20/40/60ms gives peaks 0.417/0.350/0.098. This recording
+therefore demonstrates weak, alignment-sensitive recognition, not complete
+loss of speech. No threshold or trigger rule was changed based on one sample.
+Physical TV wake remains unresolved. Laptop wake remains separately routed.
+
+### Native MyApi dashboard and assistant panel redesign
+
+Replaced the MyApi panel's local usage counter with the actual account-level
+dashboard endpoint, /api/v1/dashboard/device-activity?range=24h|7d|30d.
+Confirmed the endpoint and response fields against the web dashboard's own
+public JS bundle, then verified all three ranges with the existing ASC identity.
+The panel shows account totals, active agents, error rate, a bucketed chart,
+service/agent breakdown tabs, agent filtering, and insights derived from those
+same totals. It never substitutes local activity for failed account requests.
+Loading/errors are visible; refresh is every 30 seconds only while open.
+The bar icon still depends on myapi_enabled. No global/admin-user analytics
+are inferred: the dashboard scope is the connected account's devices/agents.
+
+Assistant panel now has Voice, Connections, and Appearance tabs, a small
+glitching ASCII header (timer stops when closed), and a prominent Activate
+Omachy button. MyApi enablement remains under Connections. Settings use the
+native Omarchy components, typography, spacing, and theme palette. Sensitivity
+stays outside scrolling content; saved changes have a dedicated apply button.
+Activation uses a local 0600 Unix socket into the existing session loop,
+interrupts wake listening, chooses the desktop microphone, and refuses duplicate
+starts. It does not start a second daemon or bypass the normal conversation flow.
+
+Validation: all 26 regression tests pass (including account endpoint/period,
+error handling, real local control socket, busy guard, and manual session routing).
+Live control status reports listening. Native assistant and MyApi panels were
+opened and visually inspected on the running desktop; no plugin runtime errors.
+Monthly response contained 30 buckets, 12 agents, and 14 services at verification.
+No live paid conversation was initiated solely for the automated button test.
