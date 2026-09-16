@@ -22,6 +22,8 @@ Commands:
                                  identity (see ../myapi/)
   disconnect-myapi           -> delete the local MyApi identity
   myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
+  approve-sudo               -> store one 2-minute sudo approval from
+                                 OMARCHY_AI_SUDO_PASSWORD (never stdout)
   select-cast-target <addr>  -> manual click in the omarchy-ai.tv-discovery
                                  overlay; runs the real start_casting
   refresh-cast-targets       -> the overlay's "Refresh" button
@@ -123,6 +125,7 @@ def _snapshot() -> dict:
     if cfg.voice not in voice_options:
         voice_options.append(cfg.voice)
     from ..phone.server import paired_count
+    from ..execution import sudo_approval
 
     return {
         "fields": fields,
@@ -135,6 +138,7 @@ def _snapshot() -> dict:
         "phone_bridge_paired_count": paired_count(),
         "myapi": _myapi_state(),
         "assistant": control.request('status'),
+        "sudo_approval": sudo_approval.status(),
     }
 
 
@@ -266,6 +270,20 @@ def cmd_myapi_usage(_args: argparse.Namespace) -> dict:
     refresh cadence (polled on a timer by that panel, not on every field
     change) and not something the main settings panel needs at all."""
     return {"services": myapi_usage.aggregate()}
+
+
+def cmd_approve_sudo(_args: argparse.Namespace) -> dict:
+    """Accept a password from the QML process environment, never argv/stdout."""
+    from ..execution import sudo_approval
+
+    password = os.environ.get("OMARCHY_AI_SUDO_PASSWORD", "")
+    if not password:
+        return {"error": "enter your password first"}
+    try:
+        sudo_approval.approve(password)
+    except (OSError, ValueError) as error:
+        return {"error": str(error)}
+    return {"approved": True, "expires_in": sudo_approval.TTL_SECONDS}
 
 
 def cmd_select_cast_target(args: argparse.Namespace) -> dict:
@@ -501,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("connect-myapi")
     sub.add_parser("disconnect-myapi")
     sub.add_parser("myapi-usage")
+    sub.add_parser("approve-sudo")
     p_dashboard = sub.add_parser('myapi-dashboard')
     p_dashboard.add_argument('period', choices=('24h', '7d', '30d'), default='7d', nargs='?')
     sub.add_parser('activate')
@@ -519,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
         "connect-myapi": cmd_connect_myapi,
         "disconnect-myapi": cmd_disconnect_myapi,
         "myapi-usage": cmd_myapi_usage,
+        "approve-sudo": cmd_approve_sudo,
         "myapi-dashboard": cmd_myapi_dashboard,
         "activate": cmd_activate,
         "select-cast-target": cmd_select_cast_target,

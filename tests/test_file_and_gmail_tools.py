@@ -10,6 +10,30 @@ from omarchy_ai.execution import actions, files, tile_logs
 
 
 class LocalFileToolTests(unittest.TestCase):
+    def test_sudo_approval_is_one_time_and_runtime_only(self):
+        from omarchy_ai.execution import sudo_approval
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sudo-approval.json"
+            with patch.object(sudo_approval, "RUNTIME_DIR", Path(directory)), \
+                 patch.object(sudo_approval, "APPROVAL_PATH", path):
+                sudo_approval.approve("not-in-results")
+                self.assertTrue(sudo_approval.status()["approved"])
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(sudo_approval.consume(), "not-in-results")
+                self.assertFalse(path.exists())
+                self.assertIsNone(sudo_approval.consume())
+
+    def test_submit_sudo_password_never_returns_the_secret(self):
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(actions.sudo_approval, "consume", return_value="not-in-results"), \
+             patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
+             patch.object(actions.subprocess, "run", return_value=completed) as run:
+            result = actions.submit_sudo_password({})
+        self.assertTrue(result.ok)
+        self.assertNotIn("not-in-results", result.message)
+        self.assertEqual(run.call_count, 2)
+
     def test_assistant_terminal_gets_a_unique_stable_label(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -44,6 +68,21 @@ class LocalFileToolTests(unittest.TestCase):
             with patch.object(tile_logs, "TERMINAL_CONTEXT_DIR", root):
                 self.assertTrue(any("/work/demo" in item for item in tile_logs.list_tiles()))
                 self.assertIn("pytest", tile_logs.read_log("demo"))
+
+    def test_completed_assistant_transcript_survives_daemon_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live = root / "live"
+            history = root / "history"
+            live.mkdir()
+            transcript = live / "Omarchy_AI_1234abcd.log"
+            transcript.write_text("installer finished successfully\n")
+            with patch.object(tile_logs, "TILE_LOG_DIR", live), \
+                 patch.object(tile_logs, "TERMINAL_HISTORY_DIR", history):
+                tile_logs.sweep_stale()
+                self.assertFalse(transcript.exists())
+                self.assertIn("installer finished successfully", tile_logs.read_log("Omarchy AI 1234abcd"))
+                self.assertTrue(any("completed terminal" in item for item in tile_logs.list_tiles()))
 
 
 class GmailAttachmentToolTests(unittest.TestCase):

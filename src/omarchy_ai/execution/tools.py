@@ -225,6 +225,10 @@ TOOLS: list[dict] = [
         },
     ),
     _tool(
+        "submit_sudo_password",
+        "Submit the one-time sudo password the user just approved in the Assistant Settings panel. Call this only after reading the exact assistant terminal log and seeing a sudo password prompt. The password is never exposed to you and the approval is consumed immediately.",
+    ),
+    _tool(
         "get_recent_actions",
         "Recall what actions you've already taken this conversation, "
         "optionally filtered to a specific window/app — use this to avoid "

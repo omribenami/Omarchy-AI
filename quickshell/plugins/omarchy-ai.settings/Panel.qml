@@ -121,6 +121,27 @@ Panel {
     }, { "OMARCHY_AI_API_KEY": trimmed })
   }
 
+  function approveSudo(password) {
+    if (!password || password.length === 0) {
+      root.statusTone = "error"
+      root.statusMessage = "Enter your password first"
+      return
+    }
+    root._enqueue([root.py, "approve-sudo"], function(result) {
+      if (result && result.error) {
+        root.statusTone = "error"
+        root.statusMessage = result.error
+      } else if (result && result.approved) {
+        root.statusTone = "ok"
+        root.statusMessage = "One sudo prompt approved for 2 minutes"
+        root.fetchSnapshot()
+      } else {
+        root.statusTone = "error"
+        root.statusMessage = "Could not approve sudo"
+      }
+    }, { "OMARCHY_AI_SUDO_PASSWORD": password })
+  }
+
   property bool pairing: false
   property string qrImageBase64: ""
   property string qrUrl: ""
@@ -425,6 +446,52 @@ Panel {
             onClicked: root.setField("myapi_enabled", myapiToggle.checked ? "false" : "true", "MyApi " + (myapiToggle.checked ? "disabled" : "enabled — look for its icon in the bar"))
           }
         }
+        PanelSeparator { foreground: root.fg; visible: root.section === "connections" }
+
+        Column {
+          visible: root.section === "connections"
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader { text: "ONE-TIME SUDO APPROVAL"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: (root.snapshot.sudo_approval && root.snapshot.sudo_approval.approved)
+              ? "Approved for the next sudo prompt. It expires in " + root.snapshot.sudo_approval.expires_in + " seconds."
+              : "Approve one sudo prompt for an installer Omachy is already running. The password is kept only in a protected runtime file, used once, then deleted."
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            color: Qt.darker(root.fg, 1.4)
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: sudoPasswordField
+              width: parent.width - approveSudoButton.width - Style.space(8)
+              password: true
+              placeholderText: "System password"
+              foreground: root.fg
+              font.family: root.bar.fontFamily
+              onAccepted: { root.approveSudo(text); text = "" }
+            }
+
+            Button {
+              id: approveSudoButton
+              text: "Approve once"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.bar.fontFamily
+              onClicked: { root.approveSudo(sudoPasswordField.text); sudoPasswordField.text = "" }
+            }
+          }
+        }
+
         PanelSeparator { foreground: root.fg; visible: root.section === "connections" }
 
                 Column {

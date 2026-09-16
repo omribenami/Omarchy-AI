@@ -217,7 +217,8 @@ src/omarchy_ai/
   voice/      wake word (openWakeWord), the gpt-live-1 WebRTC client
               (aiortc), the Watch Dogs/status-icon IPC bridges
   execution/  Hyprland/PipeWire/desktop actions, the tool schemas exposed
-              to the model, per-terminal output logs, the vision fallback
+              to the model, per-terminal output logs retained after a
+              terminal closes or service restart, the vision fallback
   display/    mDNS device discovery, the WebRTC signaling relay for casting
   phone/      the local HTTPS phone-bridge server + paired web page
   myapi/      the MyApi (myapiai.com) client — ASC Quick Connect, signed
