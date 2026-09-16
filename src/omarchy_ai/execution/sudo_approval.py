@@ -1,54 +1,46 @@
-"""One-time, panel-approved sudo credentials.
+"""Persistent, user-controlled sudo access stored in GNOME Keyring.
 
-The password never enters a model tool argument.  The settings panel writes
-it to the per-user runtime directory (0600), and the submit action consumes
-and deletes it before typing it into an already focused sudo prompt.
+The password never enters a model tool argument, config.yaml, a log, or a
+regular file. libsecret encrypts it in the user's desktop keyring; this
+module only retrieves it when the user has explicitly enabled Sudo Access.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import time
-from pathlib import Path
+import subprocess
 
-from ..config import RUNTIME_DIR
-
-APPROVAL_PATH = RUNTIME_DIR / "sudo-approval.json"
-TTL_SECONDS = 120
+_ATTRIBUTES = ("application", "omarchy-ai", "purpose", "sudo-password")
+_LABEL = "Omarchy AI Sudo Access"
 
 
-def _write(data: dict) -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    fd = os.open(APPROVAL_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as output:
-        json.dump(data, output)
-    os.chmod(APPROVAL_PATH, 0o600)
+def _run(args: list[str], *, password: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["secret-tool", *args], input=password, capture_output=True,
+        text=True, timeout=10, check=False,
+    )
 
 
-def approve(password: str) -> None:
+def store(password: str) -> None:
     if not password:
         raise ValueError("password is empty")
-    _write({"password": password, "expires_at": time.time() + TTL_SECONDS})
+    result = _run(["store", f"--label={_LABEL}", *_ATTRIBUTES], password=password)
+    if result.returncode != 0:
+        raise OSError((result.stderr or result.stdout or "could not access GNOME Keyring").strip())
 
 
-def _load() -> dict | None:
-    try:
-        data = json.loads(APPROVAL_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
+def retrieve() -> str | None:
+    result = _run(["lookup", *_ATTRIBUTES])
+    if result.returncode != 0:
         return None
-    if not isinstance(data.get("password"), str) or not isinstance(data.get("expires_at"), (int, float)) or data["expires_at"] < time.time():
-        APPROVAL_PATH.unlink(missing_ok=True)
-        return None
-    return data
+    password = result.stdout.rstrip("\n")
+    return password or None
+
+
+def clear() -> None:
+    result = _run(["clear", *_ATTRIBUTES])
+    if result.returncode != 0:
+        raise OSError((result.stderr or result.stdout or "could not clear GNOME Keyring").strip())
 
 
 def status() -> dict:
-    data = _load()
-    return {"approved": data is not None, "expires_in": max(0, int(data["expires_at"] - time.time())) if data else 0}
-
-
-def consume() -> str | None:
-    data = _load()
-    APPROVAL_PATH.unlink(missing_ok=True)
-    return data["password"] if data else None
+    return {"stored": retrieve() is not None}

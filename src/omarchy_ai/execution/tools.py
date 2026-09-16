@@ -226,7 +226,7 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "submit_sudo_password",
-        "Submit the one-time sudo password the user just approved in the Assistant Settings panel. Call this only after reading the exact assistant terminal log and seeing a sudo password prompt. The password is never exposed to you and the approval is consumed immediately.",
+        "Submit the password saved in GNOME Keyring when persistent Sudo Access is enabled in Assistant Settings. Call this only after reading the exact assistant terminal log and seeing a sudo password prompt. The password is never exposed to you.",
     ),
     _tool(
         "get_recent_actions",

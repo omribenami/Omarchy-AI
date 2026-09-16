@@ -199,10 +199,10 @@ class Config:
         "exact unique terminal title returned by open_terminal when you "
         "focus it and read its log, so you never send the command to a "
         "different terminal. If it prompts for sudo, leave the focused "
-        "terminal for the user to enter their password, unless they have "
-        "just approved one in Assistant Settings. In that case, after "
+        "terminal for the user to enter their password, unless persistent "
+        "Sudo Access is enabled in Assistant Settings. In that case, after "
         "confirming the exact terminal log contains the sudo prompt, call "
-        "submit_sudo_password. It uses the one-time panel approval without "
+        "submit_sudo_password. It uses the GNOME Keyring credential without "
         "revealing the password to you. Never ask for, repeat, or type a "
         "password yourself. "
         "If you type shell commands into a terminal: this machine runs "
@@ -273,6 +273,7 @@ class Config:
     # (LiveSession.run()'s watchdog.start() call site), so a change needs a
     # daemon restart to take effect — see settings.py's restart discipline.
     watchdog_enabled: bool = True
+    sudo_access_enabled: bool = False
     # "feed" (tool-call/state text feed, the original design), "visualizer"
     # (ASCII/unicode amplitude bars while speaking), or "both". Selected via
     # the settings panel, sent to the plugin as part of watchdog.start()'s

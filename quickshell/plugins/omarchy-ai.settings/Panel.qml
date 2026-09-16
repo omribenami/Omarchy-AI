@@ -121,25 +121,38 @@ Panel {
     }, { "OMARCHY_AI_API_KEY": trimmed })
   }
 
-  function approveSudo(password) {
+  function configureSudo(password) {
     if (!password || password.length === 0) {
       root.statusTone = "error"
       root.statusMessage = "Enter your password first"
       return
     }
-    root._enqueue([root.py, "approve-sudo"], function(result) {
+    root._enqueue([root.py, "configure-sudo"], function(result) {
       if (result && result.error) {
         root.statusTone = "error"
         root.statusMessage = result.error
-      } else if (result && result.approved) {
+      } else if (result) {
+        root.snapshot = result
+        root.setField("sudo_access_enabled", "true", "Sudo Access enabled — Omachy can now complete sudo prompts")
         root.statusTone = "ok"
-        root.statusMessage = "One sudo prompt approved for 2 minutes"
-        root.fetchSnapshot()
+        root.statusMessage = "Sudo Access saved in GNOME Keyring"
       } else {
         root.statusTone = "error"
         root.statusMessage = "Could not approve sudo"
       }
     }, { "OMARCHY_AI_SUDO_PASSWORD": password })
+  }
+
+  function forgetSudo() {
+    root._enqueue([root.py, "forget-sudo"], function(result) {
+      if (result && result.error) {
+        root.statusTone = "error"
+        root.statusMessage = result.error
+      } else {
+        root.snapshot = result || ({})
+        root.setField("sudo_access_enabled", "false", "Sudo Access disabled and password removed")
+      }
+    })
   }
 
   property bool pairing: false
@@ -273,7 +286,7 @@ Panel {
   }
 
 
-  property string section: "voice"
+  property string section: "connections"
   property bool activating: false
   property int glitchFrame: 0
   readonly property string assistantState: live ? "active" : ((snapshot.assistant || {}).state || "offline")
@@ -453,15 +466,35 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          PanelSectionHeader { text: "ONE-TIME SUDO APPROVAL"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+          PanelSectionHeader { text: "SUDO ACCESS"; foreground: "#ffd24d"; fontFamily: root.bar.fontFamily }
+
+          Rectangle {
+            width: parent.width
+            height: sudoWarning.implicitHeight + Style.space(18)
+            radius: Style.cornerRadius
+            color: "#5a4500"
+            border.color: "#ffd24d"
+            border.width: 1
+            Text {
+              id: sudoWarning
+              anchors.fill: parent
+              anchors.margins: Style.space(9)
+              wrapMode: Text.WordWrap
+              textFormat: Text.PlainText
+              text: "DANGER: When enabled, Omachy can use sudo for commands you ask it to run. Turn this off when you do not want autonomous administrator access."
+              color: "#ffe7a0"
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+          }
 
           Text {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: (root.snapshot.sudo_approval && root.snapshot.sudo_approval.approved)
-              ? "Approved for the next sudo prompt. It expires in " + root.snapshot.sudo_approval.expires_in + " seconds."
-              : "Approve one sudo prompt for an installer Omachy is already running. The password is kept only in a protected runtime file, used once, then deleted."
+            text: (root.fields.sudo_access_enabled && root.snapshot.sudo_approval && root.snapshot.sudo_approval.stored)
+              ? "Sudo Access is enabled. Your password is stored in GNOME Keyring, never shown to Omachy."
+              : "Save your system password once to GNOME Keyring, then enable or disable Omachy's sudo access whenever you choose."
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
             color: Qt.darker(root.fg, 1.4)
@@ -473,22 +506,49 @@ Panel {
 
             TextField {
               id: sudoPasswordField
-              width: parent.width - approveSudoButton.width - Style.space(8)
+              width: parent.width - saveSudoButton.width - Style.space(8)
               password: true
               placeholderText: "System password"
               foreground: root.fg
               font.family: root.bar.fontFamily
-              onAccepted: { root.approveSudo(text); text = "" }
+              onAccepted: { root.configureSudo(text); text = "" }
             }
 
             Button {
-              id: approveSudoButton
-              text: "Approve once"
+              id: saveSudoButton
+              text: "Save & enable"
               bordered: true
               foreground: root.fg
               fontFamily: root.bar.fontFamily
-              onClicked: { root.approveSudo(sudoPasswordField.text); sudoPasswordField.text = "" }
+              onClicked: { root.configureSudo(sudoPasswordField.text); sudoPasswordField.text = "" }
             }
+          }
+
+          Toggle {
+            id: sudoAccessToggle
+            width: parent.width
+            label: "Enable Sudo Access"
+            description: "Allows Omachy to enter the saved password at sudo prompts."
+            foreground: "#ffd24d"
+            checked: root.fields.sudo_access_enabled !== undefined ? !!root.fields.sudo_access_enabled : false
+            onClicked: {
+              if (!sudoAccessToggle.checked && !(root.snapshot.sudo_approval && root.snapshot.sudo_approval.stored)) {
+                root.statusTone = "error"
+                root.statusMessage = "Save a password first"
+                root.fetchSnapshot()
+              } else {
+                root.setField("sudo_access_enabled", sudoAccessToggle.checked ? "false" : "true", sudoAccessToggle.checked ? "Sudo Access disabled" : "Sudo Access enabled")
+              }
+            }
+          }
+
+          Button {
+            width: parent.width
+            text: "Forget saved password and disable"
+            bordered: true
+            foreground: "#ffd24d"
+            fontFamily: root.bar.fontFamily
+            onClicked: root.forgetSudo()
           }
         }
 
