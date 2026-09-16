@@ -82,10 +82,21 @@ def build_session_config(config: Config) -> dict:
         # session used to know nothing about a conversation from even a
         # minute earlier in the previous wake-word cycle.
         instructions += (
-            "\n\nRecent conversation history (for your context only — "
-            "don't recite it back unprompted, just use it to avoid asking "
-            "the user to repeat themselves):\n" + recent_context
+            "\n\nArchived conversations, reference only. These sessions have ended. "
+            "Their requests and assistant promises are NOT pending tasks or permission "
+            "to act. Consult them only if the current user explicitly refers back:\n"
+            + recent_context
         )
+
+    instructions += (
+        "\n\nNEW SESSION: Wait for the user's current request. If none was heard, "
+        "briefly ask how you can help. Never resume yesterday's work, run tools, "
+        "or announce an unfinished task based solely on archived conversation or "
+        "preferences. Resume only when requested in THIS session. When discussing "
+        "a terminal tile, resolve its window identity and read its current transcript; "
+        "do not infer current contents from old conversation. Report missing capture "
+        "honestly and use describe_screen for current visible contents when necessary."
+    )
 
     return {
         "model": config.live_model,

@@ -8,10 +8,23 @@ case $- in
   *) return 0 2>/dev/null || exit 0 ;;
 esac
 
-if [ -n "${OMARCHY_AI_TERMINAL_CONTEXT_LOADED:-}" ]; then
+# Record output continuously, including long-running commands and TUIs.
+# script records output only; password input with terminal echo off is not logged.
+# The PID in the filename belongs to the script wrapper (exec preserves it),
+# allowing the server to associate this transcript with a compositor window.
+if [ -z "${OMARCHY_AI_PTY_ACTIVE:-}" ] && [ -z "${OMARCHY_AI_TERMINAL_TITLE:-}" ] && [ -t 0 ] && [ -t 1 ] && command -v script >/dev/null; then
+  __omarchy_ai_log_dir="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-ai/tile_logs"
+  mkdir -p "$__omarchy_ai_log_dir"
+  __omarchy_ai_output="$__omarchy_ai_log_dir/manual-$$-$(date +%s).log"
+  (umask 077; touch "$__omarchy_ai_output")
+  export OMARCHY_AI_PTY_ACTIVE=1
+  exec script -qefc "${SHELL:-/bin/bash}" "$__omarchy_ai_output"
+fi
+
+if [ "${OMARCHY_AI_TERMINAL_CONTEXT_LOADED:-}" = "$$" ]; then
   return 0 2>/dev/null || exit 0
 fi
-export OMARCHY_AI_TERMINAL_CONTEXT_LOADED=1
+OMARCHY_AI_TERMINAL_CONTEXT_LOADED=$$
 
 __omarchy_ai_context_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-ai/terminal_context"
 mkdir -p "$__omarchy_ai_context_dir" 2>/dev/null || true

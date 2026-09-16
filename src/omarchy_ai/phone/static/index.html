@@ -31,16 +31,87 @@ button:focus-visible { outline: 2px solid #39e6ff; }
 #transcript { pointer-events: auto; max-height: 30dvh; overflow: auto; background: #05080de8; font-size: 13px; line-height: 1.6; margin-bottom: 14px; padding: 12px; }
 #transcript[hidden] { display: none; }
 .line { margin-bottom: 10px; } .who { color: #39e6ff; display: block; font-size: 10px; text-transform: uppercase; }
+#mirrorPanel { display:none; position:fixed; inset:0; z-index:10; background:#000; }
+body[data-mirror="on"] #mirrorPanel { display:block; }
+#mirrorVideo { width:100vw; height:100dvh; display:block; object-fit:contain; background:#000; opacity:1; }
+#mirrorControls { position:fixed; z-index:12; right:calc(max(8px, env(safe-area-inset-right)) + 42px); bottom:max(8px, env(safe-area-inset-bottom)); display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; max-width:calc(100vw - 68px); }
+#mirrorControls button { min-height:36px; border:1px solid #64758270; border-radius:6px; padding:5px 8px; background:#05080db8; color:#e2edf3; font:11px monospace; }
+#mirrorEye { position:fixed; z-index:13; right:max(8px, env(safe-area-inset-right)); bottom:max(8px, env(safe-area-inset-bottom)); width:36px; height:36px; display:grid; place-items:center; border:1px solid #64758270; border-radius:50%; background:#05080d90; color:#e2edf3; cursor:pointer; }
+#mirrorEye svg { width:18px; height:18px; }
+#mirrorEye .eyeSlash { display:none; }
+#mirrorEye[aria-expanded="false"] .eyeSlash { display:block; }
+body[data-mirror-controls="hidden"] #mirrorControls { display:none; }
+body[data-mirror="on"][data-mirror-controls="hidden"] #speakerStatus { display:none; }
+body[data-mirror="on"] #speakerStatus { left:auto !important; right:8px !important; max-width:min(320px, 85vw); font-size:11px; padding:4px 6px; border-radius:4px; }
+#speakerStatus:empty { display:none; }
+#mirrorAscii { position:fixed; z-index:11; left:50%; bottom:48px; width:max-content; max-width:90vw; transform:translateX(-50%); text-align:center; color:#39e6ff; font:22px monospace; text-shadow:0 0 8px #39e6ff; pointer-events:none; }
+body[data-mirror="on"] #field { display:none !important; }
+body[data-mirror="on"] header, body[data-mirror="on"] footer { display:none; }
+/* Quiet, centered voice HUD; mirror video has its own independent layout. */
+body:not([data-mirror="on"]) { background:radial-gradient(ellipse at 50% 42%, #102f3b 0%, #071119 45%, #03070c 85%); }
+body:not([data-mirror="on"]) #field { opacity:.45; mask-image:radial-gradient(ellipse 46% 34% at 50% 43%, #000 30%, transparent 100%); }
+body:not([data-mirror="on"]) header { top:max(32px, env(safe-area-inset-top)); left:24px; right:24px; text-align:center; }
+h1 { color:#9cb5c2; font-size:11px; letter-spacing:.28em; }
+body:not([data-mirror="on"]) #status { color:#9cb5c2; letter-spacing:.04em; }
+body:not([data-mirror="on"]) #talkBtn { inset:42% auto auto 50%; transform:translate(-50%,-50%); width:148px; height:148px; border:1px solid #39e6ff60; border-radius:50%; background:#081722e8; color:#c9f6ff; font:18px monospace; box-shadow:0 0 55px #39e6ff12; }
+body[data-state="live"] #talkBtn { border-color:#39e6ff; }
+body:not([data-mirror="on"]) footer { width:min(480px, calc(100% - 32px)); left:50%; right:auto; margin-left:calc(-1 * min(240px, (100% - 32px) / 2)); bottom:max(16px, env(safe-area-inset-bottom)); }
+.controls { gap:6px; justify-content:center; }
+.controls button { padding:10px 12px; border-color:#34495880; background:#0a1620e8; font-size:12px; }
+#voiceVolume { display:flex; align-items:center; justify-content:center; gap:12px; margin:0 0 14px; font:12px monospace; color:#b4cbd6; pointer-events:auto; }
+#voiceBoost { width:140px; accent-color:#39e6ff; }
+#speakerStatus { max-width:90vw; border-radius:6px; font-size:11px; }
+#mirrorChat { position:absolute; z-index:12; right:max(10px, env(safe-area-inset-right)); bottom:60px; width:min(360px, calc(100% - 20px)); max-height:calc(100% - 76px); padding:12px; border:1px solid #385568; border-radius:14px; background:#08131bf5; box-shadow:0 8px 32px #0008; overflow:auto; }
+#mirrorChat[hidden], body[data-mirror-controls="hidden"] #mirrorChat { display:none; }
+.mirrorChatHeading { display:flex; align-items:center; justify-content:space-between; color:#a5c0cf; font:11px monospace; letter-spacing:.12em; margin-bottom:8px; }
+#mirrorChatClose { background:transparent; border:0; color:#b9d6e3; font-size:22px; width:32px; height:32px; cursor:pointer; }
+#mirrorChat #transcript { max-height:28dvh; padding:0; background:none; margin:0 0 8px; }
+#mirrorChat #composer { margin:0; }
+#mirrorChat #messageInput { padding:10px; }
+#mirrorChat #sendBtn { padding:8px; }
+#mirrorText[aria-expanded="true"] { border-color:#39e6ff; color:#39e6ff; }
+#micState { position:fixed; top:calc(42% + 100px); width:100%; text-align:center; color:#ff8585; font-size:16px; letter-spacing:.15em; pointer-events:none; }
+body[data-mirror="on"] #micState { display:none; }
+body:not([data-mirror="on"]) #talkBtn { border:2px solid #ff6868; box-shadow:0 0 70px #ff484830; color:#ffaaaa; }
+body[data-mic="on"] #talkBtn { border-color:#39ffb0; color:#baffdf; box-shadow:0 0 90px #39ffb060; }
+body[data-mic="on"] #talkBtn::after { content:""; position:absolute; inset:-14px; border:2px solid #39ffb0; border-radius:50%; animation:micPulse 2s ease-out infinite; pointer-events:none; }
+body[data-mic="on"] #micState { color:#39ffb0; }
+body[data-state="connecting"] #micState { color:#ffcc66; }
+body[data-mic="on"] #field { opacity:1; }
+@keyframes micPulse { to { transform:scale(1.55); opacity:0; } }
+@media (prefers-reduced-motion:reduce) { body[data-mic="on"] #talkBtn::after { animation:none; } }
+#mirrorPanel { bottom:auto; height:100dvh; }
+#mirrorViewport { position:absolute; inset:0; overflow:auto; background:#000; }
+#mirrorVideo { width:100%; height:100%; max-width:none; object-fit:contain; }
+#mirrorControls, #mirrorEye, #mirrorAscii { position:absolute; }
+#mirrorChat { display:flex; flex-direction:column; max-height:calc(100% - 100px); bottom:88px; }
+#mirrorChat .mirrorChatHeading, #mirrorChat #composer { flex-shrink:0; }
+#mirrorChat #transcript { min-height:0; flex:1; overflow:auto; }
+@media (max-width:900px), (max-height:500px) { #mirrorChat { left:8px; right:8px; width:auto; padding:8px; } }
 </style>
 </head>
 <body data-state="idle">
   <canvas id="field" aria-hidden="true"></canvas>
   <button id="talkBtn" aria-label="Start conversation">Talk</button>
+  <div id="micState" role="status">MIC OFF · TAP TO TALK</div>
   <header><h1>OMARCHY // ASSISTANT</h1><div id="status" role="status">TAP ANYWHERE TO CONNECT</div></header>
+  <section id="mirrorPanel" aria-label="Live desktop mirror">
+    <div id="mirrorViewport"><img id="mirrorVideo" alt="Live desktop screen"></div>
+    <div id="mirrorAscii" aria-live="polite"></div>
+    <div id="mirrorControls"><button id="mirrorListen" type="button">Listen</button><button id="mirrorText" type="button" aria-controls="mirrorChat" aria-expanded="false">Text</button><button id="mirrorSpeakerBtn" type="button">Speaker / output</button><button id="mirrorFullscreen" type="button" aria-label="Enter fullscreen" title="Fullscreen">⛶</button><button id="mirrorStop" type="button" aria-label="Stop mirroring">Stop</button></div>
+    <aside id="mirrorChat" hidden aria-label="Chat with Omarchy">
+      <div class="mirrorChatHeading">CONVERSATION<button id="mirrorChatClose" type="button" aria-label="Hide chat">×</button></div>
+    </aside>
+    <button id="mirrorEye" type="button" aria-label="Hide controls" title="Hide controls" aria-controls="mirrorControls" aria-expanded="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eyeSlash" d="m3 3 18 18"/></svg>
+    </button>
+  </section>
+  <p id="speakerStatus" role="status" style="position:fixed;top:8px;left:12px;right:12px;z-index:20;background:#05080d;color:#39e6ff"></p>
   <footer>
+    <p id="voiceVolume">Use your phone’s media volume for assistant audio</p>
     <div id="transcript" hidden aria-live="polite"></div>
     <form id="composer" hidden><input id="messageInput" aria-label="Message Omarchy" placeholder="Message Omarchy…" maxlength="8000" autocomplete="off" enterkeyhint="send" required><button id="sendBtn" type="submit">Send</button></form>
-    <div class="controls"><button id="modeBtn" aria-pressed="false">Text</button><button id="outputBtn">Audio: phone</button><button id="transcriptBtn" aria-expanded="false">Transcript</button></div>
+    <div class="controls"><button id="modeBtn" aria-pressed="false">Text</button><button id="speakerBtn" type="button">Speaker / output</button><button id="outputBtn">Audio: phone</button><button id="mirrorBtn" type="button">Mirror</button><button id="talkFullscreen" type="button" aria-label="Enter fullscreen" title="Fullscreen">⛶</button><button id="transcriptBtn" aria-expanded="false">Transcript</button></div>
     <p id="err" role="alert"></p>
   </footer>
   <audio id="remoteAudio" autoplay playsinline></audio>
@@ -70,6 +141,143 @@ const composer = document.getElementById('composer');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const modeBtn = document.getElementById('modeBtn');
+const mirrorChat = document.getElementById('mirrorChat');
+const mirrorText = document.getElementById('mirrorText');
+let chatWasVisible = false;
+function toggleMirrorChat(open) {
+  if (open) {
+    chatWasVisible = transcriptEl.hidden === false;
+    mirrorChat.appendChild(transcriptEl);
+    mirrorChat.appendChild(composer);
+    transcriptEl.hidden = false;
+    composer.hidden = false;
+    mirrorChat.hidden = false;
+    messageInput.focus();
+  } else {
+    mirrorChat.hidden = true;
+    const footer = document.querySelector('footer');
+    footer.insertBefore(transcriptEl, footer.firstChild);
+    footer.insertBefore(composer, transcriptEl.nextSibling);
+    transcriptEl.hidden = !chatWasVisible;
+    composer.hidden = mode !== 'text';
+    mirrorText.focus();
+  }
+  mirrorText.setAttribute('aria-expanded', String(open));
+}
+mirrorText.addEventListener('click', () => toggleMirrorChat(mirrorChat.hidden));
+document.getElementById('mirrorChatClose').addEventListener('click', () => toggleMirrorChat(false));
+const mirrorVideo = document.getElementById('mirrorVideo');
+let mirrorZoom = 1;
+function setMirrorZoom(value) {
+  mirrorZoom = Math.max(1, Math.min(4, value));
+  mirrorVideo.style.width = `${mirrorZoom * 100}%`;
+  mirrorVideo.style.height = `${mirrorZoom * 100}%`;
+}
+const mirrorControls = document.getElementById('mirrorControls');
+for (const [label, title, action] of [
+  ['−', 'Zoom out', () => setMirrorZoom(mirrorZoom - .25)],
+  ['+', 'Zoom in', () => setMirrorZoom(mirrorZoom + .25)],
+  ['Fit', 'Fit entire screen', () => setMirrorZoom(1)],
+]) {
+  const button = document.createElement('button');
+  button.type = 'button'; button.textContent = label; button.title = title;
+  button.setAttribute('aria-label', title); button.addEventListener('click', action);
+  mirrorControls.appendChild(button);
+}
+const mirrorListen = document.getElementById('mirrorListen');
+const mirrorStop = document.getElementById('mirrorStop');
+const mirrorEye = document.getElementById('mirrorEye');
+mirrorEye.addEventListener('click', () => {
+  const hide = document.body.dataset.mirrorControls !== 'hidden';
+  document.body.dataset.mirrorControls = hide ? 'hidden' : 'visible';
+  if (hide && !mirrorChat.hidden) toggleMirrorChat(false);
+  mirrorEye.setAttribute('aria-expanded', String(!hide));
+  mirrorEye.setAttribute('aria-label', hide ? 'Show controls' : 'Hide controls');
+  mirrorEye.title = hide ? 'Show controls' : 'Hide controls';
+});
+const mirrorAscii = document.getElementById('mirrorAscii');
+let mirrorOn = false;
+let mirrorLevels = [];
+let wakeLock = null;
+async function keepScreenOn() { try { if (navigator.wakeLock?.request) wakeLock = await navigator.wakeLock.request('screen'); } catch {} }
+function updateMirrorAscii() {
+  if (!mirrorOn || !mirrorAscii) return;
+  const level = sampleOutputLevel();
+  mirrorLevels.push(level); if (mirrorLevels.length > 10) mirrorLevels.shift();
+  let out = '';
+  for (const value of mirrorLevels) {
+    const idx = Math.max(0, Math.min(8, Math.round(value * 8)));
+    const r = Math.random();
+    out += r < .04 && idx > 0 ? GLITCH_CHARS[Math.floor(Math.random()*GLITCH_CHARS.length)] : r < .62 ? BRAILLE_CHARS[idx] : BLOCK_CHARS[idx];
+  }
+  mirrorAscii.textContent = out.padStart(10, ' ');
+  mirrorAscii.style.opacity = convState === 'speaking' ? '1' : '.3';
+}
+function setMirror(on) {
+  if (on === mirrorOn) return;
+  mirrorOn=on; document.body.dataset.mirror=on?'on':'off';
+  try {
+    if (on) {
+      mirrorVideo.src='/mirror/stream?'+Date.now(); keepScreenOn();
+    } else {
+      if (!mirrorChat.hidden) toggleMirrorChat(false);
+      mirrorVideo.removeAttribute('src');
+      if(wakeLock && !live){wakeLock.release().catch(()=>{});wakeLock=null;}
+    }
+  } catch (e) { document.getElementById('speakerStatus').textContent = 'Mirror: ' + e.message; }
+  setStatus(live ? readyStatus() : idleStatus(), live ? 'live' : '');
+}
+let fullscreenPending = false;
+async function enterFullscreen(showError = false) {
+  if (fullscreenPending) return;
+  try { window.screen?.orientation?.unlock?.(); } catch {}
+  const root = document.documentElement;
+  if (!root?.requestFullscreen) {
+    if (showError) document.getElementById('speakerStatus').textContent = 'Fullscreen is unavailable in this browser. The page will use all available space.';
+    return;
+  }
+  fullscreenPending = true;
+  try {
+    if (!document.fullscreenElement) await root.requestFullscreen();
+    try { window.screen?.orientation?.unlock?.(); } catch {}
+    fitKeyboard();
+  } catch {
+    if (showError) document.getElementById('speakerStatus').textContent = 'Fullscreen was blocked by the browser. Tap ⛶ to try again.';
+  } finally { fullscreenPending = false; }
+}
+// Fullscreen requires a real gesture. Use the first tap in either view,
+// not a load-time request that mobile browsers will reject. Do not trap
+// users in fullscreen after they deliberately leave it.
+window.addEventListener('click', () => enterFullscreen(), {once:true});
+for (const id of ['mirrorFullscreen', 'talkFullscreen']) {
+  document.getElementById(id).addEventListener('click', () => enterFullscreen(true));
+}
+document.getElementById('mirrorBtn').addEventListener('click', async () => {
+  if (mirrorOn) {
+    await fetch('/mirror/stop', {method:'POST'});
+    setMirror(false);
+    return;
+  }
+  if (!confirm('Allow this paired browser to view the computer screen?')) return;
+  // Must be invoked within the tap, before waiting on any network request.
+  enterFullscreen();
+  try {
+    const r = await fetch('/mirror/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({consent:true})});
+    if (!r.ok) throw new Error('Could not start mirroring');
+    setMirror(true);
+  } catch (e) { setError(e.message); }
+});
+mirrorStop.addEventListener('click', async()=>{await fetch('/mirror/stop',{method:'POST'});setMirror(false);});
+mirrorListen.addEventListener('click', async () => {
+  if (!mirrorOn || connecting || modeChanging) return;
+  if (live && mode === 'voice') { hangup(); return; }
+  if (live) { await switchInputMode(); return; }
+      mode = 'voice';
+      modeBtn.textContent = 'Text';
+      modeBtn.setAttribute('aria-pressed', 'false');
+      composer.hidden = mirrorChat.hidden;
+  await start();
+});
 
 let pc = null;
 let dc = null;
@@ -91,6 +299,49 @@ const BLOCK_CHARS = " ▁▂▃▄▅▆▇█";
 const BRAILLE_CHARS = ["⠀", "⠁", "⠃", "⠇", "⡇", "⡏", "⡟", "⡿", "⣿"];
 const GLITCH_CHARS = "▓▒░╳┃╎";
 let audioCtx = null;
+let playbackSource = null, playbackGain = null;
+let boost = 4;
+let audioEnabled = true;
+const boostButtons = [];
+for (const container of [document.querySelector('.controls'), mirrorControls]) {
+  const button = document.createElement('button');
+  button.type = 'button'; button.textContent = 'Volume 4×';
+  button.setAttribute('aria-label', 'Voice amplification: 4 times. Tap to change.');
+  button.addEventListener('click', () => {
+    boost = ({1:2, 2:4, 4:8, 8:1})[boost];
+    for (const b of boostButtons) {
+      b.textContent = `Volume ${boost}×`;
+      b.setAttribute('aria-label', `Voice amplification: ${boost} times. Tap to change.`);
+    }
+    if (audioCtx) audioCtx.resume().then(syncPhonePlayback).catch(syncPhonePlayback);
+    syncPhonePlayback();
+  });
+  container.appendChild(button); boostButtons.push(button);
+}
+function syncPhonePlayback() {
+  const audible = audioEnabled && !castActive;
+  const amplified = !!playbackGain && audioCtx?.state === 'running' && boost > 1;
+  if (playbackGain) playbackGain.gain.value = audible && amplified ? boost : 0;
+  remoteAudio.muted = !audible || amplified;
+}
+function setupPhoneAmplification(stream) {
+  try {
+    playbackSource?.disconnect(); playbackGain?.disconnect();
+    playbackSource = audioCtx.createMediaStreamSource(stream);
+    playbackGain = audioCtx.createGain();
+    playbackGain.gain.value = 0;
+    const limiter = audioCtx.createDynamicsCompressor();
+    limiter.threshold.value = -3; limiter.knee.value = 0;
+    limiter.ratio.value = 20; limiter.attack.value = .003; limiter.release.value = .1;
+    playbackSource.connect(playbackGain); playbackGain.connect(limiter);
+    limiter.connect(audioCtx.destination);
+    audioCtx.onstatechange = syncPhonePlayback;
+  } catch {
+    playbackSource?.disconnect(); playbackGain?.disconnect();
+    playbackSource = playbackGain = null;
+  }
+  syncPhonePlayback();
+}
 let analyser = null;
 let analyserData = null;
 let ripples = [];
@@ -115,7 +366,9 @@ function draw(now) {
   if (document.hidden || now - lastFrame < (reducedMotion.matches ? 160 : 50)) return;
   lastFrame = now;
   amplitude += (sampleOutputLevel() - amplitude) * .35;
+  updateMirrorAscii();
   ctx.clearRect(0, 0, width, height);
+  if (mirrorOn) return;
   ctx.font = '14px monospace';
   ripples = ripples.filter(r => now - r.time < 2200);
   const t = reducedMotion.matches ? 0 : now / 1000;
@@ -141,7 +394,7 @@ function draw(now) {
         (now - activationRipple.time) / 1000 * 340;
       const blue = activationRipple ? inside : live;
       const speechWave = live && blue && voice > .06;
-      ctx.fillStyle = wave > .08 || speechWave ? '#39ff88' : blue ? '#39e6ff' : '#ff5f5f';
+      ctx.fillStyle = wave > .08 || speechWave ? '#39ff88' : blue ? '#39e6ff' : '#528497';
       ctx.globalAlpha = Math.min(1, .2 + energy*.65 + wave*.6);
       ctx.fillText(char, x, y);
     }
@@ -159,7 +412,11 @@ function setupAnalyser(remoteStream) {
     analyser.fftSize = 512;
     analyserData = new Uint8Array(analyser.fftSize);
     source.connect(analyser);
+    // Meter only: playback stays on the original received stream, even when
+    // Web Audio is suspended or unavailable on a mobile browser.
   } catch (e) {
+    analyser = null;
+    analyserData = null;
     console.warn('AnalyserNode setup failed', e);
   }
 }
@@ -187,6 +444,11 @@ function setStatus(text, cls) {
   statusEl.textContent = text;
   talkBtn.className = cls || '';
   document.body.dataset.state = cls || 'idle';
+  const micOn = cls === 'live' && mode === 'voice' && !!localStream;
+  document.body.dataset.mic = micOn ? 'on' : 'off';
+  mirrorListen.textContent = micOn ? 'Unlisten' : 'Listen';
+  mirrorListen.setAttribute('aria-pressed', String(micOn));
+  document.getElementById('micState').textContent = cls === 'connecting' ? 'CONNECTING · MIC NOT READY' : micOn ? 'MIC ON · LISTENING' : 'MIC OFF · TAP TO TALK';
   talkBtn.setAttribute('aria-label', cls === 'live' ? 'End conversation' : cls === 'connecting' ? 'Connecting' : 'Start conversation');
 }
 
@@ -318,6 +580,7 @@ function onDataMessage(raw) {
 }
 
 function updateComposer() {
+  mirrorListen.disabled = connecting || modeChanging;
   sendBtn.disabled = connecting || replyBusy || pendingTools > 0 || modeChanging;
   sendBtn.textContent = connecting ? 'Connecting…' : (replyBusy || pendingTools > 0) ? 'Replying…' : 'Send';
 }
@@ -341,6 +604,7 @@ async function start() {
   if (live) return true;
   if (connecting) return connectionReady;
   connecting = true;
+  keepScreenOn();
   connectionReady = new Promise(resolve => { settleConnection = resolve; });
   const ready = connectionReady;
   talkBtn.disabled = true;
@@ -358,11 +622,14 @@ async function start() {
   }, 25000);
 
   try {
+    if (navigator.audioSession) { try { navigator.audioSession.type = 'auto'; } catch {} }
     // A sendrecv transceiver allows adding a microphone later without
     // renegotiating. Text mode never requests microphone permission.
     micSender = peer.addTransceiver('audio', {direction: 'sendrecv'}).sender;
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 48000});
-    await audioCtx.resume();
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioCtx.resume().catch(() => {});
+    } catch { /* Optional visualization must never prevent the call. */ }
     if (pc !== peer) return false;
     if (mode === 'voice') {
       const stream = await navigator.mediaDevices.getUserMedia({audio: true});
@@ -374,9 +641,11 @@ async function start() {
       if (pc !== peer) return;
       const stream = e.streams[0] || new MediaStream([e.track]);
       remoteAudio.srcObject = stream;
-      remoteAudio.muted = mode === 'text';
-      remoteAudio.play().catch(() => { if (mode === 'voice') setError('Audio playback was blocked. Reconnect to try again.'); });
+      remoteAudio.volume = 1;
       setupAnalyser(stream);
+      audioEnabled = mode !== 'text';
+      setupPhoneAmplification(stream);
+      remoteAudio.play().catch(() => { if (mode === 'voice') document.getElementById('speakerStatus').textContent = 'Tap Enable audio to resume playback.'; });
     };
     peer.onconnectionstatechange = () => {
       if (pc === peer && ['failed', 'closed'].includes(peer.connectionState)) hangup();
@@ -458,13 +727,16 @@ function hangup() {
   if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
   analyser = null;
   analyserData = null;
+  playbackSource = playbackGain = null;
   remoteAudio.srcObject = null;
+  mirrorListen.textContent = 'Listen';
   setStatus(idleStatus());
   talkBtn.textContent = 'Talk';
   updateComposer();
 }
 
 talkBtn.addEventListener('click', (event) => {
+  if (!live) enterFullscreen();
   ripple(event.clientX || width/2, event.clientY || height/2);
   if (live) {
     hangup();
@@ -476,6 +748,51 @@ talkBtn.addEventListener('click', (event) => {
 });
 
 const outputBtn = document.getElementById('outputBtn');
+async function selectSpeaker(ask = true) {
+  const status = document.getElementById('speakerStatus');
+  if (ask) {
+    if (!remoteAudio.srcObject) {
+      status.textContent = 'Start listening first, then tap Enable audio.';
+      return;
+    }
+    // Call play directly inside the tap handler, before awaiting permissions.
+    // This retries autoplay permission even when output selection is absent.
+    usePhone();
+    remoteAudio.muted = false;
+    audioEnabled = true;
+    remoteAudio.volume = 1;
+    try {
+      const playing = remoteAudio.play();
+      if (audioCtx) audioCtx.resume().catch(() => {});
+      await playing;
+      syncPhonePlayback();
+      status.textContent = 'Audio enabled on the phone’s current output.';
+    } catch (e) {
+      status.textContent = 'Playback could not start: ' + e.message;
+      return;
+    }
+  }
+  try {
+    const media = navigator.mediaDevices;
+    if (!remoteAudio.setSinkId) return;
+    let device;
+    if (ask && media.selectAudioOutput) device = await media.selectAudioOutput();
+    else {
+      const devices = await media.enumerateDevices();
+      device = devices.find(d => d.kind === 'audiooutput' && /speaker|loudspeaker/i.test(d.label) && !/earpiece|receiver/i.test(d.label) && d.deviceId !== 'default');
+    }
+    if (!device) return;
+    await remoteAudio.setSinkId(device.deviceId);
+    if (playbackGain && audioCtx?.setSinkId) await audioCtx.setSinkId(device.deviceId);
+    document.getElementById('speakerStatus').textContent = 'Output: ' + (device.label || 'selected device');
+  } catch (e) {
+    if (ask) status.textContent = 'Audio enabled; output selection unavailable: ' + e.message;
+  }
+}
+document.getElementById('speakerBtn').addEventListener('click', () => selectSpeaker());
+document.getElementById('mirrorSpeakerBtn').addEventListener('click', () => selectSpeaker());
+document.getElementById('speakerBtn').textContent = 'Enable audio';
+document.getElementById('mirrorSpeakerBtn').textContent = 'Enable audio';
 let castNode = null, castSource = null, castAvailable = false, castActive = false;
 let routeGeneration = 0;
 function usePhone() {
@@ -484,7 +801,8 @@ function usePhone() {
   if (castSource) castSource.disconnect();
   if (castNode) { castNode.port.onmessage = null; castNode.disconnect(); }
   castSource = castNode = null;
-  remoteAudio.muted = mode === 'text';
+  audioEnabled = mode !== 'text';
+  syncPhonePlayback();
   outputBtn.textContent = 'Audio: phone';
 }
 async function refreshCast() {
@@ -526,6 +844,7 @@ outputBtn.addEventListener('click', async () => {
         if (!res.ok) throw new Error('TV audio unavailable');
         if (generation === routeGeneration && castActive) {
           remoteAudio.muted = true;
+          syncPhonePlayback();
           outputBtn.textContent = 'Audio: TV';
         }
       } catch (e) {
@@ -542,7 +861,7 @@ function showTranscript() {
   transcriptEl.hidden = false;
   document.getElementById('transcriptBtn').setAttribute('aria-expanded', 'true');
 }
-modeBtn.addEventListener('click', async () => {
+async function switchInputMode() {
   if (connecting || modeChanging) return;
   modeChanging = true;
   modeBtn.disabled = true;
@@ -579,7 +898,8 @@ modeBtn.addEventListener('click', async () => {
     modeBtn.disabled = false;
     updateComposer();
   }
-});
+}
+modeBtn.addEventListener('click', switchInputMode);
 composer.addEventListener('submit', async (event) => {
   event.preventDefault();
   const text = messageInput.value.trim();
@@ -612,9 +932,14 @@ function fitKeyboard() {
   const viewport = window.visualViewport;
   const inset = viewport ? Math.max(0, innerHeight - viewport.height - viewport.offsetTop) : 0;
   document.querySelector('footer').style.transform = `translateY(-${inset}px)`;
+  const panel = document.getElementById('mirrorPanel');
+  panel.style.top = `${viewport?.offsetTop || 0}px`;
+  panel.style.height = `${viewport?.height || innerHeight}px`;
 }
+window.addEventListener('resize', fitKeyboard);
 window.visualViewport?.addEventListener('resize', fitKeyboard);
 window.visualViewport?.addEventListener('scroll', fitKeyboard);
+fitKeyboard();
 
 document.getElementById('transcriptBtn').addEventListener('click', (event) => {
   transcriptEl.hidden = !transcriptEl.hidden;

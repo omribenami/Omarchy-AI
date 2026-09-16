@@ -42,6 +42,7 @@ from pathlib import Path
 from ..config import CONFIG_DIR, Config
 from . import cast_audio
 from ..execution.actions import run_action
+from ..execution import vision
 from ..voice.live import build_session_config
 
 log = logging.getLogger("omarchy_ai.phone.server")
@@ -57,6 +58,9 @@ _SESSIONS_PATH = _CERT_DIR / "paired_sessions.json"
 _SESSION_COOKIE = "omarchy_session"
 _PAIR_TOKEN_TTL_SECONDS = 300  # 5 minutes — long enough to scan, short enough that a stale QR left on screen isn't a standing risk
 _SESSION_MAX_AGE_SECONDS = 365 * 24 * 3600  # pairing should survive phone restarts; revoke explicitly instead
+_mirror_lock = threading.Lock()
+_mirror_on = False
+_mirror_started_at: float | None = None
 
 
 def _write_json_0600(path: Path, data: dict | list) -> None:
@@ -317,6 +321,36 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"available": cast_audio.available()})
             return
 
+        if path == "/mirror/status":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"}); return
+            with _mirror_lock:
+                self._send_json(200, {"on": _mirror_on, "started_at": _mirror_started_at})
+            return
+
+        if path == "/mirror/stream":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"}); return
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.end_headers()
+            try:
+                while True:
+                    with _mirror_lock:
+                        if not _mirror_on:
+                            break
+                    image = vision._capture()
+                    if image is None:
+                        time.sleep(.3); continue
+                    body = image.read_bytes()
+                    self.wfile.write(b"--frame\r\nContent-Type: image/png\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body + b"\r\n")
+                    self.wfile.flush()
+                    time.sleep(.15)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
+
         if path == "/api/paired":
             # Polled by not_paired.html — a real, live confusion this
             # round: pairing had genuinely succeeded (confirmed in the
@@ -405,6 +439,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib method name
         path = self.path.split("?", 1)[0]
+        if path in ("/mirror/start", "/mirror/stop"):
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"}); return
+            if path == "/mirror/start":
+                try: data = self._read_json_body()
+                except (json.JSONDecodeError, ValueError): data = {}
+                if data.get("consent") is not True:
+                    self._send_json(400, {"error": "explicit consent is required"}); return
+            global _mirror_on, _mirror_started_at
+            with _mirror_lock:
+                _mirror_on = path == "/mirror/start"
+                _mirror_started_at = time.time() if _mirror_on else None
+                self._send_json(200, {"on": _mirror_on, "started_at": _mirror_started_at})
+            return
         if path == "/api/audio/pcm":
             if not self._is_paired():
                 self.close_connection = True
