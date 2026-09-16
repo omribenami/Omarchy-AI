@@ -10,6 +10,13 @@ from omarchy_ai.voice import control
 
 
 class DashboardTests(unittest.TestCase):
+    def test_capability_demo_detection_requires_a_demo_request(self):
+        from omarchy_ai.voice.live import _is_capability_demo
+
+        self.assertTrue(_is_capability_demo("Please demonstrate your capabilities"))
+        self.assertTrue(_is_capability_demo("Show me what you can do"))
+        self.assertFalse(_is_capability_demo("What can you do?"))
+
     def test_real_account_endpoint_and_period(self):
         payload = {'grand': 123, 'devices': [], 'allDaily': [123], 'serviceTotals': []}
         with patch.object(dashboard.MyApiClient, 'request', return_value={'data': payload}) as request:
