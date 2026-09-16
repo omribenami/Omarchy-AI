@@ -26,6 +26,10 @@ TILE_LOG_DIR = CACHE_DIR / "tile_logs"
 # across a daemon restart so a later voice session can still understand
 # what was being worked on.
 TERMINAL_CONTEXT_DIR = STATE_DIR / "terminal_context"
+# Full transcripts from assistant-opened terminals. Kept briefly after the
+# terminal closes or the daemon restarts so a later wake can report whether
+# an installation or build finished.
+TERMINAL_HISTORY_DIR = STATE_DIR / "terminal_history"
 
 USER_CONFIG_PATH = CONFIG_DIR / "config.yaml"
 SOCKET_PATH = RUNTIME_DIR / "omarchy-ai.sock"
@@ -138,7 +142,10 @@ class Config:
         "it is instant real text. Assistant-opened terminals include full "
         "output; terminals opened directly by the user include command, "
         "working-directory, and exit-status context. It doesn't replace "
-        "describe_screen for other visual UI. "
+        "describe_screen for other visual UI. If the user says a terminal "
+        "job has finished, or you wake while/after one you started, call "
+        "read_tile_log before responding so you can report the actual "
+        "result rather than guessing. "
         "For anything not covered by your other specific tools, "
         "search list_commands — it covers Omarchy's full set of bound "
         "commands (app launchers, menus, capture, clipboard, themes, and "
@@ -192,8 +199,12 @@ class Config:
         "exact unique terminal title returned by open_terminal when you "
         "focus it and read its log, so you never send the command to a "
         "different terminal. If it prompts for sudo, leave the focused "
-        "terminal for the user to enter their password; never ask for or "
-        "type a password yourself. "
+        "terminal for the user to enter their password, unless they have "
+        "just approved one in Assistant Settings. In that case, after "
+        "confirming the exact terminal log contains the sudo prompt, call "
+        "submit_sudo_password. It uses the one-time panel approval without "
+        "revealing the password to you. Never ask for, repeat, or type a "
+        "password yourself. "
         "If you type shell commands into a terminal: this machine runs "
         "Omarchy, an Arch-based Linux distro — package commands are "
         "'pacman -S <package>' (official repos) or 'yay -S <package>' "
@@ -343,5 +354,5 @@ def load_config() -> Config:
 
 
 def ensure_dirs() -> None:
-    for d in (CONFIG_DIR, STATE_DIR, RUNTIME_DIR, TILE_LOG_DIR, TERMINAL_CONTEXT_DIR):
+    for d in (CONFIG_DIR, STATE_DIR, RUNTIME_DIR, TILE_LOG_DIR, TERMINAL_CONTEXT_DIR, TERMINAL_HISTORY_DIR):
         d.mkdir(parents=True, exist_ok=True)

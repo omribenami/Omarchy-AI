@@ -33,6 +33,7 @@ from .. import myapi
 from ..config import load_config
 from ..myapi import usage as myapi_usage
 from . import files as local_files
+from . import sudo_approval
 
 log = logging.getLogger("omarchy_ai.execution.actions")
 
@@ -356,6 +357,29 @@ def press_key(args: dict) -> ActionResult:
     for m in reversed(normalized):
         argv += ["-m", m]
     return _run(argv)
+
+
+def submit_sudo_password(_args: dict) -> ActionResult:
+    """Type one panel-approved password into the focused sudo prompt.
+
+    The model never receives the password, and the runtime secret is
+    deleted before wtype is invoked so a retry requires fresh panel approval.
+    """
+    if shutil.which("wtype") is None:
+        return ActionResult(False, "wtype is not installed")
+    password = sudo_approval.consume()
+    if password is None:
+        return ActionResult(False, "no active panel approval; ask the user to approve one sudo prompt in Assistant Settings")
+    try:
+        typed = subprocess.run(["wtype", "--", password], capture_output=True, text=True, timeout=_TIMEOUT)
+        if typed.returncode != 0:
+            return ActionResult(False, "couldn't enter the approved password")
+        entered = subprocess.run(["wtype", "-k", "return"], capture_output=True, text=True, timeout=_TIMEOUT)
+        if entered.returncode != 0:
+            return ActionResult(False, "password was entered but Return could not be sent")
+    except (OSError, subprocess.TimeoutExpired):
+        return ActionResult(False, "couldn't enter the approved password")
+    return ActionResult(True, "approved sudo password submitted")
 
 
 def remember_preference(args: dict) -> ActionResult:
@@ -1430,6 +1454,7 @@ ACTIONS = {
     "execute_command": execute_command,
     "type_text": type_text,
     "press_key": press_key,
+    "submit_sudo_password": submit_sudo_password,
     "bluetooth_toggle": bluetooth_toggle,
     "nightlight_toggle": nightlight_toggle,
     "battery_status": battery_status,

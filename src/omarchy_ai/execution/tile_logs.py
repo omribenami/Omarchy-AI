@@ -39,13 +39,15 @@ from pathlib import Path
 
 from rapidfuzz import fuzz
 
-from ..config import TERMINAL_CONTEXT_DIR, TILE_LOG_DIR
+from ..config import TERMINAL_CONTEXT_DIR, TERMINAL_HISTORY_DIR, TILE_LOG_DIR
 
 log = logging.getLogger("omarchy_ai.execution.tile_logs")
 
 _DISCOVERY_POLL_SECONDS = 0.5
 _DISCOVERY_TIMEOUT_SECONDS = 8.0
 _CLOSE_POLL_SECONDS = 2.0
+_HISTORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
+_HISTORY_MAX_FILES = 100
 # Every terminal actually available on this machine (see STATUS.md's
 # toolchain notes) plus the other common ones, so this doesn't silently
 # stop working if the user switches terminals later.
@@ -131,11 +133,10 @@ def _track(initial: Path, before: set, label: str) -> None:
             _aliases.pop(label.lower(), None)
         return
 
-    final = TILE_LOG_DIR / f"{_sanitize(title)}.log"
-    n = 2
-    while final.exists():
-        final = TILE_LOG_DIR / f"{_sanitize(title)}-{n}.log"
-        n += 1
+    # Keep the stable label as the filename. Window titles change with the
+    # command and can collide; the label lets a later assistant session find
+    # the same transcript after the window closes or this daemon restarts.
+    final = TILE_LOG_DIR / f"{_sanitize(label)}.log"
     try:
         initial.rename(final)
     except OSError:
@@ -166,11 +167,7 @@ def _track(initial: Path, before: set, label: str) -> None:
         _tracked.pop(address, None)
         _titles.pop(address, None)
         _aliases.pop(label.lower(), None)
-    try:
-        final.unlink()
-        log.info("tile_logs: tile closed, deleted %s", final)
-    except OSError:
-        pass
+    _archive_transcript(final, label)
 
 
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z])")
@@ -183,7 +180,72 @@ def _strip_ansi(text: str) -> str:
 def list_tiles() -> list[str]:
     with _lock:
         active = list(_titles.values())
-    return active + [label for label, _path in _manual_contexts()]
+    return active + [label for label, _path in _manual_contexts()] + [
+        label for label, _path in _completed_transcripts()
+    ]
+
+
+def _history_label(path: Path) -> str:
+    """Turn an archive filename into a useful, non-secret display label."""
+    stem = path.stem
+    if "--" in stem:
+        stem = stem.split("--", 1)[1]
+    return f"completed terminal: {stem.replace('_', ' ')}"
+
+
+def _prune_history() -> None:
+    if not TERMINAL_HISTORY_DIR.is_dir():
+        return
+    cutoff = time.time() - _HISTORY_RETENTION_SECONDS
+    entries: list[tuple[float, Path]] = []
+    for path in TERMINAL_HISTORY_DIR.glob("*.log"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        else:
+            entries.append((mtime, path))
+    for _mtime, path in sorted(entries, reverse=True)[_HISTORY_MAX_FILES:]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _archive_transcript(path: Path, label: str) -> None:
+    """Retain a completed assistant terminal transcript for a short time."""
+    if not path.is_file():
+        return
+    try:
+        TERMINAL_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination = TERMINAL_HISTORY_DIR / f"{stamp}--{_sanitize(label)}.log"
+        suffix = 2
+        while destination.exists():
+            destination = TERMINAL_HISTORY_DIR / f"{stamp}--{_sanitize(label)}-{suffix}.log"
+            suffix += 1
+        path.replace(destination)
+        _prune_history()
+        log.info("tile_logs: retained completed transcript at %s", destination)
+    except OSError:
+        log.exception("tile_logs: could not archive completed transcript %s", path)
+
+
+def _completed_transcripts() -> list[tuple[str, Path]]:
+    if not TERMINAL_HISTORY_DIR.is_dir():
+        return []
+    candidates = []
+    for path in TERMINAL_HISTORY_DIR.glob("*.log"):
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    return [(_history_label(path), path) for _mtime, path in sorted(candidates, reverse=True)[:20]]
 
 
 def _manual_contexts() -> list[tuple[str, Path]]:
@@ -224,6 +286,7 @@ def find_log(query: str | None) -> Path | None:
             return exact
     named_items = [(titles.get(address, address), path) for address, path in items]
     named_items.extend(_manual_contexts())
+    named_items.extend(_completed_transcripts())
     if not named_items:
         return None
     if not query:
@@ -264,14 +327,15 @@ def read_log(query: str | None, tail_chars: int = 4000) -> str:
 
 
 def sweep_stale() -> None:
-    """Called once at daemon startup. Any files already in TILE_LOG_DIR
-    are necessarily stale — no tracking thread survives a process
-    restart to ever delete them on close — so start clean rather than
-    accumulate orphaned logs across restarts."""
+    """Called once at daemon startup.
+
+    A daemon restart should not erase the evidence needed to answer what
+    happened in a terminal the assistant opened. Archive stale live logs;
+    normal pruning keeps that history bounded.
+    """
     if not TILE_LOG_DIR.is_dir():
         return
     for p in TILE_LOG_DIR.glob("*"):
-        try:
-            p.unlink()
-        except OSError:
-            pass
+        if p.is_file():
+            _archive_transcript(p, p.stem.replace("_", " "))
+    _prune_history()
