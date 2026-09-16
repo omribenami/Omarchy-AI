@@ -1,7 +1,5 @@
-"""The daemon loop: listen for the wake word, hold one conversation,
-go back to listening. Nothing here opens a gpt-live-1 connection except in
-direct response to the wake word — a live session is billed per second, so
-there is no always-on connection.
+"""Listen for a wake word or panel activation, hold one conversation,
+then return to listening. There is no always-on remote voice connection.
 """
 
 from __future__ import annotations
@@ -13,7 +11,7 @@ import threading
 from ..config import Config, ensure_dirs, load_config
 from ..execution import tile_logs
 from ..phone import server as phone_server
-from ..voice import feedback
+from ..voice import feedback, control
 from ..voice.live import LiveSession
 from ..voice.wake import WakeWordDetector
 
@@ -30,13 +28,35 @@ class OmaDaemon:
         self.config: Config = load_config()
         self.wake_detector = WakeWordDetector(self.config)
         self._stop = threading.Event()
+        self._listen_stop = threading.Event()
+        self._manual = False
+        self._state = 'listening'
         # Runs the whole time the daemon is up (not per-conversation like
         # LiveSession) — a phone tap should work any time, no wake word
         # needed. start() itself is a no-op returning None when
         # config.phone_bridge_enabled is off.
         self._phone_server = phone_server.start(self.config)
 
+    def panel_command(self, command):
+        if command == 'activate':
+            if self._state != 'listening':
+                return {'state': self._state, 'error': 'A conversation is already starting or active.'}
+            self._state = 'starting'
+            self._manual = True
+            self._listen_stop.set()
+        elif command != 'status':
+            return {'error': 'Unknown assistant command'}
+        return {'state': self._state}
+
     async def run(self) -> None:
+        server = await control.serve(self.panel_command)
+        try:
+            async with server:
+                await self._run_sessions()
+        finally:
+            control.socket_path().unlink(missing_ok=True)
+
+    async def _run_sessions(self) -> None:
         log.info(
             "omarchy-ai ready — say any of: %s",
             ", ".join(self.wake_detector.model_names),
@@ -44,25 +64,33 @@ class OmaDaemon:
         loop = asyncio.get_event_loop()
         while not self._stop.is_set():
             woke = await loop.run_in_executor(
-                None, self.wake_detector.listen, self._stop
+                None, self.wake_detector.listen, self._listen_stop
             )
             if self._stop.is_set():
                 break
-            if not woke:
+            manual = self._manual
+            self._manual = False
+            self._listen_stop.clear()
+            if not woke and not manual:
                 continue
 
+            self._state = 'active'
             feedback.play(feedback.WAKE())
             log.info("wake word detected, starting live session")
-            session = LiveSession(self.config)
+            if manual:
+                log.info('conversation activated from assistant panel')
+            session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
             try:
                 await session.run()
             except Exception:  # noqa: BLE001
                 log.exception("live session crashed")
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")
+            self._state = 'listening'
 
     def stop(self) -> None:
         self._stop.set()
+        self._listen_stop.set()
         if self._phone_server is not None:
             self._phone_server.shutdown()
 

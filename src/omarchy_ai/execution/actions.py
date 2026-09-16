@@ -52,62 +52,9 @@ _APK_PATH = (
 # android-receiver/app/build.gradle.kts) would never get rebuilt no matter
 # how much source changed.
 _APK_BUILD_MARKER = _APK_PATH.with_suffix(".built-from-hash")
-_cast_process: subprocess.Popen | None = None
-_signaling_process: subprocess.Popen | None = None
-# The bare host (no port) start_casting is currently/last cast to -- what
-# stop_casting uses to tell display/registry.py which entry to mark back
-# to "online". Same module-level-state pattern as _cast_process itself.
-_cast_target_host: str | None = None
-
-
-def _spawn_own_cgroup(argv: list[str], cwd: str) -> subprocess.Popen:
-    """Launches argv fully decoupled from omarchy-ai.service's own cgroup,
-    via a transient `systemd-run --user --scope`.
-
-    Needed because the service's `KillMode` is the systemd default
-    (`control-group`): a plain `subprocess.Popen(..., start_new_session=
-    True)` still ends up as a member of the service's cgroup (confirmed
-    live via /proc/<pid>/cgroup on a real cast subprocess) despite getting
-    its own process group/session -- so restarting the daemon to load a
-    code fix would kill an actively-streaming cast too. That's directly
-    against the real requirement here: casting stops only via
-    `stop_casting`, never as a side effect of anything else (a
-    conversation ending -- already true, see `voice/live.py`'s hangup path
-    never touching `_cast_process` -- or a daemon restart to pick up a
-    fix, which wasn't true before this).
-
-    `systemd-run --scope` execs straight into argv rather than forking a
-    wrapper around it -- confirmed live: `Popen.pid` was argv's own real
-    pid (matched via /proc/<pid>/cmdline), and `poll()`/`terminate()` on
-    the returned Popen behaved exactly as they would on a plain Popen --
-    while placing that pid in its own transient scope unit under
-    user.slice instead of the service's cgroup (confirmed live via
-    /proc/<pid>/cgroup showing `.../app.slice/run-p<pid>-*.scope`, not
-    `.../omarchy-ai.service`). `--collect` cleans up the transient unit
-    once the process exits so these don't accumulate. Falls back to a
-    plain detached Popen (today's cgroup-coupled behavior) if
-    `systemd-run` isn't on PATH, rather than failing casting outright over
-    a decoupling nicety."""
-    try:
-        return subprocess.Popen(
-            ["systemd-run", "--user", "--scope", "--collect", "--quiet", "--", *argv],
-            cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except FileNotFoundError:
-        log.warning("systemd-run not on PATH -- casting subprocess will stay in omarchy-ai.service's cgroup")
-        return subprocess.Popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
 # Set by install_receiver_on_tv's discovery step, consumed by its pairing
 # step on the next call -- same "module-level state across separate tool
-# calls" pattern _cast_process already uses.
+# calls" pattern used by the pairing conversation.
 _pending_pair_target: dict | None = None
 
 
@@ -650,114 +597,104 @@ def list_cast_targets(args: dict) -> ActionResult:
 
 
 def start_casting(args: dict) -> ActionResult:
-    global _cast_process, _signaling_process, _cast_target_host
+    from ..display import session
+    try:
+        with session.locked():
+            return _start_casting(args)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        log.exception("casting operation failed")
+        return ActionResult(False, f"casting failed: {exc}")
 
-    if _cast_process is not None and _cast_process.poll() is None:
-        return ActionResult(True, "already casting")
 
-    from ..display import registry, tv_overlay
+def _start_casting(args: dict) -> ActionResult:
+    from ..display import registry, tv_overlay, session
 
-    # Shows the "which TV?" overlay for every real cast attempt, not just
-    # ambiguous ones -- per the task's own "when asked to mirror/cast,
-    # automatically open" ask. Starts its own background refresh loop, so
-    # the overlay is already live-tracking by the time _resolve_cast_target
-    # reads the same registry a moment later.
     tv_overlay.show_and_track()
-
-    target = (args.get("target") or "").strip() or None
-    tv_addr, err = _resolve_cast_target(target)
+    tv_addr, err = _resolve_cast_target((args.get("target") or "").strip() or None)
     if err is not None:
-        # Ambiguous/no-match -- deliberately leave the overlay open and
-        # tracking. The model asks the user by voice; the *next*
-        # start_casting call (voice-resolved) or a manual row click in the
-        # overlay (cli/settings.py's select-cast-target, which just calls
-        # this same function) is what resolves and dismisses it.
         return err
-
     host = tv_addr.split(":")[0]
-    _cast_target_host = host
-    registry.mark_connecting(host)
-    tv_overlay.push_update()
+    previous = session.target()
+    if session.active() and previous == host and session.read_state().get("state") == "connected":
+        registry.mark_connected(host)
+        tv_overlay.hide_tracking()
+        return ActionResult(True, f"already casting to {tv_addr}")
 
-    # adb connect can hang for a long time against an unreachable host
-    # (confirmed live — a plain 120s-timeout background hang, not a quick
-    # failure) so this needs its own short timeout rather than trusting
-    # adb to fail fast.
-    r = _run(["adb", "connect", tv_addr], timeout=8)
-    if not r.ok or "connected" not in r.message.lower():
+    def failed(message):
         registry.mark_failed(host)
         tv_overlay.push_update()
-        time.sleep(1.2)
         tv_overlay.hide_tracking()
-        return ActionResult(False, f"could not reach {tv_addr} over the network")
+        log.error("cast to %s failed: %s", host, message)
+        return ActionResult(False, message)
 
-    _ensure_receiver_current(tv_addr)
+    registry.mark_connecting(host)
+    tv_overlay.push_update()
+    r = _run(["adb", "connect", tv_addr], timeout=8)
+    if not r.ok or "connected" not in r.message.lower():
+        return failed(f"could not reach {tv_addr}: {r.message}")
+    r = _run(["adb", "-s", tv_addr, "get-state"], timeout=5)
+    if not r.ok or r.message.strip() != "device":
+        return failed(f"receiver ADB is not ready: {r.message}")
+
+    # Validate the new target before interrupting an existing mirror.
+    if previous:
+        session.stop()
+        registry.mark_disconnected(previous)
+    r = _install_or_update_receiver(tv_addr)
+    if not r.ok:
+        return failed(r.message)
 
     if not _port_listening(_SIGNALING_PORT):
-        _signaling_process = _spawn_own_cgroup(
-            [_VENV_PYTHON, "-m", "omarchy_ai.display.signaling"],
-            cwd=str(_REPO_ROOT),
-        )
+        subprocess.run([
+            "systemd-run", "--user", "--collect", "--unit=omarchy-ai-signaling.service",
+            f"--working-directory={_REPO_ROOT}", "--property=Restart=on-failure",
+            "--property=RestartSec=2", "--", _VENV_PYTHON, "-m", "omarchy_ai.display.signaling",
+        ], check=True, capture_output=True, text=True, timeout=10)
         for _ in range(20):
             if _port_listening(_SIGNALING_PORT):
                 break
-            time.sleep(0.25)
+            time.sleep(.25)
         else:
-            registry.mark_failed(host)
-            tv_overlay.push_update()
-            time.sleep(1.2)
-            tv_overlay.hide_tracking()
-            return ActionResult(False, "signaling server failed to start")
+            return failed("signaling server failed to start")
 
-    _run(
-        ["adb", "-s", tv_addr, "shell", "am", "start", "-n", "ai.omarchy.receiver/.MainActivity"],
-        timeout=8,
-    )
-    time.sleep(1)
-
-    _cast_process = _spawn_own_cgroup(
-        [_VENV_PYTHON, "-u", str(_REPO_ROOT / "scripts" / "spike_cast_sender.py")],
-        cwd=str(_REPO_ROOT),
-    )
-    time.sleep(2)
-    if _cast_process.poll() is not None:
-        _cast_process = None
+    # Explicitly reconnect a warm Activity as well as a cold launch, using
+    # the desktop address routed to this TV rather than a baked-in IP.
+    r = _run(["adb", "-s", tv_addr, "shell", "am", "start", "-W", "-n",
+              "ai.omarchy.receiver/.MainActivity", "--es", "signaling_host",
+              session.local_address(host)], timeout=12)
+    if not r.ok or "Error:" in r.message or "Exception" in r.message:
+        return failed(f"could not launch receiver: {r.message}")
+    try:
+        session.start([_VENV_PYTHON, "-u", str(_REPO_ROOT / "scripts/spike_cast_sender.py")],
+                      str(_REPO_ROOT), host)
+        connected, detail = session.wait_connected()
+        if not connected:
+            session.stop()
+            return failed(f"casting failed: {detail}")
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        session.stop()
         registry.mark_failed(host)
-        tv_overlay.push_update()
-        time.sleep(1.2)
         tv_overlay.hide_tracking()
-        return ActionResult(False, "casting failed to start")
-
+        raise
     registry.mark_connected(host)
     tv_overlay.select(host)
-    # Grace period so "Connected" is actually visible before the overlay's
-    # own dismiss animation runs — same "let the user see the outcome"
-    # reasoning as the sleeps already in this function.
-    time.sleep(1.2)
+    time.sleep(.8)
     tv_overlay.hide_tracking()
-    return ActionResult(True, f"casting started to the TV at {tv_addr}")
+    return ActionResult(True, f"casting connected to the TV at {tv_addr}")
 
 
 def stop_casting(args: dict) -> ActionResult:
-    global _cast_process, _cast_target_host
-    if _cast_process is None or _cast_process.poll() is not None:
-        _cast_process = None
-        return ActionResult(True, "not currently casting")
-    _cast_process.terminate()
+    from ..display import registry, tv_overlay, session
     try:
-        _cast_process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        _cast_process.kill()
-    _cast_process = None
-
-    if _cast_target_host is not None:
-        from ..display import registry, tv_overlay
-
-        registry.mark_disconnected(_cast_target_host)
-        tv_overlay.hide()  # covers the edge case of stopping while it's still up
-        _cast_target_host = None
-
-    return ActionResult(True, "casting stopped")
+        with session.locked():
+            host = session.target()
+            session.stop()
+            if host:
+                registry.mark_disconnected(host)
+            tv_overlay.hide_tracking()
+            return ActionResult(True, "casting stopped")
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return ActionResult(False, f"could not stop casting: {exc}")
 
 
 def _source_fingerprint() -> str:
@@ -840,7 +777,10 @@ def _ensure_receiver_apk_built() -> ActionResult:
     # latent bug in this function since before today's changes, just
     # never exercised because the APK already existed every time this
     # ran before now.
-    r = _run([str(gradlew), "assembleDebug"], timeout=300, cwd=str(gradlew.parent))
+    build = [str(gradlew), "assembleDebug"]
+    if shutil.which("mise"):
+        build = ["mise", "exec", "--", *build]
+    r = _run(build, timeout=300, cwd=str(gradlew.parent))
     if not r.ok or not _APK_PATH.exists():
         return ActionResult(False, f"building the receiver APK failed: {r.message}")
     if fingerprint:

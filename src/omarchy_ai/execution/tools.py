@@ -555,7 +555,7 @@ MYAPI_TOOLS: list[dict] = [
                     "type": "string",
                     "description": (
                         "The service's own REST path to read, e.g. "
-                        "'/messages' for gmail — see myapi_service_methods "
+                        "'/gmail/v1/users/me/messages' for gmail — see myapi_service_methods "
                         "for what's available on this service."
                     ),
                 },

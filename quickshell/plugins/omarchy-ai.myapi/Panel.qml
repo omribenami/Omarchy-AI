@@ -5,22 +5,6 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// A separate bar icon/panel for the MyApi (myapiai.com) integration —
-// deliberately not folded into omarchy-ai.settings/Panel.qml: that panel
-// only carries the on/off switch for this one (see its "CONNECT SERVICES
-// TO OMARCHY AI" section), everything else — connecting, disconnecting,
-// live usage — lives here, its own icon, the same way the phone bridge and
-// the daemon's live-status dot already sit on the main icon rather than in
-// a menu. Hidden entirely unless myapi_enabled is on (see visible below).
-//
-// Same "shell out to src/omarchy_ai/cli/settings.py via a serialized
-// Process queue" backend as the main settings panel — no separate service,
-// same JSON-line-per-call contract. The usage table's visual language
-// (a row whose own background fills proportionally to its share of the
-// total, label left, count right) is deliberately modeled on
-// $OMARCHY_PATH/shell/plugins/agents/Panel.qml's ModelRow — this bar
-// already has one "per-provider usage" panel, this one should read like a
-// sibling of it, not an unrelated one-off look.
 Panel {
   id: root
   moduleName: "omarchy-ai.myapi"
@@ -29,14 +13,32 @@ Panel {
   readonly property string py: "/home/ben-ami/Git/omarchy-ai/.venv/bin/omarchy-ai-settings"
 
   property var snapshot: ({})
-  property var usageServices: ({})
+  property var dashboard: ({})
+  property string period: "7d"
+  property bool loading: false
+  property string dashboardError: ""
+  property string selectedDevice: ""
+  property string breakdown: "services"
+  readonly property var devices: dashboard.devices || []
+  readonly property var selected: {
+    for (var i = 0; i < devices.length; i++) if (devices[i].id === selectedDevice) return devices[i]
+    return null
+  }
+  readonly property var services: selected ? selected.services : (dashboard.serviceTotals || [])
+  readonly property var daily: selected ? selected.daily : (dashboard.allDaily || [])
+  readonly property var labels: dashboard.bucketLabels || []
+  readonly property real maxDaily: Math.max.apply(null, [1].concat(daily))
+  function count(value) { return value === undefined || value === null ? "—" : Number(value).toLocaleString(Qt.locale(), 'f', 0) }
+  function choosePeriod(value) {
+    root.period = value; root.selectedDevice = ""; dashboardScroll.contentY = 0; root.dashboard = ({}); root.fetchUsage()
+  }
   property bool connecting: false
   property string statusMessage: ""
   property string statusTone: "info" // "info" | "ok" | "error"
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
-  readonly property color accent: "#39ff88"
-  readonly property color dim: Qt.darker(fg, 1.45)
+  readonly property color accent: Color.accent
+  readonly property color dim: Qt.rgba(fg.r, fg.g, fg.b, 0.72)
   readonly property color track: Qt.darker(fg, 2.2)
   readonly property color statusColor: statusTone === "error" ? "#ff6b6b" : (statusTone === "ok" ? accent : dim)
 
@@ -44,20 +46,12 @@ Panel {
   readonly property var myapiState: snapshot.myapi || ({})
   readonly property bool connected: !!myapiState.connected
 
-  // Hidden entirely until enabled from the main settings panel — polled
-  // rather than pushed over IPC: config changes are infrequent, and this
-  // keeps both panels independent processes/components with no new
-  // cross-plugin wiring, at the cost of up to ~5s to appear/disappear
-  // after the toggle. Fine for a settings change, not a live stat.
   visible: myapiEnabled
   implicitWidth: myapiEnabled ? button.implicitWidth : 0
   implicitHeight: myapiEnabled ? button.implicitHeight : 0
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
 
-  // ---- Process queue: one Process instance, serialized calls (same
-  // pattern as omarchy-ai.settings/Panel.qml — see its own comment for
-  // why: secrets via environment, never argv). ----
   property var _queue: []
 
   function _enqueue(argv, cb, env) {
@@ -66,7 +60,7 @@ Panel {
   }
 
   function _processQueue() {
-    if (proc.running) return
+    if (proc.running || proc._cb !== null) return
     if (root._queue.length === 0) return
     var next = root._queue.shift()
     proc._cb = next.cb
@@ -77,6 +71,7 @@ Panel {
 
   Process {
     id: proc
+    onRunningChanged: if (!running) Qt.callLater(root._processQueue)
     property var _cb: null
     stdout: StdioCollector {
       waitForEnd: true
@@ -98,16 +93,22 @@ Panel {
   function fetchSnapshot() {
     root._enqueue([root.py, "get"], function(result) {
       if (result && !result.error) {
+        var wasConnected = root.connected
         root.snapshot = result
+        if (root.opened && root.connected && !wasConnected) root.fetchUsage()
       }
     })
   }
 
   function fetchUsage() {
-    root._enqueue([root.py, "myapi-usage"], function(result) {
-      if (result && !result.error) {
-        root.usageServices = result.services || ({})
-      }
+    if (!root.connected) return
+    var requested = root.period
+    root.loading = true
+    root._enqueue([root.py, "myapi-dashboard", requested], function(result) {
+      if (requested !== root.period) return
+      root.loading = false
+      root.dashboardError = result.error || ""
+      if (!result.error) root.dashboard = result
     })
   }
 
@@ -140,17 +141,15 @@ Panel {
         root.statusMessage = result.error
       } else if (result) {
         root.snapshot = result
+        root.dashboard = ({})
+        root.selectedDevice = ""
         root.statusTone = "ok"
         root.statusMessage = "Disconnected from MyApi"
       }
     })
   }
 
-  // Refetch whenever opened, plus a standing timer so the icon's own
-  // visible/hidden state (and the connected badge) stay current even while
-  // closed — the main panel's toggle writes myapi_enabled independently of
-  // this one being open.
-  onOpenedChanged: if (opened) { root.statusMessage = ""; root.statusTone = "info"; root.fetchSnapshot(); root.fetchUsage() }
+  onOpenedChanged: if (opened) { dashboardScroll.contentY = 0; root.statusMessage = ""; root.statusTone = "info"; root.fetchSnapshot(); root.fetchUsage() }
 
   Component.onCompleted: root.fetchSnapshot()
 
@@ -159,25 +158,20 @@ Panel {
     running: true
     repeat: true
     onTriggered: {
-      root.fetchSnapshot()
-      if (root.opened && root.connected) root.fetchUsage()
+      if (!proc.running && root._queue.length === 0) root.fetchSnapshot()
+
     }
+  }
+
+  Timer {
+    interval: 30000; running: root.opened && root.connected; repeat: true
+    onTriggered: if (!root.loading) root.fetchUsage()
   }
 
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // No MyApi logo asset ships with this project, so a literal glyph
-    // rather than a guessed-at brand mark — same "single icon-font
-    // character, no custom image" shape every other non-branded
-    // first-party bar icon in this shell uses (e.g. the Agents panel's
-    // own `text: "󱚣"`). Material Design Icons' lightning-bolt glyph
-    // (nf-md-lightning_bolt, U+F140B) specifically, not a plain Unicode
-    // "⚡" — confirmed via the installed JetBrainsMono Nerd Font's own
-    // cmap that the Agents panel's icon is drawn from the same nf-md-*
-    // set, so this matches that convention rather than mixing glyph
-    // families across panels.
     text: "󱐋"
     iconComponent: Component {
       Item {
@@ -191,10 +185,6 @@ Panel {
           color: root.connected ? root.accent : button.foreground
         }
 
-        // Small live-status dot, same visual weight/position as the main
-        // Omarchy AI icon's own live-conversation dot — connected (green)
-        // vs. not (no dot at all, rather than a second color, since
-        // "not connected" is the icon's own resting state already).
         Rectangle {
           width: Math.max(5, Math.round(parent.width * 0.3))
           height: width
@@ -221,24 +211,28 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    contentWidth: panel.fittedContentWidth(Style.space(490))
+    contentHeight: panel.fittedContentHeight(Math.min(column.implicitHeight, Style.space(660)))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
 
+      Flickable {
+        id: dashboardScroll
+        anchors.fill: parent
+        contentWidth: width; contentHeight: column.implicitHeight
+        clip: true; boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
       Column {
         id: column
         anchors.left: parent.left
         anchors.right: parent.right
+        anchors.rightMargin: Style.space(10)
         anchors.top: parent.top
         spacing: Style.space(14)
 
-        // Same title+subtitle shape as omarchy-ai.settings/Panel.qml's own
-        // header, not a one-off — this panel should read as that one's
-        // sibling.
         Column {
           width: parent.width
           spacing: Style.spacing.xxs
@@ -252,7 +246,7 @@ Panel {
           }
           Text {
             textFormat: Text.PlainText
-            text: "Connect services to Omarchy AI"
+            text: root.connected ? "Account activity · all devices and agents" : "Connect your MyApi account"
             color: Qt.darker(root.fg, 1.5)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -261,7 +255,6 @@ Panel {
 
         PanelSeparator { foreground: root.fg }
 
-        // ---- Not connected: credit + code entry ----
         Column {
           width: parent.width
           spacing: Style.space(10)
@@ -310,131 +303,146 @@ Panel {
           }
         }
 
-        // ---- Connected: status, usage, disconnect ----
         Column {
-          width: parent.width
-          spacing: Style.space(12)
+          width: parent.width; spacing: Style.space(12)
           visible: root.connected
-
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: "Connected" + (root.myapiState.account ? (" as " + root.myapiState.account) : "")
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            color: root.accent
+          Row {
+            width: parent.width; spacing: Style.space(8)
+            ButtonGroup {
+              width: parent.width - refresh.width - parent.spacing
+              foreground: root.fg; fontFamily: root.bar.fontFamily; fontSize: Style.font.bodySmall
+              value: root.period
+              options: [{value:"24h",label:"Day"},{value:"7d",label:"Week"},{value:"30d",label:"Month"}]
+              onChanged: function(v) { root.choosePeriod(v) }
+            }
+            Button {
+              id: refresh; text: root.loading ? "Loading…" : "Refresh"
+              foreground: root.fg; fontFamily: root.bar.fontFamily; fontSize: Style.font.caption
+              focusable: true; enabled: !root.loading; onClicked: root.fetchUsage()
+            }
           }
-
-          PanelSectionHeader { text: "USAGE"; foreground: root.fg; fontFamily: root.bar.fontFamily }
-
-          // Same shape as the Agents panel's ModelRow: a row whose own
-          // background fills to its share of the total call volume across
-          // every connected service, label left, count right — reads as a
-          // proportional breakdown at a glance rather than a bare table.
+          Text {
+            width: parent.width; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+            visible: root.dashboardError.length > 0
+            text: "Dashboard unavailable: " + root.dashboardError
+            color: Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
+          }
           Column {
-                id: usageColumn
-                width: parent.width
-                spacing: Style.space(6)
-
-                readonly property var serviceNames: Object.keys(root.usageServices).sort()
-                readonly property real totalCalls: {
-                  var t = 0
-                  for (var i = 0; i < serviceNames.length; i++) t += (root.usageServices[serviceNames[i]].calls_total || 0)
-                  return t
-                }
-
-                Text {
-                  width: parent.width
-                  visible: usageColumn.serviceNames.length === 0
-                  textFormat: Text.PlainText
-                  text: "No MyApi calls yet this session."
-                  color: root.dim
-                  font.family: root.bar.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-
-                Repeater {
-                  model: usageColumn.serviceNames
-                  delegate: Item {
-                    required property var modelData
-                    readonly property var stats: root.usageServices[modelData] || ({})
-                    readonly property real share: usageColumn.totalCalls > 0 ? (stats.calls_total || 0) / usageColumn.totalCalls : 0
-
-                    width: usageColumn.width
-                    implicitHeight: rowLabel.implicitHeight + Style.spacing.lg
-
-                    Rectangle {
-                      anchors.fill: parent
-                      radius: Style.cornerRadius
-                      color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.05)
-                    }
-
-                    Rectangle {
-                      anchors.left: parent.left
-                      anchors.top: parent.top
-                      anchors.bottom: parent.bottom
-                      width: parent.width * root.clamp(share, 0, 1)
-                      radius: Style.cornerRadius
-                      color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
-                    }
-
-                    Text {
-                      id: rowLabel
-                      textFormat: Text.PlainText
-                      text: modelData
-                      color: root.fg
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      elide: Text.ElideRight
-                      anchors.left: parent.left
-                      anchors.leftMargin: Style.space(8)
-                      anchors.right: rowCount.left
-                      anchors.rightMargin: Style.space(8)
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Text {
-                      id: rowCount
-                      textFormat: Text.PlainText
-                      text: (stats.calls_total || 0) + " (" + (stats.calls_today || 0) + " today)"
-                      color: root.dim
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      anchors.right: parent.right
-                      anchors.rightMargin: Style.space(8)
-                      anchors.verticalCenter: parent.verticalCenter
-                    }
+            width: parent.width; spacing: Style.space(12)
+            visible: root.dashboard.grand !== undefined
+            Row {
+              width: parent.width; spacing: Style.space(8)
+              Repeater {
+                model: [{label:"API CALLS",value:root.count(root.dashboard.grand)},
+                  {label:"ACTIVE AGENTS",value:root.count(root.dashboard.activeCount) + "/" + root.count(root.dashboard.deviceCount)},
+                  {label:"ERROR RATE",value:root.dashboard.errorRate + "%"}]
+                delegate: Rectangle {
+                  required property var modelData
+                  width: (parent.width - Style.space(16)) / 3; height: Style.space(65)
+                  radius: Style.cornerRadius
+                  color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.05)
+                  Column {
+                    anchors.centerIn: parent; spacing: Style.space(5)
+                    Text { text: modelData.value; color: root.fg; font.family: root.bar.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+                    Text { text: modelData.label; color: root.dim; font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption }
                   }
                 }
+              }
+            }
+            Row {
+              width: parent.width
+              Text {
+                width: parent.width - clearFilter.width
+                text: root.selected ? root.selected.label : "All agents · last " + ({"24h":"24 hours","7d":"7 days","30d":"30 days"}[root.period])
+                elide: Text.ElideRight; color: root.fg; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall
+              }
+              Button { id: clearFilter; visible: !!root.selected; text:"Clear"; foreground:root.fg; fontFamily:root.bar.fontFamily; fontSize:Style.font.caption; onClicked: root.selectedDevice = "" }
+            }
+            Row {
+              width: parent.width; height: Style.space(84); spacing: Style.space(3)
+              Repeater {
+                model: root.daily
+                delegate: Item {
+                  required property var modelData
+                  required property int index
+                  width: (parent.width - parent.spacing * Math.max(0, root.daily.length - 1)) / Math.max(1,root.daily.length)
+                  height: parent.height
+                  Rectangle {
+                    anchors.bottom: parent.bottom; width: parent.width
+                    height: Math.max(modelData > 0 ? 2 : 0, parent.height * modelData / root.maxDaily)
+                    color: root.accent; opacity: hover.containsMouse ? 1 : 0.65
+                  }
+                  MouseArea { id:hover; anchors.fill:parent; hoverEnabled:true }
+                  ToolTip.visible: hover.containsMouse
+                  ToolTip.text: (root.labels[index] || "") + " · " + root.count(modelData) + " calls"
+                }
+              }
+            }
+            Row {
+              width: parent.width
+              Text { width: parent.width/2; text:root.labels[0] || ""; color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.caption }
+              Text { width: parent.width/2; horizontalAlignment:Text.AlignRight; text:root.labels[root.labels.length-1] || ""; color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.caption }
+            }
+            PanelSeparator { foreground: root.fg }
+            ButtonGroup {
+              width:parent.width; foreground:root.fg; fontFamily:root.bar.fontFamily; fontSize:Style.font.bodySmall
+              value:root.breakdown; options:[{value:"services",label:"Services called"},{value:"agents",label:"Devices & agents"}]
+              onChanged:function(v) { root.breakdown = v }
+            }
+            Text { visible:root.breakdown === "services" && root.services.length === 0; text:"No service calls in this period."; color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.caption }
+            Repeater {
+              model: root.services
+              delegate: Item {
+                required property var modelData
+                visible: root.breakdown === "services"
+                width: parent.width; height: Style.space(29)
+                Rectangle {
+                  height:parent.height; width:parent.width * Math.min(1, modelData.value / Math.max(1, root.selected ? root.selected.value : root.dashboard.grand))
+                  color:root.accent; opacity:0.12; radius:Style.cornerRadius
+                }
+                Text { anchors.left:parent.left; anchors.leftMargin:Style.space(8); anchors.verticalCenter:parent.verticalCenter; width:parent.width*0.7; elide:Text.ElideRight; textFormat:Text.PlainText; text:modelData.key; color:root.fg; font.family:root.bar.fontFamily; font.pixelSize:Style.font.bodySmall }
+                Text { anchors.right:parent.right; anchors.rightMargin:Style.space(8); anchors.verticalCenter:parent.verticalCenter; text:root.count(modelData.value); color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.bodySmall }
+              }
+            }
+            Text { visible:root.breakdown === "agents"; text:"Select an agent to filter the chart and services."; color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.caption }
+            Repeater {
+              model: root.devices
+              delegate: Button {
+                required property var modelData
+                visible:root.breakdown === "agents"
+                width:parent.width; leftAlign:true; selected:root.selectedDevice === modelData.id
+                text:(modelData.label.length > 30 ? modelData.label.slice(0,29) + "…" : modelData.label) + " · " + root.count(modelData.value) + " calls"
+                tooltipText:modelData.label + " · " + modelData.status + " · last seen " + modelData.lastSeen + " · errors " + modelData.errPct + "%"
+                fontFamily:root.bar.fontFamily; fontSize:Style.font.bodySmall; foreground:root.fg; focusable:true
+                onClicked:root.selectedDevice = root.selectedDevice === modelData.id ? "" : modelData.id
+              }
+            }
+            PanelSeparator { foreground:root.fg }
+            PanelSectionHeader { text:"INSIGHTS"; foreground:root.fg; fontFamily:root.bar.fontFamily }
+            Text {
+              width:parent.width; wrapMode:Text.WordWrap; textFormat:Text.PlainText
+              text: {
+                var lines = []
+                var agents = root.devices.slice().sort(function(a,b){return b.value-a.value})
+                var services = (root.dashboard.serviceTotals || []).slice().sort(function(a,b){return b.value-a.value})
+                if (agents.length && root.dashboard.grand > 0) lines.push(agents[0].label + " accounts for " + Math.round(100*agents[0].value/root.dashboard.grand) + "% of calls.")
+                if (services.length) lines.push("Most-used service: " + services[0].key + " (" + root.count(services[0].value) + " calls).")
+                lines.push(root.count(root.dashboard.rateLimited) + " rate-limited calls in this period.")
+                return lines.join("\n")
+              }
+              color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.bodySmall
+            }
+            Text {
+              width:parent.width; wrapMode:Text.WordWrap
+              text:"Updated " + (root.dashboard.timestamp ? new Date(root.dashboard.timestamp).toLocaleTimeString(Qt.locale(), "HH:mm") : "—") + (root.dashboardError ? " · showing previous data" : " · account-wide")
+              color:root.dim; font.family:root.bar.fontFamily; font.pixelSize:Style.font.caption
+            }
           }
-
-          Text {
-            width: parent.width
-            textFormat: Text.PlainText
-            text: "Run omarchy-ai-dashboard in a terminal for a live view."
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            color: root.dim
-          }
-
-          Button {
-            text: "Disconnect"
-            bordered: true
-            foreground: "#ff6b6b"
-            fontFamily: root.bar.fontFamily
-            onClicked: root.disconnectMyapi()
-          }
-
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: "Disconnect only stops Omarchy AI from using it locally — to fully revoke access, also remove this device from your MyApi dashboard's Devices/Agents list."
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            color: root.dim
+          PanelSeparator { foreground:root.fg }
+          Row {
+            spacing:Style.space(8)
+            Button { text:"Open full dashboard"; bordered:true; foreground:root.fg; fontFamily:root.bar.fontFamily; focusable:true; onClicked:Qt.openUrlExternally("https://www.myapiai.com/dashboard/") }
+            Button { text:"Disconnect"; foreground:root.dim; fontFamily:root.bar.fontFamily; focusable:true; onClicked:root.disconnectMyapi() }
           }
         }
 
@@ -450,6 +458,7 @@ Panel {
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
         }
+      }
       }
     }
   }

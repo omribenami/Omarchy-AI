@@ -5,42 +5,11 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Settings panel for the Omarchy AI voice assistant — wake word model
-// selection, the Watch Dogs overlay's on/off + display mode, wake
-// sensitivity, and voice. Follows the same "Panel base + BarIconButton +
-// KeyboardPanel" shape every other first-party bar-widget panel in this
-// shell uses (see $OMARCHY_PATH/shell/plugins/panels/power/Panel.qml,
-// copied as the closest template — battery-status-poll style Process
-// calls, a KeyboardPanel popup, PanelSectionHeader-divided sections).
-//
-// Unlike a first-party panel, there's no Python service already running
-// inside Quickshell to ask — reads/writes of
-// ~/.config/omarchy-ai/config.yaml and the "is it safe to restart the
-// daemon" check both need real Python (YAML merge-over-defaults logic
-// already lives in src/omarchy_ai/config.py; duplicating it in JS would
-// drift). So every control here calls out to
-// src/omarchy_ai/cli/settings.py (installed as the `omarchy-ai-settings`
-// console script in this project's uv-managed venv) via a Process,
-// exactly the way $OMARCHY_PATH/shell/plugins/panels/dropbox's Panel.qml
-// shells out to its own status.py. The venv path is hardcoded absolute —
-// this is a single-machine, single-checkout project (systemd's own unit
-// template does the same with its @VENV@ substitution).
-//
-// The daemon (omarchy-ai.service) only reads config.yaml at process
-// startup (core/daemon.py's OmaDaemon.__init__), so every write here is
-// inert until a restart — the Restart button calls `... restart`, which
-// itself checks (via journalctl, replaying daemon.py's own "wake word
-// detected"/"session ended" log lines) whether a conversation is
-// currently in progress and refuses if so, mirroring the exact restart
-// discipline this whole project has followed by hand all day (see
-// CLAUDE.md / STATUS.md). Chose "UI triggers restart, but only when
-// provably safe" over "always just tell the user to restart manually" —
-// safer default given how easy a careless restart already proved to be
-// to get wrong today, while still not silently interrupting anyone.
 Panel {
   id: root
   moduleName: "omarchy-ai.settings"
   ipcTarget: "omarchy-ai.settings"
+  manageIpc: false // This panel supplies its own handler including setLive.
 
   readonly property string py: "/home/ben-ami/Git/omarchy-ai/.venv/bin/omarchy-ai-settings"
 
@@ -57,18 +26,11 @@ Panel {
   readonly property var voiceOptions: snapshot.voice_options || ["marin"]
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
-  readonly property color statusColor: statusTone === "error" ? "#ff6b6b" : (statusTone === "ok" ? "#39ff88" : Qt.darker(fg, 1.4))
+  readonly property color statusColor: statusTone === "error" ? Color.urgent : (statusTone === "ok" ? Color.accent : Color.muted)
 
-  // Whether a live gpt-live-1 conversation is currently connected — set
-  // via IPC from src/omarchy_ai/voice/live.py at session connect/hangup
-  // (voice/status_icon.py's set_live(), called unconditionally, not
-  // gated by watchdog_enabled: this bar-icon indicator is a separate,
-  // always-on thing from the optional Watch Dogs overlay). User's own
-  // request: red when idle, green while actually talking.
   property bool live: false
   readonly property color liveColor: live ? "#39ff88" : "#ff5f5f"
 
-  // ---- Process queue: one Process instance, serialized calls ------------
   property var _queue: []
 
   function _enqueue(argv, cb, env) {
@@ -77,21 +39,18 @@ Panel {
   }
 
   function _processQueue() {
-    if (settingsProc.running) return
+    if (settingsProc.running || settingsProc._cb !== null) return
     if (root._queue.length === 0) return
     var next = root._queue.shift()
     settingsProc._cb = next.cb
     settingsProc.command = next.argv
-    // Secrets ride in the environment, never in `command` — argv shows up
-    // in /proc/<pid>/cmdline, which is world-readable, so an API key
-    // passed as an argument would be visible in `ps` to anyone else with
-    // a shell here. /proc/<pid>/environ is 0400 owner-only.
     settingsProc.environment = next.env || ({})
     settingsProc.running = true
   }
 
   Process {
     id: settingsProc
+    onRunningChanged: if (!running) Qt.callLater(root._processQueue)
     property var _cb: null
     stdout: StdioCollector {
       waitForEnd: true
@@ -122,8 +81,6 @@ Panel {
     })
   }
 
-  // Generic setter for every field except wake models (which needs its
-  // own resync step below — see the comment there).
   function setField(key, jsonValue, successMessage) {
     root._enqueue([root.py, "set", key, jsonValue], function(result) {
       if (result && result.error) {
@@ -141,10 +98,6 @@ Panel {
     })
   }
 
-  // Write-only from this layer's point of view: the key goes out via the
-  // environment and the field is wiped immediately, and the helper's reply
-  // only ever carries "is one set / where", never the value back. Nothing
-  // here can re-display a stored key, by design.
   function saveApiKey(key) {
     var trimmed = (key || "").trim()
     if (trimmed.length === 0) {
@@ -168,18 +121,6 @@ Panel {
     }, { "OMARCHY_AI_API_KEY": trimmed })
   }
 
-  // ---- Phone bridge pairing (QR code) --------------------------------
-  // Inline in the Phone Bridge section below, not a separate PopupCard —
-  // tried that first and reverted, confirmed live: PopupCard's
-  // onOpenChanged calls bar.requestPopout()/releasePopout(), the same
-  // "only one popup open at a time" coordination every bar popout uses
-  // (including this settings panel's own main KeyboardPanel) — opening a
-  // second popout while this one was already open forced the bar to
-  // close *this* one instead of showing both, so pressing the QR button
-  // made the whole settings menu disappear with nothing to replace it.
-  // Inline growth inside the already-scrollable Phone Bridge section
-  // (below the wake_threshold Slider, which is what the earlier
-  // Flickable-scoping fix was for) doesn't have this problem at all.
   property bool pairing: false
   property string qrImageBase64: ""
   property string qrUrl: ""
@@ -228,13 +169,6 @@ Panel {
         root.statusTone = "ok"
         root.statusMessage = "Wake models updated — restart to apply"
       }
-      // MultiSelect mutates its own `values` property locally the instant
-      // a row is clicked (before this callback runs), which permanently
-      // breaks the `values: root.fields.custom_wake_model_paths` binding
-      // below. Resync explicitly to the server-confirmed list every time,
-      // success or reject — this is what makes a rejected "deselect the
-      // last active model" attempt visibly snap back instead of leaving
-      // the checkbox unchecked while the backend silently ignored it.
       wakeModelsSelect.values = (root.snapshot.fields && root.snapshot.fields.custom_wake_model_paths) || []
     })
   }
@@ -256,10 +190,6 @@ Panel {
     })
   }
 
-  // Own IpcHandler alongside the base Panel component's (same pattern
-  // $OMARCHY_PATH/shell/plugins/agents/Panel.qml uses for its extra
-  // refresh/next methods) — re-forwards open/close/show/hide/toggle and
-  // adds setLive for the bar-icon status dot.
   IpcHandler {
     target: root.ipcTarget
     function open(): void { root.open() }
@@ -288,17 +218,6 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // The real Omarchy mark, not a generic gear — user's own request,
-    // preferring the actual logo over any AI-generic glyph.
-    // /usr/share/omarchy/logo.svg is the full wordmark (1215x285,
-    // spelling "Omarchy" in blocky letterforms) — confirmed live by
-    // screenshot that shrinking it to bar-icon size turns it into
-    // illegible noise, wordmarks don't scale down like that.
-    // /usr/share/pixmaps/omarchy.png is the actual square app-icon mark
-    // (300x300, confirmed via `magick ... -format %[pixel:...]` that the
-    // green maze pattern is opaque and everything else is alpha 0) —
-    // built to read at icon size already, so used as-is here rather than
-    // reinventing a monochrome glyph version of it.
     text: ""
     iconComponent: Component {
       Item {
@@ -312,11 +231,6 @@ Panel {
           fillMode: Image.PreserveAspectFit
         }
 
-        // Live-status dot — red (idle) / green (an actual gpt-live-1
-        // conversation is connected right now), bottom-right corner.
-        // Small enough not to obscure the logo mark itself; a thin dark
-        // ring around it keeps it legible against either dot color on a
-        // busy wallpaper/bar background.
         Rectangle {
           width: Math.max(5, Math.round(parent.width * 0.32))
           height: width
@@ -337,69 +251,71 @@ Panel {
     onPressed: root.toggle()
   }
 
+
+  property string section: "voice"
+  property bool activating: false
+  property int glitchFrame: 0
+  readonly property string assistantState: live ? "active" : ((snapshot.assistant || {}).state || "offline")
+  Timer { interval: 160; running: root.opened; repeat: true; onTriggered: root.glitchFrame = (root.glitchFrame + 1) % 35 }
+  Timer { interval: 3000; running: root.opened; repeat: true; onTriggered: if (!settingsProc.running && root._queue.length === 0) root.fetchSnapshot() }
+  function activateAssistant() {
+    root.activating = true
+    root._enqueue([root.py, "activate"], function(result) {
+      root.activating = false
+      root.statusTone = result.error ? "error" : "ok"
+      root.statusMessage = result.error || "Starting Omachy — speak into your computer microphone"
+      root.fetchSnapshot()
+    })
+  }
   KeyboardPanel {
     id: panel
-    anchorItem: button
-    owner: root
-    bar: root.bar
-    open: root.opened
+    anchorItem: button; owner: root; bar: root.bar; open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(420))
-    // No fixed pixel cap here on purpose: the OpenAI API key section grew
-    // the panel past the original Style.space(560) cap, and its content
-    // rendered outside the drawn box instead of the box growing to fit —
-    // confirmed live by screenshot. fittedContentHeight's own
-    // availableCardHeight (screen-relative) is already the real safety
-    // bound, so let content size the panel and rely on that instead of a
-    // second, easy-to-outgrow fixed number.
+    contentWidth: panel.fittedContentWidth(Style.space(440))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
-
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
-
-      // A Flickable wrapper was tried here first (to fit the Phone Bridge
-      // section, which had pushed real content past availableCardHeight)
-      // and reverted — confirmed live, it made the wake_threshold Slider
-      // (a horizontal-drag control) fight the Flickable's own vertical
-      // drag-to-scroll for the same pointer gesture, moving the slider on
-      // an attempted scroll rather than scrolling. Fixed at the root
-      // instead: the Phone Bridge section (below) now stays compact by
-      // showing its QR in a separate PopupCard rather than growing this
-      // column inline, so the panel fits without scrolling again.
       Column {
         id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(14)
-
-        // ---------- Header ----------
-        Column {
-          width: parent.width
-          spacing: Style.spacing.xxs
+        width: parent.width
+        spacing: Style.space(12)
+        Row {
+          width: parent.width; spacing: Style.space(14)
           Text {
+            text: root.glitchFrame < 2 ? "[ /#_#\\ ]\n <|:::|>" : "[ o_o ]\n <|:::|>"
             textFormat: Text.PlainText
-            text: "Omarchy AI"
-            color: root.fg
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
+            color: Color.accent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.body
+            opacity: root.glitchFrame === 1 ? 0.65 : 1
           }
-          Text {
-            textFormat: Text.PlainText
-            text: "Voice assistant settings"
-            color: Qt.darker(root.fg, 1.5)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
+          Column {
+            spacing: Style.space(4)
+            Text { text: "Omachy"; color: root.fg; font.family: root.bar.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
+            Text {
+              text: root.assistantState === "active" ? "Conversation active" : root.assistantState === "starting" ? "Connecting…" : root.assistantState === "listening" ? "Ready · listening for your wake word" : "Assistant offline"
+              color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
+            }
           }
         }
-
+        Button {
+          width: parent.width
+          text: root.activating || root.assistantState === "starting" ? "Starting…" : root.assistantState === "active" ? "Omachy is active" : "Activate Omachy"
+          iconText: "󰍬"; bordered: true; selected: true; focusable: true
+          foreground: root.fg; accent: Color.accent; fontFamily: root.bar.fontFamily
+          enabled: !root.activating && root.assistantState === "listening"
+          opacity: enabled ? 1 : 0.55
+          onClicked: root.activateAssistant()
+        }
+        ButtonGroup {
+          width: parent.width; foreground: root.fg; fontFamily: root.bar.fontFamily
+          fontSize: Style.font.bodySmall; value: root.section
+          options: [{value: "voice", label: "Voice"}, {value: "connections", label: "Connections"}, {value: "appearance", label: "Appearance"}]
+          onChanged: function(v) { root.section = v; scrollArea.contentY = 0 }
+        }
         PanelSeparator { foreground: root.fg }
-
-        // ---------- Wake word ----------
         Column {
+          visible: root.section === "voice"
           width: parent.width
           spacing: Style.space(10)
 
@@ -456,94 +372,22 @@ Panel {
           }
         }
 
-        PanelSeparator { foreground: root.fg }
+        PanelSeparator { foreground: root.fg; visible: root.section === "voice" }
 
-        // Everything below scrolls; the header/wake-word section above
-        // (including thresholdSlider) deliberately does not, and never
-        // will — confirmed live, twice: putting a Slider inside a
-        // Flickable makes the two fight over the same drag gesture (an
-        // attempted scroll drags the slider instead). Keeping the Slider
-        // permanently outside any scrollable region is the actual fix,
-        // not just tuning gesture priorities. height is capped to a
-        // fixed budget rather than availableCardHeight directly (which
-        // would need this binding and the panel's own contentHeight
-        // binding below to reference each other) — generous enough for
-        // every section here to fit unscrolled on most screens, so
-        // scrolling only kicks in once content genuinely exceeds it.
+
         Flickable {
           id: scrollArea
           width: parent.width
-          height: Math.min(scrollColumn.implicitHeight, Style.space(360))
-          contentWidth: width
-          contentHeight: scrollColumn.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
+          height: Math.min(scrollColumn.implicitHeight, Math.max(Style.space(100), panel.availableCardHeight - Style.space(root.section === "voice" ? 400 : 265)))
+          contentWidth: width; contentHeight: scrollColumn.implicitHeight
+          clip: true; boundsBehavior: Flickable.StopAtBounds
           interactive: contentHeight > height
-
           ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
+          Column {
+            id: scrollColumn
+            width: parent.width - Style.space(10); spacing: Style.space(12)
         Column {
-          id: scrollColumn
-          width: parent.width
-          spacing: Style.space(14)
-
-        // ---------- Watch Dogs overlay ----------
-        Column {
-          width: parent.width
-          spacing: Style.space(10)
-
-          PanelSectionHeader { text: "WATCH DOGS OVERLAY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
-
-          Toggle {
-            id: watchdogToggle
-            width: parent.width
-            label: "Show overlay"
-            description: "Hacking-HUD panel with live conversation state, bottom-right, while a session is open."
-            foreground: root.fg
-            checked: root.fields.watchdog_enabled !== undefined ? !!root.fields.watchdog_enabled : true
-            onClicked: root.setField("watchdog_enabled", watchdogToggle.checked ? "false" : "true")
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            text: "Display mode"
-            color: Qt.darker(root.fg, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
-
-          ButtonGroup {
-            width: parent.width
-            foreground: root.fg
-            background: Color.background
-            fontFamily: root.bar.fontFamily
-            fontSize: Style.font.bodySmall
-            value: root.fields.watchdog_display_mode || "feed"
-            options: [
-              { value: "feed", label: "Text feed" },
-              { value: "visualizer", label: "ASCII visualizer" },
-              { value: "both", label: "Both" }
-            ]
-            onChanged: function(v) { root.setField("watchdog_display_mode", JSON.stringify(v), "Display mode updated — restart to apply") }
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            text: "Visualizer: a small ASCII/unicode amplitude bar reacting to the assistant's own speech, in place of (or alongside) the tool-call feed."
-            color: Qt.darker(root.fg, 1.5)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-        }
-
-        PanelSeparator { foreground: root.fg }
-
-        // ---------- Voice ----------
-        Column {
+          visible: root.section === "voice"
           width: parent.width
           spacing: Style.space(10)
 
@@ -562,14 +406,121 @@ Panel {
           }
         }
 
-        PanelSeparator { foreground: root.fg }
+        PanelSeparator { foreground: root.fg; visible: root.section === "voice" }
 
-        // ---------- OpenAI API key ----------
-        Column {
+                Column {
+          visible: root.section === "connections"
           width: parent.width
           spacing: Style.space(10)
 
-          PanelSectionHeader { text: "OPENAI API KEY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+          PanelSectionHeader { text: "MYAPI"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+
+          Toggle {
+            id: myapiToggle
+            width: parent.width
+            label: "Enable MyApi"
+            description: "Show the MyApi dashboard in the bar and allow connected services."
+            foreground: root.fg
+            checked: root.fields.myapi_enabled !== undefined ? !!root.fields.myapi_enabled : false
+            onClicked: root.setField("myapi_enabled", myapiToggle.checked ? "false" : "true", "MyApi " + (myapiToggle.checked ? "disabled" : "enabled — look for its icon in the bar"))
+          }
+        }
+        PanelSeparator { foreground: root.fg; visible: root.section === "connections" }
+
+                Column {
+          visible: root.section === "connections"
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader { text: "PHONE BRIDGE"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+
+          Toggle {
+            id: phoneBridgeToggle
+            width: parent.width
+            label: "Enable phone access"
+            description: "A local page a phone on this network can open to talk to Omarchy. Pairing is required — an unpaired phone can't use it."
+            foreground: root.fg
+            checked: root.fields.phone_bridge_enabled !== undefined ? !!root.fields.phone_bridge_enabled : false
+            onClicked: root.setField("phone_bridge_enabled", phoneBridgeToggle.checked ? "false" : "true", "Phone bridge updated — restart to apply")
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            visible: root.pairedCount > 0
+            text: root.pairedCount + (root.pairedCount === 1 ? " phone paired" : " phones paired")
+            color: Qt.darker(root.fg, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              id: qrButton
+              text: root.pairing ? "Generating…" : "Pair a phone"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.bar.fontFamily
+              enabled: !root.pairing && !!root.fields.phone_bridge_enabled
+              onClicked: root.pairPhone()
+            }
+
+            Button {
+              text: "Revoke All"
+              bordered: true
+              foreground: "#ff6b6b"
+              fontFamily: root.bar.fontFamily
+              enabled: root.pairedCount > 0
+              onClicked: root.revokePhones()
+            }
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.qrImageBase64.length > 0
+
+            Image {
+              width: 180
+              height: 180
+              anchors.horizontalCenter: parent.horizontalCenter
+              source: root.qrImageBase64.length > 0 ? ("data:image/png;base64," + root.qrImageBase64) : ""
+              fillMode: Image.PreserveAspectFit
+              smooth: false
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              text: "Scan with the phone's camera — expires in 5 minutes"
+              color: Qt.darker(root.fg, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Button {
+              text: "Hide"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.bar.fontFamily
+              anchors.horizontalCenter: parent.horizontalCenter
+              onClicked: root.qrImageBase64 = ""
+            }
+          }
+        }
+        PanelSeparator { foreground: root.fg; visible: root.section === "connections" }
+
+                Column {
+          visible: root.section === "connections"
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader { text: "ASSISTANT API KEY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
 
           Text {
             width: parent.width
@@ -618,185 +569,85 @@ Panel {
           }
         }
 
-        PanelSeparator { foreground: root.fg }
+        PanelSeparator { foreground: root.fg; visible: root.section === "connections" }
 
-        // ---------- Phone bridge (talk to Omarchy from a phone) ----------
-        // The QR shows inline below the buttons when pressed — see the
-        // qrImageBase64 property comment above for why this isn't a
-        // separate popup.
-        Column {
+                Column {
+          visible: root.section === "appearance"
           width: parent.width
           spacing: Style.space(10)
 
-          PanelSectionHeader { text: "CONNECT YOUR PHONE TO OMARCHY AI"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+          PanelSectionHeader { text: "CONVERSATION OVERLAY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
 
           Toggle {
-            id: phoneBridgeToggle
+            id: watchdogToggle
             width: parent.width
-            label: "Enable"
-            description: "A local page a phone on this network can open to talk to Omarchy. Pairing is required — an unpaired phone can't use it."
+            label: "Show overlay"
+            description: "Show conversation activity while Omachy is talking."
             foreground: root.fg
-            checked: root.fields.phone_bridge_enabled !== undefined ? !!root.fields.phone_bridge_enabled : false
-            onClicked: root.setField("phone_bridge_enabled", phoneBridgeToggle.checked ? "false" : "true", "Phone bridge updated — restart to apply")
+            checked: root.fields.watchdog_enabled !== undefined ? !!root.fields.watchdog_enabled : true
+            onClicked: root.setField("watchdog_enabled", watchdogToggle.checked ? "false" : "true")
           }
 
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            visible: root.pairedCount > 0
-            text: root.pairedCount + (root.pairedCount === 1 ? " phone paired" : " phones paired")
+            text: "Display mode"
             color: Qt.darker(root.fg, 1.4)
             font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
+            font.pixelSize: Style.font.caption
+            font.bold: true
           }
 
-          Row {
+          ButtonGroup {
             width: parent.width
-            spacing: Style.space(8)
-
-            Button {
-              id: qrButton
-              text: root.pairing ? "Generating…" : "QR"
-              bordered: true
-              foreground: root.fg
-              fontFamily: root.bar.fontFamily
-              enabled: !root.pairing && !!root.fields.phone_bridge_enabled
-              onClicked: root.pairPhone()
-            }
-
-            Button {
-              text: "Revoke All"
-              bordered: true
-              foreground: "#ff6b6b"
-              fontFamily: root.bar.fontFamily
-              enabled: root.pairedCount > 0
-              onClicked: root.revokePhones()
-            }
-          }
-
-          // Inline, not a popup — see the qrImageBase64 property comment
-          // above for why. A one-time pairing link, valid 5 minutes;
-          // scanning it is the only way a phone can reach the real page
-          // at all (see phone/server.py's _is_paired gate). The QR image
-          // never leaves this machine's screen, so the exposure window is
-          // just "however long this panel is open and visible."
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.qrImageBase64.length > 0
-
-            Image {
-              width: 180
-              height: 180
-              anchors.horizontalCenter: parent.horizontalCenter
-              source: root.qrImageBase64.length > 0 ? ("data:image/png;base64," + root.qrImageBase64) : ""
-              fillMode: Image.PreserveAspectFit
-              smooth: false
-            }
-
-            Text {
-              width: parent.width
-              horizontalAlignment: Text.AlignHCenter
-              textFormat: Text.PlainText
-              wrapMode: Text.WordWrap
-              text: "Scan with the phone's camera — expires in 5 minutes"
-              color: Qt.darker(root.fg, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            Button {
-              text: "Hide"
-              bordered: true
-              foreground: root.fg
-              fontFamily: root.bar.fontFamily
-              anchors.horizontalCenter: parent.horizontalCenter
-              onClicked: root.qrImageBase64 = ""
-            }
-          }
-        }
-        PanelSeparator { foreground: root.fg }
-
-        // ---------- MyApi (connect other services) ----------
-        // Deliberately just a switch here, not the actual connect flow —
-        // that lives in its own bar icon/panel (omarchy-ai.myapi),
-        // separate from this one and only visible once this toggle is on.
-        // Keeps this panel from growing a third increasingly-different
-        // subsystem's full UI, and gives MyApi connection status/usage a
-        // bar icon of its own the way the phone bridge and the daemon's
-        // live-status dot already each have.
-        Column {
-          width: parent.width
-          spacing: Style.space(10)
-
-          PanelSectionHeader { text: "CONNECT SERVICES TO OMARCHY AI"; foreground: root.fg; fontFamily: root.bar.fontFamily }
-
-          Toggle {
-            id: myapiToggle
-            width: parent.width
-            label: "Enable"
-            description: "Powered by MyApi (myapiai.com) — adds a separate bar icon for connecting Gmail, Calendar, Drive, Notion, Slack, and 200+ other services. Requires a MyApi Pro, Heavy, or Enterprise plan."
             foreground: root.fg
-            checked: root.fields.myapi_enabled !== undefined ? !!root.fields.myapi_enabled : false
-            onClicked: root.setField("myapi_enabled", myapiToggle.checked ? "false" : "true", "MyApi " + (myapiToggle.checked ? "disabled" : "enabled — look for its icon in the bar"))
+            background: Color.background
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            value: root.fields.watchdog_display_mode || "feed"
+            options: [
+              { value: "feed", label: "Text feed" },
+              { value: "visualizer", label: "ASCII visualizer" },
+              { value: "both", label: "Both" }
+            ]
+            onChanged: function(v) { root.setField("watchdog_display_mode", JSON.stringify(v), "Display mode updated — restart to apply") }
           }
-        }
-        PanelSeparator { foreground: root.fg }
-
-        // ---------- Footer: status + restart ----------
-        Column {
-          width: parent.width
-          spacing: Style.space(8)
 
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            visible: root.statusMessage !== ""
-            text: root.statusMessage
-            color: root.statusColor
+            text: "ASCII reacts to the assistant’s voice. Choose the activity feed, visualizer, or both."
+            color: Qt.darker(root.fg, 1.5)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
           }
+        }
 
-          Row {
-            width: parent.width
-            spacing: Style.space(10)
+        PanelSeparator { foreground: root.fg; visible: root.section === "appearance" }
 
-            Button {
-              text: root.restarting ? "Restarting…" : "Restart daemon to apply"
-              bordered: true
-              foreground: root.fg
-              fontFamily: root.bar.fontFamily
-              fontSize: Style.font.bodySmall
-              enabled: !root.restarting
-              onClicked: root.doRestart()
-            }
 
             Text {
-              textFormat: Text.PlainText
-              anchors.verticalCenter: parent.verticalCenter
-              visible: root.dirty && !root.restarting
-              text: "changes pending"
-              color: Qt.darker(root.fg, 1.3)
-              font.family: root.bar.fontFamily
-              font.italic: true
-              font.pixelSize: Style.font.caption
+              visible: root.section === "appearance"
+              width: parent.width; wrapMode: Text.WordWrap
+              text: "The header’s ASCII glitches animate only while this panel is open."
+              color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
             }
           }
-
-          Text {
-            textFormat: Text.PlainText
-            width: parent.width
-            text: (root.snapshot.config_path || "~/.config/omarchy-ai/config.yaml")
-            color: Qt.darker(root.fg, 1.7)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideMiddle
-          }
         }
-      }
-      }
+        Text {
+          visible: root.statusMessage.length > 0
+          width: parent.width; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+          text: root.statusMessage; color: root.statusColor
+          font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
+        }
+        Button {
+          visible: root.dirty || root.assistantState === "offline"
+          width: parent.width; text: root.restarting ? "Restarting…" : root.dirty ? "Apply saved changes" : "Start assistant"
+          bordered: true; focusable: true; foreground: root.fg; fontFamily: root.bar.fontFamily
+          enabled: !root.restarting && root.assistantState !== "active" && root.assistantState !== "starting"
+          onClicked: root.doRestart()
+        }
       }
     }
   }

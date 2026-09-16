@@ -1,6 +1,7 @@
 package ai.omarchy.receiver
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -21,7 +22,7 @@ class MainActivity : ComponentActivity() {
     // -- requested up front so WebRTC's audio device module never has to
     // find out the hard way that it's missing.
     private val requestRecordAudio =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* proceed regardless */ }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { viewModel.refreshMicrophone() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
         // mid-stream.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        connectFromIntent(intent)
         enableEdgeToEdge()
         setContent {
             OmarchyReceiverTheme {
@@ -40,4 +42,15 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        connectFromIntent(intent)
+    }
+
+    private fun connectFromIntent(intent: Intent) {
+        val host = intent.getStringExtra("signaling_host")
+        if (!host.isNullOrBlank()) viewModel.connect(host)
+    }
+
 }

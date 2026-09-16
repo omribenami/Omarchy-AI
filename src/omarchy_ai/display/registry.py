@@ -76,7 +76,22 @@ def refresh() -> list[dict]:
 def snapshot() -> list[dict]:
     """Current registry state, no network call -- what the overlay and any
     read-only tool call bind to between refreshes."""
-    return sorted(_devices.values(), key=lambda d: d["name"].lower())
+    # The sender belongs to a separate systemd service and survives both
+    # CLI exit and assistant restarts; derive active status from its state.
+    from . import session
+    host = session.target()
+    state = session.read_state().get("state")
+    for address, dev in list(_devices.items()):
+        if dev["status"] == "connected" and address != host:
+            dev["status"] = "online"
+    if host:
+        if state == "connected":
+            _set_status(host, "connected")
+        elif state == "starting" or state == "connecting":
+            _set_status(host, "connecting")
+        elif state in {"failed", "stopped"}:
+            _set_status(host, "offline")
+    return sorted((dict(d) for d in _devices.values()), key=lambda d: d["name"].lower())
 
 
 def get_or_refresh(max_age: float = 10.0) -> list[dict]:

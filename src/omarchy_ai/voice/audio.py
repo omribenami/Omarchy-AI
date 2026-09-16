@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 
 import numpy as np
+from .tv_mic import Receiver
 
 RATE = 16000
 FRAME_SAMPLES = 1280  # 80ms, the chunk size openWakeWord expects
@@ -30,15 +31,18 @@ def _argv(device: str | None) -> list[str]:
 
 
 def open_stream(device: str | None = None) -> subprocess.Popen:
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         _argv(device),
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         bufsize=FRAME_BYTES * 4,
     )
+    proc.tv_mic = Receiver(RATE)
+    return proc
 
 
 def close_stream(proc: subprocess.Popen) -> None:
+    proc.tv_mic.close()
     if proc.poll() is None:
         proc.terminate()
         try:

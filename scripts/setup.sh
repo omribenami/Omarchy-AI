@@ -8,6 +8,8 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+bash "$PROJECT_DIR/scripts/check-dependencies.sh"
+
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required (https://astral.sh/uv) — installing to ~/.local/bin" >&2
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -52,9 +54,12 @@ sed \
   -e "s|@VENV@|$PROJECT_DIR/.venv|g" \
   -e "s|@PROJECT_DIR@|$PROJECT_DIR|g" \
   -e "s|@PATH@|$PATH|g" \
+  -e "s|@OMARCHY_PATH@|${OMARCHY_PATH:-/usr/share/omarchy}|g" \
   systemd/omarchy-ai.service >"$SYSTEMD_USER_DIR/omarchy-ai.service"
 
 systemctl --user daemon-reload
+
+bash "$PROJECT_DIR/scripts/install-plugins.sh"
 
 echo
 echo "Setup complete. Next steps:"

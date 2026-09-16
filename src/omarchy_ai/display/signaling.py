@@ -84,15 +84,16 @@ class Relay:
     async def handle(self, ws: ServerConnection) -> None:
         role: str | None = None
         try:
-            first = await ws.recv()
+            first = await asyncio.wait_for(ws.recv(), timeout=10)
             msg = json.loads(first)
-            role = msg.get("role")
+            role = msg.get("role") if isinstance(msg, dict) else None
             if role not in ("sender", "viewer"):
                 log.warning("rejecting connection with bad first message: %r", msg)
                 await ws.close(1008, "first message must be {'role': 'sender'|'viewer'}")
                 return
 
             old = self.peers.get(role)
+            self.peers[role] = ws
             if old is not None and old is not ws:
                 log.info("replacing existing %s connection", role)
                 await old.close(1000, "replaced by new connection")
@@ -107,10 +108,18 @@ class Relay:
                     log.info("new sender connected -- discarding stale buffered offer/ICE from a previous attempt")
                 self.pending_offer = None
                 self.pending_ice = []
+                viewer = self.peers.get("viewer")
+                if viewer is not None:
+                    try:
+                        await viewer.send(json.dumps({"type": "bye"}))
+                    except websockets.exceptions.ConnectionClosed:
+                        pass
             elif role == "viewer":
                 await self._flush_pending_to_viewer(ws)
 
             async for raw in ws:
+                if self.peers.get(role) is not ws:
+                    break
                 other_role = "viewer" if role == "sender" else "sender"
                 other = self.peers.get(other_role)
                 try:
@@ -122,28 +131,45 @@ class Relay:
 
                 if other is not None:
                     log.info("relay %s -> %s: %s", role, other_role, kind)
-                    await other.send(raw)
-                    continue
+                    try:
+                        await other.send(raw)
+                        continue
+                    except websockets.exceptions.ConnectionClosed:
+                        if self.peers.get(other_role) is other:
+                            del self.peers[other_role]
 
                 if role == "sender" and parsed is not None and kind in ("offer", "ice"):
                     if kind == "offer":
                         log.info("no viewer connected yet -- buffering sender's offer")
                         self.pending_offer = parsed
+                        self.pending_ice = []
                     else:
                         log.info("no viewer connected yet -- buffering sender's ICE candidate")
-                        self.pending_ice.append(parsed)
+                        if len(self.pending_ice) < 128:
+                            self.pending_ice.append(parsed)
                     continue
 
                 log.warning(
                     "%s sent %s but no %s is connected -- dropped",
                     role, kind, other_role,
                 )
-        except websockets.exceptions.ConnectionClosed:
+        except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
             pass
+        except (json.JSONDecodeError, TypeError):
+            await ws.close(1008, "invalid registration")
         finally:
             if role is not None and self.peers.get(role) is ws:
                 del self.peers[role]
                 log.info("%s disconnected", role)
+                if role == "sender":
+                    self.pending_offer = None
+                    self.pending_ice = []
+                other = self.peers.get("viewer" if role == "sender" else "sender")
+                if other is not None:
+                    try:
+                        await other.send(json.dumps({"type": "bye"}))
+                    except websockets.exceptions.ConnectionClosed:
+                        pass
 
 
 async def run_server(host: str, port: int) -> None:

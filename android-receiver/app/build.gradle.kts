@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
@@ -47,7 +49,15 @@ fun gitOutput(execProviders: ProviderFactory, repoRoot: java.io.File, vararg arg
 // Android's own version comparison.
 val gitHash = gitOutput(execProviders, repoRoot, "rev-parse", "--short", "HEAD").ifBlank { "unknown" }
 val gitDirty = gitOutput(execProviders, repoRoot, "status", "--porcelain").isNotBlank()
-val receiverVersionName = if (gitDirty) "$gitHash-dirty" else gitHash
+// Distinguish successive local builds even while HEAD stays unchanged.
+val sourceDigest = MessageDigest.getInstance("SHA-256")
+fileTree("src").files.sortedBy { it.relativeTo(projectDir).path }.forEach {
+    sourceDigest.update(it.relativeTo(projectDir).path.toByteArray())
+    sourceDigest.update(it.readBytes())
+}
+sourceDigest.update(file("build.gradle.kts").readBytes())
+val sourceHash = sourceDigest.digest().joinToString("") { "%02x".format(it) }.take(12)
+val receiverVersionName = "$gitHash-$sourceHash"
 
 // versionCode: Android requires a monotonically increasing integer, and a
 // hash isn't one. Commit count (`git rev-list --count HEAD`) is simplest

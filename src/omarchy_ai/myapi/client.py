@@ -56,9 +56,10 @@ class MyApiError(Exception):
     MyApi dashboard), so callers can tell 'try again later' apart from
     'reconnect from the settings panel'."""
 
-    def __init__(self, message: str, *, reconnect_needed: bool = False) -> None:
+    def __init__(self, message: str, *, reconnect_needed: bool = False, details: object = None) -> None:
         super().__init__(message)
         self.reconnect_needed = reconnect_needed
+        self.details = details
 
 
 def _write_json_0600(path, data: dict) -> None:
@@ -203,13 +204,19 @@ class MyApiClient:
             except json.JSONDecodeError:
                 parsed = {}
             message = parsed.get("message") or parsed.get("error") or f"HTTP {e.code}"
-            raise MyApiError(message, reconnect_needed=e.code in (401, 403)) from e
+            data_error = parsed.get("data", {}).get("error", {}) if isinstance(parsed.get("data"), dict) else {}
+            if isinstance(data_error, dict) and data_error.get("errors"):
+                message = f"{message}: " + "; ".join(map(str, data_error["errors"]))
+            raise MyApiError(message, reconnect_needed=e.code in (401, 403), details=parsed) from e
         except urllib.error.URLError as e:
             raise MyApiError(f"could not reach myapiai.com: {e.reason}") from e
         if not raw:
             return {}
         try:
-            return json.loads(raw)
+            result = json.loads(raw)
+            if isinstance(result, dict) and (result.get("ok") is False or result.get("success") is False):
+                raise MyApiError(str(result.get("error") or result.get("message") or "provider request failed"), details=result)
+            return result
         except json.JSONDecodeError:
             return {"raw": raw.decode(errors="replace")}
 
@@ -228,7 +235,16 @@ class MyApiClient:
         self, service: str, path: str, method: str = "GET",
         query: dict | None = None, body: object | None = None,
     ) -> dict:
-        return self.request(
-            "POST", f"/services/{service}/proxy",
-            body={"path": path, "method": method, "query": query, "body": body},
-        )
+        # REST query parameters travel as text. Composio's proxy rejects
+        # numeric/bool values instead of applying normal URL encoding.
+        parameters = {}
+        for key, value in (query or {}).items():
+            if value is None:
+                continue
+            if isinstance(value, (dict, list)):
+                raise MyApiError(f"query parameter {key!r} must be a string, number, or boolean")
+            parameters[key] = str(value).lower() if isinstance(value, bool) else str(value)
+        payload = {"path": path, "method": method, "query": parameters}
+        if body is not None:
+            payload["body"] = body
+        return self.request("POST", f"/services/{service}/proxy", body=payload)

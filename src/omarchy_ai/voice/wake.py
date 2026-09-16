@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import os
+import time
+import numpy as np
 
 import openwakeword
 from openwakeword.model import Model
@@ -37,6 +40,12 @@ class WakeWordDetector:
         self.config = config
         model_paths = _resolve_model_paths(config)
         self._model = Model(wakeword_model_paths=model_paths)
+        # Each microphone needs its own feature history. Interleaving frames
+        # or replacing desktop audio with a silent TV stream breaks detection.
+        self._tv_model = Model(wakeword_model_paths=model_paths)
+        self._diagnostics = os.environ.get("OMARCHY_AI_WAKE_DIAGNOSTICS") == "1"
+        self._tv_probe = Model(wakeword_model_paths=model_paths) if self._diagnostics else None
+        self.last_source = "desktop"
         # Multiple models score every frame in parallel — anyone whose
         # trained wake word is loaded can wake it, not just a single fixed
         # phrase. Each needs its own consecutive-frame counter since they
@@ -51,23 +60,53 @@ class WakeWordDetector:
         """
         proc = audio.open_stream(self.config.mic_device)
         self._model.reset()
-        consecutive = dict.fromkeys(self.model_names, 0)
+        self._tv_model.reset()
+        if self._tv_probe is not None:
+            self._tv_probe.reset()
+        metrics = {"desktop_score": 0.0, "tv_score": 0.0, "tv_gain4_score": 0.0, "desktop_rms": 0.0, "tv_rms": 0.0}
+        next_report = time.monotonic() + 5
+        consecutive = {source: dict.fromkeys(self.model_names, 0) for source in ("desktop", "tv")}
+        tv_present = False
+        self.last_source = "desktop"
         try:
             while not stop_event.is_set():
                 frame = audio.read_frame(proc)
                 if frame is None:
                     log.warning("wake audio stream ended unexpectedly, restarting")
                     return False
-                scores = self._model.predict(frame)
-                for name in self.model_names:
-                    score = scores.get(name, 0.0)
-                    if score >= self.config.wake_threshold:
-                        consecutive[name] += 1
-                        if consecutive[name] >= self.config.wake_trigger_frames:
-                            log.info("wake word detected: %s (score=%.2f)", name, score)
-                            return True
-                    else:
-                        consecutive[name] = 0
+                sources = [("desktop", self._model, frame)]
+                remote = proc.tv_mic.read(audio.FRAME_BYTES)
+                if remote is not None:
+                    sources.append(("tv", self._tv_model, np.frombuffer(remote, dtype=np.int16)))
+                    tv_present = True
+                elif tv_present:
+                    self._tv_model.reset()
+                    consecutive["tv"] = dict.fromkeys(self.model_names, 0)
+                    tv_present = False
+                for source, model, samples in sources:
+                    scores = model.predict(samples)
+                    if self._diagnostics:
+                        metrics[source + "_score"] = max(metrics[source + "_score"], max(scores.values(), default=0.0))
+                        metrics[source + "_rms"] = max(metrics[source + "_rms"], float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))))
+                        if source == "tv":
+                            boosted = np.clip(samples.astype(np.float32) * 4, -32768, 32767).astype(np.int16)
+                            probe = self._tv_probe.predict(boosted)
+                            metrics["tv_gain4_score"] = max(metrics["tv_gain4_score"], max(probe.values(), default=0.0))
+                    for name in self.model_names:
+                        score = scores.get(name, 0.0)
+                        if score >= self.config.wake_threshold:
+                            consecutive[source][name] += 1
+                            if consecutive[source][name] >= self.config.wake_trigger_frames:
+                                self.last_source = source
+                                log.info("wake word detected: %s (score=%.2f, microphone=%s)", name, score, source)
+                                return True
+                        else:
+                            consecutive[source][name] = 0
+                if self._diagnostics and time.monotonic() >= next_report:
+                    log.info("wake diagnostics: %s", {k: round(float(v), 4) for k, v in metrics.items()})
+                    log.info("TV PCM diagnostics: %s", proc.tv_mic.diagnostics())
+                    metrics = dict.fromkeys(metrics, 0.0)
+                    next_report = time.monotonic() + 5
             return False
         finally:
             audio.close_stream(proc)

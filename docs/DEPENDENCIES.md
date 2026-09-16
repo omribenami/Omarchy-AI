@@ -1,10 +1,9 @@
-# Dependencies (running list, for the eventual installer)
+# Dependencies
 
-Kept as we go, per-package, so `scripts/setup.sh` can be written once instead
-of reconstructed from memory at the end. Not all of these need install
-commands in the script — several are already standard on Omarchy — but every
-one that required a manual step during development is listed so nothing gets
-missed.
+These are the native dependencies checked by `scripts/check-dependencies.sh`.
+The release bundle contains the Python distributions, receiver APK, wake
+models, plugins, and systemd unit. It intentionally does not bundle Arch
+packages, PipeWire, GStreamer, or an Android SDK.
 
 ## Installed manually during Phase 0 / Phase 1 spikes
 

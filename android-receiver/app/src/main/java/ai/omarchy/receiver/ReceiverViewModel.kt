@@ -21,6 +21,8 @@ class ReceiverViewModel(application: Application) : AndroidViewModel(application
 
     val connectionState: StateFlow<CastConnectionState> = client.connectionState
     val remoteVideoTrack = client.remoteVideoTrack
+    val microphoneActive = client.microphoneActive
+    fun refreshMicrophone() = client.refreshMicrophone()
 
     private val _hostInput = MutableStateFlow(prefs.getString(PREF_HOST, DEFAULT_HOST) ?: DEFAULT_HOST)
     val hostInput: StateFlow<String> = _hostInput
