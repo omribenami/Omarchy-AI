@@ -22,6 +22,9 @@ __omarchy_ai_context_file="$__omarchy_ai_context_dir/${__omarchy_ai_context_tty#
 __omarchy_ai_context_emit() {
   __omarchy_ai_context_status=$?
   [ -w "$__omarchy_ai_context_dir" ] || return 0
+  if [ -n "${OMARCHY_AI_TERMINAL_TITLE:-}" ]; then
+    printf '\033]0;%s\007' "$OMARCHY_AI_TERMINAL_TITLE"
+  fi
   __omarchy_ai_context_command="$(fc -ln -1 2>/dev/null)"
   __omarchy_ai_context_command="${__omarchy_ai_context_command//$'\n'/ }"
   # Do not copy likely credentials into a file intended for assistant
@@ -48,7 +51,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
 elif [ -n "${BASH_VERSION:-}" ]; then
   __omarchy_ai_context_previous_prompt_command="${PROMPT_COMMAND:-}"
   if [ -n "$__omarchy_ai_context_previous_prompt_command" ]; then
-    PROMPT_COMMAND="__omarchy_ai_context_emit; $__omarchy_ai_context_previous_prompt_command"
+    PROMPT_COMMAND="$__omarchy_ai_context_previous_prompt_command; __omarchy_ai_context_emit"
   else
     PROMPT_COMMAND="__omarchy_ai_context_emit"
   fi

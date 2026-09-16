@@ -25,7 +25,10 @@ install -Dm644 android-receiver/app/build/outputs/apk/debug/app-debug.apk \
   "$package_dir/android/omarchy-ai-receiver.apk"
 
 echo '==> Staging exact release source'
-git archive --format=tar HEAD | tar -x -C "$package_dir"
+# Release archives are committed under dist/ for convenient installation.
+# Excluding that directory here prevents the last archive from being packed
+# inside the next one, which otherwise grows the bundle recursively.
+git archive --format=tar HEAD -- . ':(exclude)dist' | tar -x -C "$package_dir"
 cat >"$package_dir/install.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

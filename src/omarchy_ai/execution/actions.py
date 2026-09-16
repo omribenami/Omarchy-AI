@@ -178,8 +178,14 @@ def open_terminal(args: dict) -> ActionResult:
     try:
         from . import tile_logs
 
-        _initial_log_path, argv_prefix = tile_logs.start_terminal_log()
-        return _run_detached(["omarchy-launch-terminal", *argv_prefix])
+        _initial_log_path, argv_prefix, terminal_label = tile_logs.start_terminal_log()
+        result = _run_detached(["omarchy-launch-terminal", *argv_prefix])
+        if result.ok:
+            result.message = (
+                f"opened {terminal_label}; use that exact title when focusing it "
+                "or reading its terminal log"
+            )
+        return result
     except Exception:  # noqa: BLE001
         log.exception("tile_logs setup failed, opening terminal untracked")
         return _run_detached(["omarchy-launch-terminal"])
