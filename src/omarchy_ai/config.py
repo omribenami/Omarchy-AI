@@ -255,7 +255,7 @@ class Config:
     # Time given to actually speak before the first response is requested —
     # a stopgap for real VAD-based silence detection (see jarvisd's
     # audio.py capture_utterance for the pattern to port over next).
-    speak_window_seconds: int = 6
+    speak_window_seconds: int = 4
 
     # Cross-session conversation history — how far back to recall in a new
     # session's instructions, and a hard cap on how much of it to include
