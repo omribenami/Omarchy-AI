@@ -40,7 +40,7 @@ log = logging.getLogger("omarchy_ai.voice.live")
 RATE = 48000
 FRAME_SAMPLES = 960  # 20ms at 48kHz, the standard WebRTC frame size
 OUTPUT_GAIN = 4.0  # measured RMS was ~451/32767 (~-37dBFS) without this
-PREBUFFER_FRAMES = 25  # ~500ms — see STATUS.md "Residual static" for why
+PREBUFFER_FRAMES = 15  # ~300ms: enough to avoid underruns without visibly leading speech
 REBUFFER_GRACE_EMPTY_POLLS = 3
 
 
@@ -163,7 +163,12 @@ class MicTrack(MediaStreamTrack):
             self._proc.terminate()
 
 
-def _playback_thread(proc: subprocess.Popen, q: queue.Queue, stop: threading.Event) -> None:
+def _playback_thread(
+    proc: subprocess.Popen,
+    q: queue.Queue,
+    stop: threading.Event,
+    on_playback_started,
+) -> None:
     primed = False
     empty_polls = 0
     while not stop.is_set():
@@ -186,6 +191,11 @@ def _playback_thread(proc: subprocess.Popen, q: queue.Queue, stop: threading.Eve
         try:
             proc.stdin.write(data)
             proc.stdin.flush()
+            # The transcript can arrive well before the audio. Tell the
+            # overlay that we are speaking only when the first buffered
+            # chunk is actually handed to PipeWire, rather than making the
+            # visualizer run a second or two ahead of audible speech.
+            on_playback_started()
         except (BrokenPipeError, ValueError):
             break
 
@@ -228,6 +238,11 @@ class LiveSession:
         self._output_buffer = ""
         self._farewell_scheduled = False
         self._dc = None
+        # Set by output-transcript events and consumed by the playback
+        # thread. threading.Event makes the handoff safe without blocking
+        # the WebRTC event loop.
+        self._awaiting_playback_start = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._handled_call_ids: set[str] = set()
         # In-memory only, per conversation — resets every session. A
         # per-window ("per-tile") log so the model can recall what it's
@@ -296,15 +311,21 @@ class LiveSession:
         proc = subprocess.Popen(
             [
                 "pw-play", "--rate", str(RATE), "--channels", "1",
-                "--format", "s16", "--latency", "200ms", "-a", "-",
+                "--format", "s16", "--latency", "120ms", "-a", "-",
             ],
             stdin=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
         q: queue.Queue = queue.Queue()
         stop = threading.Event()
+        def on_playback_started() -> None:
+            if self._awaiting_playback_start.is_set():
+                self._awaiting_playback_start.clear()
+                if self._loop is not None:
+                    self._loop.call_soon_threadsafe(self._set_watchdog_state, "speaking")
+
         thread = threading.Thread(
-            target=_playback_thread, args=(proc, q, stop), daemon=True
+            target=_playback_thread, args=(proc, q, stop, on_playback_started), daemon=True
         )
         thread.start()
 
@@ -487,6 +508,7 @@ class LiveSession:
             # state now, not buffer emptiness — safe to call on every
             # delta, only the real transitions reach the overlay.
             self._set_watchdog_state("listening")
+            self._awaiting_playback_start.clear()
             self._input_buffer += event.get("delta", "")
             if self._output_buffer:
                 self._transcript.append({"role": "assistant", "text": self._output_buffer})
@@ -495,7 +517,10 @@ class LiveSession:
             if self._check_exit_phrase(self._input_buffer):
                 self._hangup.set()
         elif etype == "session.output_transcript.delta":
-            self._set_watchdog_state("speaking")
+            # Text reaches us ahead of the audio stream. The playback
+            # thread switches the visual state only after it has supplied
+            # the first audio chunk to PipeWire.
+            self._awaiting_playback_start.set()
             # The model started replying — the user's turn is over. Reset
             # the input buffer so the next utterance is judged on its own.
             if self._input_buffer:
@@ -533,6 +558,7 @@ class LiveSession:
         """Connect, converse, and return once the session ends (exit
         phrase, the safety timeout, or a connection failure)."""
         t_start = time.monotonic()
+        self._loop = asyncio.get_running_loop()
         # aiortc defaults to Google's public STUN server when no
         # configuration is given (RTCIceTransport.getDefaultIceServers),
         # and aioice's gatherer waits up to 5s for a STUN reply before
