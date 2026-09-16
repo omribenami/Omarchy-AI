@@ -10,23 +10,19 @@ from omarchy_ai.execution import actions, files, tile_logs
 
 
 class LocalFileToolTests(unittest.TestCase):
-    def test_sudo_approval_is_one_time_and_runtime_only(self):
+    def test_sudo_access_uses_keyring_without_exposing_password(self):
         from omarchy_ai.execution import sudo_approval
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sudo-approval.json"
-            with patch.object(sudo_approval, "RUNTIME_DIR", Path(directory)), \
-                 patch.object(sudo_approval, "APPROVAL_PATH", path):
-                sudo_approval.approve("not-in-results")
-                self.assertTrue(sudo_approval.status()["approved"])
-                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-                self.assertEqual(sudo_approval.consume(), "not-in-results")
-                self.assertFalse(path.exists())
-                self.assertIsNone(sudo_approval.consume())
+        stored = SimpleNamespace(returncode=0, stdout="", stderr="")
+        looked_up = SimpleNamespace(returncode=0, stdout="not-in-results\n", stderr="")
+        with patch.object(sudo_approval, "_run", side_effect=[stored, looked_up]) as run:
+            sudo_approval.store("not-in-results")
+            self.assertEqual(sudo_approval.retrieve(), "not-in-results")
+        self.assertEqual(run.call_count, 2)
 
     def test_submit_sudo_password_never_returns_the_secret(self):
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch.object(actions.sudo_approval, "consume", return_value="not-in-results"), \
+        with patch.object(actions.sudo_approval, "retrieve", return_value="not-in-results"), \
+             patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
              patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
              patch.object(actions.subprocess, "run", return_value=completed) as run:
             result = actions.submit_sudo_password({})

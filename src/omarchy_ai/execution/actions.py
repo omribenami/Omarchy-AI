@@ -360,16 +360,14 @@ def press_key(args: dict) -> ActionResult:
 
 
 def submit_sudo_password(_args: dict) -> ActionResult:
-    """Type one panel-approved password into the focused sudo prompt.
-
-    The model never receives the password, and the runtime secret is
-    deleted before wtype is invoked so a retry requires fresh panel approval.
-    """
+    """Type the user-enabled keyring password into the focused sudo prompt."""
     if shutil.which("wtype") is None:
         return ActionResult(False, "wtype is not installed")
-    password = sudo_approval.consume()
+    if not load_config().sudo_access_enabled:
+        return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
+    password = sudo_approval.retrieve()
     if password is None:
-        return ActionResult(False, "no active panel approval; ask the user to approve one sudo prompt in Assistant Settings")
+        return ActionResult(False, "no sudo password is saved in GNOME Keyring; add it in Assistant Settings")
     try:
         typed = subprocess.run(["wtype", "--", password], capture_output=True, text=True, timeout=_TIMEOUT)
         if typed.returncode != 0:

@@ -22,8 +22,8 @@ Commands:
                                  identity (see ../myapi/)
   disconnect-myapi           -> delete the local MyApi identity
   myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
-  approve-sudo               -> store one 2-minute sudo approval from
-                                 OMARCHY_AI_SUDO_PASSWORD (never stdout)
+  configure-sudo             -> save persistent Sudo Access in GNOME Keyring
+  forget-sudo                -> delete saved Sudo Access from GNOME Keyring
   select-cast-target <addr>  -> manual click in the omarchy-ai.tv-discovery
                                  overlay; runs the real start_casting
   refresh-cast-targets       -> the overlay's "Refresh" button
@@ -85,6 +85,7 @@ SETTABLE = (
     "custom_wake_model_paths",
     "wake_threshold",
     "watchdog_enabled",
+    "sudo_access_enabled",
     "watchdog_display_mode",
     "voice",
     "phone_bridge_enabled",
@@ -184,6 +185,11 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
             raise ValidationError("watchdog_enabled must be a boolean")
         return value
 
+    if key == "sudo_access_enabled":
+        if not isinstance(value, bool):
+            raise ValidationError("sudo_access_enabled must be a boolean")
+        return value
+
     if key == "watchdog_display_mode":
         if value not in WATCHDOG_DISPLAY_MODES:
             raise ValidationError(f"watchdog_display_mode must be one of {WATCHDOG_DISPLAY_MODES}")
@@ -272,7 +278,7 @@ def cmd_myapi_usage(_args: argparse.Namespace) -> dict:
     return {"services": myapi_usage.aggregate()}
 
 
-def cmd_approve_sudo(_args: argparse.Namespace) -> dict:
+def cmd_configure_sudo(_args: argparse.Namespace) -> dict:
     """Accept a password from the QML process environment, never argv/stdout."""
     from ..execution import sudo_approval
 
@@ -280,10 +286,19 @@ def cmd_approve_sudo(_args: argparse.Namespace) -> dict:
     if not password:
         return {"error": "enter your password first"}
     try:
-        sudo_approval.approve(password)
+        sudo_approval.store(password)
     except (OSError, ValueError) as error:
         return {"error": str(error)}
-    return {"approved": True, "expires_in": sudo_approval.TTL_SECONDS}
+    return _snapshot()
+
+
+def cmd_forget_sudo(_args: argparse.Namespace) -> dict:
+    from ..execution import sudo_approval
+    try:
+        sudo_approval.clear()
+    except OSError as error:
+        return {"error": str(error)}
+    return _snapshot()
 
 
 def cmd_select_cast_target(args: argparse.Namespace) -> dict:
@@ -519,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("connect-myapi")
     sub.add_parser("disconnect-myapi")
     sub.add_parser("myapi-usage")
-    sub.add_parser("approve-sudo")
+    sub.add_parser("configure-sudo")
+    sub.add_parser("forget-sudo")
     p_dashboard = sub.add_parser('myapi-dashboard')
     p_dashboard.add_argument('period', choices=('24h', '7d', '30d'), default='7d', nargs='?')
     sub.add_parser('activate')
@@ -538,7 +554,8 @@ def main(argv: list[str] | None = None) -> int:
         "connect-myapi": cmd_connect_myapi,
         "disconnect-myapi": cmd_disconnect_myapi,
         "myapi-usage": cmd_myapi_usage,
-        "approve-sudo": cmd_approve_sudo,
+        "configure-sudo": cmd_configure_sudo,
+        "forget-sudo": cmd_forget_sudo,
         "myapi-dashboard": cmd_myapi_dashboard,
         "activate": cmd_activate,
         "select-cast-target": cmd_select_cast_target,
