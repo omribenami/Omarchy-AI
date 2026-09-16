@@ -244,6 +244,10 @@ class LiveSession:
         self._awaiting_playback_start = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._handled_call_ids: set[str] = set()
+        # A live response can emit several function calls in one burst.
+        # Desktop actions must complete in their received order so a demo
+        # cannot describe a sequence while its actual changes are deferred.
+        self._tool_lock: asyncio.Lock | None = None
         # In-memory only, per conversation — resets every session. A
         # per-window ("per-tile") log so the model can recall what it's
         # already done to a specific window rather than only the last
@@ -412,6 +416,12 @@ class LiveSession:
         asyncio.ensure_future(self._run_tool_call(call_id, name, args))
 
     async def _run_tool_call(self, call_id: str, name: str, args: dict) -> None:
+        if self._tool_lock is None:
+            self._tool_lock = asyncio.Lock()
+        async with self._tool_lock:
+            await self._run_tool_call_serialized(call_id, name, args)
+
+    async def _run_tool_call_serialized(self, call_id: str, name: str, args: dict) -> None:
         loop = asyncio.get_event_loop()
         window = await loop.run_in_executor(None, self._current_window)
         log.info("tool call: %s(%s)", name, args)
