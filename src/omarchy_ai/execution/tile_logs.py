@@ -18,13 +18,11 @@ terminal class" is more reliable than trying to track a single PID
 through that chain) to rename the log to the window's real title, then
 polls for that window disappearing to delete it.
 
-Scope, deliberately: only terminals opened via this project's own
-open_terminal action, end to end within this process's control. Covering
-every terminal the user opens by hand too would mean changing what
-command actually runs when a new terminal window starts — editing the
-terminal emulator's own shell-launch config, or a shell rc hook — a real,
-live change to the user's actual terminal/shell environment that wasn't
-made here; see STATUS.md for the concrete next step if that's wanted.
+Terminals opened by the assistant keep this full PTY transcript.  The
+companion interactive-shell hook also keeps a compact command/cwd/status
+context file for every Bash or Zsh terminal opened by the user, so the
+assistant can understand a manual terminal without changing emulator
+launch settings or replacing the user's shell.
 """
 
 from __future__ import annotations
@@ -41,7 +39,7 @@ from pathlib import Path
 
 from rapidfuzz import fuzz
 
-from ..config import TILE_LOG_DIR
+from ..config import TERMINAL_CONTEXT_DIR, TILE_LOG_DIR
 
 log = logging.getLogger("omarchy_ai.execution.tile_logs")
 
@@ -175,25 +173,55 @@ def _strip_ansi(text: str) -> str:
 
 def list_tiles() -> list[str]:
     with _lock:
-        return list(_titles.values())
+        active = list(_titles.values())
+    return active + [label for label, _path in _manual_contexts()]
+
+
+def _manual_contexts() -> list[tuple[str, Path]]:
+    """Recent command context files written by terminal-context.sh.
+
+    Keep the latest few sessions discoverable. They are deliberately
+    persistent state (unlike assistant PTY logs), which makes context
+    available even after a daemon restart or an earlier terminal close.
+    """
+    if not TERMINAL_CONTEXT_DIR.is_dir():
+        return []
+    candidates = []
+    for path in TERMINAL_CONTEXT_DIR.glob("*.log"):
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    result = []
+    for _mtime, path in sorted(candidates, reverse=True)[:20]:
+        try:
+            last = path.read_text(errors="replace").splitlines()[-1]
+        except (OSError, IndexError):
+            last = ""
+        cwd = re.search(r"\bcwd=(.*?) status=", last)
+        label = f"terminal context: {cwd.group(1) if cwd else path.stem}"
+        result.append((label, path))
+    return result
 
 
 def find_log(query: str | None) -> Path | None:
     with _lock:
         items = list(_tracked.items())
         titles = dict(_titles)
-    if not items:
+    named_items = [(titles.get(address, address), path) for address, path in items]
+    named_items.extend(_manual_contexts())
+    if not named_items:
         return None
     if not query:
-        return items[0][1] if len(items) == 1 else None
+        return named_items[0][1] if len(named_items) == 1 else None
     needle = query.strip().lower()
-    best_addr, best_score = None, 0.0
-    for addr, _path in items:
-        score = fuzz.WRatio(needle, titles.get(addr, "").lower())
+    best_path, best_score = None, 0.0
+    for title, path in named_items:
+        score = fuzz.WRatio(needle, title.lower())
         if score > best_score:
-            best_addr, best_score = addr, score
-    if best_addr is not None and best_score > 50:
-        return dict(items)[best_addr]
+            best_path, best_score = path, score
+    if best_path is not None and best_score > 50:
+        return best_path
     return None
 
 
@@ -207,10 +235,10 @@ def read_log(query: str | None, tail_chars: int = 4000) -> str:
     if path is None:
         available = list_tiles()
         if not available:
-            return "no tracked terminal tiles are currently open"
+            return "no terminal transcript or terminal context is available yet"
         if query:
-            return f"no tracked tile matches {query!r} -- currently open: {', '.join(available)}"
-        return f"more than one tile is open, name one -- currently open: {', '.join(available)}"
+            return f"no terminal matches {query!r} -- available: {', '.join(available)}"
+        return f"more than one terminal is available, name one -- available: {', '.join(available)}"
     try:
         raw = path.read_text(errors="replace")
     except OSError as e:

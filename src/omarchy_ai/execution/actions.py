@@ -23,11 +23,16 @@ import shutil
 import socket
 import subprocess
 import time
+import base64
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import myapi
+from ..config import load_config
 from ..myapi import usage as myapi_usage
+from . import files as local_files
 
 log = logging.getLogger("omarchy_ai.execution.actions")
 
@@ -197,6 +202,36 @@ def open_files(args: dict) -> ActionResult:
 
 def open_editor(args: dict) -> ActionResult:
     return _run_detached(["omarchy-launch-editor"])
+
+
+# --- local files -----------------------------------------------------------
+
+def list_files(args: dict) -> ActionResult:
+    try:
+        result = local_files.list_files(args.get("path"), load_config(), bool(args.get("recursive")))
+        return ActionResult(True, json.dumps(result))
+    except (local_files.FileAccessError, ValueError) as exc:
+        return ActionResult(False, str(exc))
+
+
+def read_file(args: dict) -> ActionResult:
+    try:
+        result = local_files.read_file(
+            args.get("path"), load_config(), args.get("start_line", 1), args.get("max_chars", 4_000),
+        )
+        return ActionResult(True, result or "(empty file)")
+    except (local_files.FileAccessError, ValueError) as exc:
+        return ActionResult(False, str(exc))
+
+
+def write_file(args: dict) -> ActionResult:
+    try:
+        path = local_files.write_file(
+            args.get("path"), args.get("content"), load_config(), bool(args.get("overwrite")),
+        )
+        return ActionResult(True, f"saved {path}")
+    except (local_files.FileAccessError, ValueError) as exc:
+        return ActionResult(False, str(exc))
 
 
 # --- window / workspace -----------------------------------------------------
@@ -1189,6 +1224,172 @@ def myapi_call(args: dict) -> ActionResult:
         )
 
 
+def _gmail_execute(method: str, arguments: dict) -> dict:
+    """Call the small, explicitly read-only Gmail execute allowlist.
+
+    MyApi exposes these provider reads as POST /execute even though they
+    don't alter a mailbox.  Keeping the method names here (rather than a
+    generic POST tool) preserves the voice action boundary.
+    """
+    # This is MyApi's documented provider-tool endpoint, distinct from the
+    # REST proxy used by myapi_call. Sending it through /proxy makes the
+    # upstream receive an HTML page rather than a Gmail operation.
+    return myapi.MyApiClient().request(
+        "POST", "/services/gmail/execute",
+        body={"method": method, "params": {"arguments": arguments}},
+    )
+
+
+def _walk_gmail_attachments(value: object, message_id: str | None = None) -> list[dict]:
+    found: list[dict] = []
+    if isinstance(value, dict):
+        current_id = value.get("message_id") or value.get("messageId") or value.get("id") or message_id
+        attachment_id = value.get("attachment_id") or value.get("attachmentId")
+        filename = value.get("filename") or value.get("file_name") or value.get("fileName")
+        if attachment_id:
+            found.append({
+                "message_id": current_id,
+                "attachment_id": attachment_id,
+                "filename": filename or "attachment",
+                "mime_type": value.get("mimeType") or value.get("mime_type"),
+                "size": value.get("size") or value.get("sizeEstimate"),
+            })
+        for child in value.values():
+            found.extend(_walk_gmail_attachments(child, current_id))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_walk_gmail_attachments(child, message_id))
+    return found
+
+
+def myapi_gmail_search_attachments(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect Gmail from the Omarchy AI settings panel first.")
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return ActionResult(False, "a Gmail search query is required")
+    maximum = args.get("max_results", 10)
+    if not isinstance(maximum, int) or not 1 <= maximum <= 50:
+        return ActionResult(False, "max_results must be between 1 and 50")
+    started = time.monotonic()
+    ok = False
+    try:
+        result = _gmail_execute("GMAIL_FETCH_EMAILS", {
+            "query": query.strip(), "max_results": maximum, "include_payload": True,
+        })
+        attachments = _walk_gmail_attachments(result)
+        # Payloads can repeat the same MIME part at several nesting levels.
+        unique = {(x["message_id"], x["attachment_id"]): x for x in attachments}
+        ok = True
+        return ActionResult(True, json.dumps({"attachments": list(unique.values())[:100]}))
+    except myapi.MyApiError as exc:
+        return ActionResult(False, f"Gmail search failed: {exc}")
+    finally:
+        myapi_usage.record(service="gmail", path="/execute:GMAIL_FETCH_EMAILS", method="POST(read)", ok=ok,
+                           duration_ms=(time.monotonic() - started) * 1000)
+
+
+def _find_base64_payload(value: object) -> str | None:
+    if isinstance(value, dict):
+        for key in ("data", "content", "content_base64", "base64", "file_data"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        for child in value.values():
+            found = _find_base64_payload(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_base64_payload(child)
+            if found:
+                return found
+    return None
+
+
+def _find_download_url(value: object) -> str | None:
+    if isinstance(value, dict):
+        for key in ("s3url", "download_url", "downloadUrl", "url"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and urllib.parse.urlparse(candidate).scheme == "https":
+                return candidate
+        for child in value.values():
+            found = _find_download_url(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_download_url(child)
+            if found:
+                return found
+    return None
+
+
+def _download_url(url: str) -> bytes:
+    """Download MyApi's short-lived HTTPS attachment URL with a hard cap."""
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            declared = response.headers.get("Content-Length")
+            if declared and int(declared) > 30 * 1024 * 1024:
+                raise local_files.FileAccessError("that attachment is over the 30 MB download limit")
+            data = response.read(30 * 1024 * 1024 + 1)
+    except (OSError, ValueError) as exc:
+        raise local_files.FileAccessError(f"couldn't download the Gmail attachment: {exc}") from exc
+    if len(data) > 30 * 1024 * 1024:
+        raise local_files.FileAccessError("that attachment is over the 30 MB download limit")
+    return data
+
+
+def _safe_download_name(value: object) -> str:
+    name = Path(str(value or "attachment")).name
+    name = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(". ")
+    return name[:180] or "attachment"
+
+
+def myapi_gmail_download_attachment(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect Gmail from the Omarchy AI settings panel first.")
+    message_id, attachment_id, filename = args.get("message_id"), args.get("attachment_id"), args.get("filename")
+    if not all(isinstance(value, str) and value.strip() for value in (message_id, attachment_id, filename)):
+        return ActionResult(False, "message_id, attachment_id, and filename are required")
+    started = time.monotonic()
+    ok = False
+    try:
+        result = _gmail_execute("GMAIL_GET_ATTACHMENT", {
+            "message_id": message_id.strip(), "attachment_id": attachment_id.strip(), "file_name": filename.strip(),
+        })
+        encoded = _find_base64_payload(result)
+        if encoded:
+            try:
+                raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            except (ValueError, TypeError) as exc:
+                return ActionResult(False, f"Gmail returned invalid attachment data: {exc}")
+        else:
+            url = _find_download_url(result)
+            if not url:
+                return ActionResult(False, "Gmail returned no downloadable attachment data")
+            raw = _download_url(url)
+        destination = Path.home() / "Downloads" / "Omarchy_AI" / _safe_download_name(filename)
+        # Preserve the earlier download rather than silently replacing it.
+        if destination.exists():
+            stem, suffix = destination.stem, destination.suffix
+            for index in range(2, 1000):
+                candidate = destination.with_name(f"{stem} ({index}){suffix}")
+                if not candidate.exists():
+                    destination = candidate
+                    break
+        saved = local_files.write_bytes(str(destination), raw, load_config())
+        ok = True
+        return ActionResult(True, f"downloaded {len(raw)} bytes to {saved}")
+    except myapi.MyApiError as exc:
+        return ActionResult(False, f"Gmail download failed: {exc}")
+    except local_files.FileAccessError as exc:
+        return ActionResult(False, str(exc))
+    finally:
+        myapi_usage.record(service="gmail", path="/execute:GMAIL_GET_ATTACHMENT", method="POST(read)", ok=ok,
+                           duration_ms=(time.monotonic() - started) * 1000)
+
+
 ACTIONS = {
     "volume_up": volume_up,
     "volume_down": volume_down,
@@ -1205,6 +1406,9 @@ ACTIONS = {
     "open_browser": open_browser,
     "open_files": open_files,
     "open_editor": open_editor,
+    "list_files": list_files,
+    "read_file": read_file,
+    "write_file": write_file,
     "workspace_switch": workspace_switch,
     "workspace_next": workspace_next,
     "workspace_prev": workspace_prev,
@@ -1237,6 +1441,8 @@ ACTIONS = {
     "myapi_list_services": myapi_list_services,
     "myapi_service_methods": myapi_service_methods,
     "myapi_call": myapi_call,
+    "myapi_gmail_search_attachments": myapi_gmail_search_attachments,
+    "myapi_gmail_download_attachment": myapi_gmail_download_attachment,
 }
 
 

@@ -60,6 +60,7 @@ sed \
 systemctl --user daemon-reload
 
 bash "$PROJECT_DIR/scripts/install-plugins.sh"
+bash "$PROJECT_DIR/scripts/install-terminal-context.sh"
 
 echo
 echo "Setup complete. Next steps:"
