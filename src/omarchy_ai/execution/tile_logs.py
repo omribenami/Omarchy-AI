@@ -54,6 +54,7 @@ _TERMINAL_CLASSES = {"foot", "footclient", "ghostty", "Alacritty", "kitty"}
 _lock = threading.Lock()
 _tracked: dict[str, Path] = {}  # Hyprland window address -> log file path
 _titles: dict[str, str] = {}  # window address -> last known title
+_aliases: dict[str, Path] = {}  # stable assistant terminal label -> log
 
 
 def _sanitize(name: str) -> str:
@@ -72,18 +73,22 @@ def _clients() -> list[dict]:
         return []
 
 
-def start_terminal_log() -> tuple[Path, list[str]]:
+def start_terminal_log() -> tuple[Path, list[str], str]:
     """Call before launching a terminal. Returns (initial_log_path,
-    argv_prefix) — prepend argv_prefix to the terminal's launch command
+    argv_prefix, terminal_label) — prepend argv_prefix to the terminal's launch command
     (it runs `script`, recording the session to initial_log_path instead
     of a bare shell) — and starts the background thread that renames the
     log to the real window's title once it appears, then deletes it once
     that window closes."""
     TILE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    initial = TILE_LOG_DIR / f".pending-{uuid.uuid4().hex[:8]}.log"
+    identifier = uuid.uuid4().hex[:8]
+    label = f"Omarchy AI {identifier}"
+    initial = TILE_LOG_DIR / f".pending-{identifier}.log"
     initial.touch()
+    with _lock:
+        _aliases[label.lower()] = initial
     before = {c.get("address") for c in _clients()}
-    threading.Thread(target=_track, args=(initial, before), daemon=True).start()
+    threading.Thread(target=_track, args=(initial, before, label), daemon=True).start()
     shell = os.environ.get("SHELL", "/bin/bash")
     # -q quiet (no Script started/done banner noise), -e propagate the
     # shell's own exit code rather than script's, -f flush after every
@@ -91,11 +96,11 @@ def start_terminal_log() -> tuple[Path, list[str]]:
     # session ends, -c run this command instead of an interactive-shell
     # default (bundled short opts; script's own getopt allows it, -c's
     # argument is the next token).
-    argv_prefix = ["script", "-qefc", shell, str(initial)]
-    return initial, argv_prefix
+    argv_prefix = ["env", f"OMARCHY_AI_TERMINAL_TITLE={label}", "script", "-qefc", shell, str(initial)]
+    return initial, argv_prefix, label
 
 
-def _track(initial: Path, before: set) -> None:
+def _track(initial: Path, before: set, label: str) -> None:
     address = None
     title = None
     deadline = time.monotonic() + _DISCOVERY_TIMEOUT_SECONDS
@@ -122,6 +127,8 @@ def _track(initial: Path, before: set) -> None:
             initial.unlink()
         except OSError:
             pass
+        with _lock:
+            _aliases.pop(label.lower(), None)
         return
 
     final = TILE_LOG_DIR / f"{_sanitize(title)}.log"
@@ -137,6 +144,7 @@ def _track(initial: Path, before: set) -> None:
     with _lock:
         _tracked[address] = final
         _titles[address] = title
+        _aliases[label.lower()] = final
     log.info("tile_logs: tracking terminal %r (%s) -> %s", title, address, final)
 
     while True:
@@ -157,6 +165,7 @@ def _track(initial: Path, before: set) -> None:
     with _lock:
         _tracked.pop(address, None)
         _titles.pop(address, None)
+        _aliases.pop(label.lower(), None)
     try:
         final.unlink()
         log.info("tile_logs: tile closed, deleted %s", final)
@@ -208,6 +217,11 @@ def find_log(query: str | None) -> Path | None:
     with _lock:
         items = list(_tracked.items())
         titles = dict(_titles)
+        aliases = dict(_aliases)
+    if query:
+        exact = aliases.get(query.strip().lower())
+        if exact is not None:
+            return exact
     named_items = [(titles.get(address, address), path) for address, path in items]
     named_items.extend(_manual_contexts())
     if not named_items:

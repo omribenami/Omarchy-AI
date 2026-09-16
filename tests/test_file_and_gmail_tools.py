@@ -10,6 +10,21 @@ from omarchy_ai.execution import actions, files, tile_logs
 
 
 class LocalFileToolTests(unittest.TestCase):
+    def test_assistant_terminal_gets_a_unique_stable_label(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            thread = MagicMock()
+            with patch.object(tile_logs, "TILE_LOG_DIR", root), \
+                 patch.object(tile_logs, "_clients", return_value=[]), \
+                 patch.object(tile_logs.threading, "Thread", return_value=thread):
+                initial, prefix, label = tile_logs.start_terminal_log()
+            self.assertTrue(initial.exists())
+            self.assertEqual(prefix[:2], ["env", f"OMARCHY_AI_TERMINAL_TITLE={label}"])
+            self.assertTrue(label.startswith("Omarchy AI "))
+            self.assertEqual(tile_logs.find_log(label), initial)
+            with tile_logs._lock:
+                tile_logs._aliases.pop(label.lower(), None)
+
     def test_read_write_and_root_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
