@@ -367,6 +367,17 @@ receiver APK, and packages all tracked runtime files. Native Omarchy packages
 are verified by `scripts/check-dependencies.sh` during installation and remain
 listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
 
+If the checkout has no local GitHub credential, a connected MyApi identity can
+publish the committed release through its GitHub connection:
+
+```bash
+.venv/bin/python scripts/publish-via-myapi.py          # inspect the exact change set
+.venv/bin/python scripts/publish-via-myapi.py --publish # create one commit on main
+```
+
+The publisher refuses a dirty checkout and refuses to advance `main` if the
+remote moved after it was fetched.
+
 ### Known gaps
 
 Documented honestly rather than papered over:
