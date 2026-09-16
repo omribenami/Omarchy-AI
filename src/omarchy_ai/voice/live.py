@@ -44,6 +44,15 @@ PREBUFFER_FRAMES = 15  # ~300ms: enough to avoid underruns without visibly leadi
 REBUFFER_GRACE_EMPTY_POLLS = 3
 
 
+def _is_capability_demo(text: str) -> bool:
+    """Whether this turn asks to demonstrate actions, not merely discuss them."""
+    normalized = " ".join(text.lower().split())
+    return any(phrase in normalized for phrase in (
+        "demo", "demonstrate", "show me what you can do", "show your capabilities",
+        "show me your capabilities", "demonstration",
+    ))
+
+
 def build_session_config(config: Config) -> dict:
     """Assembles the `session` object for the /v1/live/sessions POST body
     -- instructions (base + learned preferences + recent context) plus the
@@ -242,6 +251,10 @@ class LiveSession:
         # thread. threading.Event makes the handoff safe without blocking
         # the WebRTC event loop.
         self._awaiting_playback_start = threading.Event()
+        # The model sometimes narrates a demo before it emits its first
+        # function call. Hold that narration back; once a real desktop
+        # action starts, normal audio resumes for the result and next step.
+        self._demo_waiting_for_action = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._handled_call_ids: set[str] = set()
         # A live response can emit several function calls in one burst.
@@ -345,6 +358,10 @@ class LiveSession:
                 frame = await track.recv()
                 for resampled in resampler.resample(frame):
                     pcm = bytes(resampled.planes[0])[: resampled.samples * 2]
+                    if self._demo_waiting_for_action.is_set():
+                        # Deliberately discard pre-action audio rather than
+                        # replay a promise after the action has happened.
+                        continue
                     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
                     boosted = np.clip(samples * OUTPUT_GAIN, -32768, 32767).astype(np.int16)
                     q.put_nowait(boosted.tobytes())
@@ -422,6 +439,9 @@ class LiveSession:
             await self._run_tool_call_serialized(call_id, name, args)
 
     async def _run_tool_call_serialized(self, call_id: str, name: str, args: dict) -> None:
+        if self._demo_waiting_for_action.is_set():
+            self._demo_waiting_for_action.clear()
+            log.info("demo: first real action %s; enabling assistant audio", name)
         loop = asyncio.get_event_loop()
         window = await loop.run_in_executor(None, self._current_window)
         log.info("tool call: %s(%s)", name, args)
@@ -520,6 +540,8 @@ class LiveSession:
             self._set_watchdog_state("listening")
             self._awaiting_playback_start.clear()
             self._input_buffer += event.get("delta", "")
+            if _is_capability_demo(self._input_buffer):
+                self._demo_waiting_for_action.set()
             if self._output_buffer:
                 self._transcript.append({"role": "assistant", "text": self._output_buffer})
             self._output_buffer = ""
