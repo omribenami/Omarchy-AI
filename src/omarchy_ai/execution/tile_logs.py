@@ -180,7 +180,7 @@ def _strip_ansi(text: str) -> str:
 def list_tiles() -> list[str]:
     with _lock:
         active = list(_titles.values())
-    return active + [label for label, _path in _manual_contexts()] + [
+    return active + [label for label, _path in _live_transcripts()] + [label for label, _path in _manual_contexts()] + [
         label for label, _path in _completed_transcripts()
     ]
 
@@ -275,7 +275,36 @@ def _manual_contexts() -> list[tuple[str, Path]]:
     return result
 
 
+def _live_transcripts() -> list[tuple[str, Path]]:
+    """Recover live PTY identities even after the assistant daemon restarts."""
+    clients = _clients()
+    found = []
+    for path in TILE_LOG_DIR.glob("manual-*.log"):
+        try:
+            pid = int(path.name.split("-")[1])
+            seen = set()
+            while pid > 1 and pid not in seen:
+                seen.add(pid)
+                client = next((c for c in clients if c.get("pid") == pid), None)
+                if client:
+                    found.append((f"{client.get('address')} {client.get('title')} [live output]", path))
+                    break
+                stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                pid = int(stat[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return found
+
+
 def find_log(query: str | None) -> Path | None:
+    live = _live_transcripts()
+    if not query:
+        focused = next((c for c in _clients() if c.get("focusHistoryID") == 0), {})
+        query = focused.get("address")
+    if query:
+        matches = [path for label, path in live if query.lower() in label.lower()]
+        if len(matches) == 1:
+            return matches[0]
     with _lock:
         items = list(_tracked.items())
         titles = dict(_titles)
@@ -284,7 +313,12 @@ def find_log(query: str | None) -> Path | None:
         exact = aliases.get(query.strip().lower())
         if exact is not None:
             return exact
-    named_items = [(titles.get(address, address), path) for address, path in items]
+    named_items = [(f"{address} {titles.get(address, address)}", path) for address, path in items]
+    if query:
+        for address, path in items:
+            if address == query:
+                return path
+    named_items.extend(live)
     named_items.extend(_manual_contexts())
     named_items.extend(_completed_transcripts())
     if not named_items:
@@ -297,6 +331,8 @@ def find_log(query: str | None) -> Path | None:
         score = fuzz.WRatio(needle, title.lower())
         if score > best_score:
             best_path, best_score = path, score
+    if query.startswith("0x"):
+        return None  # Never substitute another tile for an exact window ID.
     if best_path is not None and best_score > 50:
         return best_path
     return None
@@ -317,13 +353,17 @@ def read_log(query: str | None, tail_chars: int = 4000) -> str:
             return f"no terminal matches {query!r} -- available: {', '.join(available)}"
         return f"more than one terminal is available, name one -- available: {', '.join(available)}"
     try:
-        raw = path.read_text(errors="replace")
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - max(tail_chars * 4, 16384)))
+            raw = stream.read().decode(errors="replace")
     except OSError as e:
         return f"failed to read log: {e}"
     text = _strip_ansi(raw).strip()
     if len(text) > tail_chars:
         text = "...(truncated)...\n" + text[-tail_chars:]
-    return text or "(no output yet)"
+    kind = "command history only; NOT live output" if path.parent == TERMINAL_CONTEXT_DIR else "PTY output history; terminal redraws may differ from the visible screen"
+    return f"Source: {path.name} ({kind})\n" + (text or "(no output yet)")
 
 
 def sweep_stale() -> None:
@@ -337,5 +377,11 @@ def sweep_stale() -> None:
         return
     for p in TILE_LOG_DIR.glob("*"):
         if p.is_file():
+            if p.name.startswith("manual-"):
+                try:
+                    os.kill(int(p.name.split("-")[1]), 0)
+                    continue
+                except (ProcessLookupError, ValueError):
+                    pass
             _archive_transcript(p, p.stem.replace("_", " "))
     _prune_history()

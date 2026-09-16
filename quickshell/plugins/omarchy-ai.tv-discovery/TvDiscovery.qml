@@ -89,6 +89,7 @@ Item {
     root.devices = parseDevices(payloadJson)
     root.selectedAddress = ""
     dismissTimer.stop()
+    selectionTimeout.restart()
     root.opened = true
   }
 
@@ -111,6 +112,7 @@ Item {
 
   function close() {
     dismissTimer.stop()
+    selectionTimeout.stop()
     root.opened = false
     root.selectedAddress = ""
   }
@@ -118,6 +120,13 @@ Item {
   Timer {
     id: dismissTimer
     interval: 1200
+    onTriggered: root.close()
+  }
+
+  // Never leave the display picker stranded if discovery or pairing fails.
+  Timer {
+    id: selectionTimeout
+    interval: 30000
     onTriggered: root.close()
   }
 
