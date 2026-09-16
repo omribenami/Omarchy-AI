@@ -261,6 +261,8 @@ class LiveSession:
         # Desktop actions must complete in their received order so a demo
         # cannot describe a sequence while its actual changes are deferred.
         self._tool_lock: asyncio.Lock | None = None
+        self._pending_tool_outputs = 0
+        self._tool_continue_task: asyncio.Task | None = None
         # In-memory only, per conversation — resets every session. A
         # per-window ("per-tile") log so the model can recall what it's
         # already done to a specific window rather than only the last
@@ -413,6 +415,11 @@ class LiveSession:
             self._hangup.set()
             return
 
+        # A single Realtime response may contain several function calls.
+        # Count every call before scheduling work, then continue the model
+        # exactly once after all corresponding outputs have been submitted.
+        self._pending_tool_outputs += 1
+
         raw_args = item.get("arguments") or "{}"
         try:
             args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
@@ -422,6 +429,7 @@ class LiveSession:
         if name == "get_recent_actions":
             output = self._get_recent_actions(args.get("target"))
             self._send_function_result(call_id, True, output)
+            self._tool_output_complete()
             return
 
         # Executing inline here (this is a sync callback off the data
@@ -466,6 +474,7 @@ class LiveSession:
                 {"action": name, "args": args, "ok": result.ok, "window": window}
             )
         self._send_function_result(call_id, result.ok, result.message)
+        self._tool_output_complete()
 
     @staticmethod
     def _current_window() -> dict:
@@ -509,13 +518,28 @@ class LiveSession:
         }
         try:
             self._dc.send(json.dumps(payload))
-            # Submitting the result doesn't make the model continue on its
-            # own — confirmed live: no error, but also no reaction at all
-            # for 6+ seconds until this was added. Same "explicit trigger
-            # needed" pattern as the very first response.
-            self._dc.send(json.dumps({"type": "response.create"}))
         except Exception:  # noqa: BLE001
             log.debug("failed to send function_call_output", exc_info=True)
+
+    def _tool_output_complete(self) -> None:
+        self._pending_tool_outputs = max(0, self._pending_tool_outputs - 1)
+        if self._pending_tool_outputs or self._tool_continue_task is not None:
+            return
+
+        async def continue_response() -> None:
+            # Calls in a batch are usually delivered together, but give the
+            # data channel one event-loop turn to deliver the tail before
+            # requesting the next response.
+            await asyncio.sleep(0.15)
+            self._tool_continue_task = None
+            if self._pending_tool_outputs or self._dc is None:
+                return
+            try:
+                self._dc.send(json.dumps({"type": "response.create"}))
+            except Exception:  # noqa: BLE001
+                log.debug("failed to continue after tool outputs", exc_info=True)
+
+        self._tool_continue_task = asyncio.ensure_future(continue_response())
 
     def _check_farewell(self, text: str) -> bool:
         norm = text.strip().lower()
