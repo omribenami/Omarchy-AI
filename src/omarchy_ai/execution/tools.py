@@ -63,15 +63,39 @@ TOOLS: list[dict] = [
     _tool("open_files", "Open the file manager."),
     _tool("open_editor", "Open the default text editor."),
     _tool(
+        "list_files",
+        "List files and folders in the user's home directory or /tmp. Use this to find a local file before reading it. Set recursive only when needed; results are bounded.",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Folder to list. Omit for the user's home directory."},
+            "recursive": {"type": "boolean", "description": "Include nested entries, up to a bounded result size."},
+        }, "required": []},
+    ),
+    _tool(
+        "read_file",
+        "Read a local text file from the user's home directory or /tmp. Use it to understand a document, project, or terminal context file; it does not read binary files.",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Text file to read."},
+            "start_line": {"type": "integer", "minimum": 1, "description": "One-based line to start at; omit for the beginning."},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000, "description": "Maximum text to return."},
+        }, "required": ["path"]},
+    ),
+    _tool(
+        "write_file",
+        "Save text to a local file in the user's home directory or /tmp. Use only when the user asks to create or edit a file. Existing files are protected unless overwrite is explicitly true.",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Destination file path."},
+            "content": {"type": "string", "description": "Complete text to save."},
+            "overwrite": {"type": "boolean", "description": "Set true only when the user clearly asked to replace the existing file."},
+        }, "required": ["path", "content"]},
+    ),
+    _tool(
         "read_tile_log",
-        "Read the real text output of a terminal this assistant opened "
-        "with open_terminal — everything printed in it, plus what was "
-        "typed. Use this instead of describe_screen to check on a "
-        "terminal's output or whether a command finished — it's real "
-        "text, not a vision call, so it's much faster. Only tracks "
-        "terminals opened via open_terminal, not every terminal window "
-        "on screen — if nothing matches, the result says so and lists "
-        "what is currently tracked.",
+        "Read terminal context without a vision call. Terminals opened "
+        "by the assistant have a full real-text transcript (output plus "
+        "what was typed); every interactive Bash or Zsh terminal also "
+        "has a compact command, working-directory, and exit-status "
+        "context log. Use this to understand what is happening in a "
+        "terminal or whether a command finished.",
         {
             "type": "object",
             "properties": {
@@ -566,5 +590,22 @@ MYAPI_TOOLS: list[dict] = [
             },
             "required": ["service", "path"],
         },
+    ),
+    _tool(
+        "myapi_gmail_search_attachments",
+        "Search connected Gmail for messages with attachments and return the message ID, attachment ID, and filename needed to download one. Use a Gmail query such as 'from:alex has:attachment' or 'filename:invoice.pdf'. This only reads mail.",
+        {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Gmail search query."},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum messages to inspect; omit for 10."},
+        }, "required": ["query"]},
+    ),
+    _tool(
+        "myapi_gmail_download_attachment",
+        "Download one Gmail attachment found by myapi_gmail_search_attachments. Saves it under ~/Downloads/Omarchy_AI and never overwrites an existing download. This only reads mail and writes the downloaded copy locally.",
+        {"type": "object", "properties": {
+            "message_id": {"type": "string", "description": "Message ID returned by the Gmail attachment search."},
+            "attachment_id": {"type": "string", "description": "Attachment ID returned by the Gmail attachment search."},
+            "filename": {"type": "string", "description": "Attachment filename returned by the Gmail attachment search."},
+        }, "required": ["message_id", "attachment_id", "filename"]},
     ),
 ]

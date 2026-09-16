@@ -97,6 +97,11 @@ been used for, live:
 - Workspace switching, window listing/focusing, fullscreen toggle, close,
   screenshots, screen lock.
 - Launchers: terminal, browser, files, editor.
+- Local files: `list_files`, `read_file`, and `write_file` let Omarchy AI
+  work with text files in your home directory and `/tmp`. It creates a new
+  file by default and only replaces an existing file when you explicitly
+  ask it to. Add other project locations with `file_access_roots` in
+  `~/.config/omarchy-ai/config.yaml`.
 - Typing and key-press injection (`type_text`/`press_key`) into whatever
   window is focused — including modifier combos, so it can e.g. focus a
   browser's address bar before typing a URL.
@@ -114,10 +119,10 @@ been used for, live:
 - `describe_screen` — a screenshot plus a separate vision-model call, used
   only as a fallback when window state and conversation context aren't
   enough to tell what you mean.
-- `read_tile_log` — every terminal the assistant itself opened has its real
-  text output tracked (via `script(1)`), so it can answer "did that
-  command finish?" by reading actual text instead of paying for a vision
-  call.
+- `read_tile_log` — terminals the assistant opens have a full real-text
+  transcript (via `script(1)`). Every interactive Bash or Zsh terminal
+  also writes a compact command, working-directory, and exit-status context
+  log, so Omarchy AI can understand terminals you opened yourself too.
 - Floating window name-label badges (`show_window_labels`) — instead of
   reading a list of window titles out loud when it's not sure which window
   you mean, it drops a real on-screen badge over each candidate so you can
@@ -194,6 +199,11 @@ been used for, live:
   by a connected service ("check my email" reads Gmail directly rather
   than paying for a vision call) — read-only for now, it can't send,
   create, or delete anything yet.
+- Gmail attachment requests have a dedicated flow: Omarchy AI searches the
+  requested mail for attachment IDs, then downloads the chosen file to
+  `~/Downloads/Omarchy_AI/`. MyApi transports those provider reads through
+  its execute endpoint; the assistant only exposes the allowlisted read
+  operations, never Gmail send or mailbox mutation.
 - `omarchy-ai-dashboard` — a live terminal dashboard (built with `rich`)
   showing which services are connected and how much each has actually been
   used, refreshed in real time from a local call log.
@@ -400,9 +410,10 @@ Documented honestly rather than papered over:
 - **Audio quality on casting** is verified for video (steady 15fps, zero
   drops in testing) but not yet measured with the same rigor for the audio
   branch.
-- **MyApi calls are read-only (GET) for now** — same "no confirm/policy
-  layer exists yet" reasoning as everything else in this list; sending an
-  email or creating a calendar event through MyApi isn't wired up.
+- **MyApi calls are read-only** — Gmail attachment search/download uses
+  MyApi's POST-based provider-read transport, while the generic service
+  tool remains GET-only. Sending an email or creating a calendar event
+  through MyApi isn't wired up.
   Disconnecting from the Omarchy AI settings panel only stops this machine
   from using the connection — no programmatic revoke was found on MyApi's
   side, so fully cutting access also means removing the device from your

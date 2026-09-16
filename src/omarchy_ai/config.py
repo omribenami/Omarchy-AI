@@ -21,6 +21,11 @@ CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "o
 # currently-open tracked terminal, deleted when it closes) and safe to
 # wipe entirely on every daemon startup (sweep_stale()).
 TILE_LOG_DIR = CACHE_DIR / "tile_logs"
+# Command-and-directory context from interactive terminals opened by the
+# user. Unlike TILE_LOG_DIR these are state: they are intentionally kept
+# across a daemon restart so a later voice session can still understand
+# what was being worked on.
+TERMINAL_CONTEXT_DIR = STATE_DIR / "terminal_context"
 
 USER_CONFIG_PATH = CONFIG_DIR / "config.yaml"
 SOCKET_PATH = RUNTIME_DIR / "omarchy-ai.sock"
@@ -128,13 +133,12 @@ class Config:
         "when genuinely needed, not by default, and say something brief "
         "like 'let me take a look' right before calling it so the user "
         "knows you're working rather than stalled. If the question is "
-        "specifically about a terminal you opened with open_terminal — "
-        "did a command finish, what did it print — call read_tile_log "
-        "instead of describe_screen: it's the terminal's real text "
-        "output, effectively instant, and doesn't need a vision call at "
-        "all. It only covers terminals opened that way, not every window "
-        "on screen — describe_screen is still the right tool for "
-        "anything else visual. "
+        "specifically about a terminal — did a command finish, what was "
+        "being worked on — call read_tile_log instead of describe_screen: "
+        "it is instant real text. Assistant-opened terminals include full "
+        "output; terminals opened directly by the user include command, "
+        "working-directory, and exit-status context. It doesn't replace "
+        "describe_screen for other visual UI. "
         "For anything not covered by your other specific tools, "
         "search list_commands — it covers Omarchy's full set of bound "
         "commands (app launchers, menus, capture, clipboard, themes, and "
@@ -271,6 +275,13 @@ class Config:
     phone_bridge_enabled: bool = False
     phone_bridge_port: int = 8766
 
+    # Local file tools are intentionally limited to user-owned locations.
+    # Add an explicit path here when a project lives elsewhere; paths are
+    # resolved before every operation so symlinks cannot escape a root.
+    file_access_roots: list[str] = field(
+        default_factory=lambda: [str(Path.home()), "/tmp"]
+    )
+
     # MyApi (myapiai.com) — connect state itself lives in
     # MYAPI_IDENTITY_PATH (connect-myapi/disconnect-myapi in cli/settings.py
     # write/delete it), not here. This is the master on/off switch: it's
@@ -295,7 +306,10 @@ MYAPI_INSTRUCTIONS = (
     "connected, myapi_service_methods before a service's first use, then "
     "myapi_call to actually make the request. It's structured data, no "
     "vision call needed, and much faster and cheaper than a screenshot. "
-    "myapi_call can only read (GET) for now, not send/create/delete "
+    "For Gmail attachments, use myapi_gmail_search_attachments to find "
+    "the message and attachment IDs, then myapi_gmail_download_attachment "
+    "to save it in Downloads/Omarchy_AI. myapi_call can only read (GET) "
+    "for now, not send/create/delete "
     "anything — if asked to do something that would need that, say "
     "plainly you can't do that yet rather than trying. Only fall back to "
     "the browser/describe_screen path when nothing connected covers the "
@@ -323,5 +337,5 @@ def load_config() -> Config:
 
 
 def ensure_dirs() -> None:
-    for d in (CONFIG_DIR, STATE_DIR, RUNTIME_DIR, TILE_LOG_DIR):
+    for d in (CONFIG_DIR, STATE_DIR, RUNTIME_DIR, TILE_LOG_DIR, TERMINAL_CONTEXT_DIR):
         d.mkdir(parents=True, exist_ok=True)
