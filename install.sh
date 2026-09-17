@@ -11,8 +11,12 @@ if [[ ! -f pyproject.toml || ! -d scripts ]]; then
 fi
 
 echo "==> Installing Omarchy AI from $project_dir"
+bash "$project_dir/scripts/install-dependencies.sh"
 bash "$project_dir/scripts/setup.sh"
 
 echo
 echo "Installation complete. Start the assistant with:"
 echo "  systemctl --user enable --now omarchy-ai.service"
+if [[ -f "$project_dir/android/omarchy-ai-receiver.apk" ]]; then
+  printf 'Optional Android TV receiver:\n  adb install -r "%s"\n' "$project_dir/android/omarchy-ai-receiver.apk"
+fi

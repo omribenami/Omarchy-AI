@@ -5,16 +5,17 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   echo 'Refusing to package uncommitted source. Commit the release first.' >&2
   exit 1
 fi
 
 version="$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)"
-package_dir="dist/omarchy-ai-${version}-linux-x86_64"
+staging_dir="$(mktemp -d)"
+trap 'rm -rf -- "$staging_dir"' EXIT
+package_dir="$staging_dir/omarchy-ai-${version}-linux-x86_64"
 archive="dist/omarchy-ai-${version}-linux-x86_64.tar.gz"
-rm -rf "$package_dir" "$archive"
-mkdir -p "$package_dir"
+mkdir -p "$package_dir" dist
 
 echo '==> Building Python wheel and source distribution'
 uv build --out-dir "$package_dir/python"
@@ -29,19 +30,8 @@ echo '==> Staging exact release source'
 # Excluding that directory here prevents the last archive from being packed
 # inside the next one, which otherwise grows the bundle recursively.
 git archive --format=tar HEAD -- . ':(exclude)dist' | tar -x -C "$package_dir"
-cat >"$package_dir/install.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-bundle_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$bundle_dir"
-bash scripts/check-dependencies.sh
-bash scripts/setup.sh
-printf '\nReceiver APK: %s\n' "$bundle_dir/android/omarchy-ai-receiver.apk"
-printf 'Install it on a connected Android TV with:\n  adb install -r "%s"\n' "$bundle_dir/android/omarchy-ai-receiver.apk"
-EOF
 chmod 0755 "$package_dir/install.sh"
 
-tar -C dist -czf "$archive" "$(basename "$package_dir")"
-rm -rf "$package_dir"
-sha256sum "$archive" >"$archive.sha256"
+tar -C "$staging_dir" -czf "$archive" "$(basename "$package_dir")"
+(cd dist && sha256sum "$(basename "$archive")" >"$(basename "$archive").sha256")
 echo "Built $archive"

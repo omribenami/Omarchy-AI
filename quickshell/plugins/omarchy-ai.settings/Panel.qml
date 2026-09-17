@@ -18,6 +18,9 @@ Panel {
   property bool dirty: false
   property bool restarting: false
   property bool apiKeyEditing: false
+  readonly property bool geminiSelected: fields.provider === "gemini"
+  readonly property var selectedKey: (geminiSelected ? snapshot.gemini_api_key : snapshot.api_key) || ({})
+  onGeminiSelectedChanged: { apiKeyEditing = false; apiKeyFieldTop.text = "" }
   property string statusMessage: ""
   property string statusTone: "info" // "info" | "ok" | "error"
 
@@ -106,7 +109,7 @@ Panel {
       root.statusMessage = "Paste a key first"
       return
     }
-    root._enqueue([root.py, "set-api-key"], function(result) {
+    root._enqueue([root.py, root.geminiSelected ? "set-gemini-api-key" : "set-api-key"], function(result) {
       if (result && result.error) {
         root.statusTone = "error"
         root.statusMessage = result.error
@@ -115,11 +118,13 @@ Panel {
         root.dirty = true
         root.statusTone = "ok"
         root.statusMessage = "API key saved — restart to apply"
+        apiKeyFieldTop.text = ""
+        root.apiKeyEditing = false
       } else {
         root.statusTone = "error"
         root.statusMessage = "No response from settings helper"
       }
-    }, { "OMARCHY_AI_API_KEY": trimmed })
+    }, root.geminiSelected ? { "GEMINI_API_KEY": trimmed } : { "OMARCHY_AI_API_KEY": trimmed })
   }
 
   function configureSudo(password) {
@@ -287,7 +292,7 @@ Panel {
   }
 
 
-  property string section: "connections"
+  property string section: "voice"
   property bool activating: false
   property int glitchFrame: 0
   readonly property string assistantState: live ? "active" : ((snapshot.assistant || {}).state || "offline")
@@ -342,22 +347,21 @@ Panel {
           opacity: enabled ? 1 : 0.55
           onClicked: root.activateAssistant()
         }
+        Text {
+          width: parent.width; wrapMode: Text.WordWrap
+          text: (root.snapshot.assistant && root.snapshot.assistant.error_detail) || (root.dirty ? "Changes saved · apply below to use them" : "Running provider: " + ((root.snapshot.assistant && root.snapshot.assistant.provider) || "offline"))
+          color: root.snapshot.assistant && root.snapshot.assistant.error_detail ? Color.urgent : Color.muted
+          font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
+        }
         Column {
           width: parent.width; spacing: Style.space(6)
-          PanelSectionHeader { text: "ASSISTANT API KEY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+          PanelSectionHeader { text: "AI PROVIDER & ACCESS"; foreground: root.fg; fontFamily: root.bar.fontFamily }
           Dropdown { width: parent.width; showLabel: true; label: "Provider"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.fields.provider || "openai"; options: [{value: "openai", label: "OpenAI Live"}, {value: "gemini", label: "Gemini 3.8 Live"}]; onChanged: function(v) { root.setField("provider", JSON.stringify(v), "Provider updated — restart to apply") } }
-          Text { width: parent.width; wrapMode: Text.WordWrap; text: (root.snapshot.api_key && root.snapshot.api_key.set) ? "API key saved securely." : "Add your OpenAI API key to enable conversations."; color: (root.snapshot.api_key && root.snapshot.api_key.set) ? Qt.darker(root.fg, 1.4) : "#ff6b6b"; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
+          Text { width: parent.width; wrapMode: Text.WordWrap; text: root.selectedKey.set ? "Key saved securely · only this provider's key is needed" : root.geminiSelected ? "Paste your Google AI Studio API key to get started." : "Paste your OpenAI API key to get started."; color: root.selectedKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
           Row {
             width: parent.width; spacing: Style.space(8)
-            TextField { id: apiKeyFieldTop; visible: !root.snapshot.api_key || !root.snapshot.api_key.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - Style.space(8); password: true; placeholderText: "sk-…"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: { root.saveApiKey(text); text = ""; root.apiKeyEditing = false } }
-            Button { id: saveKeyButtonTop; text: (root.snapshot.api_key && root.snapshot.api_key.set && !root.apiKeyEditing) ? "Edit" : "Save"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.snapshot.api_key && root.snapshot.api_key.set && !root.apiKeyEditing) root.apiKeyEditing = true; else { root.saveApiKey(apiKeyFieldTop.text); apiKeyFieldTop.text = ""; root.apiKeyEditing = false } } }
-          }
-          Text { visible: root.fields.provider === "gemini"; width: parent.width; wrapMode: Text.WordWrap; text: (root.snapshot.gemini_api_key && root.snapshot.gemini_api_key.set) ? "Gemini API key saved securely." : "Add a Google AI Studio Gemini API key."; color: root.fg; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
-          Row {
-            visible: root.fields.provider === "gemini"
-            width: parent.width; spacing: Style.space(8)
-            TextField { id: geminiKeyField; width: parent.width - geminiKeyButton.width - Style.space(8); password: true; placeholderText: "Gemini API key"; foreground: root.fg; font.family: root.bar.fontFamily }
-            Button { id: geminiKeyButton; text: "Save Gemini key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { root._enqueue([root.py, "set-gemini-api-key"], function(result) { root.snapshot = result; root.statusTone = result.error ? "error" : "ok"; root.statusMessage = result.error || "Gemini key saved — restart to apply" }, {"GEMINI_API_KEY": geminiKeyField.text}); geminiKeyField.text = "" } }
+            TextField { id: apiKeyFieldTop; visible: !root.selectedKey.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - Style.space(8); password: true; placeholderText: root.geminiSelected ? "Google AI Studio key" : "OpenAI key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveApiKey(text) }
+            Button { id: saveKeyButtonTop; text: root.selectedKey.set && !root.apiKeyEditing ? "Edit key" : "Save key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.selectedKey.set && !root.apiKeyEditing) root.apiKeyEditing = true; else root.saveApiKey(apiKeyFieldTop.text) } }
           }
         }
         ButtonGroup {
@@ -367,6 +371,17 @@ Panel {
           onChanged: function(v) { root.section = v; scrollArea.contentY = 0 }
         }
         PanelSeparator { foreground: root.fg }
+        Flickable {
+          id: scrollArea
+          width: parent.width
+          height: Math.min(scrollColumn.implicitHeight, Math.max(Style.space(100), panel.availableCardHeight - Style.space(390)))
+          contentWidth: width; contentHeight: scrollColumn.implicitHeight
+          clip: true; boundsBehavior: Flickable.StopAtBounds
+          interactive: contentHeight > height
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          Column {
+            id: scrollColumn
+            width: parent.width - Style.space(10); spacing: Style.space(12)
         Column {
           visible: root.section === "voice"
           width: parent.width
@@ -428,17 +443,6 @@ Panel {
         PanelSeparator { foreground: root.fg; visible: root.section === "voice" }
 
 
-        Flickable {
-          id: scrollArea
-          width: parent.width
-          height: Math.min(scrollColumn.implicitHeight, Math.max(Style.space(100), panel.availableCardHeight - Style.space(root.section === "voice" ? 400 : 265)))
-          contentWidth: width; contentHeight: scrollColumn.implicitHeight
-          clip: true; boundsBehavior: Flickable.StopAtBounds
-          interactive: contentHeight > height
-          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-          Column {
-            id: scrollColumn
-            width: parent.width - Style.space(10); spacing: Style.space(12)
         Column {
           visible: root.section === "voice"
           width: parent.width

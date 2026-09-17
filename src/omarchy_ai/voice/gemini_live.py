@@ -1,117 +1,224 @@
-"""Minimal Gemini Live audio session.
-
-Gemini Live is a WebSocket protocol, separate from OpenAI's WebRTC session.
-This adapter keeps the same wake-to-session lifecycle and uses the local
-PipeWire microphone/speaker, while leaving desktop actions on the OpenAI path
-until Gemini tool declarations are mapped explicitly.
-"""
+"""Full-duplex Gemini Live audio and desktop actions."""
 from __future__ import annotations
 
 import asyncio
 import logging
-import subprocess
-import math
-import struct
-
+from pathlib import Path
+import numpy as np
 from ..core.history import append_session
-from ..config import Config
+from ..execution.actions import run_action, ActionResult
 from . import status_icon, watchdog
+from .live import build_session_config, LiveSession
+from .echo_cancel import EchoCancellation
 
 log = logging.getLogger("omarchy_ai.voice.gemini")
 
 
+def build_live_config(config):
+    shared = build_session_config(config)
+    tools = [{"name": t["name"], "description": t["description"],
+              "parameters_json_schema": t["parameters"], "behavior": "NON_BLOCKING"}
+             for t in shared["delegation"]["responses"]["tools"]]
+    return {"response_modalities": ["AUDIO"], "system_instruction": shared["instructions"],
+            "input_audio_transcription": {}, "output_audio_transcription": {},
+            "tools": [{"function_declarations": tools}]}
+
+
 class GeminiLiveSession:
-    def __init__(self, config: Config):
+    def __init__(self, config):
         self.config = config
         self._hangup = asyncio.Event()
-        self._transcript: list[dict] = []
+        self._transcript = []
+        self._audio = asyncio.Queue(maxsize=250)
+        self._calls = asyncio.Queue(maxsize=64)
+        self._seen = set()
+        self._cancelled = set()
+        self._state = "listening"
+        self._level = 0.0
+        self._generation = 0
+        self._speaker = None
+        self._speaker_generation = -1
+        self._action_log = []
+        self.on_connected = None
+        self.on_message = None
+        self._echo = EchoCancellation()
 
-    def _key(self) -> str:
-        with open(self.config.gemini_api_key_path) as f:
-            return f.read().strip()
+    async def _receive(self, session):
+        while not self._hangup.is_set():
+            received = False
+            async for message in session.receive():
+                received = True
+                if self.on_message:
+                    self.on_message(message)
+                if message.tool_call_cancellation:
+                    self._cancelled.update(message.tool_call_cancellation.ids or [])
+                if message.tool_call:
+                    for call in message.tool_call.function_calls or []:
+                        if call.id not in self._seen:
+                            self._seen.add(call.id)
+                            self._calls.put_nowait(call)
+                server = message.server_content
+                if not server:
+                    continue
+                for role, transcription in (("user", server.input_transcription), ("assistant", server.output_transcription)):
+                    if transcription and transcription.text:
+                        self._transcript.append({"role": role, "text": transcription.text})
+                if server.interrupted:
+                    self._generation += 1
+                    while not self._audio.empty():
+                        self._audio.get_nowait()
+                    if self._speaker and self._speaker.returncode is None:
+                        try:
+                            self._speaker.terminate()
+                        except ProcessLookupError:
+                            pass
+                    self._state, self._level = "listening", 0.0
+                if server.model_turn:
+                    for part in server.model_turn.parts or []:
+                        if part.inline_data and part.inline_data.data:
+                            self._audio.put_nowait((self._generation, part.inline_data.data))
+            if not received:
+                raise ConnectionError("Gemini receive stream closed without a turn")
 
-    async def run(self) -> None:
+    async def _tools(self, session):
+        from google.genai import types
+        while True:
+            call = await self._calls.get()
+            if call.id in self._cancelled:
+                continue
+            if call.name == "end_conversation":
+                await session.send_tool_response(function_responses=types.FunctionResponse(
+                    id=call.id, name=call.name, response={"ok": True}))
+                self._hangup.set()
+                return
+            log.info("Gemini action started: %s", call.name)
+            try:
+                if call.name == "get_recent_actions":
+                    result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
+                else:
+                    window = await asyncio.to_thread(LiveSession._current_window)
+                    action = asyncio.create_task(asyncio.to_thread(run_action, call.name, call.args or {}))
+                    try:
+                        result = await asyncio.shield(action)
+                    except asyncio.CancelledError:
+                        # Cancellation cannot stop an OS action already running.
+                        # Finish it before allowing the next conversation.
+                        await action
+                        raise
+                    if call.name == "close_window" and result.ok:
+                        self._action_log = [e for e in self._action_log if e["window"] != window]
+                    else:
+                        self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "window": window})
+                        self._action_log = self._action_log[-100:]
+                response = {"ok": result.ok, "message": result.message}
+            except Exception:
+                log.exception("Gemini action failed: %s", call.name)
+                response = {"ok": False, "message": "Action failed; do not assume completion."}
+            log.info("Gemini action finished: %s (ok=%s)", call.name, response["ok"])
+            if call.id not in self._cancelled:
+                await session.send_tool_response(function_responses=types.FunctionResponse(
+                    id=call.id, name=call.name, response=response, scheduling="WHEN_IDLE"))
+
+    async def _send_audio(self, session, mic):
+        from google.genai import types
+        while True:
+            chunk = await mic.stdout.read(640)
+            if not chunk:
+                raise RuntimeError("Microphone stream ended")
+            await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+
+    @staticmethod
+    async def _stop_process(process):
+        if process is None:
+            return
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
         try:
-            from google import genai
-            from google.genai import types
-        except ImportError as error:
-            raise RuntimeError("Gemini provider requires the google-genai package; run uv sync") from error
-        client = genai.Client(api_key=self._key())
-        mic = subprocess.Popen(
-            ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms", "-a", "-"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
-        speaker = subprocess.Popen(
-            ["pw-play", "--rate", "24000", "--channels", "1", "--format", "s16", "--latency", "120ms", "-a", "-"],
-            stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
+            await asyncio.wait_for(process.wait(), 2)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+
+    async def _play_audio(self):
+        while True:
+            generation, raw = await self._audio.get()
+            if generation != self._generation:
+                continue
+            if self._speaker is None or self._speaker.returncode is not None or generation != self._speaker_generation:
+                await self._stop_process(self._speaker)
+                self._speaker = await asyncio.create_subprocess_exec(
+                    "pw-play", "--rate", "24000", "--channels", "1", "--format", "s16",
+                    "--latency", "40ms", "--target", self._echo.sink, "-a", "-", stdin=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL)
+                self._speaker_generation = generation
+                if generation != self._generation:
+                    continue
+            try:
+                self._speaker.stdin.write(raw)
+                await self._speaker.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                if generation != self._generation:
+                    continue
+                raise
+            self._state = "speaking"
+            samples = np.frombuffer(raw[:len(raw) // 2 * 2], dtype="<i2").astype(float)
+            self._level = min(1.0, float(np.sqrt(np.mean(samples * samples))) / 12000) if samples.size else 0
+            await asyncio.sleep(len(raw) / 48000)
+            if self._audio.empty():
+                self._state, self._level = "listening", 0.0
+
+    async def _visuals(self):
+        previous = None
+        while True:
+            state = self._state
+            if state != previous:
+                await asyncio.to_thread(watchdog.state, state)
+                previous = state
+            await asyncio.to_thread(watchdog.level, self._level)
+            await asyncio.sleep(0.1)
+
+    async def run(self):
+        from google import genai
+        client = genai.Client(api_key=Path(self.config.gemini_api_key_path).read_text().strip())
+        mic = None
+        tasks = []
         try:
-            live_config = {
-                "response_modalities": ["AUDIO"],
-                "system_instruction": self.config.instructions,
-                "input_audio_transcription": {},
-                "output_audio_transcription": {},
-            }
-            log.info("connecting to Gemini Live model %s", self.config.gemini_model)
-            async with client.aio.live.connect(model=self.config.gemini_model, config=live_config) as session:
-                log.info("Gemini Live session connected")
-                status_icon.set_live(True)
+            # Do not silently fall back to a raw mic: that reintroduces
+            # self-interruptions while claiming full-duplex audio works.
+            await self._echo.start(self.config.mic_device)
+            async with client.aio.live.connect(model=self.config.gemini_model, config=build_live_config(self.config)) as session:
+                argv = ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms"]
+                argv.extend(["--target", self._echo.source])
+                mic = await asyncio.create_subprocess_exec(*argv, "-a", "-", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                log.info("Gemini Live connected: %s; full-duplex tools enabled", self.config.gemini_model)
+                if self.on_connected:
+                    self.on_connected()
+                await asyncio.to_thread(status_icon.set_live, True)
                 if self.config.watchdog_enabled:
-                    watchdog.start(self.config.watchdog_display_mode)
-                    watchdog.state("listening")
-                async def send_audio() -> None:
-                    while not self._hangup.is_set():
-                        chunk = await asyncio.get_running_loop().run_in_executor(None, mic.stdout.read, 640)
-                        if not chunk:
-                            self._hangup.set(); return
-                        await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
-
-                sender = asyncio.create_task(send_audio())
-                try:
-                    # The SDK's receive() iterator ends normally at each
-                    # turn_complete boundary. Re-enter it for the next VAD
-                    # turn; ending one iterator is not a disconnected socket.
-                    while not self._hangup.is_set():
-                        async for message in session.receive():
-                            server = message.server_content
-                            if server and server.input_transcription:
-                                text = server.input_transcription.text or ""
-                                if text:
-                                    self._transcript.append({"role": "user", "text": text})
-                            if server and server.output_transcription:
-                                text = server.output_transcription.text or ""
-                                if text:
-                                    self._transcript.append({"role": "assistant", "text": text})
-                            if server and server.model_turn and speaker.stdin:
-                                for part in server.model_turn.parts or []:
-                                    blob = getattr(part, "inline_data", None)
-                                    if blob and blob.data:
-                                        watchdog.state("speaking")
-                                        raw = blob.data
-                                        if isinstance(raw, str):
-                                            raw = raw.encode()
-                                        samples = struct.unpack("<%dh" % (len(raw) // 2), raw[:len(raw) - len(raw) % 2])
-                                        rms = math.sqrt(sum(float(v) * v for v in samples) / max(1, len(samples)))
-                                        if self.config.watchdog_enabled:
-                                            watchdog.level(min(1.0, rms / 12000.0))
-                                        speaker.stdin.write(raw)
-                                        speaker.stdin.flush()
-                            if self._hangup.is_set():
-                                break
-                        if self.config.watchdog_enabled and not self._hangup.is_set():
-                            watchdog.state("listening")
-                except Exception:
-                    log.exception("Gemini Live session failed while receiving audio")
-                    raise
-                finally:
-                    sender.cancel()
-                    await asyncio.gather(sender, return_exceptions=True)
+                    await asyncio.to_thread(watchdog.start, self.config.watchdog_display_mode)
+                workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(), self._tools(session), self._hangup.wait()]
+                if self.config.watchdog_enabled:
+                    workers.append(self._visuals())
+                tasks = [asyncio.create_task(worker) for worker in workers]
+                done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
         finally:
-            if self.config.watchdog_enabled:
-                watchdog.stop()
-            status_icon.set_live(False)
             self._hangup.set()
-            mic.terminate(); speaker.terminate()
-            try: mic.wait(timeout=2); speaker.wait(timeout=2)
-            except subprocess.TimeoutExpired: pass
-            append_session(self._transcript, self.config.context_retention_hours)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._stop_process(mic)
+            await self._stop_process(self._speaker)
+            try:
+                await self._echo.close()
+            except Exception:
+                log.exception("Could not unload session echo cancellation")
+            await client.aio.aclose()
+            await asyncio.to_thread(status_icon.set_live, False)
+            if self.config.watchdog_enabled:
+                await asyncio.to_thread(watchdog.stop)
+            await asyncio.to_thread(append_session, self._transcript, self.config.context_retention_hours)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import threading
 
 from ..config import Config, ensure_dirs, load_config
@@ -32,6 +33,7 @@ class OmaDaemon:
         self._listen_stop = threading.Event()
         self._manual = False
         self._state = 'listening'
+        self._last_error = None
         # Runs the whole time the daemon is up (not per-conversation like
         # LiveSession) — a phone tap should work any time, no wake word
         # needed. start() itself is a no-op returning None when
@@ -47,14 +49,25 @@ class OmaDaemon:
             self._listen_stop.set()
         elif command != 'status':
             return {'error': 'Unknown assistant command'}
-        return {'state': self._state}
+        config = getattr(self, 'config', None)
+        return {'state': self._state, 'provider': getattr(config, 'provider', None),
+                'error_detail': getattr(self, '_last_error', None)}
 
     async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        def terminate():
+            self.stop()
+            task.cancel()
+        # Let active audio sessions unload their private PipeWire modules
+        # when systemd restarts us, instead of exiting before their finally.
+        loop.add_signal_handler(signal.SIGTERM, terminate)
         server = await control.serve(self.panel_command)
         try:
             async with server:
                 await self._run_sessions()
         finally:
+            loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
 
     async def _run_sessions(self) -> None:
@@ -81,19 +94,18 @@ class OmaDaemon:
             if manual:
                 log.info('conversation activated from assistant panel')
             if self.config.provider == "gemini":
+                self._state = 'starting'
                 session = GeminiLiveSession(self.config)
+                session.on_connected = lambda: setattr(self, '_state', 'active')
             else:
                 session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
             try:
+                self._last_error = None
                 await session.run()
             except Exception:  # noqa: BLE001
                 log.exception("live session crashed")
-                if self.config.provider == "gemini":
-                    log.warning("Gemini Live failed; falling back to OpenAI Live for this session")
-                    try:
-                        await LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source).run()
-                    except Exception:  # noqa: BLE001
-                        log.exception("OpenAI fallback session also crashed")
+                self._last_error = "Connection ended unexpectedly. Check the service log, then try again."
+                # Keep the selected provider; never silently switch credentials.
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")
             self._state = 'listening'
@@ -114,5 +126,5 @@ def main() -> None:
     daemon = OmaDaemon()
     try:
         asyncio.run(daemon.run())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         daemon.stop()

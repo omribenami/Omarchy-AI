@@ -13,10 +13,7 @@ for source in "$PROJECT_DIR"/quickshell/plugins/*; do
   fi
   mkdir -p "$PLUGIN_DIR/$id"
   cp -a "$source/." "$PLUGIN_DIR/$id/"
-  if [[ "$id" == "omarchy-ai.settings" ]]; then
-    sed -i "s|@OMARCHY_AI_SETTINGS@|$PROJECT_DIR/.venv/bin/omarchy-ai-settings|g" \
-      "$PLUGIN_DIR/$id/Panel.qml"
-  fi
+  python3 "$PROJECT_DIR/scripts/render-plugin-paths.py" "$PLUGIN_DIR/$id" "$PROJECT_DIR/.venv/bin/omarchy-ai-settings"
 done
 # The shell watches plugin files, but rescan before enabling new IDs.
 omarchy-shell shell rescanPlugins
@@ -24,4 +21,5 @@ for id in settings watchdog window-labels myapi tv-discovery; do
   omarchy plugin enable "omarchy-ai.$id"
 done
 # The MyApi widget itself stays hidden until myapi_enabled is true.
+omarchy bar move omarchy-ai.settings --section right
 omarchy bar move omarchy-ai.myapi --section right --after omarchy-ai.settings

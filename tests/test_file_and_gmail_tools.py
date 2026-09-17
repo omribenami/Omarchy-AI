@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,7 +61,7 @@ class LocalFileToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log = root / "pts_2.log"
-            log.write_text("[2026-01-01T00:00:00] shell=bash pid=1 cwd=/work/demo status=0 command=pytest\n")
+            log.write_text(f"[2026-01-01T00:00:00] shell=bash pid={os.getpid()} cwd=/work/demo status=0 command=pytest\n")
             with patch.object(tile_logs, "TERMINAL_CONTEXT_DIR", root):
                 self.assertTrue(any("/work/demo" in item for item in tile_logs.list_tiles()))
                 self.assertIn("pytest", tile_logs.read_log("demo"))

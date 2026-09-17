@@ -61,7 +61,8 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         from omarchy_ai.core.daemon import OmaDaemon
         from unittest.mock import MagicMock, AsyncMock
         daemon = OmaDaemon.__new__(OmaDaemon)
-        daemon.config = object()
+        from types import SimpleNamespace
+        daemon.config = SimpleNamespace(provider="openai")
         daemon._stop = threading.Event()
         daemon._listen_stop = threading.Event()
         daemon._manual = True
