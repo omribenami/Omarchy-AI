@@ -22,24 +22,70 @@
 ---
 
 **Omarchy AI** is an independent, self-hosted voice assistant for
-[Omarchy](https://omarchy.org) (the Arch-based Hyprland desktop distro). Say
-a wake word, talk to it in plain language, and it actually *does things* on
-your desktop — not a chatbot bolted onto a terminal. It's built directly on
-your choice of OpenAI Live or Gemini Live, with a typed tool-calling layer
-that turns speech into real Hyprland/PipeWire/desktop actions.
+[Omarchy](https://omarchy.org) — the Arch-based Hyprland desktop. Say a wake
+word, talk in plain language, and it *does things* on your machine: windows,
+volume, themes, reminders, casting to a TV, phone bridge — not a chatbot
+bolted onto a terminal.
 
-It is not built on Home Assistant, Open Interpreter, or any other agent
-framework — the conversation loop, the tool registry, the wake-word
-pipeline, the casting subsystem, and the desktop UI are all this project's
-own code.
+Built directly on OpenAI Live or Gemini Live, with a typed tool-calling layer
+that turns speech into real Hyprland / PipeWire / desktop actions. The
+conversation loop, tool registry, wake-word pipeline, casting subsystem, and
+desktop UI are all this project's own code — not Home Assistant, Open
+Interpreter, or another agent framework.
 
-> **Honest status check.** This is a real, working system — the daemon runs
-> as a systemd service today, has controlled a real desktop over dozens of
-> live voice sessions, and casts a real desktop to a real Android TV over
-> WebRTC. It was also built in one long, evidence-driven session (see
-> [`STATUS.md`](STATUS.md) for the implementation history. A release bundle
-> includes the Python distributions, locked source, desktop plugins, wake
-> models, service unit, and Android receiver APK.
+> **Honest status.** The daemon runs as a systemd service today, has driven a
+> real desktop across dozens of live voice sessions, and casts to a real
+> Android TV over WebRTC. It was built in one long, evidence-driven session —
+> see [`STATUS.md`](STATUS.md). A release bundle ships the Python
+> distributions, locked source, desktop plugins, wake models, service unit,
+> and Android receiver APK.
+
+---
+
+## Hero demo
+
+Desktop session — wake word, live conversation, real tools on Omarchy:
+
+<div align="center">
+<video src="docs/media/desktop-demo.mp4" controls width="900" playsinline>
+  Your browser does not support video. <a href="docs/media/desktop-demo.mp4">Download the desktop demo</a>
+</video>
+</div>
+
+<p align="center"><a href="docs/media/desktop-demo.mp4"><strong>Watch / download desktop demo</strong></a></p>
+
+---
+
+## Feature gallery
+
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <p><strong>Phone bridge</strong></p>
+      <p>Talk from a paired phone browser over WebRTC — API keys stay on the desktop.</p>
+      <video src="docs/media/phone-bridge.mp4" controls width="100%" playsinline></video>
+      <p><a href="docs/media/phone-bridge.mp4">phone-bridge.mp4</a></p>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <p><strong>Short demo</strong></p>
+      <p>A condensed walkthrough of the assistant in action.</p>
+      <video src="docs/media/short-demo.mp4" controls width="100%" playsinline></video>
+      <p><a href="docs/media/short-demo.mp4">short-demo.mp4</a></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <p><strong>TV screen mirroring</strong></p>
+      <p>WebRTC cast to a paired Android TV / projector.</p>
+      <img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="100%" />
+    </td>
+    <td width="50%" valign="top" align="center">
+      <p><strong>TV screen mirroring</strong></p>
+      <p>Same session, second angle / state.</p>
+      <img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="100%" />
+    </td>
+  </tr>
+</table>
 
 ---
 
