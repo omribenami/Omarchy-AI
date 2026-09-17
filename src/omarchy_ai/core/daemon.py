@@ -88,6 +88,12 @@ class OmaDaemon:
                 await session.run()
             except Exception:  # noqa: BLE001
                 log.exception("live session crashed")
+                if self.config.provider == "gemini":
+                    log.warning("Gemini Live failed; falling back to OpenAI Live for this session")
+                    try:
+                        await LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source).run()
+                    except Exception:  # noqa: BLE001
+                        log.exception("OpenAI fallback session also crashed")
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")
             self._state = 'listening'
