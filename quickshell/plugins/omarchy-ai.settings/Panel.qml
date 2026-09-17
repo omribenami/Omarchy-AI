@@ -345,11 +345,19 @@ Panel {
         Column {
           width: parent.width; spacing: Style.space(6)
           PanelSectionHeader { text: "ASSISTANT API KEY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+          Dropdown { width: parent.width; showLabel: true; label: "Provider"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.fields.provider || "openai"; options: [{value: "openai", label: "OpenAI Live"}, {value: "gemini", label: "Gemini 3.8 Live"}]; onChanged: function(v) { root.setField("provider", JSON.stringify(v), "Provider updated — restart to apply") } }
           Text { width: parent.width; wrapMode: Text.WordWrap; text: (root.snapshot.api_key && root.snapshot.api_key.set) ? "API key saved securely." : "Add your OpenAI API key to enable conversations."; color: (root.snapshot.api_key && root.snapshot.api_key.set) ? Qt.darker(root.fg, 1.4) : "#ff6b6b"; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
           Row {
             width: parent.width; spacing: Style.space(8)
             TextField { id: apiKeyFieldTop; visible: !root.snapshot.api_key || !root.snapshot.api_key.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - Style.space(8); password: true; placeholderText: "sk-…"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: { root.saveApiKey(text); text = ""; root.apiKeyEditing = false } }
             Button { id: saveKeyButtonTop; text: (root.snapshot.api_key && root.snapshot.api_key.set && !root.apiKeyEditing) ? "Edit" : "Save"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.snapshot.api_key && root.snapshot.api_key.set && !root.apiKeyEditing) root.apiKeyEditing = true; else { root.saveApiKey(apiKeyFieldTop.text); apiKeyFieldTop.text = ""; root.apiKeyEditing = false } } }
+          }
+          Text { visible: root.fields.provider === "gemini"; width: parent.width; wrapMode: Text.WordWrap; text: (root.snapshot.gemini_api_key && root.snapshot.gemini_api_key.set) ? "Gemini API key saved securely." : "Add a Google AI Studio Gemini API key."; color: root.fg; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
+          Row {
+            visible: root.fields.provider === "gemini"
+            width: parent.width; spacing: Style.space(8)
+            TextField { id: geminiKeyField; width: parent.width - geminiKeyButton.width - Style.space(8); password: true; placeholderText: "Gemini API key"; foreground: root.fg; font.family: root.bar.fontFamily }
+            Button { id: geminiKeyButton; text: "Save Gemini key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { root._enqueue([root.py, "set-gemini-api-key"], function(result) { root.snapshot = result; root.statusTone = result.error ? "error" : "ok"; root.statusMessage = result.error || "Gemini key saved — restart to apply" }, {"GEMINI_API_KEY": geminiKeyField.text}); geminiKeyField.text = "" } }
           }
         }
         ButtonGroup {

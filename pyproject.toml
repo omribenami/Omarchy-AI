@@ -12,6 +12,7 @@ dependencies = [
     # to a direct dependency because src/omarchy_ai/myapi/client.py relies
     # on its Ed25519 primitives directly, not just incidentally.
     "cryptography>=42.0",
+    "google-genai>=1.30.0,<3.0.0",
     "numpy>=2.5.3",
     "onnxruntime>=1.30.0",
     "openwakeword>=0.4.0",
@@ -21,7 +22,7 @@ dependencies = [
     # cli/dashboard.py's live MyApi usage view — this project's first real
     # TUI dependency, pure-Python, no new system packages needed.
     "rich>=13.7",
-    "websockets>=17.1",
+    "websockets>=13.0,<17.0",
 ]
 
 [project.scripts]
