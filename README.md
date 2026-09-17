@@ -24,6 +24,18 @@
 
 ---
 
+## Demo
+
+A condensed walkthrough of the assistant in action:
+
+<div align="center">
+
+https://github.com/user-attachments/assets/fac7e740-cdd3-414f-be3e-524dd60bdca7
+
+</div>
+
+---
+
 **Omarchy AI** is an independent, self-hosted voice assistant for
 [Omarchy](https://omarchy.org) — the Arch-based Hyprland desktop. Say a wake
 word, talk in plain language, and it *does things* on your machine: windows,
@@ -45,19 +57,15 @@ Interpreter, or another agent framework.
 
 ---
 
-## Hero demo
+## Feature gallery
 
-Desktop session — wake word, live conversation, real tools on Omarchy:
+**Desktop session** — wake word, live conversation, real tools on Omarchy.
 
 <div align="center">
 
 https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 </div>
-
----
-
-## Feature gallery
 
 **Phone bridge** — talk from a paired phone browser over WebRTC; API keys stay on the desktop.
 
@@ -67,20 +75,13 @@ https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
 
 </div>
 
-**Short demo** — a condensed walkthrough of the assistant in action.
-
-<div align="center">
-
-https://github.com/user-attachments/assets/fac7e740-cdd3-414f-be3e-524dd60bdca7
-
-</div>
-
 **TV screen mirroring** — WebRTC cast to a paired Android TV / projector.
 
 <div align="center">
 <img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="420" />
 <img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="420" />
 </div>
+
 
 ---
 
