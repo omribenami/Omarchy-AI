@@ -5,6 +5,19 @@ The release bundle contains the Python distributions, receiver APK, wake
 models, plugins, and systemd unit. It intentionally does not bundle Arch
 packages, PipeWire, GStreamer, or an Android SDK.
 
+## Release 0.3.0 runtime installation
+
+`bash install.sh` checks and installs missing Arch runtime packages using
+`scripts/install-dependencies.sh`, then runs the dependency checks and locked
+Python setup. It includes `pipewire-audio` (WebRTC echo/noise processor),
+`pipewire-pulse` and `libpulse` (`pactl`), `uv`, `python-gobject`, GStreamer,
+`android-tools`, and `qrencode`. The Google GenAI SDK is installed from
+`uv.lock`. No API keys or personal settings are included in the release.
+
+Desktop Gemini creates session-owned echo/noise cancellation devices;
+no global PipeWire configuration or default-device change is required.
+The bundled Android APK does not require the Android SDK on the target PC.
+
 ## Installed manually during Phase 0 / Phase 1 spikes
 
 | Package | Source | Why |

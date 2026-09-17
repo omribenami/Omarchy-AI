@@ -25,8 +25,8 @@
 [Omarchy](https://omarchy.org) (the Arch-based Hyprland desktop distro). Say
 a wake word, talk to it in plain language, and it actually *does things* on
 your desktop — not a chatbot bolted onto a terminal. It's built directly on
-OpenAI's realtime `gpt-live-1` model over WebRTC, with a typed tool-calling
-layer that turns speech into real Hyprland/PipeWire/desktop actions.
+your choice of OpenAI Live or Gemini Live, with a typed tool-calling layer
+that turns speech into real Hyprland/PipeWire/desktop actions.
 
 It is not built on Home Assistant, Open Interpreter, or any other agent
 framework — the conversation loop, the tool registry, the wake-word
@@ -68,13 +68,16 @@ been used for, live:
 
 **Voice & wake word**
 - Fully local wake-word detection (`openWakeWord`), listening continuously
-  and opening a `gpt-live-1` conversation only when triggered — no
+  and opening a conversation with the selected provider only when triggered — no
   connection (and no per-second billing) outside an active conversation.
 - Any number of custom wake-word models can be loaded at once
   (`~/.config/omarchy-ai/wake_models/*.onnx`) — whichever one fires wakes
   it, configurable threshold/trigger-frame sensitivity.
 - Two-way, low-latency realtime voice via `gpt-live-1` over WebRTC
   (`aiortc`), delegated to `gpt-5` for reasoning/tool-calling.
+- Selectable Gemini Live on desktop and phone, with non-blocking desktop
+  actions. Desktop Gemini uses private PipeWire echo cancellation and noise
+  suppression without changing other applications' default audio devices.
 - Ends a conversation on "bye"/"stop"/"that's all" (and non-English
   equivalents — Hebrew is wired in as the concrete case) by watching the
   model's own spoken farewell, not just an English keyword match.
@@ -150,8 +153,9 @@ been used for, live:
 **Phone bridge**
 - A local page (self-signed HTTPS, so mobile mic access works) that a
   paired phone can open to talk to Omarchy AI directly from a browser —
-  the phone does its own WebRTC straight to OpenAI; this machine only
-  relays the SDP handshake (it holds the API key) and executes tool calls.
+  the phone uses WebRTC directly with OpenAI, or through this computer's
+  Gemini bridge when Gemini is selected. API keys remain on the computer.
+  Browser microphone capture requests echo cancellation and noise suppression.
 - QR-code pairing, generated from the settings panel: single-use,
   5-minute-TTL pairing token, a signed session cookie good for a year once
   paired, and a hard 403 on every request without a valid paired session —
@@ -255,24 +259,41 @@ in [`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md).
 
 ### Fast install (copy and paste)
 
-On a normal Omarchy installation, paste this whole block into a terminal:
+On an x86-64 Omarchy desktop, paste this whole block into a terminal.
+Internet access is required; missing system packages ask for sudo approval.
+Existing API keys and settings are preserved.
 
 ```bash
-sudo pacman -S --needed git android-tools gst-plugins-bad gst-plugins-good qrencode python-gobject
-git clone https://github.com/omribenami/Omarchy-AI.git "$HOME/Git/omarchy-ai"
-cd "$HOME/Git/omarchy-ai"
-./install.sh
+(
+set -euo pipefail
+mkdir -p "$HOME/.local/share/omachy-ai-releases"
+cd "$HOME/.local/share/omachy-ai-releases"
+package=omarchy-ai-0.3.0-linux-x86_64.tar.gz
+base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
+curl -fL "$base/$package" -o "$package"
+curl -fL "$base/$package.sha256" -o "$package.sha256"
+sha256sum -c "$package.sha256"
+tar -xzf "$package"
+cd omarchy-ai-0.3.0-linux-x86_64
+bash install.sh
 systemctl --user enable --now omarchy-ai.service
+systemctl --user restart omarchy-ai.service
+)
 ```
 
-The installer creates the Python environment, installs the desktop plugins,
+Keep the extracted directory: the service runs from it. The installer installs
+missing native packages, creates the locked Python environment, installs the desktop plugins,
 copies the bundled wake-word models, creates the user config, and installs the
 systemd service. It does not guess or overwrite your API key. Open the
-**Omarchy AI** settings panel, add the key at the top, then press **Apply saved
-changes**. The panel restarts the service and saves the key in
-`~/.config/omarchy-ai/key` with owner-only permissions.
+**Omarchy AI** settings panel on the right side of the bar, choose **OpenAI**
+or **Gemini**, add that provider's key, then press **Apply saved changes**.
+Keys are saved with owner-only permissions in `~/.config/omarchy-ai/key`
+or `~/.config/omarchy-ai/gemini-key`. Saved keys show an **Edit key** button.
+New installs default to the `omachy` wake word and ASCII visualizer; existing
+preferences are not overwritten. Refresh paired phone pages after upgrading.
 
-If the repository is already present, run `cd "$HOME/Git/omarchy-ai" && ./install.sh`.
+For an existing source checkout, pull the update with `git pull --ff-only`,
+run `bash install.sh` there, then restart `omarchy-ai.service`.
 
 ### Persistent preferences
 
@@ -284,7 +305,7 @@ future sessions. One-off requests are not saved as preferences.
 ### Release package
 
 Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` file
-from the matching GitHub release, verify it, then unpack and install:
+from this repository's [`dist/`](dist/) directory, verify it, then unpack and install:
 
 ```bash
 sha256sum -c omarchy-ai-<version>-linux-x86_64.tar.gz.sha256
@@ -295,8 +316,11 @@ cd omarchy-ai-<version>-linux-x86_64
 
 The bundle includes the Android receiver at
 `android/omarchy-ai-receiver.apk`. The installer sets up the desktop service
-and plugins; it does not silently install system packages or alter firewall
-rules. It prints the exact `adb install -r` command for the receiver.
+and plugins, and requests installation of missing native packages via pacman.
+It does not alter firewall rules. It prints the `adb install -r` command for
+the receiver. The archive contains the app wheel/source, dependency lockfile,
+plugins, wake models, and prebuilt APK; Python dependencies and native packages
+are downloaded during installation, so this is not an offline installer.
 
 ### From source
 
@@ -306,21 +330,21 @@ each is needed):
 
 ```bash
 sudo pacman -S --needed android-tools gst-plugins-bad gst-plugins-good \
-  gradle qrencode
+  gradle qrencode python-gobject pipewire-audio pipewire-pulse libpulse uv
 yay -S android-sdk-cmdline-tools-latest
 ```
 
 GStreamer, PipeWire, `xdg-desktop-portal-hyprland`, `avahi-daemon`, and
 `python-gobject` ship on a stock Omarchy install already — the setup script
-below checks rather than assumes, but doesn't install them for you if
-they're somehow missing.
+checks them, and `install.sh` installs missing runtime packages. The Android
+SDK and Gradle are needed only to rebuild the receiver, not to use the bundle.
 
 **2. Clone and install:**
 
 ```bash
 git clone https://github.com/omribenami/Omarchy-AI.git ~/Git/omarchy-ai
 cd ~/Git/omarchy-ai
-./scripts/setup.sh
+bash install.sh
 ```
 
 `setup.sh` creates a `uv`-managed venv **with `--system-site-packages`**

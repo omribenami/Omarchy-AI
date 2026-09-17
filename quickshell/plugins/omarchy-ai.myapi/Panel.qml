@@ -10,7 +10,7 @@ Panel {
   moduleName: "omarchy-ai.myapi"
   ipcTarget: "omarchy-ai.myapi"
 
-  readonly property string py: "/home/ben-ami/Git/omarchy-ai/.venv/bin/omarchy-ai-settings"
+  readonly property string py: "@OMARCHY_AI_SETTINGS@"
 
   property var snapshot: ({})
   property var dashboard: ({})

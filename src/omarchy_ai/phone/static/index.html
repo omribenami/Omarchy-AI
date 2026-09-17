@@ -632,7 +632,7 @@ async function start() {
     } catch { /* Optional visualization must never prevent the call. */ }
     if (pc !== peer) return false;
     if (mode === 'voice') {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
       if (pc !== peer) { stream.getTracks().forEach(t => t.stop()); return false; }
       localStream = stream;
       await micSender.replaceTrack(stream.getAudioTracks()[0]);
@@ -870,7 +870,7 @@ async function switchInputMode() {
   const peer = pc;
   try {
     if (live && next === 'voice') {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
       if (pc !== peer) { stream.getTracks().forEach(t => t.stop()); return; }
       localStream = stream;
       await micSender.replaceTrack(stream.getAudioTracks()[0]);

@@ -1,6 +1,6 @@
 [project]
 name = "omarchy-ai"
-version = "0.2.0"
+version = "0.3.0"
 description = "Independent voice assistant for Omarchy with Android TV/tablet casting"
 authors = [
     { name = "omribenami", email = "benami.omri@gmail.com" }

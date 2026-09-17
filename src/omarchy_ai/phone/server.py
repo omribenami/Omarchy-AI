@@ -1,8 +1,9 @@
 """Phone bridge: an HTTPS server letting a paired phone on LAN or Tailscale talk
 to Omarchy from a browser page.
 
-The browser does its own WebRTC directly to OpenAI's Live API (real audio
-never passes through this process) — this server's only two jobs are:
+For OpenAI, the browser uses WebRTC directly to its Live API. For Gemini,
+the server bridges browser WebRTC audio to Gemini Live with a server-side key.
+The server's OpenAI path has two jobs:
 (1) relay the browser's SDP offer to `POST /v1/live/sessions` (which needs
 the real API key, so the browser can't call it directly) and hand back the
 answer, and (2) execute tool calls the model makes during that session,
@@ -221,6 +222,9 @@ def _relay_offer(config: Config, offer_sdp: str) -> str:
     """POSTs the browser's SDP offer to OpenAI (server-side, real key) and
     returns the answer SDP — same request shape as the desktop LiveSession,
     built from the same build_session_config so the two can't drift."""
+    if config.provider == "gemini":
+        from .gemini import relay_offer
+        return relay_offer(config, offer_sdp)
     body = json.dumps(
         {
             "session": build_session_config(config),
@@ -497,6 +501,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "expected {\"sdp\": \"...\"}"})
             return
         try:
+            log.info("phone bridge: creating %s session", self.config.provider)
             answer_sdp = _relay_offer(self.config, offer_sdp)
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")

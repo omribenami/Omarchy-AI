@@ -38,7 +38,7 @@ Item {
   property var devices: []
   property string selectedAddress: ""
   property bool refreshing: false
-  readonly property string py: "/home/ben-ami/Git/omarchy-ai/.venv/bin/omarchy-ai-settings"
+  readonly property string py: "@OMARCHY_AI_SETTINGS@"
 
   readonly property color rainGreen: "#39ff88"
   readonly property color rainCyan: "#39e6ff"

@@ -20,7 +20,7 @@ echo "==> Syncing Python environment (system-site-packages, for python-gobject/G
 if [[ ! -d .venv ]]; then
   uv venv --system-site-packages --python /usr/bin/python3
 fi
-uv sync
+uv sync --locked
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-ai"
 mkdir -p "$CONFIG_DIR"
@@ -40,11 +40,8 @@ else
   echo "==> $CONFIG_DIR/config.yaml already exists, leaving it alone"
 fi
 
-if [[ ! -f "$CONFIG_DIR/key" && ! -f ~/.config/omavoice/key ]]; then
-  echo "==> No OpenAI API key found yet"
-  echo "    Open the Omarchy AI settings panel and add it at the top, or run:"
-  echo "    printf '%s\\n' 'sk-...' | $PROJECT_DIR/.venv/bin/omarchy-ai-settings set-api-key"
-fi
+echo "==> In Assistant Settings, choose OpenAI or Gemini and save that provider's API key."
+echo "    Existing configuration and key files are preserved. Apply saved changes to restart."
 
 echo "==> Installing the systemd user unit"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -66,7 +63,7 @@ echo "Setup complete. Next steps:"
 echo "  systemctl --user enable --now omarchy-ai"
 echo "  journalctl --user -u omarchy-ai -f"
 echo
-echo "Say 'omachy' (or 'omri'/'roni' — all three are trained and active) to talk."
+echo "Say 'omachy' to talk. Additional bundled wake words can be enabled in Settings."
 echo "End a conversation by saying goodbye/stop/that's all."
 echo
 echo "Optional: connect Gmail/Calendar/Drive/Notion/Slack and more via MyApi"
