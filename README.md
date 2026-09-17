@@ -48,12 +48,6 @@ conversation loop, tool registry, wake-word pipeline, casting subsystem, and
 desktop UI are all this project's own code — not Open Interpreter or
 another agent framework.
 
-> **Honest status.** The daemon runs as a systemd service today, has driven a
-> real desktop across dozens of live voice sessions, and casts to a real
-> Android TV over WebRTC. It was built in one long, evidence-driven session —
-> see [`STATUS.md`](STATUS.md). A release bundle ships the Python
-> distributions, locked source, desktop plugins, wake models, service unit,
-> and Android receiver APK.
 
 ---
 
@@ -63,7 +57,7 @@ another agent framework.
 
 <div align="center">
 
-https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
+https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
 
 </div>
 
@@ -71,7 +65,7 @@ https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 <div align="center">
 
-https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
+https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 </div>
 
