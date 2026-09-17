@@ -1,3 +1,5 @@
+<div align="center">
+
 ```
  ██████╗ ███╗   ███╗ █████╗  ██████╗██╗  ██╗██╗   ██╗
 ██╔═══██╗████╗ ████║██╔══██╗██╔════╝██║  ██║╚██╗ ██╔╝
@@ -10,6 +12,7 @@
 
 ```
 
+</div>
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-39ff88.svg)](LICENSE)
@@ -47,45 +50,27 @@ Interpreter, or another agent framework.
 Desktop session — wake word, live conversation, real tools on Omarchy:
 
 <div align="center">
-<video src="docs/media/desktop-demo.mp4" controls width="900" playsinline>
-  Your browser does not support video. <a href="docs/media/desktop-demo.mp4">Download the desktop demo</a>
-</video>
+  <a href="docs/media/desktop-demo.mp4">
+    <img src="docs/media/desktop-demo.jpg" alt="Omarchy AI desktop demo" width="900" />
+  </a>
+  <p><a href="docs/media/desktop-demo.mp4"><strong>▶ Watch desktop demo</strong></a></p>
 </div>
-
-<p align="center"><a href="docs/media/desktop-demo.mp4"><strong>Watch / download desktop demo</strong></a></p>
 
 ---
 
 ## Feature gallery
 
-<table>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <p><strong>Phone bridge</strong></p>
-      <p>Talk from a paired phone browser over WebRTC — API keys stay on the desktop.</p>
-      <video src="docs/media/phone-bridge.mp4" controls width="100%" playsinline></video>
-      <p><a href="docs/media/phone-bridge.mp4">phone-bridge.mp4</a></p>
-    </td>
-    <td width="50%" valign="top" align="center">
-      <p><strong>Short demo</strong></p>
-      <p>A condensed walkthrough of the assistant in action.</p>
-      <video src="docs/media/short-demo.mp4" controls width="100%" playsinline></video>
-      <p><a href="docs/media/short-demo.mp4">short-demo.mp4</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <p><strong>TV screen mirroring</strong></p>
-      <p>WebRTC cast to a paired Android TV / projector.</p>
-      <img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="100%" />
-    </td>
-    <td width="50%" valign="top" align="center">
-      <p><strong>TV screen mirroring</strong></p>
-      <p>Same session, second angle / state.</p>
-      <img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="100%" />
-    </td>
-  </tr>
-</table>
+<div align="center">
+
+| **Phone bridge** | **Short demo** |
+|:---:|:---:|
+| Talk from a paired phone browser over WebRTC — API keys stay on the desktop.<br/><a href="docs/media/phone-bridge.mp4"><img src="docs/media/phone-bridge.jpg" alt="Phone bridge" width="420" /></a><br/><a href="docs/media/phone-bridge.mp4">▶ Watch</a> | A condensed walkthrough of the assistant in action.<br/><a href="docs/media/short-demo.mp4"><img src="docs/media/short-demo.jpg" alt="Short demo" width="420" /></a><br/><a href="docs/media/short-demo.mp4">▶ Watch</a> |
+
+| **TV screen mirroring** | |
+|:---:|:---:|
+| Cast / mirror the desktop to a paired Android TV.<br/><img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="420" /> | <img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="420" /> |
+
+</div>
 
 ---
 
