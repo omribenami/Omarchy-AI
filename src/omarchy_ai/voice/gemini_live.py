@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import math
+import struct
 
 from ..core.history import append_session
 from ..config import Config
-from . import status_icon
+from . import status_icon, watchdog
 
 log = logging.getLogger("omarchy_ai.voice.gemini")
 
@@ -54,6 +56,9 @@ class GeminiLiveSession:
             async with client.aio.live.connect(model=self.config.gemini_model, config=live_config) as session:
                 log.info("Gemini Live session connected")
                 status_icon.set_live(True)
+                if self.config.watchdog_enabled:
+                    watchdog.start(self.config.watchdog_display_mode)
+                    watchdog.state("listening")
                 async def send_audio() -> None:
                     while not self._hangup.is_set():
                         chunk = await asyncio.get_running_loop().run_in_executor(None, mic.stdout.read, 640)
@@ -81,10 +86,20 @@ class GeminiLiveSession:
                                 for part in server.model_turn.parts or []:
                                     blob = getattr(part, "inline_data", None)
                                     if blob and blob.data:
-                                        speaker.stdin.write(blob.data)
+                                        watchdog.state("speaking")
+                                        raw = blob.data
+                                        if isinstance(raw, str):
+                                            raw = raw.encode()
+                                        samples = struct.unpack("<%dh" % (len(raw) // 2), raw[:len(raw) - len(raw) % 2])
+                                        rms = math.sqrt(sum(float(v) * v for v in samples) / max(1, len(samples)))
+                                        if self.config.watchdog_enabled:
+                                            watchdog.level(min(1.0, rms / 12000.0))
+                                        speaker.stdin.write(raw)
                                         speaker.stdin.flush()
                             if self._hangup.is_set():
                                 break
+                        if self.config.watchdog_enabled and not self._hangup.is_set():
+                            watchdog.state("listening")
                 except Exception:
                     log.exception("Gemini Live session failed while receiving audio")
                     raise
@@ -92,6 +107,8 @@ class GeminiLiveSession:
                     sender.cancel()
                     await asyncio.gather(sender, return_exceptions=True)
         finally:
+            if self.config.watchdog_enabled:
+                watchdog.stop()
             status_icon.set_live(False)
             self._hangup.set()
             mic.terminate(); speaker.terminate()
