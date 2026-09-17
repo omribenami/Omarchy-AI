@@ -31,7 +31,12 @@ async def serve(callback):
             pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                # The panel may close its one-shot IPC socket immediately
+                # after receiving the response; that is not a daemon error.
+                pass
 
     path = socket_path()
     path.unlink(missing_ok=True)
