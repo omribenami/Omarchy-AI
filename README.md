@@ -45,8 +45,8 @@ bolted onto a terminal.
 Built directly on OpenAI Live or Gemini Live, with a typed tool-calling layer
 that turns speech into real Hyprland / PipeWire / desktop actions. The
 conversation loop, tool registry, wake-word pipeline, casting subsystem, and
-desktop UI are all this project's own code — not Home Assistant, Open
-Interpreter, or another agent framework.
+desktop UI are all this project's own code — not Open Interpreter or
+another agent framework.
 
 > **Honest status.** The daemon runs as a systemd service today, has driven a
 > real desktop across dozens of live voice sessions, and casts to a real
@@ -59,7 +59,7 @@ Interpreter, or another agent framework.
 
 ## Feature gallery
 
-**Desktop session** — wake word, live conversation, real tools on Omarchy.
+**Phone session** — mirror the screen to your phone and operate the PC by talking to Omarchy.
 
 <div align="center">
 
@@ -67,7 +67,7 @@ https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 </div>
 
-**Phone bridge** — talk from a paired phone browser over WebRTC; API keys stay on the desktop.
+**Phone bridge** — talk from a paired phone to Omarchy while mirroring the PC to Android TVs in your network.
 
 <div align="center">
 
