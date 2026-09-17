@@ -167,7 +167,12 @@ def _track(initial: Path, before: set, label: str) -> None:
         _tracked.pop(address, None)
         _titles.pop(address, None)
         _aliases.pop(label.lower(), None)
-    _archive_transcript(final, label)
+    # Closed terminal output is ephemeral. Do not retain it in the assistant
+    # cache: a later session must never confuse a dead tile with a live one.
+    try:
+        final.unlink()
+    except OSError:
+        pass
 
 
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z])")
@@ -180,9 +185,7 @@ def _strip_ansi(text: str) -> str:
 def list_tiles() -> list[str]:
     with _lock:
         active = list(_titles.values())
-    return active + [label for label, _path in _live_transcripts()] + [label for label, _path in _manual_contexts()] + [
-        label for label, _path in _completed_transcripts()
-    ]
+    return active + [label for label, _path in _live_transcripts()] + [label for label, _path in _manual_contexts()]
 
 
 def _history_label(path: Path) -> str:
@@ -269,6 +272,16 @@ def _manual_contexts() -> list[tuple[str, Path]]:
             last = path.read_text(errors="replace").splitlines()[-1]
         except (OSError, IndexError):
             last = ""
+        pid_match = re.search(r"\bpid=(\d+)\b", last)
+        if pid_match:
+            try:
+                os.kill(int(pid_match.group(1)), 0)
+            except (ProcessLookupError, PermissionError, ValueError):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                continue
         cwd = re.search(r"\bcwd=(.*?) status=", last)
         label = f"terminal context: {cwd.group(1) if cwd else path.stem}"
         result.append((label, path))
@@ -320,7 +333,6 @@ def find_log(query: str | None) -> Path | None:
                 return path
     named_items.extend(live)
     named_items.extend(_manual_contexts())
-    named_items.extend(_completed_transcripts())
     if not named_items:
         return None
     if not query:
@@ -369,9 +381,9 @@ def read_log(query: str | None, tail_chars: int = 4000) -> str:
 def sweep_stale() -> None:
     """Called once at daemon startup.
 
-    A daemon restart should not erase the evidence needed to answer what
-    happened in a terminal the assistant opened. Archive stale live logs;
-    normal pruning keeps that history bounded.
+    A daemon restart must not leave dead terminal output in the assistant's
+    cache. Remove stale PTY logs and stale manual context files; only open
+    terminals remain discoverable.
     """
     if not TILE_LOG_DIR.is_dir():
         return
@@ -383,5 +395,27 @@ def sweep_stale() -> None:
                     continue
                 except (ProcessLookupError, ValueError):
                     pass
-            _archive_transcript(p, p.stem.replace("_", " "))
-    _prune_history()
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    if TERMINAL_HISTORY_DIR.is_dir():
+        for p in TERMINAL_HISTORY_DIR.glob("*.log"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    if TERMINAL_CONTEXT_DIR.is_dir():
+        for p in TERMINAL_CONTEXT_DIR.glob("*.log"):
+            try:
+                last = p.read_text(errors="replace").splitlines()[-1]
+                match = re.search(r"\bpid=(\d+)\b", last)
+                if not match:
+                    p.unlink()
+                    continue
+                os.kill(int(match.group(1)), 0)
+            except (OSError, ValueError, IndexError):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
