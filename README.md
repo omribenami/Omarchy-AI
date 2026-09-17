@@ -1,3 +1,5 @@
+<div align="center">
+
 ```
  ██████╗ ███╗   ███╗ █████╗  ██████╗██╗  ██╗██╗   ██╗
 ██╔═══██╗████╗ ████║██╔══██╗██╔════╝██║  ██║╚██╗ ██╔╝
@@ -10,6 +12,7 @@
 
 ```
 
+</div>
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-39ff88.svg)](LICENSE)
@@ -47,45 +50,37 @@ Interpreter, or another agent framework.
 Desktop session — wake word, live conversation, real tools on Omarchy:
 
 <div align="center">
-<video src="docs/media/desktop-demo.mp4" controls width="900" playsinline>
-  Your browser does not support video. <a href="docs/media/desktop-demo.mp4">Download the desktop demo</a>
-</video>
-</div>
 
-<p align="center"><a href="docs/media/desktop-demo.mp4"><strong>Watch / download desktop demo</strong></a></p>
+https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
+
+</div>
 
 ---
 
 ## Feature gallery
 
-<table>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <p><strong>Phone bridge</strong></p>
-      <p>Talk from a paired phone browser over WebRTC — API keys stay on the desktop.</p>
-      <video src="docs/media/phone-bridge.mp4" controls width="100%" playsinline></video>
-      <p><a href="docs/media/phone-bridge.mp4">phone-bridge.mp4</a></p>
-    </td>
-    <td width="50%" valign="top" align="center">
-      <p><strong>Short demo</strong></p>
-      <p>A condensed walkthrough of the assistant in action.</p>
-      <video src="docs/media/short-demo.mp4" controls width="100%" playsinline></video>
-      <p><a href="docs/media/short-demo.mp4">short-demo.mp4</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top" align="center">
-      <p><strong>TV screen mirroring</strong></p>
-      <p>WebRTC cast to a paired Android TV / projector.</p>
-      <img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="100%" />
-    </td>
-    <td width="50%" valign="top" align="center">
-      <p><strong>TV screen mirroring</strong></p>
-      <p>Same session, second angle / state.</p>
-      <img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="100%" />
-    </td>
-  </tr>
-</table>
+**Phone bridge** — talk from a paired phone browser over WebRTC; API keys stay on the desktop.
+
+<div align="center">
+
+https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
+
+</div>
+
+**Short demo** — a condensed walkthrough of the assistant in action.
+
+<div align="center">
+
+https://github.com/user-attachments/assets/fac7e740-cdd3-414f-be3e-524dd60bdca7
+
+</div>
+
+**TV screen mirroring** — WebRTC cast to a paired Android TV / projector.
+
+<div align="center">
+<img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="420" />
+<img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="420" />
+</div>
 
 ---
 
