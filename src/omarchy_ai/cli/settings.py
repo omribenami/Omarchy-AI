@@ -112,7 +112,7 @@ def _wake_models() -> list[dict]:
     if not WAKE_MODELS_DIR.is_dir():
         return []
     return [
-        {"name": p.stem, "path": str(p)}
+        {"name": p.name, "path": str(p)}
         for p in sorted(WAKE_MODELS_DIR.glob("*.onnx"))
     ]
 
@@ -448,16 +448,13 @@ def cmd_restart_status(_args: argparse.Namespace) -> dict:
 
 
 def cmd_restart(_args: argparse.Namespace) -> dict:
-    busy, reason = _conversation_busy()
-    if busy:
-        return {"restarted": False, "reason": reason}
     proc = subprocess.run(
         ["systemctl", "--user", "restart", SERVICE],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
         return {"restarted": False, "reason": (proc.stderr or proc.stdout or "systemctl restart failed").strip()}
-    return {"restarted": True, "reason": reason}
+    return {"restarted": True, "reason": "service restarted"}
 
 
 def cmd_pair_phone(_args: argparse.Namespace) -> dict:

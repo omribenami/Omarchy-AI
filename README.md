@@ -253,6 +253,27 @@ in [`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md).
 
 ## Installation
 
+### Fast install (copy and paste)
+
+On a normal Omarchy installation, paste this whole block into a terminal:
+
+```bash
+sudo pacman -S --needed git android-tools gst-plugins-bad gst-plugins-good qrencode python-gobject
+git clone https://github.com/omribenami/Omarchy-AI.git "$HOME/Git/omarchy-ai"
+cd "$HOME/Git/omarchy-ai"
+./install.sh
+systemctl --user enable --now omarchy-ai.service
+```
+
+The installer creates the Python environment, installs the desktop plugins,
+copies the bundled wake-word models, creates the user config, and installs the
+systemd service. It does not guess or overwrite your API key. Open the
+**Omarchy AI** settings panel, add the key at the top, then press **Apply saved
+changes**. The panel restarts the service and saves the key in
+`~/.config/omarchy-ai/key` with owner-only permissions.
+
+If the repository is already present, run `cd "$HOME/Git/omarchy-ai" && ./install.sh`.
+
 ### Release package
 
 Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` file

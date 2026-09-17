@@ -11,12 +11,13 @@ Panel {
   ipcTarget: "omarchy-ai.settings"
   manageIpc: false // This panel supplies its own handler including setLive.
 
-  readonly property string py: "/home/ben-ami/Git/omarchy-ai/.venv/bin/omarchy-ai-settings"
+  readonly property string py: "@OMARCHY_AI_SETTINGS@"
 
   property var snapshot: ({})
   property bool loaded: false
   property bool dirty: false
   property bool restarting: false
+  property bool apiKeyEditing: false
   property string statusMessage: ""
   property string statusTone: "info" // "info" | "ok" | "error"
 
@@ -341,6 +342,16 @@ Panel {
           opacity: enabled ? 1 : 0.55
           onClicked: root.activateAssistant()
         }
+        Column {
+          width: parent.width; spacing: Style.space(6)
+          PanelSectionHeader { text: "ASSISTANT API KEY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
+          Text { width: parent.width; wrapMode: Text.WordWrap; text: (root.snapshot.api_key && root.snapshot.api_key.set) ? "API key saved securely." : "Add your OpenAI API key to enable conversations."; color: (root.snapshot.api_key && root.snapshot.api_key.set) ? Qt.darker(root.fg, 1.4) : "#ff6b6b"; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
+          Row {
+            width: parent.width; spacing: Style.space(8)
+            TextField { id: apiKeyFieldTop; visible: !root.snapshot.api_key || !root.snapshot.api_key.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - Style.space(8); password: true; placeholderText: "sk-…"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: { root.saveApiKey(text); text = ""; root.apiKeyEditing = false } }
+            Button { id: saveKeyButtonTop; text: (root.snapshot.api_key && root.snapshot.api_key.set && !root.apiKeyEditing) ? "Edit" : "Save"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.snapshot.api_key && root.snapshot.api_key.set && !root.apiKeyEditing) root.apiKeyEditing = true; else { root.saveApiKey(apiKeyFieldTop.text); apiKeyFieldTop.text = ""; root.apiKeyEditing = false } } }
+          }
+        }
         ButtonGroup {
           width: parent.width; foreground: root.fg; fontFamily: root.bar.fontFamily
           fontSize: Style.font.bodySmall; value: root.section
@@ -647,53 +658,7 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          PanelSectionHeader { text: "ASSISTANT API KEY"; foreground: root.fg; fontFamily: root.bar.fontFamily }
-
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: {
-              var st = root.snapshot.api_key || ({})
-              if (!st.set) return "No key set — the assistant can't start a conversation without one."
-              if (st.source === "omavoice") return "Using the key from omavoice. Paste one here to give Omarchy AI its own."
-              return "A key is set. Paste a new one to replace it."
-            }
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            color: (root.snapshot.api_key && root.snapshot.api_key.set)
-              ? Qt.darker(root.fg, 1.4) : "#ff6b6b"
-          }
-
-          Row {
-            width: parent.width
-            spacing: Style.space(8)
-
-            TextField {
-              id: apiKeyField
-              width: parent.width - saveKeyButton.width - Style.space(8)
-              password: true
-              placeholderText: "sk-..."
-              foreground: root.fg
-              font.family: root.bar.fontFamily
-              onAccepted: {
-                root.saveApiKey(text)
-                text = ""
-              }
-            }
-
-            Button {
-              id: saveKeyButton
-              text: "Save"
-              bordered: true
-              foreground: root.fg
-              fontFamily: root.bar.fontFamily
-              onClicked: {
-                root.saveApiKey(apiKeyField.text)
-                apiKeyField.text = ""
-              }
-            }
-          }
+          // API key editor is shown at the top of the panel.
         }
 
         PanelSeparator { foreground: root.fg; visible: root.section === "connections" }
@@ -731,7 +696,7 @@ Panel {
             background: Color.background
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
-            value: root.fields.watchdog_display_mode || "feed"
+            value: root.fields.watchdog_display_mode || "visualizer"
             options: [
               { value: "feed", label: "Text feed" },
               { value: "visualizer", label: "ASCII visualizer" },

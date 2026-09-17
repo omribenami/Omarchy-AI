@@ -86,7 +86,9 @@ class Config:
     custom_wake_model_path: str | None = None  # back-compat single-model override
     custom_wake_model_paths: list[str] = field(
         default_factory=lambda: (
-            [str(p) for p in sorted(WAKE_MODELS_DIR.glob("*.onnx"))]
+            [str(WAKE_MODELS_DIR / "omachy.onnx")]
+            if (WAKE_MODELS_DIR / "omachy.onnx").is_file()
+            else [str(p) for p in sorted(WAKE_MODELS_DIR.glob("*.onnx"))[:1]]
             if WAKE_MODELS_DIR.is_dir()
             else []
         )
@@ -286,7 +288,7 @@ class Config:
     # (ASCII/unicode amplitude bars while speaking), or "both". Selected via
     # the settings panel, sent to the plugin as part of watchdog.start()'s
     # payload each session.
-    watchdog_display_mode: str = "feed"
+    watchdog_display_mode: str = "visualizer"
 
     # Phone bridge (src/omarchy_ai/phone/server.py) — a local HTTP server
     # letting a phone on the same LAN open a live conversation from a

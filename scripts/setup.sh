@@ -40,11 +40,10 @@ else
   echo "==> $CONFIG_DIR/config.yaml already exists, leaving it alone"
 fi
 
-if [[ ! -f ~/.config/omavoice/key ]]; then
-  echo "==> WARNING: no OpenAI API key found at ~/.config/omavoice/key"
-  echo "    Omarchy AI needs a key with gpt-live-1 access. Either paste one"
-  echo "    there (mode 600, key only, no other content) or set"
-  echo "    api_key_path in $CONFIG_DIR/config.yaml to point somewhere else."
+if [[ ! -f "$CONFIG_DIR/key" && ! -f ~/.config/omavoice/key ]]; then
+  echo "==> No OpenAI API key found yet"
+  echo "    Open the Omarchy AI settings panel and add it at the top, or run:"
+  echo "    printf '%s\\n' 'sk-...' | $PROJECT_DIR/.venv/bin/omarchy-ai-settings set-api-key"
 fi
 
 echo "==> Installing the systemd user unit"

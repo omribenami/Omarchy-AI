@@ -13,6 +13,10 @@ for source in "$PROJECT_DIR"/quickshell/plugins/*; do
   fi
   mkdir -p "$PLUGIN_DIR/$id"
   cp -a "$source/." "$PLUGIN_DIR/$id/"
+  if [[ "$id" == "omarchy-ai.settings" ]]; then
+    sed -i "s|@OMARCHY_AI_SETTINGS@|$PROJECT_DIR/.venv/bin/omarchy-ai-settings|g" \
+      "$PLUGIN_DIR/$id/Panel.qml"
+  fi
 done
 # The shell watches plugin files, but rescan before enabling new IDs.
 omarchy-shell shell rescanPlugins
