@@ -50,7 +50,9 @@ class GeminiLiveSession:
                 "input_audio_transcription": {},
                 "output_audio_transcription": {},
             }
+            log.info("connecting to Gemini Live model %s", self.config.gemini_model)
             async with client.aio.live.connect(model=self.config.gemini_model, config=live_config) as session:
+                log.info("Gemini Live session connected")
                 status_icon.set_live(True)
                 async def send_audio() -> None:
                     while not self._hangup.is_set():
@@ -79,6 +81,12 @@ class GeminiLiveSession:
                                     speaker.stdin.flush()
                         if self._hangup.is_set():
                             break
+                    if not self._hangup.is_set():
+                        log.warning("Gemini Live receive stream ended before hangup")
+                        raise RuntimeError("Gemini Live receive stream ended unexpectedly")
+                except Exception:
+                    log.exception("Gemini Live session failed while receiving audio")
+                    raise
                 finally:
                     sender.cancel()
                     await asyncio.gather(sender, return_exceptions=True)
