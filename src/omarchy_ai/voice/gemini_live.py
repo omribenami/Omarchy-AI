@@ -63,27 +63,28 @@ class GeminiLiveSession:
 
                 sender = asyncio.create_task(send_audio())
                 try:
-                    async for message in session.receive():
-                        server = message.server_content
-                        if server and server.input_transcription:
-                            text = server.input_transcription.text or ""
-                            if text:
-                                self._transcript.append({"role": "user", "text": text})
-                        if server and server.output_transcription:
-                            text = server.output_transcription.text or ""
-                            if text:
-                                self._transcript.append({"role": "assistant", "text": text})
-                        if server and server.model_turn and speaker.stdin:
-                            for part in server.model_turn.parts or []:
-                                blob = getattr(part, "inline_data", None)
-                                if blob and blob.data:
-                                    speaker.stdin.write(blob.data)
-                                    speaker.stdin.flush()
-                        if self._hangup.is_set():
-                            break
-                    if not self._hangup.is_set():
-                        log.warning("Gemini Live receive stream ended before hangup")
-                        raise RuntimeError("Gemini Live receive stream ended unexpectedly")
+                    # The SDK's receive() iterator ends normally at each
+                    # turn_complete boundary. Re-enter it for the next VAD
+                    # turn; ending one iterator is not a disconnected socket.
+                    while not self._hangup.is_set():
+                        async for message in session.receive():
+                            server = message.server_content
+                            if server and server.input_transcription:
+                                text = server.input_transcription.text or ""
+                                if text:
+                                    self._transcript.append({"role": "user", "text": text})
+                            if server and server.output_transcription:
+                                text = server.output_transcription.text or ""
+                                if text:
+                                    self._transcript.append({"role": "assistant", "text": text})
+                            if server and server.model_turn and speaker.stdin:
+                                for part in server.model_turn.parts or []:
+                                    blob = getattr(part, "inline_data", None)
+                                    if blob and blob.data:
+                                        speaker.stdin.write(blob.data)
+                                        speaker.stdin.flush()
+                            if self._hangup.is_set():
+                                break
                 except Exception:
                     log.exception("Gemini Live session failed while receiving audio")
                     raise
