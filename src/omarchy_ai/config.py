@@ -38,6 +38,7 @@ SOCKET_PATH = RUNTIME_DIR / "omarchy-ai.sock"
 # real setup path for a fresh install (nothing else to know about, no other
 # project's config to borrow from).
 OMARCHY_KEY_PATH = CONFIG_DIR / "key"
+GEMINI_KEY_PATH = CONFIG_DIR / "gemini-key"
 # Where this project started: omavoice's key, reused directly since it's
 # the same OpenAI account. Kept as a fallback purely so an install that
 # predates the settings panel keeps working without the user having to
@@ -77,6 +78,9 @@ API_URL = "https://api.openai.com/v1/live/sessions"
 
 @dataclass
 class Config:
+    provider: str = "openai"
+    gemini_model: str = "gemini-3.8-live"
+    gemini_api_key_path: str = str(GEMINI_KEY_PATH)
     # Wake word (openWakeWord). See jarvisd's README for tuning notes —
     # same detector, same knobs. Custom-trained models (any number) load
     # simultaneously — anyone whose name is in this list wakes it, not

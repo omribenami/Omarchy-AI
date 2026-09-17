@@ -13,6 +13,7 @@ from ..execution import tile_logs
 from ..phone import server as phone_server
 from ..voice import feedback, control
 from ..voice.live import LiveSession
+from ..voice.gemini_live import GeminiLiveSession
 from ..voice.wake import WakeWordDetector
 
 log = logging.getLogger("omarchy_ai.core.daemon")
@@ -79,7 +80,10 @@ class OmaDaemon:
             log.info("wake word detected, starting live session")
             if manual:
                 log.info('conversation activated from assistant panel')
-            session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
+            if self.config.provider == "gemini":
+                session = GeminiLiveSession(self.config)
+            else:
+                session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
             try:
                 await session.run()
             except Exception:  # noqa: BLE001

@@ -54,6 +54,7 @@ from ..config import (
     CONFIG_DIR,
     LEGACY_KEY_PATH,
     OMARCHY_KEY_PATH,
+    GEMINI_KEY_PATH,
     USER_CONFIG_PATH,
     WAKE_MODELS_DIR,
     Config,
@@ -82,6 +83,7 @@ QR_BACKGROUND = "0d1a12"
 
 # name -> (validate_and_normalize(raw_json_value, current_config) -> value, description)
 SETTABLE = (
+    "provider",
     "custom_wake_model_paths",
     "wake_threshold",
     "watchdog_enabled",
@@ -136,6 +138,7 @@ def _snapshot() -> dict:
         "voice_options": voice_options,
         "config_path": str(USER_CONFIG_PATH),
         "api_key": _api_key_state(),
+        "gemini_api_key": {"set": GEMINI_KEY_PATH.exists(), "path": str(GEMINI_KEY_PATH)},
         "phone_bridge_paired_count": paired_count(),
         "myapi": _myapi_state(),
         "assistant": control.request('status'),
@@ -170,6 +173,11 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
             # not a preference.
             raise ValidationError("at least one wake model must stay active")
         return sorted(set(value))
+
+    if key == "provider":
+        if value not in ("openai", "gemini"):
+            raise ValidationError("provider must be openai or gemini")
+        return value
 
     if key == "wake_threshold":
         try:
@@ -371,6 +379,20 @@ def cmd_set_api_key(_args: argparse.Namespace) -> dict:
 
     return _snapshot()
 
+def cmd_set_gemini_api_key(_args: argparse.Namespace) -> dict:
+    raw = os.environ.get("GEMINI_API_KEY")
+    if raw is None:
+        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    key = (raw or "").strip()
+    if not key or any(c.isspace() for c in key):
+        return {"error": "no valid Gemini API key provided"}
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(GEMINI_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(key + "\n")
+    os.chmod(GEMINI_KEY_PATH, 0o600)
+    return _snapshot()
+
 
 def cmd_get(_args: argparse.Namespace) -> dict:
     return _snapshot()
@@ -524,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("key")
     p_set.add_argument("value")
     sub.add_parser("set-api-key")
+    sub.add_parser("set-gemini-api-key")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
     sub.add_parser("pair-phone")
@@ -545,6 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         "get": cmd_get,
         "set": cmd_set,
         "set-api-key": cmd_set_api_key,
+        "set-gemini-api-key": cmd_set_gemini_api_key,
         "restart-status": cmd_restart_status,
         "pair-phone": cmd_pair_phone,
         "revoke-phones": cmd_revoke_phones,
