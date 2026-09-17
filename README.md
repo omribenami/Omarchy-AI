@@ -274,6 +274,13 @@ changes**. The panel restarts the service and saves the key in
 
 If the repository is already present, run `cd "$HOME/Git/omarchy-ai" && ./install.sh`.
 
+### Persistent preferences
+
+You can give the assistant a standing instruction in conversation, for
+example: “Always type terminal commands in English.” It saves explicit,
+general preferences with its `remember_preference` tool and applies them in
+future sessions. One-off requests are not saved as preferences.
+
 ### Release package
 
 Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` file

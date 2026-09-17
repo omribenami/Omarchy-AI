@@ -6,9 +6,17 @@ from unittest.mock import patch
 from omarchy_ai.config import Config
 from omarchy_ai.execution import tile_logs
 from omarchy_ai.voice.live import build_session_config
+from omarchy_ai.core import memory
 
 
 class ContextTests(unittest.TestCase):
+    def test_standing_preference_is_persisted_and_reloaded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "learned_preferences.yaml"
+            with patch.object(memory, "PREFERENCES_PATH", path), patch.object(memory, "STATE_DIR", Path(directory)):
+                memory.add_preference("Always type terminal commands in English.")
+                self.assertEqual(memory.load_preferences(), ["Always type terminal commands in English."])
+
     def test_history_is_inactive_at_new_session(self):
         with patch('omarchy_ai.voice.live.load_recent_context', return_value='user: install yesterday'), patch('omarchy_ai.voice.live.load_preferences', return_value=[]):
             payload = str(build_session_config(Config()))

@@ -65,7 +65,7 @@ class LocalFileToolTests(unittest.TestCase):
                 self.assertTrue(any("/work/demo" in item for item in tile_logs.list_tiles()))
                 self.assertIn("pytest", tile_logs.read_log("demo"))
 
-    def test_completed_assistant_transcript_survives_daemon_restart(self):
+    def test_closed_assistant_transcript_is_removed_on_daemon_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             live = root / "live"
@@ -77,8 +77,8 @@ class LocalFileToolTests(unittest.TestCase):
                  patch.object(tile_logs, "TERMINAL_HISTORY_DIR", history):
                 tile_logs.sweep_stale()
                 self.assertFalse(transcript.exists())
-                self.assertIn("installer finished successfully", tile_logs.read_log("Omarchy AI 1234abcd"))
-                self.assertTrue(any("completed terminal" in item for item in tile_logs.list_tiles()))
+                self.assertNotIn("installer finished successfully", tile_logs.read_log("Omarchy AI 1234abcd"))
+                self.assertFalse(any("completed terminal" in item for item in tile_logs.list_tiles()))
 
 
 class GmailAttachmentToolTests(unittest.TestCase):
