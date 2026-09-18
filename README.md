@@ -304,13 +304,13 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.4-linux-x86_64.tar.gz
+package=omarchy-ai-0.3.5-linux-x86_64.tar.gz
 base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.4-linux-x86_64
+cd omarchy-ai-0.3.5-linux-x86_64
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
@@ -380,6 +380,14 @@ The worker uses the configured Vercel Gateway key. `search_os_knowledge` retriev
 the packaged Omarchy expert guide, capability registry and Arch operation notes.
 Uncertain decisions and unverified outcomes return a trace and any verified
 steps to the live model. See [research, architecture and measured limits](docs/JEV-DESKTOP.md).
+
+Web tasks run through the upstream
+[`browser-use/jev-ultrafast`](https://github.com/browser-use/jev-ultrafast)
+`Agent` with screenshots disabled. Each DOM decision explicitly requests
+`typesafe-ai/jev`; a small Gateway text model is used only when a field needs
+generated text. Release bundles include a pinned Jev Ultrafast wheel and the
+installer verifies that its `Agent` imports successfully. Browser runs stop at
+20 actions or 45 seconds rather than continuing an unproductive loop.
 
 ### Omarchi-ai (Jev + Vercel AI Gateway)
 

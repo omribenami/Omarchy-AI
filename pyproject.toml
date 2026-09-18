@@ -1,6 +1,6 @@
 [project]
 name = "omarchy-ai"
-version = "0.3.4"
+version = "0.3.5"
 description = "Independent voice assistant for Omarchy with Android TV/tablet casting"
 authors = [
     { name = "omribenami", email = "benami.omri@gmail.com" }
@@ -25,7 +25,7 @@ dependencies = [
     "websockets>=13.0,<17.0",
     # Browser Use's Jev-ultrafast agent. Browser decisions are routed through
     # our Gateway adapter, so it never needs a second TypeSafe/OpenRouter key.
-    "jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast.git",
+    "jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast.git@1231850a0bf1a0c0341fe408ef1668dbbfdfac46",
 ]
 
 [project.scripts]

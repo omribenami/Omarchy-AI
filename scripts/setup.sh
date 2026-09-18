@@ -21,6 +21,13 @@ if [[ ! -d .venv ]]; then
   uv venv --system-site-packages --python /usr/bin/python3
 fi
 uv sync --locked
+if compgen -G "$PROJECT_DIR/python/jev_ultrafast-*.whl" >/dev/null; then
+  uv pip install --python "$PROJECT_DIR/.venv/bin/python" --no-deps \
+    "$PROJECT_DIR"/python/jev_ultrafast-*.whl
+fi
+"$PROJECT_DIR/.venv/bin/python" -c 'from importlib.metadata import version; from jev_ultrafast import Agent; assert version("jev-ultrafast")' \
+  || { echo 'Jev Ultrafast browser dependency failed to install.' >&2; exit 1; }
+echo "==> Verified Jev Ultrafast browser agent"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-ai"
 mkdir -p "$CONFIG_DIR"
