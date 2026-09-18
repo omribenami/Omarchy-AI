@@ -11,14 +11,14 @@ from omarchy_ai.voice.gemini_live import GeminiLiveSession, build_live_config
 
 
 class GeminiTests(unittest.IsolatedAsyncioTestCase):
-    def test_config_exposes_nonblocking_actions_and_shared_context(self):
+    def test_config_waits_for_action_results_and_preserves_shared_context(self):
         with patch('omarchy_ai.voice.live.load_preferences', return_value=['Type English']), patch('omarchy_ai.voice.live.load_recent_context', return_value='old task'):
             config = types.LiveConnectConfig(**build_live_config(Config()))
         self.assertIn('Type English', config.system_instruction)
         self.assertIn('NOT pending tasks', config.system_instruction)
         declarations = config.tools[0].function_declarations
         self.assertIn('end_conversation', [d.name for d in declarations])
-        self.assertTrue(all(d.behavior == 'NON_BLOCKING' for d in declarations))
+        self.assertTrue(all(d.behavior == 'BLOCKING' for d in declarations))
 
     async def test_receive_crosses_turns_and_deduplicates_calls(self):
         adapter = GeminiLiveSession(Config())
@@ -89,3 +89,18 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
                 yield None
         with self.assertRaises(ConnectionError):
             await GeminiLiveSession(Config())._receive(SimpleNamespace(receive=receive))
+
+    async def test_failed_focus_blocks_queued_input_and_records_reason(self):
+        adapter = GeminiLiveSession(Config())
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        for number, name in enumerate(['focus_window', 'type_text', 'end_conversation']):
+            adapter._calls.put_nowait(types.FunctionCall(id=str(number), name=name, args={}))
+        with patch('omarchy_ai.voice.gemini_live.run_action', return_value=ActionResult(False, 'target missing')) as execute, patch('omarchy_ai.voice.gemini_live.LiveSession._current_window', return_value={}):
+            await adapter._tools(session)
+        self.assertEqual(execute.call_count, 1)
+        responses = [c.kwargs['function_responses'].response for c in session.send_tool_response.await_args_list]
+        self.assertFalse(responses[0]['ok'])
+        self.assertFalse(responses[1]['ok'])
+        self.assertIn('Input NOT sent', responses[1]['message'])
+        self.assertIn('Input NOT sent', adapter._action_log[-1]['message'])
+        self.assertEqual(adapter._action_log[-1]['call_id'], '1')

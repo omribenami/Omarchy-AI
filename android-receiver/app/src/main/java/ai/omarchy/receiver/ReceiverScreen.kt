@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -131,6 +132,13 @@ private fun StatusOverlay(connectionState: CastConnectionState) {
             verticalArrangement = Arrangement.Bottom,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            Image(
+                painter = painterResource(R.drawable.omarchy_wordmark),
+                contentDescription = "Omarchy",
+                modifier = Modifier.width(256.dp).height(60.dp),
+                contentScale = ContentScale.Fit,
+            )
+            Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = "Omarchy AI Receiver",
                 style = MaterialTheme.typography.headlineMedium,

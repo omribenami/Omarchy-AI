@@ -26,8 +26,10 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 
 log = logging.getLogger("omarchy_ai.voice.watchdog")
+_last_level_sent = 0.0
 
 _TIMEOUT = 5
 
@@ -95,6 +97,11 @@ def stop() -> None:
 
 def state(label: str) -> None:
     """Update the state indicator (connecting/listening/thinking/speaking)."""
+    global _last_level_sent
+    if label == "speaking":
+        # Do not suppress the first amplitude sample because it happens soon
+        # after the previous turn's final zero sample.
+        _last_level_sent = 0.0
     _event({"kind": "state", "state": label, "text": f"[{label}]"})
 
 
@@ -130,6 +137,13 @@ def level(value: float) -> None:
     output capture, so a slow/hung `omarchy-shell` process can never stall
     the audio queue feeding pw-play.
     """
+    global _last_level_sent
+    now = time.monotonic()
+    # Keep a bounded IPC rate while still sampling often enough to track
+    # syllables. Popen is fire-and-forget, so this does not block playback.
+    if value and now - _last_level_sent < 0.05:
+        return
+    _last_level_sent = now
     payload = json.dumps({"kind": "level", "level": round(float(value), 3)})
     try:
         subprocess.Popen(

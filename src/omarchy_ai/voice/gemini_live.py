@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+import time
 from pathlib import Path
 import numpy as np
+from ..core import updates
 from ..core.history import append_session
 from ..execution.actions import run_action, ActionResult
+from ..execution.verified_input import InputGuard
 from . import status_icon, watchdog
 from .live import build_session_config, LiveSession
 from .echo_cancel import EchoCancellation
@@ -17,11 +21,19 @@ log = logging.getLogger("omarchy_ai.voice.gemini")
 def build_live_config(config):
     shared = build_session_config(config)
     tools = [{"name": t["name"], "description": t["description"],
-              "parameters_json_schema": t["parameters"], "behavior": "NON_BLOCKING"}
+              "parameters_json_schema": t["parameters"], "behavior": "BLOCKING"}
              for t in shared["delegation"]["responses"]["tools"]]
     return {"response_modalities": ["AUDIO"], "system_instruction": shared["instructions"],
             "input_audio_transcription": {}, "output_audio_transcription": {},
             "tools": [{"function_declarations": tools}]}
+
+
+async def announce_update(session):
+    notice = updates.wake_notice()
+    if notice:
+        await session.send_client_content(turns={"role": "user", "parts": [{"text":
+            "[Automatic wake notice] Briefly announce this verified notice, then listen: "
+            + notice + " Do not install anything without an explicit user update request."}]}, turn_complete=True)
 
 
 class GeminiLiveSession:
@@ -39,6 +51,8 @@ class GeminiLiveSession:
         self._speaker = None
         self._speaker_generation = -1
         self._action_log = []
+        self._input_guard = InputGuard()
+        self._audit_session = uuid.uuid4().hex
         self.on_connected = None
         self.on_message = None
         self._echo = EchoCancellation()
@@ -52,8 +66,15 @@ class GeminiLiveSession:
                     self.on_message(message)
                 if message.tool_call_cancellation:
                     self._cancelled.update(message.tool_call_cancellation.ids or [])
+                    from ..execution.browser_jev import cancel_browser_tasks
+                    cancel_browser_tasks()
                 if message.tool_call:
                     for call in message.tool_call.function_calls or []:
+                        if call.name == "end_conversation":
+                            from ..execution.browser_jev import cancel_browser_tasks
+                            cancel_browser_tasks()
+                            self._hangup.set()
+                            return
                         if call.id not in self._seen:
                             self._seen.add(call.id)
                             self._calls.put_nowait(call)
@@ -91,13 +112,14 @@ class GeminiLiveSession:
                     id=call.id, name=call.name, response={"ok": True}))
                 self._hangup.set()
                 return
-            log.info("Gemini action started: %s", call.name)
+            log.info("Gemini action started: session=%s call=%s name=%s args=%r",
+                     self._audit_session, call.id, call.name, call.args or {})
             try:
                 if call.name == "get_recent_actions":
                     result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
                 else:
                     window = await asyncio.to_thread(LiveSession._current_window)
-                    action = asyncio.create_task(asyncio.to_thread(run_action, call.name, call.args or {}))
+                    action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, call.name, call.args or {}))
                     try:
                         result = await asyncio.shield(action)
                     except asyncio.CancelledError:
@@ -108,16 +130,17 @@ class GeminiLiveSession:
                     if call.name == "close_window" and result.ok:
                         self._action_log = [e for e in self._action_log if e["window"] != window]
                     else:
-                        self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "window": window})
+                        self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "message": result.message, "call_id": call.id, "ts": time.time(), "window": window})
                         self._action_log = self._action_log[-100:]
                 response = {"ok": result.ok, "message": result.message}
             except Exception:
                 log.exception("Gemini action failed: %s", call.name)
                 response = {"ok": False, "message": "Action failed; do not assume completion."}
-            log.info("Gemini action finished: %s (ok=%s)", call.name, response["ok"])
+            log.info("Gemini action finished: session=%s call=%s name=%s ok=%s message=%r",
+                     self._audit_session, call.id, call.name, response["ok"], response["message"])
             if call.id not in self._cancelled:
                 await session.send_tool_response(function_responses=types.FunctionResponse(
-                    id=call.id, name=call.name, response=response, scheduling="WHEN_IDLE"))
+                    id=call.id, name=call.name, response=response))
 
     async def _send_audio(self, session, mic):
         from google.genai import types
@@ -203,10 +226,13 @@ class GeminiLiveSession:
                 if self.config.watchdog_enabled:
                     workers.append(self._visuals())
                 tasks = [asyncio.create_task(worker) for worker in workers]
+                await announce_update(session)
                 done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     task.result()
         finally:
+            from ..execution.browser_jev import cancel_browser_tasks
+            cancel_browser_tasks()
             self._hangup.set()
             for task in tasks:
                 task.cancel()

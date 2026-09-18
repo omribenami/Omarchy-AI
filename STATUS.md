@@ -3515,3 +3515,31 @@ Live control status reports listening. Native assistant and MyApi panels were
 opened and visually inspected on the running desktop; no plugin runtime errors.
 Monthly response contained 30 buckets, 12 agents, and 14 services at verification.
 No live paid conversation was initiated solely for the automated button test.
+
+### 2026-09-17 — GitHub self-updates and wake notices
+
+Added `core/updates.py`: checks stable `dist/` bundles with matching SHA-256
+files, pins both downloads to a GitHub commit, compares numeric package
+versions, and caches checks for 15 minutes. A background startup check and
+bounded wake refresh feed a brief update recommendation into the shared voice
+instructions; Gemini explicitly requests the startup notice when one exists.
+The live GitHub check returned installed/latest 0.3.0, so no update was applied.
+The repository's only GitHub Release is `demo-media`; using `/releases/latest`
+would have mistaken demo content for an application release.
+
+Added `check_assistant_updates`, `update_assistant`, and `get_update_status`.
+Only an explicit user update request schedules the independent systemd user
+worker. It stages dependencies in a separate release directory, verifies the
+archive, backs up the service/shell integration, switches installations, and
+checks a stable PID plus the assistant control socket. Setup/startup failures
+restore the previous integration and restart the prior installation. The current
+checkout, keys, settings, and conversation data are not replaced. State is
+persisted in `~/.local/state/omarchy-ai/updates/`; worker output goes to the
+`omarchy-ai-update.service` journal. Android updates remain separate.
+
+Validation: full existing suite passed after correcting duplicate tool
+registration with MyApi enabled. Twenty updater tests cover numeric comparisons,
+cache/offline behavior, provider notices, checksum/traversal rejection, separate
+worker scheduling, staged install ordering, rollback, and preserved settings.
+Installation/rollback tests use temporary files and mocked service commands;
+an actual newer-version upgrade is not yet exercised because none is published.

@@ -19,8 +19,10 @@ Panel {
   property bool restarting: false
   property bool apiKeyEditing: false
   readonly property bool geminiSelected: fields.provider === "gemini"
-  readonly property var selectedKey: (geminiSelected ? snapshot.gemini_api_key : snapshot.api_key) || ({})
+  readonly property bool omarchySelected: fields.provider === "omarchy"
+  readonly property var selectedKey: snapshot.vercel_gateway_api_key || ({})
   onGeminiSelectedChanged: { apiKeyEditing = false; apiKeyFieldTop.text = "" }
+  onOmarchySelectedChanged: { apiKeyEditing = false; apiKeyFieldTop.text = "" }
   property string statusMessage: ""
   property string statusTone: "info" // "info" | "ok" | "error"
 
@@ -109,7 +111,7 @@ Panel {
       root.statusMessage = "Paste a key first"
       return
     }
-    root._enqueue([root.py, root.geminiSelected ? "set-gemini-api-key" : "set-api-key"], function(result) {
+    root._enqueue([root.py, "set-vercel-gateway-api-key"], function(result) {
       if (result && result.error) {
         root.statusTone = "error"
         root.statusMessage = result.error
@@ -124,7 +126,32 @@ Panel {
         root.statusTone = "error"
         root.statusMessage = "No response from settings helper"
       }
-    }, root.geminiSelected ? { "GEMINI_API_KEY": trimmed } : { "OMARCHY_AI_API_KEY": trimmed })
+    }, root.omarchySelected ? { "AI_GATEWAY_API_KEY": trimmed } : (root.geminiSelected ? { "GEMINI_API_KEY": trimmed } : { "OMARCHY_AI_API_KEY": trimmed }))
+  }
+
+  // Quickshell's panel-level keyboard surface can prevent a compositor from
+  // delivering Ctrl+V to an otherwise focused password field. Keep a direct
+  // Wayland clipboard path here as a reliable fallback; the value remains
+  // only in this masked field and is never printed or logged.
+  function pasteApiKey() {
+    if (!pasteKeyProc.running) pasteKeyProc.running = true
+  }
+
+  Process {
+    id: pasteKeyProc
+    command: ["wl-paste", "--no-newline", "--type", "text"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (text && text.length > 0) {
+          apiKeyFieldTop.text = text
+          apiKeyFieldTop.forceActiveFocus()
+        } else {
+          root.statusTone = "error"
+          root.statusMessage = "Clipboard has no text to paste"
+        }
+      }
+    }
   }
 
   function configureSudo(password) {
@@ -316,6 +343,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // PanelKeyCatcher handles keys before its children. Password fields
+      // must own Ctrl+V (and all regular editing keys) once focused.
+      blocked: apiKeyFieldTop.activeFocus || sudoPasswordField.activeFocus
       onCloseRequested: root.close()
       Column {
         id: column
@@ -356,11 +386,13 @@ Panel {
         Column {
           width: parent.width; spacing: Style.space(6)
           PanelSectionHeader { text: "AI PROVIDER & ACCESS"; foreground: root.fg; fontFamily: root.bar.fontFamily }
-          Dropdown { width: parent.width; showLabel: true; label: "Provider"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.fields.provider || "openai"; options: [{value: "openai", label: "OpenAI Live"}, {value: "gemini", label: "Gemini 3.8 Live"}]; onChanged: function(v) { root.setField("provider", JSON.stringify(v), "Provider updated — restart to apply") } }
-          Text { width: parent.width; wrapMode: Text.WordWrap; text: root.selectedKey.set ? "Key saved securely · only this provider's key is needed" : root.geminiSelected ? "Paste your Google AI Studio API key to get started." : "Paste your OpenAI API key to get started."; color: root.selectedKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
+          Dropdown { width: parent.width; showLabel: true; label: "Assistant"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: "omarchy"; options: [{value: "omarchy", label: "Omarchi-ai (Vercel Gateway)"}]; onChanged: function(v) { root.setField("provider", JSON.stringify(v), "Gateway assistant enabled — restart to apply") } }
+          Dropdown { width: parent.width; showLabel: true; label: "Text model"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.fields.omarchy_model_choice || "gemini"; options: [{value: "gemini", label: "Gemini (Gateway)"}, {value: "openai", label: "OpenAI (Gateway)"}, {value: "jev", label: "Jev policy + Gateway text"}]; onChanged: function(v) { root.setField("omarchy_model_choice", JSON.stringify(v), "Model updated — restart to apply") } }
+          Text { width: parent.width; wrapMode: Text.WordWrap; text: root.selectedKey.set ? "One Vercel AI Gateway key is active. Jev always handles typed decisions and browser actions." : "Paste your Vercel AI Gateway API key."; color: root.selectedKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
           Row {
             width: parent.width; spacing: Style.space(8)
-            TextField { id: apiKeyFieldTop; visible: !root.selectedKey.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - Style.space(8); password: true; placeholderText: root.geminiSelected ? "Google AI Studio key" : "OpenAI key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveApiKey(text) }
+            TextField { id: apiKeyFieldTop; visible: !root.selectedKey.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - pasteKeyButtonTop.width - Style.space(16); password: true; placeholderText: "Vercel AI Gateway key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveApiKey(text) }
+            Button { id: pasteKeyButtonTop; text: "Paste"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: root.pasteApiKey() }
             Button { id: saveKeyButtonTop; text: root.selectedKey.set && !root.apiKeyEditing ? "Edit key" : "Save key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.selectedKey.set && !root.apiKeyEditing) root.apiKeyEditing = true; else root.saveApiKey(apiKeyFieldTop.text) } }
           }
         }
@@ -749,7 +781,11 @@ Panel {
           visible: root.dirty || root.assistantState === "offline"
           width: parent.width; text: root.restarting ? "Restarting…" : root.dirty ? "Apply saved changes" : "Start assistant"
           bordered: true; focusable: true; foreground: root.fg; fontFamily: root.bar.fontFamily
-          enabled: !root.restarting && root.assistantState !== "active" && root.assistantState !== "starting"
+          // Applying a saved preference must remain clickable while the
+          // daemon is running.  The restart helper still reports a busy
+          // conversation rather than silently doing nothing, and the panel
+          // keeps the dirty state until a restart actually succeeds.
+          enabled: !root.restarting
           onClicked: root.doRestart()
         }
       }

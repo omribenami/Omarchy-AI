@@ -27,9 +27,12 @@ install -Dm644 android-receiver/app/build/outputs/apk/debug/app-debug.apk \
 
 echo '==> Staging exact release source'
 # Release archives are committed under dist/ for convenient installation.
-# Excluding that directory here prevents the last archive from being packed
-# inside the next one, which otherwise grows the bundle recursively.
-git archive --format=tar HEAD -- . ':(exclude)dist' | tar -x -C "$package_dir"
+# Exclude previous archives and original demo captures; neither is needed at
+# runtime, and the raw media can push GitHub-hosted installers past 100 MB.
+git archive --format=tar HEAD -- . \
+  ':(exclude)dist' \
+  ':(exclude)docs/media/original' \
+  | tar -x -C "$package_dir"
 chmod 0755 "$package_dir/install.sh"
 
 tar -C "$staging_dir" -czf "$archive" "$(basename "$package_dir")"

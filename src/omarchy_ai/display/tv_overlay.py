@@ -64,8 +64,12 @@ def show_and_track(poll_interval: float = 4.0) -> None:
     global _poll_stop, _poll_thread
     with _lock:
         hide_tracking()
+        # Open immediately using the last known registry snapshot.  A real
+        # mDNS pass can take several seconds; waiting for it here made the
+        # chooser invisible during the exact period when the user needs it.
+        _push("show", registry.snapshot())
         devices = registry.refresh()
-        _push("show", devices)
+        _push("update", devices)
         _poll_stop = threading.Event()
         _poll_thread = threading.Thread(
             target=_poll_loop, args=(_poll_stop, poll_interval), daemon=True

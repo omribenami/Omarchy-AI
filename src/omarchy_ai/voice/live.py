@@ -29,8 +29,10 @@ from rapidfuzz import fuzz
 from .. import myapi
 from ..config import MYAPI_INSTRUCTIONS, Config
 from ..core.history import append_session, load_recent_context
+from ..core import updates
 from ..core.memory import load_preferences
 from ..execution.actions import run_action
+from ..execution.verified_input import InputGuard
 from ..execution.tools import MYAPI_TOOLS, TOOLS
 from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
@@ -96,6 +98,36 @@ def build_session_config(config: Config) -> dict:
         "a terminal tile, resolve its window identity and read its current transcript; "
         "do not infer current contents from old conversation. Report missing capture "
         "honestly and use describe_screen for current visible contents when necessary."
+    )
+
+    instructions += (
+        "\n\nACTION EVIDENCE: Wait for tool results before saying an action happened. "
+        "A plan or promise is not execution. If a tool fails, report failure and repair "
+        "the prerequisite before continuing. Before typing or pressing keys, call "
+        "focus_window successfully for the intended window. Input tools only confirm "
+        "input dispatch, NEVER application acceptance or completion. After submitting "
+        "a prompt, read fresh output from that same terminal and verify that the app "
+        "accepted this exact request; inspect describe_screen if redraw history is "
+        "ambiguous. Old 'Working' text is not evidence of current work. If evidence "
+        "is missing, say 'input sent, outcome unverified', not 'done'. Never claim "
+        "ongoing monitoring or promise future alerts unless an actual monitoring "
+        "mechanism has been started; one log read or saved preference is not monitoring."
+    )
+
+    notice = updates.wake_notice()
+    if notice:
+        instructions += (
+            "\n\nVERIFIED STARTUP UPDATE NOTICE: In your first spoken reply, briefly "
+            "announce this notice in the user's language, then handle their request: "
+            + notice + " This notice does not authorize installation. Only call "
+            "update_assistant when the user explicitly asks to update Omarchy AI."
+        )
+    instructions += (
+        "\n\nSELF UPDATES: Use check_assistant_updates to check GitHub, "
+        "update_assistant only for an explicit request to update this assistant, "
+        "and get_update_status for progress or failures. Never use terminal commands "
+        "or git pull to update yourself. An accepted update request is not a "
+        "completed installation; warn that the conversation disconnects at restart."
     )
 
     return {
@@ -277,6 +309,7 @@ class LiveSession:
         # already done to a specific window rather than only the last
         # thing overall.
         self._action_log: list[dict] = []
+        self._input_guard = InputGuard()
         # This session's own turns, flushed to core/history.py on hangup so
         # the *next* session (potentially minutes or days later) can recall
         # it — separate from _action_log, which never leaves memory.
@@ -461,7 +494,7 @@ class LiveSession:
         self._set_watchdog_state("thinking")
         if self._watchdog_on:
             watchdog.tool_call(name, args)
-        result = await loop.run_in_executor(None, run_action, name, args)
+        result = await loop.run_in_executor(None, self._input_guard.run, run_action, name, args)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
         if self._watchdog_on:
             watchdog.tool_result(name, args, result.ok, result.message)
@@ -474,7 +507,7 @@ class LiveSession:
             ]
         else:
             self._action_log.append(
-                {"action": name, "args": args, "ok": result.ok, "window": window}
+                {"action": name, "args": args, "ok": result.ok, "message": result.message, "window": window}
             )
         self._send_function_result(call_id, result.ok, result.message)
 
