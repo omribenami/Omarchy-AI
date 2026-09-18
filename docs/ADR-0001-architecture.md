@@ -606,3 +606,13 @@ SDK) actually produces an APK, not just that each piece installed.
   (ruled out: packet loss, PipeWire XRUNs) but not conclusively
   root-caused — see `STATUS.md`. Not a functional blocker; worth revisiting
   before this becomes the default daily-use experience.
+
+## 2026-09-18 addendum: native Jev delegation
+
+The live conversational model delegates supported native desktop goals to a
+bounded typed worker, following the existing Jev browser approach. Jev receives
+structured state and selects operations/targets; existing code executes and
+independently verifies them. Text generation, vision, complex planning and
+uncertain decisions remain with the live model. Reference knowledge is retrieved
+from packaged Omarchy research and Arch notes and cannot expand the executable
+allowlist. See [Jev desktop design and validation](JEV-DESKTOP.md).

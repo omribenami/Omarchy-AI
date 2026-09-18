@@ -304,13 +304,13 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.1-linux-x86_64.tar.gz
+package=omarchy-ai-0.3.2-linux-x86_64.tar.gz
 base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.1-linux-x86_64
+cd omarchy-ai-0.3.2-linux-x86_64
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
@@ -363,6 +363,20 @@ to `dist/` on `main` to make it discoverable. Same-version source commits are no
 updates. Updates download and run the project's installer, using GitHub HTTPS
 and the accompanying checksum for integrity (the checksum is not a separate
 publisher signature).
+
+### Jev desktop worker with live conversation
+
+OpenAI and Gemini Live can delegate native OS goals to `desktop_task` while
+remaining the conversational model. Jev selects typed operations and observed
+targets; code checks freshness, executes existing actions and verifies native
+state afterward. Supported areas are workspaces, window focus, output volume,
+brightness, installed themes and bar panels. Vision, generated text, complex
+planning and unsupported work remain with the live model and its other tools.
+
+The worker uses the configured Vercel Gateway key. `search_os_knowledge` retrieves
+the packaged Omarchy expert guide, capability registry and Arch operation notes.
+Uncertain decisions and unverified outcomes return a trace and any verified
+steps to the live model. See [research, architecture and measured limits](docs/JEV-DESKTOP.md).
 
 ### Omarchi-ai (Jev + Vercel AI Gateway)
 

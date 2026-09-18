@@ -63,6 +63,17 @@ def build_session_config(config: Config) -> dict:
     the exact same OpenAI session shape, so this has to stay one function,
     not two copies that can quietly drift apart."""
     instructions = config.instructions
+    instructions += (
+        "\n\nJEV DESKTOP DELEGATION: You remain the live conversational model. "
+        "For supported native OS tasks (workspaces, focusing windows, output volume/mute, "
+        "brightness, installed themes, bar panels), prefer desktop_task with the complete "
+        "current user goal. Its Jev loop handles typed decisions and native verification "
+        "without a language-model round trip per action. browser_task handles web tasks. "
+        "Keep vision, generated text, complex planning and unsupported actions with your "
+        "normal tools. Use search_os_knowledge for Omarchy/Arch reference material. "
+        "A handoff may include already executed steps: read the trace and continue only "
+        "remaining work. Never translate an unverified dispatch into a completion claim."
+    )
     myapi_on = config.myapi_enabled and myapi.is_connected()
     if myapi_on:
         # Only mentioned/exposed at all once a connection actually exists
@@ -453,6 +464,8 @@ class LiveSession:
         self._handled_call_ids.add(call_id)
 
         if name == "end_conversation":
+            from ..execution.desktop_jev import cancel_desktop_tasks
+            cancel_desktop_tasks()
             log.info("end_conversation tool call received")
             self._hangup.set()
             return
@@ -480,6 +493,8 @@ class LiveSession:
         if self._tool_lock is None:
             self._tool_lock = asyncio.Lock()
         async with self._tool_lock:
+            if self._hangup.is_set():
+                return
             await self._run_tool_call_serialized(call_id, name, args)
 
     async def _run_tool_call_serialized(self, call_id: str, name: str, args: dict) -> None:
@@ -743,6 +758,8 @@ class LiveSession:
             except asyncio.TimeoutError:
                 log.info("session hit max_session_seconds, hanging up")
         finally:
+            from ..execution.desktop_jev import cancel_desktop_tasks
+            cancel_desktop_tasks()
             status_icon.set_live(False)
             if self._watchdog_on:
                 watchdog.stop()

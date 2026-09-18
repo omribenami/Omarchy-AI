@@ -32,7 +32,7 @@ class InputGuard:
             self.address = self.focused(execute)
             if not self.address:
                 return ActionResult(False, "Focus could not be verified; input is blocked. Retry focus_window.")
-        if name in {"open_terminal", "open_browser", "open_editor", "open_files", "close_window"}:
+        if name in {"open_terminal", "open_browser", "open_editor", "open_files", "close_window", "desktop_task"}:
             self.address = None
         if keyboard and result.ok:
             result = ActionResult(True, "Input command sent to verified window " + self.address +

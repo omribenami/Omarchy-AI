@@ -99,7 +99,7 @@ class GatewayClient:
         if not self.key:
             raise GatewayError("Vercel AI Gateway key is empty")
 
-    def _request(self, path: str, body: bytes, content_type: str, headers: dict[str, str] | None = None) -> bytes:
+    def _request(self, path: str, body: bytes, content_type: str, headers: dict[str, str] | None = None, *, timeout: float = 45) -> bytes:
         request_headers = {"Authorization": f"Bearer {self.key}", "Content-Type": content_type}
         if headers:
             request_headers.update(headers)
@@ -110,7 +110,7 @@ class GatewayClient:
             request_headers["ai-gateway-protocol-version"] = "0.0.1"
         req = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=45) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 return response.read()
         except urllib.error.HTTPError as error:
             detail = error.read().decode(errors="replace")[:500]
@@ -163,6 +163,15 @@ class GatewayClient:
             {"ai-evaluation-model-specification-version": "4", "ai-model-id": self.config.omarchy_jev_model},
         )
         return json.loads(response).get("answers", {})
+
+    def evaluate_questions(self, state: str, questions: dict) -> dict:
+        """Batch native desktop decisions through the evaluation protocol."""
+        response = self._request(
+            "/ai/evaluation-model", json.dumps({"state": state, "questions": questions}).encode(),
+            "application/json", {"ai-evaluation-model-specification-version": "4",
+                                 "ai-model-id": self.config.omarchy_jev_model}, timeout=8,
+        )
+        return json.loads(response)["answers"]
 
     def chat(self, messages: list[dict]) -> dict:
         # execution.tools is in Responses API shape; the Gateway's OpenAI

@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -19,6 +20,17 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         declarations = config.tools[0].function_declarations
         self.assertIn('end_conversation', [d.name for d in declarations])
         self.assertTrue(all(d.behavior == 'BLOCKING' for d in declarations))
+
+    def test_noise_resistant_vad_still_allows_user_interruptions(self):
+        config = types.LiveConnectConfig(**build_live_config(Config()))
+        realtime = config.realtime_input_config
+        self.assertEqual(realtime.activity_handling, types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS)
+        vad = realtime.automatic_activity_detection
+        self.assertFalse(vad.disabled)
+        self.assertEqual(vad.start_of_speech_sensitivity, types.StartSensitivity.START_SENSITIVITY_LOW)
+        self.assertEqual(vad.end_of_speech_sensitivity, types.EndSensitivity.END_SENSITIVITY_LOW)
+        self.assertEqual(vad.prefix_padding_ms, 300)
+        self.assertEqual(vad.silence_duration_ms, 600)
 
     async def test_receive_crosses_turns_and_deduplicates_calls(self):
         adapter = GeminiLiveSession(Config())
@@ -73,9 +85,93 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         async def receive():
             yield types.LiveServerMessage(server_content=types.LiveServerContent(interrupted=True))
             adapter._hangup.set()
-        await adapter._receive(SimpleNamespace(receive=receive))
+        adapter._mic_levels.append((time.monotonic(), 30.0, 80))
+        with self.assertLogs('omarchy_ai.voice.gemini', level='WARNING') as logs:
+            await adapter._receive(SimpleNamespace(receive=receive))
         self.assertTrue(adapter._audio.empty())
         self.assertEqual(adapter._generation, 1)
+        self.assertEqual(adapter._interruptions, 1)
+        self.assertIn('mic_rms_500ms=30.0', logs.output[0])
+        self.assertIn('queued_chunks=1', logs.output[0])
+
+    async def test_microphone_metrics_preserve_input_even_while_speaking(self):
+        adapter = GeminiLiveSession(Config())
+        adapter._state = 'speaking'
+        reader = asyncio.StreamReader()
+        pcm = b'\x64\x00' * 320
+        reader.feed_data(pcm)
+        reader.feed_eof()
+        session = SimpleNamespace(send_realtime_input=AsyncMock())
+        with self.assertRaisesRegex(RuntimeError, 'Microphone'):
+            await adapter._send_audio(session, SimpleNamespace(stdout=reader))
+        self.assertEqual(session.send_realtime_input.call_args.kwargs['audio'].data, pcm)
+        self.assertEqual(adapter._mic_levels[-1][1:], (100.0, 100))
+
+    async def test_interrupted_queued_action_is_skipped_but_acknowledged(self):
+        adapter = GeminiLiveSession(Config())
+        async def receive():
+            yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
+                types.FunctionCall(id='queued', name='open_terminal', args={})]))
+            yield types.LiveServerMessage(server_content=types.LiveServerContent(interrupted=True))
+            adapter._hangup.set()
+        await adapter._receive(SimpleNamespace(receive=receive))
+        adapter._calls.put_nowait(types.FunctionCall(id='end', name='end_conversation', args={}))
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        with patch('omarchy_ai.voice.gemini_live.run_action') as action:
+            await adapter._tools(session)
+        action.assert_not_called()
+        reply = session.send_tool_response.call_args_list[0].kwargs['function_responses']
+        self.assertEqual(reply.id, 'queued')
+        self.assertFalse(reply.response['ok'])
+        self.assertIn('Not executed', reply.response['message'])
+        self.assertNotIn('queued', adapter._pending_calls)
+
+    async def test_interruption_preserves_running_tool_result(self):
+        adapter = GeminiLiveSession(Config())
+        entered, release = threading.Event(), threading.Event()
+        def action(*_):
+            entered.set(); release.wait(2)
+            return ActionResult(True, 'Actual completed result')
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        adapter._calls.put_nowait(types.FunctionCall(id='running', name='list_windows', args={}))
+        async def receive():
+            yield types.LiveServerMessage(server_content=types.LiveServerContent(interrupted=True))
+            adapter._hangup.set()
+        with patch('omarchy_ai.voice.gemini_live.run_action', side_effect=action), patch('omarchy_ai.voice.gemini_live.LiveSession._current_window', return_value={}):
+            worker = asyncio.create_task(adapter._tools(session))
+            try:
+                for _ in range(100):
+                    if entered.is_set(): break
+                    await asyncio.sleep(.01)
+                self.assertTrue(entered.is_set())
+                await adapter._receive(SimpleNamespace(receive=receive))
+                self.assertNotIn('running', adapter._cancelled)
+                release.set()
+                for _ in range(100):
+                    if session.send_tool_response.await_count: break
+                    await asyncio.sleep(.01)
+                session.send_tool_response.assert_awaited_once()
+                reply = session.send_tool_response.call_args.kwargs['function_responses']
+                self.assertEqual(reply.id, 'running')
+                self.assertEqual(reply.response, {'ok': True, 'message': 'Actual completed result'})
+            finally:
+                release.set(); worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_explicit_server_tool_cancellation_does_not_get_response(self):
+        adapter = GeminiLiveSession(Config())
+        async def receive():
+            yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
+                types.FunctionCall(id='cancelled', name='open_terminal', args={})]))
+            yield types.LiveServerMessage(tool_call_cancellation=types.LiveServerToolCallCancellation(ids=['cancelled']))
+            adapter._hangup.set()
+        await adapter._receive(SimpleNamespace(receive=receive))
+        adapter._calls.put_nowait(types.FunctionCall(id='end', name='end_conversation', args={}))
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        with patch('omarchy_ai.voice.gemini_live.run_action') as action:
+            await adapter._tools(session)
+        action.assert_not_called()
+        self.assertEqual([c.kwargs['function_responses'].id for c in session.send_tool_response.call_args_list], ['end'])
 
     async def test_microphone_eof_is_error(self):
         reader = asyncio.StreamReader()
