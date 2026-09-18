@@ -55,26 +55,54 @@ Panel {
     settingsProc.command = next.argv
     settingsProc.environment = next.env || ({})
     settingsProc.running = true
+    settingsTimeout.restart()
+  }
+
+  function _finishProcess(result) {
+    settingsTimeout.stop()
+    var cb = settingsProc._cb
+    settingsProc._cb = null
+    if (cb) cb(result)
+    Qt.callLater(root._processQueue)
   }
 
   Process {
     id: settingsProc
-    onRunningChanged: if (!running) Qt.callLater(root._processQueue)
+    onRunningChanged: if (!running) settingsExitTimer.restart()
     property var _cb: null
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var result = null
         try {
-          result = JSON.parse(text || "{}")
+          result = text.trim() ? JSON.parse(text) : { error: "Settings helper returned no response" }
         } catch (e) {
           result = { error: "settings helper returned invalid output" }
         }
-        var cb = settingsProc._cb
-        settingsProc._cb = null
-        if (cb) cb(result)
-        root._processQueue()
+        if (settingsProc._cb !== null) root._finishProcess(result)
       }
+    }
+  }
+
+  Timer {
+    id: settingsExitTimer
+    interval: 250
+    repeat: false
+    onTriggered: {
+      if (settingsProc._cb !== null)
+        root._finishProcess({ error: "Settings helper exited without a response" })
+      else root._processQueue()
+    }
+  }
+
+  Timer {
+    id: settingsTimeout
+    interval: 30000
+    repeat: false
+    onTriggered: {
+      if (settingsProc._cb !== null)
+        root._finishProcess({ error: "Settings helper timed out" })
+      if (settingsProc.running) settingsProc.running = false
     }
   }
 
@@ -114,6 +142,8 @@ Panel {
       root.statusMessage = "Paste a key first"
       return
     }
+    root.statusTone = "info"
+    root.statusMessage = "Saving conversation key…"
     var command = root.omarchySelected ? "set-vercel-gateway-api-key" : root.geminiSelected ? "set-gemini-api-key" : "set-api-key"
     root._enqueue([root.py, command], function(result) {
       if (result && result.error) {
@@ -140,6 +170,8 @@ Panel {
       root.statusMessage = "Paste a Gateway key first"
       return
     }
+    root.statusTone = "info"
+    root.statusMessage = "Saving Jev Gateway key…"
     root._enqueue([root.py, "set-vercel-gateway-api-key"], function(result) {
       if (result && result.error) {
         root.statusTone = "error"
@@ -435,6 +467,12 @@ Panel {
             TextField { id: gatewayKeyField; visible: !root.gatewayKey.set || root.gatewayKeyEditing; width: parent.width - saveGatewayButton.width - pasteGatewayButton.width - Style.space(16); password: true; placeholderText: "Jev / Vercel AI Gateway key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveGatewayKey(text) }
             Button { id: pasteGatewayButton; text: "Paste"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: root.pasteApiKey(gatewayKeyField) }
             Button { id: saveGatewayButton; text: root.gatewayKey.set && !root.gatewayKeyEditing ? "Edit key" : "Save key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.gatewayKey.set && !root.gatewayKeyEditing) root.gatewayKeyEditing = true; else root.saveGatewayKey(gatewayKeyField.text) } }
+          }
+          Text {
+            visible: root.statusMessage.length > 0
+            width: parent.width; wrapMode: Text.WordWrap; textFormat: Text.PlainText
+            text: root.statusMessage; color: root.statusColor
+            font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
           }
         }
         ButtonGroup {
@@ -811,12 +849,6 @@ Panel {
               color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
             }
           }
-        }
-        Text {
-          visible: root.statusMessage.length > 0
-          width: parent.width; wrapMode: Text.WordWrap; textFormat: Text.PlainText
-          text: root.statusMessage; color: root.statusColor
-          font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
         }
         Button {
           visible: root.dirty || root.assistantState === "offline"

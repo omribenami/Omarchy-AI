@@ -14,10 +14,15 @@ _LABEL = "Omarchy AI Sudo Access"
 
 
 def _run(args: list[str], *, password: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["secret-tool", *args], input=password, capture_output=True,
-        text=True, timeout=10, check=False,
-    )
+    try:
+        return subprocess.run(
+            ["secret-tool", *args], input=password, capture_output=True,
+            text=True, timeout=10, check=False,
+        )
+    except FileNotFoundError as error:
+        raise OSError("secret-tool is unavailable; install libsecret for Sudo Access") from error
+    except subprocess.TimeoutExpired as error:
+        raise OSError("GNOME Keyring did not respond") from error
 
 
 def store(password: str) -> None:
@@ -29,7 +34,10 @@ def store(password: str) -> None:
 
 
 def retrieve() -> str | None:
-    result = _run(["lookup", *_ATTRIBUTES])
+    try:
+        result = _run(["lookup", *_ATTRIBUTES])
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
     password = result.stdout.rstrip("\n")
