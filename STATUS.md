@@ -3702,3 +3702,28 @@ leaving an operation pending forever. An isolated subprocess test verifies a
 fresh laptop without `secret-tool` can fetch settings, save the Gateway key,
 receive a successful JSON response, and retain the key at 0600 without
 revealing it in stdout.
+
+## 2026-09-18 — Confirmed and bounded Jev Ultrafast browser path (0.3.5)
+
+The browser path was already the upstream `jev_ultrafast.Agent` with its atomic
+DOM snapshot, indexed actions, freshness checks and screenshots disabled. Every
+policy call set `ai-model-id: typesafe-ai/jev` through the configured Vercel
+Gateway. The lockfile was on upstream's functional 452c1ad commit; upstream's
+newer 1231850 commit adds documentation only. The release now pins that exact
+current commit and also bundles its built wheel. Setup installs the bundled
+wheel after the locked environment sync and fails if `jev_ultrafast.Agent`
+cannot import, so an apparently successful installation cannot omit it.
+
+The perceived slowness was confirmed in real logs. One browser task ran 54
+actions before a CDP session failure; others repeatedly retried Gateway HTTP
+503 responses. Browser tasks now use a six-second Jev request timeout with one
+short retry, log the model and decision latency, allow only one short blocked
+state recovery, and stop after 20 actions or 45 seconds. These limits bound a
+bad run; they cannot make an upstream Gateway 503 fast.
+
+The same logs showed the live model typing the user's full conversational
+request into a focused terminal, producing `bash: command not found: please`.
+Live instructions now require `browser_task` for web work and forbid copying
+conversation requests into terminals, editors, chats or other AI agents. The
+input guard also rejects common conversational request prefixes in terminal
+windows, with a regression test for the reported `please ...` case.

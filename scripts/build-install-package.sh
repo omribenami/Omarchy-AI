@@ -20,6 +20,12 @@ mkdir -p "$package_dir" dist
 echo '==> Building Python wheel and source distribution'
 uv build --out-dir "$package_dir/python"
 
+echo '==> Bundling pinned Jev Ultrafast browser wheel'
+jev_source="$staging_dir/jev-ultrafast"
+git clone --quiet https://github.com/browser-use/jev-ultrafast.git "$jev_source"
+git -C "$jev_source" checkout --quiet 1231850a0bf1a0c0341fe408ef1668dbbfdfac46
+uv build --wheel --out-dir "$package_dir/python" "$jev_source"
+
 echo '==> Building Android receiver APK'
 (cd android-receiver && mise exec -- ./gradlew :app:assembleDebug --offline)
 install -Dm644 android-receiver/app/build/outputs/apk/debug/app-debug.apk \

@@ -23,6 +23,8 @@ from .actions import ActionResult
 log = logging.getLogger("omarchy_ai.execution.browser_jev")
 _browser_process = None
 _cancel_generation = 0
+_MAX_ACTIONS = 20
+_MAX_SECONDS = 45
 
 
 def cancel_browser_tasks() -> None:
@@ -121,6 +123,7 @@ def _ensure_dedicated_browser() -> None:
 
 def run_browser_task(args: dict, config) -> ActionResult:
     generation = _cancel_generation
+    started = time.monotonic()
     url = str(args.get("url") or "").strip()
     goal = str(args.get("goal") or "").strip()
     if not url.startswith(("https://", "http://")) or not goal:
@@ -147,13 +150,20 @@ def run_browser_task(args: dict, config) -> ActionResult:
         response = None
         for attempt in range(2):
             try:
-                response = client._request("/ai/evaluation-model", request_body, "application/json", headers)
+                request_started = time.monotonic()
+                response = client._request(
+                    "/ai/evaluation-model", request_body, "application/json", headers, timeout=6
+                )
+                log.info(
+                    "Jev browser decision: model=%s latency_ms=%d",
+                    config.omarchy_jev_model, (time.monotonic() - request_started) * 1000,
+                )
                 break
-            except Exception:
+            except Exception as error:
                 if attempt == 1:
                     raise
-                log.warning("Jev browser evaluation timed out/failed; retrying")
-                time.sleep(0.35)
+                log.warning("Jev browser evaluation failed; one retry: %s", error)
+                time.sleep(0.15)
         assert response is not None
         result = json.loads(response)
         result.setdefault("model", config.omarchy_jev_model)
@@ -206,6 +216,18 @@ def run_browser_task(args: dict, config) -> ActionResult:
             if generation != _cancel_generation:
                 return ActionResult(False, "Browser task cancelled because the assistant stopped.")
             final = state
+            history = state.get("history") or []
+            elapsed = time.monotonic() - started
+            if len(history) >= _MAX_ACTIONS or elapsed >= _MAX_SECONDS:
+                log.warning(
+                    "Jev browser budget reached: actions=%d elapsed_ms=%d model=%s",
+                    len(history), elapsed * 1000, config.omarchy_jev_model,
+                )
+                return ActionResult(
+                    False,
+                    f"Browser task stopped at its speed budget after {len(history)} actions "
+                    f"and {elapsed:.1f}s. The tab remains open; completion was not verified.",
+                )
             if state.get("status") in {"done", "blocked"}:
                 if state.get("status") == "blocked":
                     decisions = state.get("decisions") or []
@@ -223,10 +245,10 @@ def run_browser_task(args: dict, config) -> ActionResult:
                     )
                     page_actions = (state.get("page") or {}).get("actions") or []
                     premature_block = last_choice == "BLOCKED" and bool(page_actions)
-                    if (heuristic_block or premature_block) and recovery_attempts < 3:
+                    if (heuristic_block or premature_block) and recovery_attempts < 1:
                         recovery_attempts += 1
                         log.warning(
-                            "browser block after %d actions; choice=%s heuristic=%s recovering (%d/3), url=%s, actions=%s",
+                            "browser block after %d actions; choice=%s heuristic=%s recovering once, url=%s, actions=%s",
                             len(history), last_choice, heuristic_block, recovery_attempts,
                             (state.get("page") or {}).get("url"),
                             [item.get("action") for item in repeated],
@@ -234,7 +256,7 @@ def run_browser_task(args: dict, config) -> ActionResult:
                         # run() yields a snapshot, not the mutable agent state.
                         # Allow asynchronous results to settle and observe again
                         # before resuming the generator's terminal-state check.
-                        time.sleep(1)
+                        time.sleep(0.2)
                         agent.state["page"] = agent.browser.observe(screenshot=False)
                         agent.state["decision"] = None
                         agent.state["status"] = "ready"
@@ -245,6 +267,10 @@ def run_browser_task(args: dict, config) -> ActionResult:
         status = final.get("status")
         history = final.get("history") or []
         if status == "done":
+            log.info(
+                "Jev browser completed: actions=%d elapsed_ms=%d model=%s implementation=jev-ultrafast",
+                len(history), (time.monotonic() - started) * 1000, config.omarchy_jev_model,
+            )
             return ActionResult(True, f"Browser task visibly completed after {len(history)} verified action(s).")
         last_actions = ", ".join(item.get("action", "?") for item in history[-3:])
         page_url = (final.get("page") or {}).get("url", "unknown")

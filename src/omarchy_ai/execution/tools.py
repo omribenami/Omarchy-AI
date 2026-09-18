@@ -72,7 +72,7 @@ TOOLS: list[dict] = [
     _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
-    _tool("browser_task", "Use the dedicated Jev-ultrafast browser agent for a web task. It observes the live browser DOM, chooses only a currently observed browser action with Jev, verifies each step, and stops only on visible completion or a blocked state. Use this for web navigation, searching, forms, and opening links; do not use desktop keyboard tools to drive the browser.", {
+    _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses the installed browser-use/jev-ultrafast Agent with the typesafe-ai/jev policy model, structured live DOM, no screenshots, fresh-target checks and bounded execution. Do not use desktop keyboard tools to drive a browser.", {
         "type": "object", "properties": {
             "url": {"type": "string", "description": "Starting URL. Use https:// when known."},
             "goal": {"type": "string", "description": "The complete web task and its visible success condition."},

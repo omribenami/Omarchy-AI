@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallerTests(unittest.TestCase):
+    def test_setup_verifies_jev_ultrafast_install(self):
+        setup = (ROOT / 'scripts/setup.sh').read_text()
+        self.assertIn('from jev_ultrafast import Agent', setup)
+        self.assertIn('python/jev_ultrafast-*.whl', setup)
+        project = (ROOT / 'pyproject.toml').read_text()
+        self.assertIn('browser-use/jev-ultrafast.git', project)
     def test_upgrade_replaces_old_panel_and_refreshes_shell(self):
         with tempfile.TemporaryDirectory(prefix='omachy install ') as directory:
             base = Path(directory)
