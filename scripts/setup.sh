@@ -40,7 +40,8 @@ else
   echo "==> $CONFIG_DIR/config.yaml already exists, leaving it alone"
 fi
 
-echo "==> In Assistant Settings, choose OpenAI or Gemini and save that provider's API key."
+echo "==> In Assistant Settings, choose a conversation model and save its API key."
+echo "    For Jev desktop/browser actions, also save a Vercel AI Gateway key."
 echo "    Existing configuration and key files are preserved. Apply saved changes to restart."
 
 echo "==> Installing the systemd user unit"

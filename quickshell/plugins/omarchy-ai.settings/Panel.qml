@@ -18,11 +18,14 @@ Panel {
   property bool dirty: false
   property bool restarting: false
   property bool apiKeyEditing: false
+  property bool gatewayKeyEditing: false
+  property var pasteTarget: null
+  readonly property string selectedProvider: fields.provider || "openai"
   readonly property bool geminiSelected: fields.provider === "gemini"
   readonly property bool omarchySelected: fields.provider === "omarchy"
-  readonly property var selectedKey: snapshot.vercel_gateway_api_key || ({})
-  onGeminiSelectedChanged: { apiKeyEditing = false; apiKeyFieldTop.text = "" }
-  onOmarchySelectedChanged: { apiKeyEditing = false; apiKeyFieldTop.text = "" }
+  readonly property var selectedKey: omarchySelected ? (snapshot.vercel_gateway_api_key || ({})) : geminiSelected ? (snapshot.gemini_api_key || ({})) : (snapshot.api_key || ({}))
+  readonly property var gatewayKey: snapshot.vercel_gateway_api_key || ({})
+  onSelectedProviderChanged: { apiKeyEditing = false; apiKeyFieldTop.text = "" }
   property string statusMessage: ""
   property string statusTone: "info" // "info" | "ok" | "error"
 
@@ -111,7 +114,8 @@ Panel {
       root.statusMessage = "Paste a key first"
       return
     }
-    root._enqueue([root.py, "set-vercel-gateway-api-key"], function(result) {
+    var command = root.omarchySelected ? "set-vercel-gateway-api-key" : root.geminiSelected ? "set-gemini-api-key" : "set-api-key"
+    root._enqueue([root.py, command], function(result) {
       if (result && result.error) {
         root.statusTone = "error"
         root.statusMessage = result.error
@@ -129,11 +133,37 @@ Panel {
     }, root.omarchySelected ? { "AI_GATEWAY_API_KEY": trimmed } : (root.geminiSelected ? { "GEMINI_API_KEY": trimmed } : { "OMARCHY_AI_API_KEY": trimmed }))
   }
 
+  function saveGatewayKey(key) {
+    var trimmed = (key || "").trim()
+    if (trimmed.length === 0) {
+      root.statusTone = "error"
+      root.statusMessage = "Paste a Gateway key first"
+      return
+    }
+    root._enqueue([root.py, "set-vercel-gateway-api-key"], function(result) {
+      if (result && result.error) {
+        root.statusTone = "error"
+        root.statusMessage = result.error
+      } else if (result) {
+        root.snapshot = result
+        root.dirty = true
+        root.statusTone = "ok"
+        root.statusMessage = "Jev Gateway key saved — restart to apply"
+        gatewayKeyField.text = ""
+        root.gatewayKeyEditing = false
+      } else {
+        root.statusTone = "error"
+        root.statusMessage = "No response from settings helper"
+      }
+    }, { "AI_GATEWAY_API_KEY": trimmed })
+  }
+
   // Quickshell's panel-level keyboard surface can prevent a compositor from
   // delivering Ctrl+V to an otherwise focused password field. Keep a direct
   // Wayland clipboard path here as a reliable fallback; the value remains
   // only in this masked field and is never printed or logged.
-  function pasteApiKey() {
+  function pasteApiKey(target) {
+    root.pasteTarget = target
     if (!pasteKeyProc.running) pasteKeyProc.running = true
   }
 
@@ -144,12 +174,15 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         if (text && text.length > 0) {
-          apiKeyFieldTop.text = text
-          apiKeyFieldTop.forceActiveFocus()
+          if (root.pasteTarget) {
+            root.pasteTarget.text = text
+            root.pasteTarget.forceActiveFocus()
+          }
         } else {
           root.statusTone = "error"
           root.statusMessage = "Clipboard has no text to paste"
         }
+        root.pasteTarget = null
       }
     }
   }
@@ -345,7 +378,7 @@ Panel {
       anchors.fill: parent
       // PanelKeyCatcher handles keys before its children. Password fields
       // must own Ctrl+V (and all regular editing keys) once focused.
-      blocked: apiKeyFieldTop.activeFocus || sudoPasswordField.activeFocus
+      blocked: apiKeyFieldTop.activeFocus || gatewayKeyField.activeFocus || sudoPasswordField.activeFocus
       onCloseRequested: root.close()
       Column {
         id: column
@@ -386,14 +419,22 @@ Panel {
         Column {
           width: parent.width; spacing: Style.space(6)
           PanelSectionHeader { text: "AI PROVIDER & ACCESS"; foreground: root.fg; fontFamily: root.bar.fontFamily }
-          Dropdown { width: parent.width; showLabel: true; label: "Assistant"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: "omarchy"; options: [{value: "omarchy", label: "Omarchi-ai (Vercel Gateway)"}]; onChanged: function(v) { root.setField("provider", JSON.stringify(v), "Gateway assistant enabled — restart to apply") } }
-          Dropdown { width: parent.width; showLabel: true; label: "Text model"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.fields.omarchy_model_choice || "gemini"; options: [{value: "gemini", label: "Gemini (Gateway)"}, {value: "openai", label: "OpenAI (Gateway)"}, {value: "jev", label: "Jev policy + Gateway text"}]; onChanged: function(v) { root.setField("omarchy_model_choice", JSON.stringify(v), "Model updated — restart to apply") } }
-          Text { width: parent.width; wrapMode: Text.WordWrap; text: root.selectedKey.set ? "One Vercel AI Gateway key is active. Jev always handles typed decisions and browser actions." : "Paste your Vercel AI Gateway API key."; color: root.selectedKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
+          Dropdown { width: parent.width; showLabel: true; label: "Conversation model"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.selectedProvider; options: [{value: "openai", label: "OpenAI Live"}, {value: "gemini", label: "Gemini Live"}, {value: "omarchy", label: "Gateway voice"}]; onChanged: function(v) { root.setField("provider", JSON.stringify(v), "Conversation model updated — restart to apply") } }
+          Dropdown { visible: root.omarchySelected; width: parent.width; showLabel: true; label: "Gateway reply model"; foreground: root.fg; background: Color.popups.background; fontFamily: root.bar.fontFamily; value: root.fields.omarchy_model_choice || "gemini"; options: [{value: "gemini", label: "Gemini (Gateway)"}, {value: "openai", label: "OpenAI (Gateway)"}, {value: "jev", label: "Jev policy + Gateway text"}]; onChanged: function(v) { root.setField("omarchy_model_choice", JSON.stringify(v), "Model updated — restart to apply") } }
+          Text { width: parent.width; wrapMode: Text.WordWrap; text: root.selectedKey.set ? "Conversation key saved" : root.omarchySelected ? "Enter your Vercel AI Gateway key for Gateway voice." : root.geminiSelected ? "Enter your Google AI Studio key for Gemini Live." : "Enter your OpenAI key for OpenAI Live."; color: root.selectedKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
           Row {
             width: parent.width; spacing: Style.space(8)
-            TextField { id: apiKeyFieldTop; visible: !root.selectedKey.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - pasteKeyButtonTop.width - Style.space(16); password: true; placeholderText: "Vercel AI Gateway key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveApiKey(text) }
-            Button { id: pasteKeyButtonTop; text: "Paste"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: root.pasteApiKey() }
+            TextField { id: apiKeyFieldTop; visible: !root.selectedKey.set || root.apiKeyEditing; width: parent.width - saveKeyButtonTop.width - pasteKeyButtonTop.width - Style.space(16); password: true; placeholderText: root.omarchySelected ? "Vercel AI Gateway key" : root.geminiSelected ? "Google AI Studio key" : "OpenAI key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveApiKey(text) }
+            Button { id: pasteKeyButtonTop; text: "Paste"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: root.pasteApiKey(apiKeyFieldTop) }
             Button { id: saveKeyButtonTop; text: root.selectedKey.set && !root.apiKeyEditing ? "Edit key" : "Save key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.selectedKey.set && !root.apiKeyEditing) root.apiKeyEditing = true; else root.saveApiKey(apiKeyFieldTop.text) } }
+          }
+          Text { visible: !root.omarchySelected; width: parent.width; wrapMode: Text.WordWrap; text: root.gatewayKey.set ? "Jev access key saved. Jev uses Vercel AI Gateway for desktop and browser decisions." : "Jev desktop and browser actions need a Vercel AI Gateway key. A separate TypeSafe token is not used by this integration."; color: root.gatewayKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
+          Row {
+            visible: !root.omarchySelected
+            width: parent.width; spacing: Style.space(8)
+            TextField { id: gatewayKeyField; visible: !root.gatewayKey.set || root.gatewayKeyEditing; width: parent.width - saveGatewayButton.width - pasteGatewayButton.width - Style.space(16); password: true; placeholderText: "Jev / Vercel AI Gateway key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveGatewayKey(text) }
+            Button { id: pasteGatewayButton; text: "Paste"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: root.pasteApiKey(gatewayKeyField) }
+            Button { id: saveGatewayButton; text: root.gatewayKey.set && !root.gatewayKeyEditing ? "Edit key" : "Save key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.gatewayKey.set && !root.gatewayKeyEditing) root.gatewayKeyEditing = true; else root.saveGatewayKey(gatewayKeyField.text) } }
           }
         }
         ButtonGroup {
@@ -406,7 +447,7 @@ Panel {
         Flickable {
           id: scrollArea
           width: parent.width
-          height: Math.min(scrollColumn.implicitHeight, Math.max(Style.space(100), panel.availableCardHeight - Style.space(390)))
+          height: Math.min(scrollColumn.implicitHeight, Math.max(Style.space(100), panel.availableCardHeight - Style.space(480)))
           contentWidth: width; contentHeight: scrollColumn.implicitHeight
           clip: true; boundsBehavior: Flickable.StopAtBounds
           interactive: contentHeight > height

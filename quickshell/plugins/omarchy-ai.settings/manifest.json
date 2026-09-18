@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "omarchy-ai.settings",
   "name": "Omarchy AI Settings",
-  "version": "1.0.0",
+  "version": "0.3.3",
   "author": "omarchy-ai",
   "description": "Wake word models, Watch Dogs overlay, and voice settings for the Omarchy AI assistant.",
   "kinds": [
