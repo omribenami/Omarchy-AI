@@ -18,6 +18,14 @@ def _tool(name: str, description: str, parameters: dict = _NO_ARGS) -> dict:
 
 
 TOOLS: list[dict] = [
+    _tool("check_assistant_updates", "Check GitHub for a newer stable Omarchy AI install bundle. Returns installed and latest versions or an honest network error. Does not install anything."),
+    _tool("update_assistant", "Update Omarchy AI itself from its verified GitHub bundle. Call ONLY when the user explicitly says to update/install the assistant update, never just because an update exists or they ask about it. Runs separately, preserves settings and previous installation, and restarts the assistant. Tell the user the conversation will disconnect at restart. A successful tool result means started, NOT completed. Do not run git pull or terminal install commands instead."),
+    _tool("get_update_status", "Read progress/result of the assistant self-update. Report preparing/installing/completed/failed accurately; a queued or running update is not complete."),
+    _tool("list_bar_icons", "Discover the current top-bar icons with exact IDs, names, section, position, and numbers. Use FIRST for any toolbar, top-bar icon, settings panel, Omarchy AI settings, MyApi, network, Bluetooth, audio, display, power, clock or weather panel request. If ambiguous, read the numbered names to the user and ask which one. These numbers are a spoken/text list, not on-screen labels. Tray entries and non-panel widgets may not expose a panel."),
+    _tool("open_bar_panel", "Open the actual top-bar panel using the exact ID returned by list_bar_icons. Resolve a user's number using that list's ID, then call this tool. Never substitute the Agent launcher (Claude) or Omarchy menu for a missing panel. Report failures honestly; shell acceptance is not visual verification.", {
+        "type": "object", "properties": {"id": {"type": "string", "description": "Exact plugin ID from list_bar_icons."}}, "required": ["id"]}),
+    _tool("close_bar_panel", "Close or dismiss a top-bar settings popup (AI settings, MyApi, audio, network, Bluetooth, etc.). Use list_bar_icons to resolve the exact ID. These are shell panels, not application windows: never use close_window, keyboard shortcuts, or kill the shell to dismiss them. This is safe to repeat and will not reopen the panel. A successful result confirms the dismiss request, not visual closure.", {
+        "type": "object", "properties": {"id": {"type": "string", "description": "Exact plugin ID from list_bar_icons."}}, "required": ["id"]}),
     _tool("volume_up", "Raise the system output volume by a small step."),
     _tool("volume_down", "Lower the system output volume by a small step."),
     _tool("volume_mute_toggle", "Toggle mute on the system output."),
@@ -60,6 +68,11 @@ TOOLS: list[dict] = [
     _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
+    _tool("browser_task", "Use the dedicated Jev-ultrafast browser agent for a web task. It observes the live browser DOM, chooses only a currently observed browser action with Jev, verifies each step, and stops only on visible completion or a blocked state. Use this for web navigation, searching, forms, and opening links; do not use desktop keyboard tools to drive the browser.", {
+        "type": "object", "properties": {
+            "url": {"type": "string", "description": "Starting URL. Use https:// when known."},
+            "goal": {"type": "string", "description": "The complete web task and its visible success condition."},
+        }, "required": ["url", "goal"]}),
     _tool("open_files", "Open the file manager."),
     _tool("open_editor", "Open the default text editor."),
     _tool(
@@ -130,7 +143,7 @@ TOOLS: list[dict] = [
     ),
     _tool("workspace_next", "Switch to the next workspace."),
     _tool("workspace_prev", "Switch to the previous workspace."),
-    _tool("close_window", "Close the currently focused window."),
+    _tool("close_window", "Close the currently focused application window. For top-bar settings panels or popups, use close_bar_panel instead; this would close the application underneath."),
     _tool(
         "window_fullscreen_toggle",
         "Toggle fullscreen on the currently focused window/tile — makes it "
@@ -150,7 +163,7 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "list_commands",
-        "Search Omarchy's full keybinding/command list (228 commands — "
+        "For top-bar icons or settings panels, use list_bar_icons/open_bar_panel instead. Search Omarchy's keybinding/command list (228 commands — "
         "app launchers, system menus, capture tools, window/workspace "
         "actions, theme/clipboard/emoji pickers, and more) by what the "
         "user described. Use this instead of guessing when they ask for "
@@ -188,8 +201,8 @@ TOOLS: list[dict] = [
         "type_text",
         "Type literal text into whichever window is currently focused — "
         "a terminal, a browser address/search bar, a text field, "
-        "anywhere. Focus the right window first with focus_window if "
-        "needed. Does not press Enter afterward — call press_key with "
+        "anywhere. A successful focus_window is required before input; focus the right window "
+        "first. Success means input sent, not application acceptance. Does not press Enter afterward — call press_key with "
         "'Return' separately if the text should be submitted/run.",
         {
             "type": "object",

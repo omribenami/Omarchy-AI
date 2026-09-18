@@ -13,7 +13,7 @@ class WakeMicrophoneTests(unittest.TestCase):
         desktop = np.full(audio.FRAME_SAMPLES, 1234, dtype=np.int16)
         proc = SimpleNamespace(stdout=io.BytesIO(desktop.tobytes()), tv_mic=MagicMock())
         proc.tv_mic.read.return_value = bytes(audio.FRAME_BYTES)
-        np.testing.assert_array_equal(audio.read_frame(proc), desktop)
+        np.testing.assert_array_equal(audio.read_frame(proc), audio.clean_frame(desktop))
         proc.tv_mic.read.assert_not_called()
 
     def detect(self, desktop_scores, tv_scores, remote=True):

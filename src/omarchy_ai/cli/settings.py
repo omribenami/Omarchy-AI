@@ -55,6 +55,7 @@ from ..config import (
     LEGACY_KEY_PATH,
     OMARCHY_KEY_PATH,
     GEMINI_KEY_PATH,
+    VERCEL_GATEWAY_KEY_PATH,
     USER_CONFIG_PATH,
     WAKE_MODELS_DIR,
     Config,
@@ -92,6 +93,10 @@ SETTABLE = (
     "voice",
     "phone_bridge_enabled",
     "myapi_enabled",
+    "omarchy_text_model",
+    "omarchy_vision_model",
+    "omarchy_stt_model",
+    "omarchy_model_choice",
 )
 
 # A curated set of realtime voices this project has seen documented/used —
@@ -139,6 +144,7 @@ def _snapshot() -> dict:
         "config_path": str(USER_CONFIG_PATH),
         "api_key": _api_key_state(),
         "gemini_api_key": {"set": GEMINI_KEY_PATH.exists(), "path": str(GEMINI_KEY_PATH)},
+        "vercel_gateway_api_key": {"set": VERCEL_GATEWAY_KEY_PATH.exists(), "path": str(VERCEL_GATEWAY_KEY_PATH)},
         "phone_bridge_paired_count": paired_count(),
         "myapi": _myapi_state(),
         "assistant": control.request('status'),
@@ -175,8 +181,17 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
         return sorted(set(value))
 
     if key == "provider":
-        if value not in ("openai", "gemini"):
-            raise ValidationError("provider must be openai or gemini")
+        if value not in ("openai", "gemini", "omarchy"):
+            raise ValidationError("provider must be openai, gemini, or omarchy")
+        return value
+
+    if key in {"omarchy_text_model", "omarchy_vision_model", "omarchy_stt_model"}:
+        if not isinstance(value, str) or "/" not in value or any(c.isspace() for c in value):
+            raise ValidationError(f"{key} must be a Gateway model id")
+        return value
+    if key == "omarchy_model_choice":
+        if value not in {"gemini", "openai", "jev"}:
+            raise ValidationError("omarchy_model_choice must be gemini, openai, or jev")
         return value
 
     if key == "wake_threshold":
@@ -394,6 +409,21 @@ def cmd_set_gemini_api_key(_args: argparse.Namespace) -> dict:
     return _snapshot()
 
 
+def cmd_set_vercel_gateway_api_key(_args: argparse.Namespace) -> dict:
+    raw = os.environ.get("AI_GATEWAY_API_KEY")
+    if raw is None:
+        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    key = (raw or "").strip()
+    if len(key) < 12 or any(c.isspace() for c in key):
+        return {"error": "no valid Vercel AI Gateway key provided"}
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(VERCEL_GATEWAY_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(key + "\n")
+    os.chmod(VERCEL_GATEWAY_KEY_PATH, 0o600)
+    return _snapshot()
+
+
 def cmd_get(_args: argparse.Namespace) -> dict:
     return _snapshot()
 
@@ -547,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     p_set.add_argument("value")
     sub.add_parser("set-api-key")
     sub.add_parser("set-gemini-api-key")
+    sub.add_parser("set-vercel-gateway-api-key")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
     sub.add_parser("pair-phone")
@@ -569,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         "set": cmd_set,
         "set-api-key": cmd_set_api_key,
         "set-gemini-api-key": cmd_set_gemini_api_key,
+        "set-vercel-gateway-api-key": cmd_set_vercel_gateway_api_key,
         "restart-status": cmd_restart_status,
         "pair-phone": cmd_pair_phone,
         "revoke-phones": cmd_revoke_phones,

@@ -15,6 +15,24 @@ FRAME_SAMPLES = 1280  # 80ms, the chunk size openWakeWord expects
 FRAME_BYTES = FRAME_SAMPLES * 2  # s16 = 2 bytes/sample
 
 
+def clean_frame(frame: np.ndarray) -> np.ndarray:
+    """Suppress DC/low-frequency rumble and idle mic hiss before wake VAD."""
+    samples = frame.astype(np.float32, copy=True)
+    if samples.size < 2:
+        return frame
+    # Lightweight high-pass; wake words live well above this range.
+    previous_x = previous_y = 0.0
+    alpha = 0.969
+    for i, value in enumerate(samples):
+        y = alpha * (previous_y + value - previous_x)
+        samples[i] = y
+        previous_x, previous_y = value, y
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    if rms < 260:
+        samples *= 0.08
+    return np.clip(samples, -32768, 32767).astype(np.int16)
+
+
 def _argv(device: str | None) -> list[str]:
     argv = [
         "pw-record",
@@ -60,4 +78,4 @@ def read_frame(proc: subprocess.Popen) -> np.ndarray | None:
         if not chunk:
             return None
         buf += chunk
-    return np.frombuffer(buf, dtype=np.int16)
+    return clean_frame(np.frombuffer(buf, dtype=np.int16))

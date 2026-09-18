@@ -70,10 +70,25 @@ class ActionResult:
     message: str = ""
 
 
+def _desktop_env() -> dict[str, str]:
+    """Recover Hyprland's per-login instance id for services started at boot."""
+    environment = os.environ.copy()
+    if environment.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return environment
+    try:
+        probe = subprocess.run(["hyprctl", "instances", "-j"], capture_output=True, text=True, timeout=2, check=False)
+        instances = json.loads(probe.stdout or "[]")
+        if instances:
+            environment["HYPRLAND_INSTANCE_SIGNATURE"] = str(instances[0]["instance"])
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        pass
+    return environment
+
+
 def _run(argv: list[str], timeout: float = _TIMEOUT, cwd: str | None = None) -> ActionResult:
     try:
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd
+            argv, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd, env=_desktop_env()
         )
     except FileNotFoundError:
         return ActionResult(False, f"{argv[0]} is not installed")
@@ -96,6 +111,7 @@ def _run_detached(argv: list[str]) -> ActionResult:
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            env=_desktop_env(),
         )
     except FileNotFoundError:
         return ActionResult(False, f"{argv[0]} is not installed")
@@ -161,7 +177,19 @@ def brightness_set(args: dict) -> ActionResult:
 # --- capture / launchers -----------------------------------------------------
 
 def screenshot(args: dict) -> ActionResult:
-    return _run(["omarchy-capture-screenshot", "fullscreen"])
+    from ..config import load_config
+    from .vision import _capture, inspect_gateway_image
+
+    path = _capture()
+    if path is None:
+        return ActionResult(False, "Screenshot capture failed; no saved image verified.")
+    cfg = load_config()
+    if cfg.provider == "omarchy":
+        evidence = inspect_gateway_image(path, "Describe the visible desktop in this saved screenshot.", cfg)
+        if evidence.startswith("error:"):
+            return ActionResult(False, f"Screenshot saved at {path}, but visual inspection failed: {evidence}")
+        return ActionResult(True, f"Screenshot saved at {path}. Visual evidence: {evidence}")
+    return ActionResult(True, f"Screenshot saved at {path}")
 
 
 def lock_screen(args: dict) -> ActionResult:
@@ -196,11 +224,32 @@ def read_tile_log(args: dict) -> ActionResult:
     from . import tile_logs
 
     text = tile_logs.read_log(args.get("window"))
-    return ActionResult(True, text)
+    available = not text.startswith(("no terminal", "more than one terminal", "failed to read log:"))
+    return ActionResult(available, text)
 
 
 def open_browser(args: dict) -> ActionResult:
-    return _run_detached(["omarchy-launch-browser"])
+    # Omarchy-ai owns one browser: the dedicated Jev-ultrafast Chromium
+    # profile. Do not open the user's normal browser and then drive it with
+    # keyboard focus, which is both ambiguous and unsafe.
+    try:
+        from .browser_jev import _ensure_dedicated_browser
+        _ensure_dedicated_browser()
+        from .browser_jev import _focus_dedicated_window
+        _focus_dedicated_window()
+        return ActionResult(True, "dedicated Jev browser ready")
+    except Exception as exc:
+        return ActionResult(False, f"dedicated Jev browser unavailable: {exc}")
+
+
+def browser_task(args: dict) -> ActionResult:
+    """Run jev-ultrafast with Gateway-backed Jev decisions and one Gateway key."""
+    try:
+        from .browser_jev import run_browser_task
+        return run_browser_task(args, load_config())
+    except Exception as exc:
+        log.exception("browser task failed before execution")
+        return ActionResult(False, f"browser task unavailable; no browser action executed: {exc}")
 
 
 def open_files(args: dict) -> ActionResult:
@@ -301,6 +350,46 @@ def list_windows(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(windows))
 
 
+def list_bar_icons(args: dict) -> ActionResult:
+    from .bar import entries
+    try:
+        return ActionResult(True, json.dumps(entries()))
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        return ActionResult(False, f"Could not discover top-bar icons: {exc}")
+
+
+def check_assistant_updates(args: dict) -> ActionResult:
+    from ..core import updates
+    result = updates.check_updates(force=True)
+    return ActionResult(result["ok"], json.dumps(result))
+
+
+def update_assistant(args: dict) -> ActionResult:
+    from ..core import updates
+    return ActionResult(*updates.request_update())
+
+
+def get_update_status(args: dict) -> ActionResult:
+    from ..core import updates
+    return ActionResult(True, json.dumps(updates.update_status()))
+
+
+def close_bar_panel(args: dict) -> ActionResult:
+    from .bar import close_panel
+    try:
+        return ActionResult(*close_panel(args.get("id", "")))
+    except Exception as exc:
+        return ActionResult(False, f"Could not close top-bar panel: {exc}")
+
+
+def open_bar_panel(args: dict) -> ActionResult:
+    from .bar import open_panel
+    try:
+        return ActionResult(*open_panel(args.get("id", "")))
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        return ActionResult(False, f"Could not open top-bar panel: {exc}")
+
+
 def list_commands(args: dict) -> ActionResult:
     from .keybindings import list_commands as _list_commands
 
@@ -396,6 +485,13 @@ def describe_screen(args: dict) -> ActionResult:
 
     question = args.get("question") or "Briefly describe what's on the screen."
     cfg = load_config()
+    if cfg.provider == "omarchy":
+        from .vision import _capture, inspect_gateway_image
+        path = _capture()
+        if path is None:
+            return ActionResult(False, "Screenshot capture failed; screen contents unverified.")
+        text = inspect_gateway_image(path, question, cfg)
+        return ActionResult(not text.startswith("error:"), text)
     text = _describe_screen(
         question, cfg.api_key_path, cfg.responses_model, cfg.responses_reasoning_effort
     )
@@ -500,10 +596,22 @@ def focus_window(args: dict) -> ActionResult:
         if match is None:
             return ActionResult(False, f"no window matching '{target}' found")
         address = match["address"]
-    return _hyprctl_dispatch(
+    result = _hyprctl_dispatch(
         f'hl.dsp.focus({{ window = "address:{address}" }})',
         ["focuswindow", f"address:{address}"],
     )
+    if not result.ok:
+        return result
+    for _ in range(5):
+        active = _run(["hyprctl", "activewindow", "-j"])
+        try:
+            if active.ok and json.loads(active.message).get("address") == address:
+                return ActionResult(True, f"verified focus on {address}")
+        except (ValueError, AttributeError):
+            pass
+        time.sleep(0.04)
+    return ActionResult(False, f"focus dispatch returned but {address} is not verified active")
+
 
 
 # --- misc system toggles -----------------------------------------------------
@@ -1419,6 +1527,12 @@ def myapi_gmail_download_attachment(args: dict) -> ActionResult:
 
 
 ACTIONS = {
+    "check_assistant_updates": check_assistant_updates,
+    "update_assistant": update_assistant,
+    "get_update_status": get_update_status,
+    "list_bar_icons": list_bar_icons,
+    "open_bar_panel": open_bar_panel,
+    "close_bar_panel": close_bar_panel,
     "volume_up": volume_up,
     "volume_down": volume_down,
     "volume_mute_toggle": volume_mute_toggle,
@@ -1432,6 +1546,7 @@ ACTIONS = {
     "open_terminal": open_terminal,
     "read_tile_log": read_tile_log,
     "open_browser": open_browser,
+    "browser_task": browser_task,
     "open_files": open_files,
     "open_editor": open_editor,
     "list_files": list_files,

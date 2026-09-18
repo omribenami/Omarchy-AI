@@ -11,10 +11,12 @@ import threading
 
 from ..config import Config, ensure_dirs, load_config
 from ..execution import tile_logs
+from . import updates
 from ..phone import server as phone_server
 from ..voice import feedback, control
 from ..voice.live import LiveSession
 from ..voice.gemini_live import GeminiLiveSession
+from ..voice.omarchy import OmarchySession
 from ..voice.wake import WakeWordDetector
 
 log = logging.getLogger("omarchy_ai.core.daemon")
@@ -63,10 +65,20 @@ class OmaDaemon:
         # when systemd restarts us, instead of exiting before their finally.
         loop.add_signal_handler(signal.SIGTERM, terminate)
         server = await control.serve(self.panel_command)
+        async def refresh_updates():
+            while True:
+                try:
+                    await asyncio.to_thread(updates.check_updates)
+                except Exception:
+                    log.warning("Update check unavailable", exc_info=True)
+                await asyncio.sleep(updates.CACHE_SECONDS)
+        update_checker = asyncio.create_task(refresh_updates())
         try:
             async with server:
                 await self._run_sessions()
         finally:
+            update_checker.cancel()
+            await asyncio.gather(update_checker, return_exceptions=True)
             loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
 
@@ -88,6 +100,12 @@ class OmaDaemon:
             if not woke and not manual:
                 continue
 
+            # Cached checks normally return immediately. An offline GitHub must
+            # never hold up wake activation; a timed-out refresh can finish later.
+            try:
+                await asyncio.wait_for(asyncio.to_thread(updates.check_updates), timeout=2)
+            except Exception:
+                log.debug("Wake update refresh deferred", exc_info=True)
             self._state = 'active'
             feedback.play(feedback.WAKE())
             log.info("wake word detected, starting live session")
@@ -96,6 +114,10 @@ class OmaDaemon:
             if self.config.provider == "gemini":
                 self._state = 'starting'
                 session = GeminiLiveSession(self.config)
+                session.on_connected = lambda: setattr(self, '_state', 'active')
+            elif self.config.provider == "omarchy":
+                self._state = 'starting'
+                session = OmarchySession(self.config)
                 session.on_connected = lambda: setattr(self, '_state', 'active')
             else:
                 session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
@@ -106,6 +128,9 @@ class OmaDaemon:
                 log.exception("live session crashed")
                 self._last_error = "Connection ended unexpectedly. Check the service log, then try again."
                 # Keep the selected provider; never silently switch credentials.
+            finally:
+                from ..execution.browser_jev import cancel_browser_tasks
+                cancel_browser_tasks()
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")
             self._state = 'listening'

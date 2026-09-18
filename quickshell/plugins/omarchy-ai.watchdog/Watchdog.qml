@@ -39,6 +39,8 @@ Item {
   // omarchy-ai.settings panel, sent as part of the start() payload each
   // session (src/omarchy_ai/voice/watchdog.py's start(display_mode)).
   property string displayMode: "feed"
+  property int activationNonce: 0
+  property string glitchLine: ""
 
   // Rolling amplitude buffer for the ASCII visualizer, 0..1 per sample —
   // a scrolling-waveform look with a short window rather than a single
@@ -81,24 +83,18 @@ Item {
     var s = ""
     for (var i = 0; i < root.levels.length; i++) {
       var idx = Math.max(0, Math.min(8, Math.round(root.levels[i] * 8)))
-      var r = Math.random()
-      if (r < 0.04 && idx > 0) {
-        // Artifact column: ignore the real amplitude entirely for one
-        // frame at one position.
-        s += root.glitchChars.charAt(Math.floor(Math.random() * root.glitchChars.length))
-      } else if (r < 0.62) {
-        s += root.brailleChars[idx]
-      } else {
-        s += root.blockChars.charAt(idx)
-      }
+      // Keep the glyph deterministic: random glitch columns made the meter
+      // look out of phase even when its timing was correct.
+      s += root.blockChars.charAt(idx)
     }
     return s
   }
 
-  readonly property color rainGreen: "#39ff88"
-  readonly property color rainCyan: "#39e6ff"
-  readonly property color rainLime: "#a6ff4d"
-  readonly property color rainErr: "#ff5f5f"
+  // The original Omarchy AI visualizer blue, used consistently everywhere.
+  readonly property color rainGreen: "#39e6ff"
+  readonly property color rainCyan: rainGreen
+  readonly property color rainLime: rainGreen
+  readonly property color rainErr: rainGreen
   readonly property color rainDim: Util.alpha(rainGreen, 0.55)
 
   function stateColor(s) {
@@ -143,11 +139,26 @@ Item {
       // Ignore — fall back to "feed".
     }
     displayMode = mode
+    activationNonce += 1
     opened = true
   }
 
   function close() {
     opened = false
+  }
+
+  Timer {
+    id: glitchTimer
+    interval: 1500
+    repeat: true
+    running: root.opened
+    onTriggered: {
+      var chars = "01/#%<>[]{}+=_*:;!?"
+      var line = ""
+      for (var i = 0; i < 18 + Math.floor(Math.random() * 18); i++)
+        line += chars.charAt(Math.floor(Math.random() * chars.length))
+      root.glitchLine = line
+    }
   }
 
   function pushLine(text, tone) {
@@ -232,6 +243,13 @@ Item {
       // Visual-only, like the OSD and window labels: never steal input.
       mask: Region {}
 
+      ActivationEffects {
+        anchors.fill: parent
+        active: root.opened
+        accent: root.rainGreen
+        activationNonce: root.activationNonce
+      }
+
       readonly property int cardWidth: Style.space(440)
       readonly property int cardHeight: Style.space(268)
       readonly property int cardMargin: Style.space(20)
@@ -249,11 +267,19 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: Style.space(48)
+        width: Math.min(parent.width - Style.space(48), Style.space(720))
+        height: Style.space(118)
         textFormat: Text.PlainText
-        text: root.visualizerLine()
+        // Keep the dependency explicit: QML cannot reliably infer that a
+        // property read inside visualizerLine() should invalidate this
+        // binding. Without this, levels changed over IPC but the rendered
+        // ASCII row stayed at its initial idle value.
+        text: { var samples = root.levels; return root.visualizerLine() }
         font.family: Style.font.family
-        font.pixelSize: Style.font.displayLarge
+        font.pixelSize: Math.max(16, Style.font.displayLarge * 0.72)
         color: root.convState === "speaking" ? root.rainCyan : Util.alpha(root.rainCyan, 0.30)
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignBottom
         elide: Text.ElideNone
         opacity: root.opened ? 1 : 0
 
@@ -397,6 +423,7 @@ Item {
           }
         }
       }
+
     }
   }
 }

@@ -304,13 +304,13 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.0-linux-x86_64.tar.gz
+package=omarchy-ai-0.3.1-linux-x86_64.tar.gz
 base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.0-linux-x86_64
+cd omarchy-ai-0.3.1-linux-x86_64
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
@@ -321,15 +321,65 @@ Keep the extracted directory: the service runs from it. The installer installs
 missing native packages, creates the locked Python environment, installs the desktop plugins,
 copies the bundled wake-word models, creates the user config, and installs the
 systemd service. It does not guess or overwrite your API key. Open the
-**Omarchy AI** settings panel on the right side of the bar, choose **OpenAI**
-or **Gemini**, add that provider's key, then press **Apply saved changes**.
+**Omarchy AI** settings panel on the right side of the bar, choose **OpenAI**,
+**Gemini**, or **Omarchi-ai (Jev + Vercel)**, add that provider's key, then
+press **Apply saved changes**.
 Keys are saved with owner-only permissions in `~/.config/omarchy-ai/key`
-or `~/.config/omarchy-ai/gemini-key`. Saved keys show an **Edit key** button.
+or `~/.config/omarchy-ai/gemini-key`; Omarchy-ai stores its Vercel AI Gateway
+key in `~/.config/omarchy-ai/vercel-ai-gateway-key`. Saved keys show an
+**Edit key** button.
 New installs default to the `omachy` wake word and ASCII visualizer; existing
 preferences are not overwritten. Refresh paired phone pages after upgrading.
 
 For an existing source checkout, pull the update with `git pull --ff-only`,
 run `bash install.sh` there, then restart `omarchy-ai.service`.
+
+### Voice updates
+
+Omarchy checks the versioned bundles in this repository's `dist/` directory at
+startup and every 15 minutes. On wake, it refreshes an expired check with a
+2-second foreground limit and recommends a newer version in its first spoken
+reply. Offline checks do not prevent conversation. Unversioned demo releases
+and bundles without a checksum are ignored.
+
+Say **“Check for updates”**, **“Update yourself”**, or **“What's the update
+status?”**. Only an explicit update request starts installation. The updater
+pins the download and SHA-256 file to the same GitHub commit, verifies and
+unpacks the bundle, and prepares a new Python environment before stopping the
+assistant. It keeps your API keys, settings, conversation history, and existing
+source checkout. The conversation disconnects when the new version starts.
+
+The updater runs in the separate `omarchy-ai-update.service` user unit. It
+retains the previous installation and backs up the service and shell integration;
+if setup or startup fails, it restores them. Progress and errors are stored in
+`~/.local/state/omarchy-ai/updates/install.json`; detailed output is available via
+`journalctl --user -u omarchy-ai-update.service`. Updates require existing native
+runtime dependencies and `uv`; missing system packages are reported rather than
+prompting for sudo from a background voice session. Android receiver updates
+remain separate from the desktop assistant update.
+
+Publish a bundle and matching `.sha256` with a **higher `pyproject.toml` version**
+to `dist/` on `main` to make it discoverable. Same-version source commits are not
+updates. Updates download and run the project's installer, using GitHub HTTPS
+and the accompanying checksum for integrity (the checksum is not a separate
+publisher signature).
+
+### Omarchi-ai (Jev + Vercel AI Gateway)
+
+Omarchi-ai is the third provider. It uses `typesafe-ai/jev` through Vercel AI
+Gateway for typed, confidence-aware action/end-of-conversation/risk decisions;
+Jev is an evaluation model, not a chat text generator. Gateway's
+`openai/gpt-4o-mini-transcribe` performs automatic multilingual transcription,
+`openai/tts-1` returns low-latency PCM speech, and a compact Gateway language
+model supplies conversational wording and tool arguments only after Jev's
+decision. The existing Watch Dogs visualizer remains live because it is driven
+from the PCM samples sent to PipeWire.
+
+This provider captures one spoken turn at a time (the configured speak window),
+unlike the WebRTC full-duplex OpenAI and Gemini Live providers. The phone bridge
+continues to listen securely on port 8766 for pairing, mirroring, and the two
+realtime phone providers; Gateway turn-based phone voice is not exposed as a
+misleading WebRTC Live session.
 
 ### Persistent preferences
 

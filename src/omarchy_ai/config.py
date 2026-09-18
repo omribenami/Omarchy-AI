@@ -39,6 +39,7 @@ SOCKET_PATH = RUNTIME_DIR / "omarchy-ai.sock"
 # project's config to borrow from).
 OMARCHY_KEY_PATH = CONFIG_DIR / "key"
 GEMINI_KEY_PATH = CONFIG_DIR / "gemini-key"
+VERCEL_GATEWAY_KEY_PATH = CONFIG_DIR / "vercel-ai-gateway-key"
 # Where this project started: omavoice's key, reused directly since it's
 # the same OpenAI account. Kept as a fallback purely so an install that
 # predates the settings panel keeps working without the user having to
@@ -81,6 +82,24 @@ class Config:
     provider: str = "openai"
     gemini_model: str = "gemini-3.8-live"
     gemini_api_key_path: str = str(GEMINI_KEY_PATH)
+    # Omarchy-ai is a Gateway composition: Jev makes typed agent decisions,
+    # GPT-4o mini Transcribe recognizes speech in many languages, TTS-1 is
+    # the latency-oriented speech renderer, and the language model only
+    # turns approved decisions/tool results into natural replies.
+    vercel_gateway_api_key_path: str = str(VERCEL_GATEWAY_KEY_PATH)
+    omarchy_jev_model: str = "typesafe-ai/jev"
+    omarchy_stt_model: str = "openai/gpt-4o-mini-transcribe"
+    omarchy_end_silence_ms: int = 650
+    omarchy_max_utterance_seconds: int = 20
+    omarchy_tts_model: str = "openai/tts-1"
+    # tts-1's voice catalogue is distinct from the Live API's (for example
+    # the default Live voice "marin" is not a valid tts-1 voice).
+    omarchy_tts_voice: str = "nova"
+    omarchy_text_model: str = "google/gemini-3.5-flash-lite"
+    # UI choice. Jev remains the structured decision/browser policy; it is
+    # never incorrectly used as a free-form text generator.
+    omarchy_model_choice: str = "gemini"
+    omarchy_vision_model: str = "google/gemini-2.5-flash-lite"
     # Wake word (openWakeWord). See jarvisd's README for tuning notes —
     # same detector, same knobs. Custom-trained models (any number) load
     # simultaneously — anyone whose name is in this list wakes it, not
