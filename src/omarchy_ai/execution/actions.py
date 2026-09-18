@@ -184,7 +184,7 @@ def screenshot(args: dict) -> ActionResult:
     if path is None:
         return ActionResult(False, "Screenshot capture failed; no saved image verified.")
     cfg = load_config()
-    if cfg.provider == "omarchy":
+    if _gateway_key_configured(cfg):
         evidence = inspect_gateway_image(path, "Describe the visible desktop in this saved screenshot.", cfg)
         if evidence.startswith("error:"):
             return ActionResult(False, f"Screenshot saved at {path}, but visual inspection failed: {evidence}")
@@ -485,7 +485,7 @@ def describe_screen(args: dict) -> ActionResult:
 
     question = args.get("question") or "Briefly describe what's on the screen."
     cfg = load_config()
-    if cfg.provider == "omarchy":
+    if _gateway_key_configured(cfg):
         from .vision import _capture, inspect_gateway_image
         path = _capture()
         if path is None:
@@ -498,6 +498,16 @@ def describe_screen(args: dict) -> ActionResult:
     if text.startswith("error:"):
         return ActionResult(False, text)
     return ActionResult(True, text)
+
+
+def _gateway_key_configured(cfg) -> bool:
+    gateway_key_path = getattr(cfg, "vercel_gateway_api_key_path", "")
+    if not gateway_key_path:
+        return False
+    try:
+        return bool(Path(gateway_key_path).expanduser().read_text().strip())
+    except OSError:
+        return False
 
 
 def _matching_windows(targets, clients: list[dict]) -> list[dict]:
@@ -1588,6 +1598,19 @@ ACTIONS = {
     "myapi_gmail_search_attachments": myapi_gmail_search_attachments,
     "myapi_gmail_download_attachment": myapi_gmail_download_attachment,
 }
+
+
+def desktop_task(args: dict) -> ActionResult:
+    from .desktop_jev import desktop_task as execute
+    return execute(args)
+
+
+def search_os_knowledge(args: dict) -> ActionResult:
+    from .os_knowledge import search_os_knowledge as search
+    return search(args)
+
+
+ACTIONS.update(desktop_task=desktop_task, search_os_knowledge=search_os_knowledge)
 
 
 def run_action(name: str, args: dict) -> ActionResult:

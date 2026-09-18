@@ -541,13 +541,33 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"ok": result.ok, "message": result.message})
 
 
+class PhoneHTTPServer(ThreadingHTTPServer):
+    """Keep slow TLS clients out of the single server accept loop."""
+
+    request_queue_size = 32
+    tls_context: ssl.SSLContext | None = None
+    handshake_timeout = 5
+    request_timeout = 30
+
+    def process_request_thread(self, request, client_address):
+        try:
+            request.settimeout(self.handshake_timeout)
+            if self.tls_context is not None:
+                request = self.tls_context.wrap_socket(request, server_side=True)
+            request.settimeout(self.request_timeout)
+        except OSError:
+            self.shutdown_request(request)
+            return
+        super().process_request_thread(request, client_address)
+
+
 def start(config: Config) -> ThreadingHTTPServer | None:
     """Starts the phone bridge in a background thread. Returns the server
     (call .shutdown() to stop it) or None if it's disabled."""
     if not config.phone_bridge_enabled:
         return None
     _Handler.config = config
-    server = ThreadingHTTPServer(("0.0.0.0", config.phone_bridge_port), _Handler)
+    server = PhoneHTTPServer(("0.0.0.0", config.phone_bridge_port), _Handler)
 
     cert = _ensure_self_signed_cert()
     scheme = "http"
@@ -555,7 +575,11 @@ def start(config: Config) -> ThreadingHTTPServer | None:
         cert_path, key_path = cert
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
-        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        # Wrapping the listening socket performs TLS negotiation in accept(),
+        # before ThreadingMixIn can start a worker. Idle phone preconnections
+        # then freeze every new request indefinitely. Wrap accepted sockets
+        # inside their worker instead, with a bounded handshake timeout.
+        server.tls_context = ctx
         scheme = "https"
 
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="phone-bridge")

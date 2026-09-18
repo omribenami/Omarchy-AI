@@ -3543,3 +3543,118 @@ cache/offline behavior, provider notices, checksum/traversal rejection, separate
 worker scheduling, staged install ordering, rollback, and preserved settings.
 Installation/rollback tests use temporary files and mocked service commands;
 an actual newer-version upgrade is not yet exercised because none is published.
+
+### 2026-09-18 — Jev native desktop worker and phone HTTPS stall repair
+
+Researched TypeSafe's typed primitives, confidence semantics, jev-browser and
+jev-ultrafast. Added execution/desktop_jev.py and shared desktop_task tool:
+parallel native observation, batched operation/target choices, code-owned args,
+probability validation, freshness/cancellation guards, bounded execution and
+independent postconditions. Live conversation remains Gemini (existing selected
+provider); unsupported/uncertain work, text and vision hand back. Packaged the
+user's Omarchy expert guide and 456-route pinned capability registry with bounded
+retrieval and Arch manual reference notes. See docs/JEV-DESKTOP.md for sources,
+coverage and limits. Existing uncommitted Gateway vision work was preserved.
+
+Real probes resolved English/Hebrew workspace requests and Nord theme selection;
+vision/negated requests handed back. Decision latency in these probes was roughly
+0.37–0.98s. Some ordinary actions remain below the conservative probability gate.
+A bounded real brightness probe executed 51%, verified it, then returned its
+verified step because final goal probability was only 0.86. Restored and verified
+the original 50%. This is not a successful end-to-end spoken-task claim.
+
+During development the user reported the server down. Confirmed localhost HTTPS
+8766 timed out after 5s with a full accept queue, while daemon/control still
+reported listening. Found TLS wrapping on the listening socket: an idle handshake
+can block accept before a request worker starts. Moved handshakes into workers
+with 5s timeout and 30s request-read timeout. Real TLS socket regression confirms
+a stalled client cannot block another request and expires. All 134 Python tests
+pass; wheel includes knowledge files; git diff --check passes.
+
+Restarted the idle assistant to load both changes. The old instance stayed stuck
+in shutdown and was terminated to complete the restart. New PID 152401 logged
+ready at 14:46:14 CDT; localhost HTTPS returned 200 in 0.049s. Pairing files,
+provider selection, microphone configuration and system audio services unchanged.
+
+Post-restart validation: held an idle TCP/TLS client against the running port
+8766 while a second HTTPS client successfully received 200; the idle client
+expired. Control still reports listening/Gemini/no error. A separate Gemini Live
+connection accepted the updated session/tool schema with desktop_task and
+search_os_knowledge; no audio was sent or recorded. Spoken delegation remains
+unverified.
+
+### 2026-09-18 — Mid-word speech cutoff / suspected self-interruption
+
+User reported that Gemini stops mid-word and may hear itself. Inspected the
+13:59 and 15:01–15:03 sessions. Saved history contains assistant phrases followed
+by near-identical user transcriptions ('Do you need', 'need help with'), and the
+latest session has short, implausible multilingual inputs interleaved with partial
+assistant replies. This strongly suggests residual echo/noise being interpreted
+as speech; it is not an acoustic measurement or proof of every individual cutoff.
+The journal confirms WebRTC AEC loaded for the physical internal mic and speakers,
+with assistant playback/capture explicitly targeting its private sink/source.
+No PipeWire/WirePlumber error was logged in the inspected interval. The old code
+did not log server interruption events, so their count cannot be reconstructed.
+
+Verified PipeWire's Pulse compatibility layer translates the configured AEC
+options; no speculative hardware gain or system audio-service change was made.
+Configured Gemini automatic activity detection with LOW start/end sensitivity,
+300ms prefix and 600ms end silence, keeping START_OF_ACTIVITY_INTERRUPTS and
+continuous microphone input. These are a mitigation pending a spoken test, not
+proof that acoustic echo is eliminated. Google's current capabilities guide:
+https://ai.google.dev/gemini-api/docs/live-api/capabilities#automatic-vad-configuration
+
+Added interruption event logs: session ID, count, playback state/queue, recent
+500ms microphone RMS/peak, time since playback submission, received/submitted
+byte counters and turn/session summaries. No microphone recording or raw audio
+is stored; no new transcript text is written to these diagnostic logs. Tests
+check interruption cleanup/diagnostics and unchanged mic forwarding during
+speech, preserving full duplex. All 136 Python tests pass; Gemini accepted the
+new VAD configuration in a no-audio connection. Acoustic validation still needs
+the user to speak/listen in the actual room.
+
+### 2026-09-18 — False interruptions confirmed; gain cap and tool-result repair
+
+User reported the same cutoffs plus a stall after VAD tuning, and confirmed
+being silent during the interruptions. The 15:11–15:12 session recorded four
+server interruptions; the first had 500ms maximum microphone RMS 16473.8 and
+peak 32768 (full-scale clipping). Three interruptions discarded queued speech.
+Saved transcript again included assistant wording as microphone input. The
+hardware exposed Capture +30dB and Internal Mic Boost +10dB at the existing
+60% source setting. The session ultimately ended; daemon was back to listening,
+not process-deadlocked. Do not describe the previous VAD-only mitigation as fixed.
+
+Paused the idle assistant and measured raw vs AEC microphone signals locally
+while playing the same generated test phrase. No microphone recording was saved
+or uploaded in this local comparison. At 60%: raw RMS 3013.6 / AEC RMS 314.1;
+at 35%: raw 649.8 / AEC 116.5. This small controlled measurement shows lower
+absolute residual echo, not a universal accuracy or attenuation benchmark.
+
+Added optional Config.gemini_mic_volume_percent (default None for other installs).
+This machine's config uses 35%, with its original YAML backed up beside it.
+EchoCancellation caps the physical source before loading AEC, preserves channel
+balance, and restores exact previous volumes on cleanup/startup failure. It
+never raises an already quieter mic, and preserves a deliberate user gain
+change during the session. Real cap/cleanup test observed exactly 60% -> 35% ->
+60%. Wake-word listening therefore keeps the prior level; no audio services,
+speaker volume, or system default devices were changed.
+
+Corrected a bug introduced with the Jev interruption hook: generic speech
+interruption used to add ALL seen tool IDs to the protocol-cancelled set. That
+could suppress a running tool's result and strand a BLOCKING call. Now only
+explicit server tool_call_cancellation suppresses a response. Interrupted queued
+work is skipped with an explicit non-execution response; running tools return
+their actual outcome. New tests cover all three cases. Result logs are bounded
+and record result length and actual response delivery. This is a reproduced
+protocol bug, not proof it caused this particular reported stall.
+
+Validation: all 143 Python tests pass, including gain restoration/failure/user
+change handling and interruption/tool-response cases. Ran a real Gemini Live
+speaker/microphone test with tools disabled, using the normal AEC/capture/playback
+code and this machine's 35% session cap. It completed 726720 bytes of 24kHz mono
+s16 speech (~15.14s), received == submitted, generation_complete=1,
+turn_complete=1, interruptions=0, microphone transcription characters=0.
+Observed mic peak 1799 and maximum frame RMS ~740; no clipping. This final test
+used the normal configured Gemini microphone stream (no local audio recording).
+Actual human barge-in still needs user confirmation; it remains enabled and
+unit-tested, not replaced with muting/half duplex.

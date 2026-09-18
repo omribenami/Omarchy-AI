@@ -81,6 +81,9 @@ API_URL = "https://api.openai.com/v1/live/sessions"
 class Config:
     provider: str = "openai"
     gemini_model: str = "gemini-3.8-live"
+    # Optional physical mic cap during desktop conversations only. None keeps
+    # device/user defaults; restore the previous gain when the session ends.
+    gemini_mic_volume_percent: int | None = None
     gemini_api_key_path: str = str(GEMINI_KEY_PATH)
     # Omarchy-ai is a Gateway composition: Jev makes typed agent decisions,
     # GPT-4o mini Transcribe recognizes speech in many languages, TTS-1 is

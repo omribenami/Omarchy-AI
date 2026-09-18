@@ -26,9 +26,11 @@ _cancel_generation = 0
 
 
 def cancel_browser_tasks() -> None:
-    """Invalidate running browser work, including threads waiting for a model."""
+    """Invalidate delegated work, including threads waiting for a model."""
     global _cancel_generation
     _cancel_generation += 1
+    from .desktop_jev import cancel_desktop_tasks
+    cancel_desktop_tasks()
 
 
 def _guard_browser_action(original, generation):
