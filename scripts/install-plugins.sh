@@ -23,3 +23,12 @@ done
 # The MyApi widget itself stays hidden until myapi_enabled is true.
 omarchy bar move omarchy-ai.settings --section right
 omarchy bar move omarchy-ai.myapi --section right --after omarchy-ai.settings
+# A rescan refreshes the registry, but an open panel can retain its previous
+# QML instance. Restart after all plugin and layout changes during upgrades.
+# Omarchy refuses a restart while the session is locked; the rescan above is
+# still applied, and the refreshed panel appears when the session unlocks.
+if command -v omarchy-hyprland-session-locked >/dev/null 2>&1 && omarchy-hyprland-session-locked; then
+  echo 'Omarchy shell restart deferred while the session is locked; plugins were rescanned.'
+else
+  omarchy restart shell
+fi

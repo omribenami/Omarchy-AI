@@ -3658,3 +3658,28 @@ Observed mic peak 1799 and maximum frame RMS ~740; no clipping. This final test
 used the normal configured Gemini microphone stream (no local audio recording).
 Actual human barge-in still needs user confirmation; it remains enabled and
 unit-tested, not replaced with muting/half duplex.
+
+## 2026-09-18 — Settings panel upgrade and Jev key access (0.3.3)
+
+The 0.3.2 Settings QML accidentally hardcoded its provider picker to Gateway
+voice and sent the top key editor to the Vercel Gateway setter regardless of
+the selected conversation provider. The backend still supported OpenAI Live,
+Gemini Live, and Gateway voice, so this was a panel regression rather than a
+provider migration. A second laptop upgraded from an old release still showed
+an old-looking settings menu and had no clear place for Jev access.
+
+The panel now follows `fields.provider`, shows the corresponding OpenAI/Gemini/
+Gateway key state, and routes each key to its existing backend setter. With a
+Live provider selected, a separate masked "Jev / Vercel AI Gateway key" editor
+is shown. Jev calls use that Gateway key; this integration has no direct
+TypeSafe-token path. Existing key files and provider selection are preserved.
+
+Plugin installation already copied QML and requested a rescan, but an open
+panel could retain its old instance. It now restarts the Omarchy shell after
+enabling and placing plugins, unless the desktop is locked (when the rescan
+still applies and Omarchy explicitly refuses a shell restart). The Settings
+plugin manifest now reports 0.3.3. On this desktop, running the plugin
+installer restarted the shell, the installed panel matched the rendered source,
+the panel opened and closed through IPC without QML errors, and its layout was
+visually checked at 1366x768. Installer tests cover both unlocked restart and
+locked rescan behavior.

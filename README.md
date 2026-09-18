@@ -304,13 +304,13 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.2-linux-x86_64.tar.gz
+package=omarchy-ai-0.3.3-linux-x86_64.tar.gz
 base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.2-linux-x86_64
+cd omarchy-ai-0.3.3-linux-x86_64
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
@@ -322,8 +322,11 @@ missing native packages, creates the locked Python environment, installs the des
 copies the bundled wake-word models, creates the user config, and installs the
 systemd service. It does not guess or overwrite your API key. Open the
 **Omarchy AI** settings panel on the right side of the bar, choose **OpenAI**,
-**Gemini**, or **Omarchi-ai (Jev + Vercel)**, add that provider's key, then
+**Gemini**, or **Gateway voice**, add that provider's key, then
 press **Apply saved changes**.
+For Jev desktop and browser actions while using OpenAI Live or Gemini Live,
+also save a **Jev / Vercel AI Gateway key** in the same panel. This integration
+uses the Gateway key for Jev; it does not accept a separate TypeSafe token.
 Keys are saved with owner-only permissions in `~/.config/omarchy-ai/key`
 or `~/.config/omarchy-ai/gemini-key`; Omarchy-ai stores its Vercel AI Gateway
 key in `~/.config/omarchy-ai/vercel-ai-gateway-key`. Saved keys show an
