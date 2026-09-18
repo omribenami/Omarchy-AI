@@ -3683,3 +3683,22 @@ installer restarted the shell, the installed panel matched the rendered source,
 the panel opened and closed through IPC without QML errors, and its layout was
 visually checked at 1366x768. Installer tests cover both unlocked restart and
 locked rescan behavior.
+
+## 2026-09-18 — Gateway key Save appeared inert on clean laptops (0.3.4)
+
+Reproduced the report with an isolated config and a PATH without `secret-tool`:
+`set-vercel-gateway-api-key` wrote a 0600 key file, then crashed while building
+its return snapshot. The snapshot queried optional Sudo Access through
+`secret-tool`, which was absent and is not an installer dependency. The helper
+therefore emitted no JSON even though the key was saved. The Settings panel
+also placed its status below the scroll area and interpreted empty stdout as
+an empty successful snapshot, hiding the failure from the user.
+
+The Sudo Access lookup now reports "not stored" when `secret-tool` is missing
+or the keyring is unavailable. Store/clear operations surface a safe error.
+The panel shows save progress and result beside the key fields, treats empty
+helper output as an error, and times out or reports a process exit instead of
+leaving an operation pending forever. An isolated subprocess test verifies a
+fresh laptop without `secret-tool` can fetch settings, save the Gateway key,
+receive a successful JSON response, and retain the key at 0600 without
+revealing it in stdout.

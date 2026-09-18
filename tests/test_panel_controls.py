@@ -1,5 +1,9 @@
 import asyncio
+import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -7,6 +11,33 @@ from unittest.mock import patch
 
 from omarchy_ai.myapi import dashboard
 from omarchy_ai.voice import control
+
+
+class GatewayKeySettingsTests(unittest.TestCase):
+    def test_clean_laptop_without_secret_tool_can_save_gateway_key(self):
+        # The old helper wrote the key, then crashed while assembling its
+        # response because sudo status unconditionally called secret-tool.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            empty_path = base / 'bin'
+            empty_path.mkdir()
+            config = base / 'config'
+            env = dict(os.environ, PATH=str(empty_path),
+                       XDG_CONFIG_HOME=str(config), XDG_STATE_HOME=str(base / 'state'))
+            command = [sys.executable, '-m', 'omarchy_ai.cli.settings']
+            initial = subprocess.run(command + ['get'], env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(initial.returncode, 0, initial.stderr)
+            self.assertFalse(json.loads(initial.stdout)['vercel_gateway_api_key']['set'])
+
+            env['AI_GATEWAY_API_KEY'] = 'test-gateway-key-1234567890'
+            saved = subprocess.run(command + ['set-vercel-gateway-api-key'], env=env,
+                                   capture_output=True, text=True, timeout=20)
+            self.assertEqual(saved.returncode, 0, saved.stderr)
+            self.assertTrue(json.loads(saved.stdout)['vercel_gateway_api_key']['set'])
+            self.assertNotIn(env['AI_GATEWAY_API_KEY'], saved.stdout)
+            key_path = config / 'omarchy-ai/vercel-ai-gateway-key'
+            self.assertEqual(key_path.read_text().strip(), env['AI_GATEWAY_API_KEY'])
+            self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
 
 
 class DashboardTests(unittest.TestCase):
