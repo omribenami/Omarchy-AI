@@ -40,6 +40,7 @@ from pathlib import Path
 from rapidfuzz import fuzz
 
 from ..config import TERMINAL_CONTEXT_DIR, TERMINAL_HISTORY_DIR, TILE_LOG_DIR
+from .desktop_env import desktop_env
 
 log = logging.getLogger("omarchy_ai.execution.tile_logs")
 
@@ -67,7 +68,10 @@ def _sanitize(name: str) -> str:
 
 def _clients() -> list[dict]:
     try:
-        r = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(
+            ["hyprctl", "clients", "-j"], capture_output=True, text=True,
+            timeout=5, env=desktop_env(),
+        )
         if r.returncode != 0:
             return []
         return json.loads(r.stdout or "[]")

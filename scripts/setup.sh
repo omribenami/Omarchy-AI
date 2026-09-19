@@ -65,6 +65,7 @@ systemctl --user daemon-reload
 
 bash "$PROJECT_DIR/scripts/install-plugins.sh"
 bash "$PROJECT_DIR/scripts/install-terminal-context.sh"
+bash "$PROJECT_DIR/scripts/install-keybinding.sh"
 
 echo
 echo "Setup complete. Next steps:"

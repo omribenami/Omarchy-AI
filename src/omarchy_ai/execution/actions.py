@@ -34,6 +34,7 @@ from ..config import load_config
 from ..myapi import usage as myapi_usage
 from . import files as local_files
 from . import sudo_approval
+from .desktop_env import desktop_env
 
 log = logging.getLogger("omarchy_ai.execution.actions")
 
@@ -71,18 +72,8 @@ class ActionResult:
 
 
 def _desktop_env() -> dict[str, str]:
-    """Recover Hyprland's per-login instance id for services started at boot."""
-    environment = os.environ.copy()
-    if environment.get("HYPRLAND_INSTANCE_SIGNATURE"):
-        return environment
-    try:
-        probe = subprocess.run(["hyprctl", "instances", "-j"], capture_output=True, text=True, timeout=2, check=False)
-        instances = json.loads(probe.stdout or "[]")
-        if instances:
-            environment["HYPRLAND_INSTANCE_SIGNATURE"] = str(instances[0]["instance"])
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
-        pass
-    return environment
+    """Backward-compatible alias for callers that imported this helper."""
+    return desktop_env()
 
 
 def _run(argv: list[str], timeout: float = _TIMEOUT, cwd: str | None = None) -> ActionResult:
@@ -274,6 +265,7 @@ def read_file(args: dict) -> ActionResult:
     try:
         result = local_files.read_file(
             args.get("path"), load_config(), args.get("start_line", 1), args.get("max_chars", 4_000),
+            system_config=bool(args.get("system_config")),
         )
         return ActionResult(True, result or "(empty file)")
     except (local_files.FileAccessError, ValueError) as exc:
@@ -286,6 +278,25 @@ def write_file(args: dict) -> ActionResult:
             args.get("path"), args.get("content"), load_config(), bool(args.get("overwrite")),
         )
         return ActionResult(True, f"saved {path}")
+    except (local_files.FileAccessError, ValueError) as exc:
+        return ActionResult(False, str(exc))
+
+
+def edit_file(args: dict) -> ActionResult:
+    try:
+        config = load_config()
+        privileged = bool(args.get("privileged"))
+        password = None
+        if privileged:
+            if not config.sudo_access_enabled:
+                return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
+            password = sudo_approval.retrieve()
+        path, count = local_files.edit_file(
+            args.get("path"), args.get("old_text"), args.get("new_text"), config,
+            expected_replacements=args.get("expected_replacements", 1),
+            privileged=privileged, sudo_password=password,
+        )
+        return ActionResult(True, f"updated and verified {path} ({count} exact replacement(s))")
     except (local_files.FileAccessError, ValueError) as exc:
         return ActionResult(False, str(exc))
 
@@ -458,10 +469,17 @@ def submit_sudo_password(_args: dict) -> ActionResult:
     if password is None:
         return ActionResult(False, "no sudo password is saved in GNOME Keyring; add it in Assistant Settings")
     try:
-        typed = subprocess.run(["wtype", "--", password], capture_output=True, text=True, timeout=_TIMEOUT)
+        environment = _desktop_env()
+        typed = subprocess.run(
+            ["wtype", "--", password], capture_output=True, text=True,
+            timeout=_TIMEOUT, env=environment,
+        )
         if typed.returncode != 0:
             return ActionResult(False, "couldn't enter the approved password")
-        entered = subprocess.run(["wtype", "-k", "return"], capture_output=True, text=True, timeout=_TIMEOUT)
+        entered = subprocess.run(
+            ["wtype", "-k", "return"], capture_output=True, text=True,
+            timeout=_TIMEOUT, env=environment,
+        )
         if entered.returncode != 0:
             return ActionResult(False, "password was entered but Return could not be sent")
     except (OSError, subprocess.TimeoutExpired):
@@ -1562,6 +1580,7 @@ ACTIONS = {
     "list_files": list_files,
     "read_file": read_file,
     "write_file": write_file,
+    "edit_file": edit_file,
     "workspace_switch": workspace_switch,
     "workspace_next": workspace_next,
     "workspace_prev": workspace_prev,

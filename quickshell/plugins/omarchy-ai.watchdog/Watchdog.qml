@@ -41,6 +41,9 @@ Item {
   property string displayMode: "feed"
   property int activationNonce: 0
   property string glitchLine: ""
+  // Most recent tool outcome, held through the assistant's spoken reply.
+  // It resets as soon as speech ends and the assistant returns to listening.
+  property string outcomeTone: ""
 
   // Rolling amplitude buffer for the ASCII visualizer, 0..1 per sample —
   // a scrolling-waveform look with a short window rather than a single
@@ -83,19 +86,31 @@ Item {
     var s = ""
     for (var i = 0; i < root.levels.length; i++) {
       var idx = Math.max(0, Math.min(8, Math.round(root.levels[i] * 8)))
-      // Keep the glyph deterministic: random glitch columns made the meter
-      // look out of phase even when its timing was correct.
-      s += root.blockChars.charAt(idx)
+      // Match the richer server/phone visualizer: mostly braille texture,
+      // some solid meter blocks, and rare glitch artifacts.
+      var r = Math.random()
+      if (r < 0.04 && idx > 0) {
+        s += root.glitchChars.charAt(Math.floor(Math.random() * root.glitchChars.length))
+      } else if (r < 0.62) {
+        s += root.brailleChars[idx]
+      } else {
+        s += root.blockChars.charAt(idx)
+      }
     }
     return s
   }
 
-  // The original Omarchy AI visualizer blue, used consistently everywhere.
-  readonly property color rainGreen: "#39e6ff"
-  readonly property color rainCyan: rainGreen
-  readonly property color rainLime: rainGreen
-  readonly property color rainErr: rainGreen
+  readonly property color rainGreen: "#39ff88"
+  readonly property color rainCyan: "#39e6ff"
+  readonly property color rainLime: "#a6ff4d"
+  readonly property color rainErr: "#ff5f5f"
   readonly property color rainDim: Util.alpha(rainGreen, 0.55)
+
+  function visualizerColor() {
+    if (root.outcomeTone === "err") return root.rainErr
+    if (root.outcomeTone === "ok") return root.rainGreen
+    return root.convState === "speaking" ? root.rainCyan : Util.alpha(root.rainCyan, 0.30)
+  }
 
   function stateColor(s) {
     if (s === "listening") return rainCyan
@@ -122,6 +137,7 @@ Item {
     lines = []
     levels = []
     convState = "connecting"
+    outcomeTone = ""
   }
 
   function open(payloadJson) {
@@ -185,7 +201,9 @@ Item {
       if (kind === "state") {
         var s = String(p.state || "").trim()
         if (s.length > 0) {
+          var speechFinished = root.convState === "speaking" && s !== "speaking"
           root.convState = s
+          if (speechFinished) root.outcomeTone = ""
           // Decay/clear the visualizer the instant the conversation isn't
           // "speaking" anymore, so switching to listening/thinking (or a
           // fresh turn) never shows a stale frozen waveform.
@@ -200,6 +218,7 @@ Item {
         if (root.convState === "speaking") pushLevel(p.level)
       } else if (kind === "tool_call" || kind === "tool_result") {
         var tone = kind === "tool_result" ? (p.tone || "ok") : "call"
+        if (kind === "tool_result") root.outcomeTone = tone === "err" ? "err" : "ok"
         if (p.text) pushLine(p.text, tone)
       } else if (p.text) {
         // Unknown kind — still show it rather than silently drop real
@@ -276,8 +295,8 @@ Item {
         // ASCII row stayed at its initial idle value.
         text: { var samples = root.levels; return root.visualizerLine() }
         font.family: Style.font.family
-        font.pixelSize: Math.max(16, Style.font.displayLarge * 0.72)
-        color: root.convState === "speaking" ? root.rainCyan : Util.alpha(root.rainCyan, 0.30)
+        font.pixelSize: Style.font.displayLarge
+        color: root.visualizerColor()
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignBottom
         elide: Text.ElideNone

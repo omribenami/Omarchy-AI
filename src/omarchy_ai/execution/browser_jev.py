@@ -13,18 +13,22 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from .actions import ActionResult
 
 log = logging.getLogger("omarchy_ai.execution.browser_jev")
 _browser_process = None
+_owned_browser = None
+_task_lock = threading.Lock()
 _cancel_generation = 0
-_MAX_ACTIONS = 20
-_MAX_SECONDS = 45
+_MAX_ACTIONS = 50
+_MAX_SECONDS = 90
 
 
 def cancel_browser_tasks() -> None:
@@ -101,6 +105,7 @@ def _ensure_dedicated_browser() -> None:
     browser_argv = [
         binary, "--remote-debugging-port=9229", f"--user-data-dir={profile}",
         "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
+        "--hide-crash-restore-bubble",
         "--ozone-platform=wayland", "about:blank",
     ]
     # Keep Chromium's GPU/renderer children out of omarchy-ai.service.
@@ -122,6 +127,82 @@ def _ensure_dedicated_browser() -> None:
         except Exception:
             time.sleep(0.2)
     raise RuntimeError("dedicated Chromium did not expose CDP on port 9229")
+
+
+def _same_site(first: str, second: str) -> bool:
+    try:
+        return urlsplit(first).scheme in {"http", "https"} and urlsplit(first).netloc == urlsplit(second).netloc
+    except (TypeError, ValueError):
+        return False
+
+
+def _adopt_existing_tab():
+    """Attach to the one surviving automation page after daemon restarts."""
+    try:
+        from browser_harness.helpers import cdp
+        from jev_ultrafast.browser import Browser
+        targets = cdp("Target.getTargets").get("targetInfos", [])
+        pages = [
+            target for target in targets
+            if target.get("type") == "page"
+            and str(target.get("url") or "").startswith(("http://", "https://"))
+        ]
+        if not pages:
+            return None
+        target = pages[-1]
+        browser = Browser.__new__(Browser)
+        browser.target = target["targetId"]
+        browser.session = cdp(
+            "Target.attachToTarget", targetId=browser.target, flatten=True,
+        )["sessionId"]
+        browser.call(
+            "Emulation.setDeviceMetricsOverride", width=1120, height=780,
+            deviceScaleFactor=1, mobile=False,
+        )
+        browser.call("Emulation.setFocusEmulationEnabled", enabled=True)
+        log.info("adopted existing dedicated browser target: %s", browser.target)
+        return browser
+    except Exception:
+        log.debug("no existing browser target could be adopted", exc_info=True)
+        return None
+
+
+def _agent_with_reused_tab(Agent, url: str, goal: str):
+    """Create fresh task state while retaining one browser target and cart."""
+    global _owned_browser
+    if _owned_browser is None or not getattr(_owned_browser, "target", None):
+        _owned_browser = _adopt_existing_tab()
+    if _owned_browser is None:
+        agent = Agent(url, goal, screenshots=False)
+        _owned_browser = agent.browser
+        return agent
+
+    browser = _owned_browser
+    page = browser.observe(screenshot=False)
+    current_url = str(page.get("url") or "")
+    # A continuation commonly repeats the site's home URL. Do not throw away
+    # search/cart progress in that case. Navigate only from blank/different
+    # sites, while still honoring an explicit URL on a new task/site.
+    if not _same_site(current_url, url):
+        browser.call("Page.navigate", url=url)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if browser.evaluate("document.readyState") == "complete":
+                break
+            time.sleep(0.02)
+        page = browser.observe(screenshot=False)
+
+    agent = Agent.__new__(Agent)
+    agent.pending_text = None
+    agent.browser = browser
+    agent.record_dir = None
+    agent.screenshots = False
+    agent.state = dict(
+        browser=browser, goal=goal, page=page, decision=None, history=[],
+        status="ready", plan=[goal], plan_index=0, decisions=[], text_calls=[],
+        elapsed_ms=0, started_at=None, record=False,
+    )
+    return agent
 
 
 def run_browser_task(args: dict, config) -> ActionResult:
@@ -199,8 +280,14 @@ def run_browser_task(args: dict, config) -> ActionResult:
     Agent.command.__globals__["choose"] = policy.choose
     Agent.command.__globals__["field_text"] = gateway_text
     agent = None
+    if not _task_lock.acquire(blocking=False):
+        policy.post_json, policy.field_text = old_post, old_field
+        agent_module.choose, agent_module.field_text = old_choose, old_agent_field
+        Agent.command.__globals__["choose"] = old_command_choose
+        Agent.command.__globals__["field_text"] = old_command_field
+        return ActionResult(False, "another browser task is already running; wait for its result instead of opening another")
     try:
-        agent = Agent(url, goal, screenshots=False)
+        agent = _agent_with_reused_tab(Agent, url, goal)
         agent.browser.act = _guard_browser_action(agent.browser.act, generation)
         # Browser() creates its owned tab in the background.  This assistant
         # has a dedicated profile, so make that tab visible and active.  Keep
@@ -248,7 +335,10 @@ def run_browser_task(args: dict, config) -> ActionResult:
                     )
                     page_actions = (state.get("page") or {}).get("actions") or []
                     premature_block = last_choice == "BLOCKED" and bool(page_actions)
-                    if (heuristic_block or premature_block) and recovery_attempts < 1:
+                    # Loading-state blocks at zero actions should not consume
+                    # the only chance to recover later after real progress.
+                    recovery_limit = 4
+                    if (heuristic_block or premature_block) and recovery_attempts < recovery_limit:
                         recovery_attempts += 1
                         log.warning(
                             "browser block after %d actions; choice=%s heuristic=%s recovering once, url=%s, actions=%s",
@@ -297,3 +387,4 @@ def run_browser_task(args: dict, config) -> ActionResult:
             os.environ.pop("TYPESAFE_MODEL", None)
         else:
             os.environ["TYPESAFE_MODEL"] = old_typesafe_model
+        _task_lock.release()
