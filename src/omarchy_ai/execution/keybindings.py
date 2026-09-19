@@ -19,11 +19,12 @@ confirmed live that this does not trigger the interactive UI.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from dataclasses import dataclass
 
 from rapidfuzz import fuzz
+
+from .desktop_env import desktop_env
 
 log = logging.getLogger("omarchy_ai.execution.keybindings")
 
@@ -56,6 +57,7 @@ def _load() -> list[Binding]:
         proc = subprocess.run(
             ["bash", "-c", _EXTRACT_RECORDS],
             capture_output=True, text=True, timeout=_TIMEOUT, check=False,
+            env=desktop_env(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []
@@ -100,7 +102,7 @@ def execute_command(title: str) -> tuple[bool, str]:
     if score < 60:
         return False, f"no command matching '{title}' found"
 
-    env = {**os.environ, "DISPATCHER": best.dispatcher, "ARG": best.arg}
+    env = {**desktop_env(), "DISPATCHER": best.dispatcher, "ARG": best.arg}
     try:
         proc = subprocess.run(
             ["bash", "-c", _DISPATCH_ONE],

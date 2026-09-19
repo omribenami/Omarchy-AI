@@ -72,7 +72,7 @@ TOOLS: list[dict] = [
     _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
-    _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses the installed browser-use/jev-ultrafast Agent with the typesafe-ai/jev policy model, structured live DOM, no screenshots, fresh-target checks and bounded execution. Do not use desktop keyboard tools to drive a browser.", {
+    _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses one persistent owned Chromium tab with the installed browser-use/jev-ultrafast Agent, typesafe-ai/jev policy model, structured live DOM, fresh-target checks and bounded execution. Put the complete multi-step web goal in one call. If it returns blocked after partial progress, call it at most once more with only the verified remaining work; it resumes the same tab. Never retry the same blocked goal repeatedly, call open_browser between attempts, or use desktop keyboard tools to drive the browser.", {
         "type": "object", "properties": {
             "url": {"type": "string", "description": "Starting URL. Use https:// when known."},
             "goal": {"type": "string", "description": "The complete web task and its visible success condition."},
@@ -89,11 +89,12 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "read_file",
-        "Read a local text file from the user's home directory or /tmp. Use it to understand a document, project, or terminal context file; it does not read binary files.",
+        "Read a local text file. By default this is limited to the user's home directory or /tmp. For a user-requested system configuration task, set system_config to read a file under /etc directly before editing it; never open a terminal editor just to inspect a file.",
         {"type": "object", "properties": {
             "path": {"type": "string", "description": "Text file to read."},
             "start_line": {"type": "integer", "minimum": 1, "description": "One-based line to start at; omit for the beginning."},
             "max_chars": {"type": "integer", "minimum": 1, "maximum": 12000, "description": "Maximum text to return."},
+            "system_config": {"type": "boolean", "description": "Allow a user-requested readable configuration file under /etc."},
         }, "required": ["path"]},
     ),
     _tool(
@@ -104,6 +105,17 @@ TOOLS: list[dict] = [
             "content": {"type": "string", "description": "Complete text to save."},
             "overwrite": {"type": "boolean", "description": "Set true only when the user clearly asked to replace the existing file."},
         }, "required": ["path", "content"]},
+    ),
+    _tool(
+        "edit_file",
+        "Edit an existing text file by exact content replacement. REQUIRED instead of opening nano/vim or simulating editor keystrokes. Read the file first, copy a unique old_text span exactly, and use expected_replacements to prevent ambiguous changes. The write is atomic and verified. Set privileged only for a user-requested /etc change when persistent Sudo Access is enabled; this uses the saved keyring credential internally and creates a timestamped backup without exposing the password.",
+        {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Existing text file to edit."},
+            "old_text": {"type": "string", "description": "Exact current text to replace, preferably including surrounding context."},
+            "new_text": {"type": "string", "description": "Replacement text."},
+            "expected_replacements": {"type": "integer", "minimum": 1, "description": "Exact number of matches required; defaults to 1."},
+            "privileged": {"type": "boolean", "description": "Use saved Sudo Access for a user-requested file under /etc."},
+        }, "required": ["path", "old_text", "new_text"]},
     ),
     _tool(
         "read_tile_log",
@@ -243,7 +255,7 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "submit_sudo_password",
-        "Submit the password saved in GNOME Keyring when persistent Sudo Access is enabled in Assistant Settings. Call this only after reading the exact assistant terminal log and seeing a sudo password prompt. The password is never exposed to you.",
+        "Submit the password saved in GNOME Keyring when persistent Sudo Access is enabled in Assistant Settings. Enabled Sudo Access is explicit permission to use this tool for a sudo prompt caused by the user's requested terminal task. After reading the exact assistant terminal log and seeing that prompt, call this tool automatically instead of asking the user to type the password. The password is never exposed to you.",
     ),
     _tool(
         "get_recent_actions",

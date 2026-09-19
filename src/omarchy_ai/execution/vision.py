@@ -16,6 +16,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from .desktop_env import desktop_env
+
 log = logging.getLogger("omarchy_ai.execution.vision")
 
 RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -53,7 +55,7 @@ def _capture() -> Path | None:
     try:
         proc = subprocess.run(
             ["omarchy-capture-screenshot", "fullscreen", "save"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, timeout=10, check=False, env=desktop_env(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None

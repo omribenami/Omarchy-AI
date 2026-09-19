@@ -44,6 +44,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import yaml
 
@@ -557,7 +558,23 @@ def cmd_revoke_phones(_args: argparse.Namespace) -> dict:
 
 
 def cmd_activate(_args):
-    return control.request('activate')
+    result = control.request('activate')
+    if result.get('state') != 'offline':
+        return result
+    started = subprocess.run(
+        ['systemctl', '--user', 'start', SERVICE],
+        capture_output=True, text=True, check=False,
+    )
+    if started.returncode != 0:
+        return {'state': 'offline', 'error': (started.stderr or started.stdout or 'Could not start assistant.').strip()}
+    # The socket path can briefly exist from the old process while systemd is
+    # starting the new daemon, so retry the request itself—not just stat().
+    for _ in range(30):
+        time.sleep(.1)
+        result = control.request('activate')
+        if result.get('state') != 'offline':
+            return result
+    return result
 
 
 def cmd_myapi_dashboard(args):

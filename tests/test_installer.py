@@ -14,6 +14,17 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('python/jev_ultrafast-*.whl', setup)
         project = (ROOT / 'pyproject.toml').read_text()
         self.assertIn('browser-use/jev-ultrafast.git', project)
+
+    def test_setup_installs_assistant_activation_keybinding(self):
+        setup = (ROOT / 'scripts/setup.sh').read_text()
+        self.assertIn('scripts/install-keybinding.sh', setup)
+        script = (ROOT / 'scripts/install-keybinding.sh').read_text()
+        self.assertIn('SUPER + GRAVE', script)
+        self.assertIn('SUPER + SHIFT + GRAVE', script)
+        self.assertIn('omarchy-ai-settings', script)
+        self.assertIn('activate', script)
+        self.assertIn('.venv/bin/omarchy-ai-settings', script)
+        self.assertIn('hl.unbind', script)
     def test_upgrade_replaces_old_panel_and_refreshes_shell(self):
         with tempfile.TemporaryDirectory(prefix='omachy install ') as directory:
             base = Path(directory)

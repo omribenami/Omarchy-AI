@@ -57,6 +57,27 @@ class LocalFileToolTests(unittest.TestCase):
             with self.assertRaises(files.FileAccessError):
                 files.write_file(str(saved), "replace", config)
 
+    def test_exact_edit_is_atomic_and_refuses_stale_or_ambiguous_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = SimpleNamespace(file_access_roots=[str(root)])
+            target = root / "settings.conf"
+            target.write_text("before\nkey=old\nafter\n")
+            path, count = files.edit_file(str(target), "key=old", "key=new", config)
+            self.assertEqual((path, count), (target, 1))
+            self.assertEqual(target.read_text(), "before\nkey=new\nafter\n")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            with self.assertRaisesRegex(files.FileAccessError, "found 0"):
+                files.edit_file(str(target), "key=old", "bad", config)
+            target.write_text("key=old\nkey=old\n")
+            with self.assertRaisesRegex(files.FileAccessError, "found 2"):
+                files.edit_file(str(target), "key=old", "bad", config)
+
+    def test_privileged_edit_is_bounded_to_etc_and_requires_password(self):
+        config = SimpleNamespace(file_access_roots=["/tmp"])
+        with self.assertRaisesRegex(files.FileAccessError, "limited to files under /etc"):
+            files.edit_file("/usr/share", "a", "b", config, privileged=True, sudo_password="x")
+
     def test_manual_terminal_context_is_discoverable(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
