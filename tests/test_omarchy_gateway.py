@@ -67,6 +67,19 @@ class OmarchyGatewayTests(unittest.TestCase):
         self.assertIn("function", payload["tools"][0])
         self.assertNotIn("name", payload["tools"][0])
 
+    def test_browser_text_helper_advances_multi_item_searches(self):
+        with TemporaryDirectory() as directory:
+            key = Path(directory) / "key"; key.write_text("gateway-secret")
+            client = GatewayClient(self._config(key))
+            response = {"choices": [{"message": {"content": '{"text":"whole milk"}'}}]}
+            with patch.object(client, "_request", return_value=json.dumps(response).encode()) as request:
+                context = {"goal": "add bananas and milk", "recent_actions": [{"action": "Search", "text": "bananas"}]}
+                self.assertEqual(client.text_value(context), "whole milk")
+        payload = json.loads(request.call_args.args[1])
+        prompt = payload["messages"][0]["content"]
+        self.assertIn("next unfinished item", prompt)
+        self.assertEqual(json.loads(payload["messages"][1]["content"]), context)
+
 
 class OmarchyVisualizerTests(unittest.IsolatedAsyncioTestCase):
     async def capture(self, scores, max_seconds=20):
