@@ -41,7 +41,10 @@ def _guard_browser_action(original, generation):
     def guarded(action, page, text=None):
         if generation != _cancel_generation:
             raise RuntimeError("Browser task cancelled because the assistant stopped")
-        key = (action.get("kind"), action.get("label"), page.get("url"))
+        # Reusing a search field is expected for multi-item tasks. Include the
+        # generated value so distinct queries do not look like a stuck loop,
+        # while still stopping repeated attempts with the same value.
+        key = (action.get("kind"), action.get("label"), page.get("url"), text)
         # Fingerprints change when a menu toggles, so fingerprint-only
         # progress detection does not catch repeated Times-button clicks.
         if action.get("kind") != "wait" and recent[-6:].count(key) >= 3:
@@ -249,7 +252,7 @@ def run_browser_task(args: dict, config) -> ActionResult:
                         recovery_attempts += 1
                         log.warning(
                             "browser block after %d actions; choice=%s heuristic=%s recovering once, url=%s, actions=%s",
-                            len(history), last_choice, heuristic_block, recovery_attempts,
+                            len(history), last_choice, heuristic_block,
                             (state.get("page") or {}).get("url"),
                             [item.get("action") for item in repeated],
                         )
