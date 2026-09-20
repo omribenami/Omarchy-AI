@@ -30,7 +30,7 @@ A condensed walkthrough of the assistant in action:
 
 <div align="center">
 
-https://github.com/user-attachments/assets/fac7e740-cdd3-414f-be3e-524dd60bdca7
+https://github.com/user-attachments/assets/49467e18-0e00-4db6-ba63-bbaf9927b218
 
 </div>
 
