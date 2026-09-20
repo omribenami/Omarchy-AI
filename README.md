@@ -42,11 +42,18 @@ word, talk in plain language, and it *does things* on your machine: windows,
 volume, themes, reminders, casting to a TV, phone bridge — not a chatbot
 bolted onto a terminal.
 
-Built directly on OpenAI Live or Gemini Live, with a typed tool-calling layer
-that turns speech into real Hyprland / PipeWire / desktop actions. The
-conversation loop, tool registry, wake-word pipeline, casting subsystem, and
-desktop UI are all this project's own code — not Open Interpreter or
-another agent framework.
+It's powered by two layers of models, not one. The conversation itself —
+hearing you, talking back, deciding which tool to call — runs on a realtime
+voice model you choose: OpenAI's **Live** API (`gpt-live-1`, delegated to
+`gpt-5` for reasoning) or Google's **Gemini Live**. Neither of those models
+drives the mouse or DOM directly: for native desktop actions (workspaces,
+window focus, volume, themes, bar panels) and for web browser navigation,
+decisions are delegated instead to [**Typesafe AI's `jev`**](https://github.com/browser-use/jev-ultrafast)
+— a small, typed evaluation model built for exactly this, via `desktop_task`
+and `browser_task` respectively — rather than asking the conversational
+voice model to reason about every click. The conversation loop, tool
+registry, wake-word pipeline, casting subsystem, and desktop UI are all this
+project's own code — not Open Interpreter or another agent framework.
 
 
 ---
