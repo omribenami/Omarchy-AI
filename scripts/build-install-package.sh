@@ -2,6 +2,17 @@
 # Build a self-contained release bundle from a committed checkout.
 set -euo pipefail
 
+skip_android=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-android) skip_android=1 ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_dir"
 
@@ -26,10 +37,14 @@ git clone --quiet https://github.com/browser-use/jev-ultrafast.git "$jev_source"
 git -C "$jev_source" checkout --quiet 1231850a0bf1a0c0341fe408ef1668dbbfdfac46
 uv build --wheel --out-dir "$package_dir/python" "$jev_source"
 
-echo '==> Building Android receiver APK'
-(cd android-receiver && mise exec -- ./gradlew :app:assembleDebug --offline)
-install -Dm644 android-receiver/app/build/outputs/apk/debug/app-debug.apk \
-  "$package_dir/android/omarchy-ai-receiver.apk"
+if ((skip_android)); then
+  echo '==> Skipping Android receiver APK (--skip-android)'
+else
+  echo '==> Building Android receiver APK'
+  (cd android-receiver && mise exec -- ./gradlew :app:assembleDebug --offline)
+  install -Dm644 android-receiver/app/build/outputs/apk/debug/app-debug.apk \
+    "$package_dir/android/omarchy-ai-receiver.apk"
+fi
 
 echo '==> Staging exact release source'
 # Release archives are committed under dist/ for convenient installation.

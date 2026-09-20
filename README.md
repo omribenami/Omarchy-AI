@@ -535,7 +535,10 @@ This writes `dist/omarchy-ai-<version>-linux-x86_64.tar.gz` and a SHA-256
 checksum. It builds the Python wheel and source distribution, a fresh Android
 receiver APK, and packages all tracked runtime files. Native Omarchy packages
 are verified by `scripts/check-dependencies.sh` during installation and remain
-listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
+listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md). Pass `--skip-android`
+to omit the Gradle build (the slowest step) and ship a bundle without the
+receiver APK — `install.sh` skips the optional `adb install` step when it's
+absent.
 
 If the checkout has no local GitHub credential, a connected MyApi identity can
 publish the committed release through its GitHub connection:
