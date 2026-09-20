@@ -1,7 +1,14 @@
 """Per-conversation keyboard targeting; dispatch success is not task completion."""
 import json
+import subprocess
+from pathlib import Path
 
 from .actions import ActionResult
+
+# Terminal-hosted editors where stray keystrokes silently corrupt buffer
+# content (or, in modal editors, get interpreted as editing commands)
+# instead of just failing with "command not found" at a shell prompt.
+_EDITOR_COMMS = {"vim", "nvim", "vi", "nano", "emacs", "micro", "joe", "ne", "kak", "hx", "helix", "pico"}
 
 
 class InputGuard:
@@ -24,8 +31,51 @@ class InputGuard:
         return window.get("address") if window else None
 
     @staticmethod
-    def _conversation_pasted_into_terminal(window, args):
+    def _pid_for_address(address):
+        try:
+            clients = json.loads(subprocess.run(
+                ["hyprctl", "clients", "-j"], capture_output=True, text=True, timeout=5,
+            ).stdout)
+            return next((c.get("pid") for c in clients if c.get("address") == address), None)
+        except (subprocess.SubprocessError, ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _editor_running(root_pid):
+        """Walk the terminal's process tree for a foreground text editor."""
+        if not root_pid:
+            return False
+        children = {}
+        try:
+            pids = [int(p.name) for p in Path("/proc").iterdir() if p.name.isdigit()]
+        except OSError:
+            return False
+        for pid in pids:
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                children.setdefault(int(stat[1]), []).append(pid)
+            except (OSError, ValueError, IndexError):
+                continue
+        stack, seen = [root_pid], set()
+        while stack:
+            pid = stack.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            try:
+                comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            except OSError:
+                comm = ""
+            if comm in _EDITOR_COMMS:
+                return True
+            stack.extend(children.get(pid, []))
+        return False
+
+    @classmethod
+    def _conversation_pasted_into_terminal(cls, window, args):
         if str(window.get("app") or "").casefold() not in {"foot", "kitty", "alacritty", "ghostty", "wezterm"}:
+            return False
+        if not cls._editor_running(cls._pid_for_address(window.get("address"))):
             return False
         text = str(args.get("text") or "").strip().casefold()
         starts = ("please ", "can you ", "could you ", "would you ", "i want ", "i need ",
