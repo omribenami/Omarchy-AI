@@ -3727,3 +3727,69 @@ Live instructions now require `browser_task` for web work and forbid copying
 conversation requests into terminals, editors, chats or other AI agents. The
 input guard also rejects common conversational request prefixes in terminal
 windows, with a regression test for the reported `please ...` case.
+
+## 2026-09-20 — Scoped the conversational-text terminal guard to open editors
+
+Real log evidence (`journalctl --user -u omarchy-ai.service`, session
+`bcb67877e6cf4da49ca3f448509bae05`, 10:13–10:14): the model tried to
+`type_text` the user's raw request ("Can you somehow save this mp4 file?")
+into a focused `foot` window, got blocked by `verified_input.InputGuard`
+(added above for the `please ...`/`bash: command not found` incident), then
+retried with an actual command-shaped string and succeeded. The guard did
+its job, but the user pointed out it fires on *any* terminal focus — at a
+plain shell prompt, stray conversational text just no-ops as
+`command not found`; the actually dangerous case is a terminal running a
+modal/buffer editor (vim, nano, etc.), where the same keystrokes silently
+corrupt file content or get interpreted as editor commands (e.g. `dd`,
+`ZZ`) instead of failing loudly.
+
+`InputGuard._conversation_pasted_into_terminal` now only blocks when an
+editor process (`vim`, `nvim`, `vi`, `nano`, `emacs`, `micro`, `joe`, `ne`,
+`kak`, `hx`, `helix`, `pico` — see `_EDITOR_COMMS`) is found in the focused
+terminal's process tree (`InputGuard._editor_running`, walking `/proc` from
+the window's pid, fetched via a direct `hyprctl clients -j` lookup since
+the model-facing `list_windows` tool doesn't expose pid). Plain shell
+prompts now allow conversational-looking text through again — this
+reopens the original `bash: command not found` nuisance at a bare prompt,
+accepted as a known, non-destructive tradeoff. Regression tests updated in
+`tests/test_verified_input.py`: one confirms the block still fires with an
+editor running, one confirms the same text now passes at a plain prompt.
+
+### Real regression from the above: _editor_running crashed on every real /proc scan, breaking every type_text call -- confirmed live, fixed
+
+User report: "the assistant still wont type what I ask from her." Confirmed
+live via `journalctl --user -u omarchy-ai.service`, real traceback, not
+guessed: every `type_text` call (even plain ones like `'ls'`, `'git push'`,
+after a verified `focus_window`) failed with the generic
+"Action failed; do not assume completion." from `gemini_live.py`'s
+broad `except Exception` in `_tools`. The actual exception underneath:
+```
+File ".../execution/verified_input.py", line 50, in _editor_running
+    pids = [int(p) for p in Path("/proc").iterdir() if p.name.isdigit()]
+TypeError: int() argument must be a string, a bytes-like object or a real number, not 'PosixPath'
+```
+`_editor_running` (added in the fix above) iterated `Path("/proc")` and
+called `int(p)` on each `Path` object instead of `int(p.name)` -- `Path`
+has no `__int__`, so this raised on the very first real PID it ever saw.
+This shipped without ever running against a real `/proc` tree: the unit
+tests added alongside it (`test_conversational_request_is_not_typed_into_an_open_editor`
+etc.) mock `InputGuard._editor_running` directly via `patch.object`, so
+they never exercised its actual body -- a real gap in this repo's own
+"real hardware test over assumptions" convention, worth remembering:
+mocking the function under test's own implementation proves nothing about
+that implementation.
+
+Fixed: `int(p.name)`. Confirmed against real `/proc` data before
+restarting the live service (not just re-running the mocked unit tests,
+which passed both before and after the fix and would not have caught
+this): `InputGuard._editor_running(<real focused terminal's pid>)` ->
+`False`, no exception, against this machine's actual `/proc`; a real
+`nvim --headless` process kept alive via a bash `coproc` (so it wouldn't
+exit before the check, unlike an earlier attempt with `nvim --headless -c
+quit` and a faked `exec -a vim sleep` process, both of which turned out to
+be flawed test setups, not code issues -- `exec -a` only rewrites argv[0]/
+`cmdline`, not the kernel's `comm` field `_editor_running` actually reads)
+-> `InputGuard._editor_running` correctly returned `True`, both for the
+`nvim` pid directly and for its parent shell's pid (tree-walk works).
+`omarchy-ai.service` restarted (idle at the time, no active conversation)
+to deploy the fix.
