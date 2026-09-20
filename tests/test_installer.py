@@ -90,5 +90,13 @@ class InstallerTests(unittest.TestCase):
             env = dict(os.environ, PATH=str(base) + ':' + os.environ['PATH'], TEST_COMMAND_LOG=str(base / 'commands'))
             subprocess.run(['bash', str(ROOT / 'scripts/install-dependencies.sh')], env=env, check=True, capture_output=True)
             command = (base / 'commands').read_text()
-            for package in ('pipewire-audio', 'pipewire-pulse', 'libpulse', 'python-gobject', 'uv'):
+            for package in ('pipewire-audio', 'pipewire-pulse', 'libpulse', 'python-gobject'):
                 self.assertIn(package, command)
+
+    def test_dependency_install_does_not_pacman_check_uv(self):
+        # uv is commonly installed via astral's own installer, not pacman;
+        # pacman -Q can't see that install, so checking it here would demand
+        # sudo for an already-present, fully working tool. setup.sh owns
+        # uv's presence via its own command -v check instead.
+        script = (ROOT / 'scripts/install-dependencies.sh').read_text()
+        self.assertNotIn('uv', script.split('packages=(')[1].split(')')[0])
