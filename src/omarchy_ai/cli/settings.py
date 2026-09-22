@@ -24,6 +24,10 @@ Commands:
   myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
   configure-sudo             -> save persistent Sudo Access in GNOME Keyring
   forget-sudo                -> delete saved Sudo Access from GNOME Keyring
+  set-github-issue-token     -> save a personal GitHub token (env
+                                 GITHUB_ISSUE_TOKEN) used to file issues on
+                                 this project's repo (see core/issues.py)
+  forget-github-issue-token  -> delete the saved GitHub issue token
   select-cast-target <addr>  -> manual click in the omarchy-ai.tv-discovery
                                  overlay; runs the real start_casting
   refresh-cast-targets       -> the overlay's "Refresh" button
@@ -49,6 +53,7 @@ import time
 import yaml
 
 from .. import myapi
+from ..core import issues
 from ..myapi import usage as myapi_usage
 from ..voice import control
 from ..config import (
@@ -146,6 +151,7 @@ def _snapshot() -> dict:
         "api_key": _api_key_state(),
         "gemini_api_key": {"set": GEMINI_KEY_PATH.exists(), "path": str(GEMINI_KEY_PATH)},
         "vercel_gateway_api_key": {"set": VERCEL_GATEWAY_KEY_PATH.exists(), "path": str(VERCEL_GATEWAY_KEY_PATH)},
+        "github_issue_token": {"set": issues.has_token(), "path": str(issues.TOKEN_PATH)},
         "phone_bridge_paired_count": paired_count(),
         "myapi": _myapi_state(),
         "assistant": control.request('status'),
@@ -425,6 +431,31 @@ def cmd_set_vercel_gateway_api_key(_args: argparse.Namespace) -> dict:
     return _snapshot()
 
 
+def cmd_set_github_issue_token(_args: argparse.Namespace) -> dict:
+    """Store a personal GitHub token (core/issues.py's TOKEN_PATH), used to
+    file issues on this project's own repo when a self-update fails or the
+    user asks to report a problem. Meant to be a fine-grained PAT scoped
+    to Issues: write on just this repo -- opt-in per machine, never
+    bundled with any install; see core/issues.py's module docstring."""
+    raw = os.environ.get("GITHUB_ISSUE_TOKEN")
+    if raw is None:
+        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    token = (raw or "").strip()
+    if len(token) < 12 or any(c.isspace() for c in token):
+        return {"error": "no valid GitHub token provided"}
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(issues.TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token + "\n")
+    os.chmod(issues.TOKEN_PATH, 0o600)
+    return _snapshot()
+
+
+def cmd_forget_github_issue_token(_args: argparse.Namespace) -> dict:
+    issues.TOKEN_PATH.unlink(missing_ok=True)
+    return _snapshot()
+
+
 def cmd_get(_args: argparse.Namespace) -> dict:
     return _snapshot()
 
@@ -595,6 +626,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("set-api-key")
     sub.add_parser("set-gemini-api-key")
     sub.add_parser("set-vercel-gateway-api-key")
+    sub.add_parser("set-github-issue-token")
+    sub.add_parser("forget-github-issue-token")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
     sub.add_parser("pair-phone")
@@ -618,6 +651,8 @@ def main(argv: list[str] | None = None) -> int:
         "set-api-key": cmd_set_api_key,
         "set-gemini-api-key": cmd_set_gemini_api_key,
         "set-vercel-gateway-api-key": cmd_set_vercel_gateway_api_key,
+        "set-github-issue-token": cmd_set_github_issue_token,
+        "forget-github-issue-token": cmd_forget_github_issue_token,
         "restart-status": cmd_restart_status,
         "pair-phone": cmd_pair_phone,
         "revoke-phones": cmd_revoke_phones,

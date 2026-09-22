@@ -3854,3 +3854,81 @@ daemon was left running and unmodified for this investigation per this
 repo's convention of not restarting it outside the specific task; a
 restart to deploy this is still needed and should be flagged before
 doing it.
+
+### 2026-09-22 — 0.3.8 self-update failed on another machine: stale uv.lock (real regression from this session)
+
+Real evidence from a second machine: `~/omarchy-update-0.3.8-failure.log`
+and `~/README-omarchy-update-0.3.8-failure.md` (the latter written by the
+live model itself during that failed session) both showed self-update to
+0.3.8 failing with `Command '['uv', 'sync', '--locked']' returned
+non-zero exit status 1`, leaving that machine safely on 0.3.5 (install()
+raises before `switched = True`, so no rollback was even needed).
+
+Root cause: this session's own 0.3.8 version bump edited only
+`pyproject.toml`'s version field and never ran `uv lock` -- `uv.lock`
+still recorded `omarchy-ai v0.3.7`. `uv sync --locked` (exactly what
+`core/updates.py install()` runs, non-interactively, so it can only fail)
+refuses to proceed on any mismatch between the two. Identical bug class
+to the 0.3.7 stale-lock incident (9be0122, b01d7ca) -- confirmed by
+`grep version uv.lock` showing `0.3.7` against `pyproject.toml`'s `0.3.8`.
+
+Fixed with `uv lock` (now records `0.3.8`; `uv lock --check` passes).
+Verified against the actual failure mode, not just the lock file: copied
+the working tree into an isolated directory and ran the real
+`uv venv --system-site-packages ... && uv sync --locked` sequence
+`install()` uses -- resolved and installed all 64 packages instead of
+failing. Rebuilt and republished the 0.3.8 archive with the fix (same
+version, matching the 0.3.7-refresh precedent, since the previously
+published 0.3.8 archive could never have installed for anyone).
+
+### 2026-09-22 — Built the GitHub-issue-filing capability the model had already promised
+
+The same `README-omarchy-update-0.3.8-failure.md` the live model wrote
+during that failure told the user "I can open a pre-filled GitHub issue
+with these details." Grepped the whole codebase for any issue-filing
+code: none existed anywhere. The model offered a capability that was
+never built -- exactly the kind of unverified claim this project's own
+instructions elsewhere warn against ("Never claim ongoing monitoring or
+promise future alerts unless an actual mechanism has been started").
+
+Built the real thing instead of just correcting the prompt. Design
+question (auth model) was the user's call, not mine, since it decides
+what ships to every install: asked, and the answer was "personal token,
+opt-in per machine" -- a fine-grained GitHub PAT (Issues: write only on
+`omribenami/Omarchy-AI`) stored locally like the existing Gemini/Vercel
+keys, never bundled with any install, with a bounded worst case (the
+repo is public; anyone could already open an issue by hand) since it's
+only automating what a random GitHub user could already do through the
+web UI.
+
+- `core/issues.py` (new): `file_issue(title, body)` POSTs to
+  `api.github.com/repos/omribenami/Omarchy-AI/issues` using a token at
+  `~/.config/omarchy-ai/github-issue-token`; returns `(False, "no GitHub
+  issue token configured on this machine")` when absent rather than
+  attempting anything. Never raises -- callers get a human-readable
+  reason (401/403/network) instead of a traceback that could end up
+  spoken aloud or embedded in a local report.
+- `core/updates.py install()`: on any failure, now calls
+  `_report_failure()` (best-effort, wrapped so a filing failure can never
+  mask the real update error) and records `issue_url`/`issue_error` in
+  `install.json` so `get_update_status` reports what actually happened --
+  filed (with URL), or exactly why not -- instead of the model guessing.
+- `execution/actions.py`/`tools.py`: general-purpose `report_issue(title,
+  description)` voice tool for problems beyond failed updates, gated in
+  the instructions to only fire on an explicit user ask, never
+  proactively.
+- `cli/settings.py`: `set-github-issue-token` / `forget-github-issue-token`
+  (env `GITHUB_ISSUE_TOKEN`, same 0600-from-creation pattern as the
+  existing key setters), surfaced in `get`'s snapshot as
+  `github_issue_token: {set, path}`.
+- `voice/live.py` instructions: the model must read `issue_url`/
+  `issue_error` off `get_update_status` before saying anything about
+  reporting a failure -- report the existing URL, or the honest reason
+  none exists -- and must never claim an issue was filed unless a tool
+  call actually returned success.
+
+10 new tests (`tests/test_issues.py`, three new cases in
+`tests/test_updates.py` covering token-present/absent/filing-itself-fails
+outcomes of the update-failure path) plus a manual round-trip of
+`set-github-issue-token`/`get`/`forget-github-issue-token` through the
+real CLI. All 172 tests pass.

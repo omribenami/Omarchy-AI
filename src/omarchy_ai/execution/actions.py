@@ -385,6 +385,18 @@ def get_update_status(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(updates.update_status()))
 
 
+def report_issue(args: dict) -> ActionResult:
+    from ..core import issues
+    title = str(args.get("title") or "").strip()
+    description = str(args.get("description") or "").strip()
+    if not title or not description:
+        return ActionResult(False, "title and description are both required")
+    ok, result = issues.file_issue(title, description)
+    if not ok:
+        return ActionResult(False, f"Issue NOT filed: {result}")
+    return ActionResult(True, f"Filed: {result}")
+
+
 def close_bar_panel(args: dict) -> ActionResult:
     from .bar import close_panel
     try:
@@ -1558,6 +1570,7 @@ ACTIONS = {
     "check_assistant_updates": check_assistant_updates,
     "update_assistant": update_assistant,
     "get_update_status": get_update_status,
+    "report_issue": report_issue,
     "list_bar_icons": list_bar_icons,
     "open_bar_panel": open_bar_panel,
     "close_bar_panel": close_bar_panel,
