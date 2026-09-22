@@ -19,10 +19,33 @@ from .echo_cancel import EchoCancellation
 log = logging.getLogger("omarchy_ai.voice.gemini")
 
 
+# desktop_task and browser_task alone can run 25-90s (see their tool
+# descriptions in execution/tools.py). Declaring every tool "behavior":
+# "BLOCKING" (as this did before) is a Gemini Live API setting, not a model
+# limitation: BLOCKING tells the server to pause ALL audio generation for
+# this session until the function response arrives, so the assistant went
+# fully silent for the entire action instead of talking/listening while it
+# ran. Confirmed live via journalctl: real sessions logged multi-second
+# "Gemini action started" -> "...finished" gaps with zero audio in between,
+# and the instructions text already had to hack around it by telling the
+# model to blurt "on it" right at the call site. Gemini Live's async
+# function calling ("behavior": "NON_BLOCKING") exists specifically for
+# this: the model keeps generating/listening immediately after the call,
+# and the eventual FunctionResponse.scheduling (WHEN_IDLE here) controls
+# how its result gets folded back in without cutting off other speech. See
+# ai.google.dev/gemini-api/docs/live-guide#async-function-calling. Fast
+# actions stay BLOCKING on purpose: for a one-shot volume/window toggle,
+# waiting a fraction of a second for confirmation before continuing is the
+# right, unsurprising behavior, and the model's own next tool call already
+# depends on that confirmation for many of them.
+NON_BLOCKING_ACTIONS = {"desktop_task", "browser_task"}
+
+
 def build_live_config(config):
     shared = build_session_config(config)
     tools = [{"name": t["name"], "description": t["description"],
-              "parameters_json_schema": t["parameters"], "behavior": "BLOCKING"}
+              "parameters_json_schema": t["parameters"],
+              "behavior": "NON_BLOCKING" if t["name"] in NON_BLOCKING_ACTIONS else "BLOCKING"}
              for t in shared["delegation"]["responses"]["tools"]]
     return {"response_modalities": ["AUDIO"], "system_instruction": shared["instructions"],
             "input_audio_transcription": {}, "output_audio_transcription": {},
@@ -67,6 +90,12 @@ class GeminiLiveSession:
         self._speaker_generation = -1
         self._action_log = []
         self._input_guard = InputGuard()
+        # desktop_task/browser_task run as detached tasks (NON_BLOCKING, see
+        # build_live_config) instead of being awaited inline in _tools, so a
+        # slow one can't hold up a fast action called right after it or the
+        # conversation loop. Tracked here so run()'s shutdown can actually
+        # cancel/await them instead of leaking a bare create_task().
+        self._bg_tasks: set[asyncio.Task] = set()
         self._audit_session = uuid.uuid4().hex
         self.on_connected = None
         self.on_message = None
@@ -166,40 +195,62 @@ class GeminiLiveSession:
                     id=call.id, name=call.name, response={"ok": True}))
                 self._hangup.set()
                 return
-            log.info("Gemini action started: session=%s call=%s name=%s args=%r",
-                     self._audit_session, call.id, call.name, call.args or {})
             self._pending_calls.add(call.id)
-            try:
-                if call.name == "get_recent_actions":
-                    result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
+            if call.name in NON_BLOCKING_ACTIONS:
+                # Declared NON_BLOCKING in build_live_config: the server does
+                # not wait for this response before letting the model keep
+                # talking, so this loop shouldn't wait either -- dispatch and
+                # immediately go back to pulling the next call (a fast action
+                # the model asks for in the meantime, or a second background
+                # task) instead of serializing behind a 25-90s action.
+                task = asyncio.create_task(self._run_call(session, call))
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
+            else:
+                await self._run_call(session, call)
+
+    async def _run_call(self, session, call) -> None:
+        from google.genai import types
+        log.info("Gemini action started: session=%s call=%s name=%s args=%r",
+                 self._audit_session, call.id, call.name, call.args or {})
+        try:
+            if call.name == "get_recent_actions":
+                result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
+            else:
+                window = await asyncio.to_thread(LiveSession._current_window)
+                action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, call.name, call.args or {}))
+                try:
+                    result = await asyncio.shield(action)
+                except asyncio.CancelledError:
+                    # Cancellation cannot stop an OS action already running.
+                    # Finish it before allowing the next conversation.
+                    await action
+                    raise
+                if call.name == "close_window" and result.ok:
+                    self._action_log = [e for e in self._action_log if e["window"] != window]
                 else:
-                    window = await asyncio.to_thread(LiveSession._current_window)
-                    action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, call.name, call.args or {}))
-                    try:
-                        result = await asyncio.shield(action)
-                    except asyncio.CancelledError:
-                        # Cancellation cannot stop an OS action already running.
-                        # Finish it before allowing the next conversation.
-                        await action
-                        raise
-                    if call.name == "close_window" and result.ok:
-                        self._action_log = [e for e in self._action_log if e["window"] != window]
-                    else:
-                        self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "message": result.message, "call_id": call.id, "ts": time.time(), "window": window})
-                        self._action_log = self._action_log[-100:]
-                response = {"ok": result.ok, "message": result.message}
-            except Exception:
-                log.exception("Gemini action failed: %s", call.name)
-                response = {"ok": False, "message": "Action failed; do not assume completion."}
-            log.info("Gemini action finished: session=%s call=%s name=%s ok=%s result_chars=%d message=%r",
-                     self._audit_session, call.id, call.name, response["ok"],
-                     len(response["message"]), response["message"][:1800])
-            if call.id not in self._cancelled:
-                await session.send_tool_response(function_responses=types.FunctionResponse(
-                    id=call.id, name=call.name, response=response))
-                log.info("Gemini tool response delivered: session=%s call=%s interrupted=%s",
-                         self._audit_session, call.id, call.id in self._interrupted_calls)
-            self._pending_calls.discard(call.id)
+                    self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "message": result.message, "call_id": call.id, "ts": time.time(), "window": window})
+                    self._action_log = self._action_log[-100:]
+            response = {"ok": result.ok, "message": result.message}
+        except Exception:
+            log.exception("Gemini action failed: %s", call.name)
+            response = {"ok": False, "message": "Action failed; do not assume completion."}
+        log.info("Gemini action finished: session=%s call=%s name=%s ok=%s result_chars=%d message=%r",
+                 self._audit_session, call.id, call.name, response["ok"],
+                 len(response["message"]), response["message"][:1800])
+        if call.id not in self._cancelled:
+            kwargs = {}
+            if call.name in NON_BLOCKING_ACTIONS:
+                # WHEN_IDLE (not INTERRUPT): fold the result in once the
+                # model naturally has nothing else to say, rather than
+                # cutting off whatever it's telling the user at that moment
+                # just because this background action happened to finish.
+                kwargs["scheduling"] = types.FunctionResponseScheduling.WHEN_IDLE
+            await session.send_tool_response(function_responses=types.FunctionResponse(
+                id=call.id, name=call.name, response=response, **kwargs))
+            log.info("Gemini tool response delivered: session=%s call=%s interrupted=%s",
+                     self._audit_session, call.id, call.id in self._interrupted_calls)
+        self._pending_calls.discard(call.id)
 
     async def _send_audio(self, session, mic):
         from google.genai import types
@@ -304,7 +355,9 @@ class GeminiLiveSession:
             self._hangup.set()
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in self._bg_tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, *self._bg_tasks, return_exceptions=True)
             await self._stop_process(mic)
             await self._stop_process(self._speaker)
             try:

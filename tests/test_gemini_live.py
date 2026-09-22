@@ -19,7 +19,20 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('NOT pending tasks', config.system_instruction)
         declarations = config.tools[0].function_declarations
         self.assertIn('end_conversation', [d.name for d in declarations])
-        self.assertTrue(all(d.behavior == 'BLOCKING' for d in declarations))
+        by_name = {d.name: d.behavior for d in declarations}
+        # desktop_task/browser_task run 25-90s (see their tool descriptions)
+        # and must be NON_BLOCKING so the server keeps generating audio while
+        # they run instead of freezing the whole session on them -- see
+        # gemini_live.NON_BLOCKING_ACTIONS. Every other tool stays BLOCKING:
+        # those are fast, and several (e.g. focus_window before type_text)
+        # depend on the model actually seeing the prior result before
+        # deciding what to call next.
+        self.assertEqual(by_name['desktop_task'], 'NON_BLOCKING')
+        self.assertEqual(by_name['browser_task'], 'NON_BLOCKING')
+        self.assertTrue(all(
+            behavior == 'BLOCKING' for name, behavior in by_name.items()
+            if name not in ('desktop_task', 'browser_task')
+        ))
 
     def test_noise_resistant_vad_still_allows_user_interruptions(self):
         config = types.LiveConnectConfig(**build_live_config(Config()))
@@ -78,6 +91,59 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
                 worker.cancel()
                 sender.cancel()
                 await asyncio.gather(worker, sender, return_exceptions=True)
+
+    async def test_non_blocking_action_does_not_serialize_behind_a_fast_call(self):
+        # The actual bug this project reported: desktop_task/browser_task are
+        # slow (25-90s) and used to be dispatched exactly like every other
+        # tool call -- awaited inline in the same queue-processing loop, so a
+        # fast action requested right after one queued up behind it instead
+        # of running immediately. NON_BLOCKING dispatch (see _tools) must let
+        # the fast call finish independently of the slow one still running.
+        adapter = GeminiLiveSession(Config())
+        entered, release = threading.Event(), threading.Event()
+
+        def dispatch(name, args):
+            if name == "desktop_task":
+                entered.set()
+                release.wait(2)
+                return ActionResult(True, "workspace switched")
+            return ActionResult(True, "volume up")
+
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        adapter._calls.put_nowait(types.FunctionCall(id="bg", name="desktop_task", args={"goal": "next workspace"}))
+        adapter._calls.put_nowait(types.FunctionCall(id="fast", name="volume_up", args={}))
+        with patch('omarchy_ai.voice.gemini_live.run_action', side_effect=dispatch), \
+                patch('omarchy_ai.voice.gemini_live.LiveSession._current_window', return_value={}):
+            worker = asyncio.create_task(adapter._tools(session))
+            try:
+                for _ in range(100):
+                    if entered.is_set() and session.send_tool_response.await_count:
+                        break
+                    await asyncio.sleep(.01)
+                self.assertTrue(entered.is_set())
+                # The fast call already got a response while desktop_task is
+                # still blocked on `release` -- proof it wasn't stuck in line.
+                session.send_tool_response.assert_awaited_once()
+                fast_reply = session.send_tool_response.call_args.kwargs['function_responses']
+                self.assertEqual(fast_reply.id, 'fast')
+                release.set()
+                for _ in range(100):
+                    if session.send_tool_response.await_count > 1:
+                        break
+                    await asyncio.sleep(.01)
+                self.assertEqual(session.send_tool_response.await_count, 2)
+                bg_reply = session.send_tool_response.call_args.kwargs['function_responses']
+                self.assertEqual(bg_reply.id, 'bg')
+                # WHEN_IDLE scheduling: fold the result in once the model has
+                # nothing else to say, not by cutting off other speech.
+                self.assertEqual(bg_reply.scheduling, types.FunctionResponseScheduling.WHEN_IDLE)
+                self.assertIsNone(fast_reply.scheduling)
+            finally:
+                release.set()
+                worker.cancel()
+                for task in list(adapter._bg_tasks):
+                    task.cancel()
+                await asyncio.gather(worker, *adapter._bg_tasks, return_exceptions=True)
 
     async def test_interruption_discards_queued_speech(self):
         adapter = GeminiLiveSession(Config())
