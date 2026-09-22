@@ -263,6 +263,32 @@ def _healthy():
         raise RuntimeError("Updated assistant did not become ready on its control socket")
 
 
+def _report_failure(version, message, previous_root):
+    """Best-effort: files a GitHub issue for a failed self-update if this
+    machine has a token configured (see core/issues.py), so the failure is
+    visible to the maintainer without the user having to do it by hand.
+    Returns (issue_url, issue_error) -- exactly one is set, both go into
+    install.json so get_update_status can report what actually happened
+    (filed / no token / filing itself failed) instead of the live model
+    guessing or promising something that didn't happen."""
+    from . import issues
+    try:
+        import platform
+        body = (
+            f"Automatic report from a self-update failure.\n\n"
+            f"- Target version: {version}\n"
+            f"- Previous root: {previous_root}\n"
+            f"- Platform: {platform.platform()}\n"
+            f"- Python: {platform.python_version()}\n\n"
+            f"Error:\n```\n{message}\n```\n"
+        )
+        ok, result = issues.file_issue(f"Self-update to {version} failed", body)
+    except Exception as exc:  # noqa: BLE001 -- filing must never mask the real update failure
+        log.warning("Could not file GitHub issue for update failure: %s", exc)
+        return None, str(exc)
+    return (result, None) if ok else (None, result)
+
+
 def install(version, previous_root):
     version_tuple(version)
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -270,9 +296,10 @@ def install(version, previous_root):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         records = []
         switched = False
-        def status(state, message):
+        def status(state, message, **extra):
             _write(STATE / "install.json", {"state": state, "version": version,
-                    "message": message, "updated_at": time.time(), "previous_root": str(previous_root)})
+                    "message": message, "updated_at": time.time(), "previous_root": str(previous_root),
+                    **extra})
         try:
             status("preparing", "Downloading and verifying the release; current assistant remains running.")
             release = discover()
@@ -316,7 +343,8 @@ def install(version, previous_root):
                     message += "; previous installation restored and running"
                 except Exception as rollback_error:
                     message += f"; rollback needs attention: {rollback_error}"
-            status("failed", message)
+            issue_url, issue_error = _report_failure(version, message, previous_root)
+            status("failed", message, issue_url=issue_url, issue_error=issue_error)
             raise
 
 

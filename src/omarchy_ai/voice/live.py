@@ -147,7 +147,17 @@ def build_session_config(config: Config) -> dict:
         "update_assistant only for an explicit request to update this assistant, "
         "and get_update_status for progress or failures. Never use terminal commands "
         "or git pull to update yourself. An accepted update request is not a "
-        "completed installation; warn that the conversation disconnects at restart."
+        "completed installation; warn that the conversation disconnects at restart. "
+        "If get_update_status reports state=failed, check its issue_url/issue_error "
+        "fields before saying anything about reporting it: issue_url means a GitHub "
+        "issue was already filed automatically -- tell the user that, with the URL, "
+        "don't offer to file one. issue_error means it tried and could not (commonly "
+        "no GitHub token configured on this machine) -- say that honestly. Only call "
+        "report_issue yourself if the user explicitly asks to report/file an issue "
+        "(for this or anything else) and no automatic one already exists for it. "
+        "Never say you can, will, or did file a GitHub issue unless report_issue (or "
+        "the automatic update-failure report above) actually returned success -- that "
+        "is a real external action with a real result, not something to promise."
     )
 
     return {

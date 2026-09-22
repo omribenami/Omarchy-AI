@@ -160,6 +160,52 @@ class UpdateTests(unittest.TestCase):
         command.assert_not_called()
         self.assertEqual(updates.update_status()['state'], 'failed')
 
+    def test_failure_files_a_github_issue_when_a_token_is_configured(self):
+        # Real report from another machine (see the 0.3.8 uv.lock incident):
+        # an update failure used to just sit in install.json with nothing
+        # actually reported anywhere. A failed install must now attempt to
+        # file a GitHub issue and record the real outcome (URL, or why not)
+        # so get_update_status can be honest instead of the live model
+        # guessing or promising something that never happened.
+        old = self.base / 'old'
+        old.mkdir()
+        (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
+        from omarchy_ai.core import issues
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download', side_effect=OSError('offline')), patch.object(updates, '_command'), \
+                patch.object(issues, 'file_issue', return_value=(True, 'https://github.com/omribenami/Omarchy-AI/issues/42')) as file_issue:
+            with self.assertRaises(OSError):
+                updates.install('0.4.0', old)
+        file_issue.assert_called_once()
+        title = file_issue.call_args.args[0]
+        self.assertIn('0.4.0', title)
+        status = updates.update_status()
+        self.assertEqual(status['issue_url'], 'https://github.com/omribenami/Omarchy-AI/issues/42')
+        self.assertIsNone(status['issue_error'])
+
+    def test_failure_reports_no_issue_filed_without_a_token(self):
+        old = self.base / 'old'
+        old.mkdir()
+        (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
+        from omarchy_ai.core import issues
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download', side_effect=OSError('offline')), patch.object(updates, '_command'), \
+                patch.object(issues, 'file_issue', return_value=(False, 'no GitHub issue token configured on this machine')):
+            with self.assertRaises(OSError):
+                updates.install('0.4.0', old)
+        status = updates.update_status()
+        self.assertIsNone(status['issue_url'])
+        self.assertIn('no GitHub issue token', status['issue_error'])
+
+    def test_issue_filing_failure_never_masks_the_real_update_error(self):
+        old = self.base / 'old'
+        old.mkdir()
+        (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
+        from omarchy_ai.core import issues
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download', side_effect=OSError('offline')), patch.object(updates, '_command'), \
+                patch.object(issues, 'file_issue', side_effect=RuntimeError('boom')):
+            with self.assertRaises(OSError):
+                updates.install('0.4.0', old)
+        self.assertEqual(updates.update_status()['state'], 'failed')
+
 
     def test_successful_install_keeps_old_tree_and_marks_completed(self):
         old = self.base / 'old'

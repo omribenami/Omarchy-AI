@@ -311,13 +311,13 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.8-linux-x86_64.tar.gz
+package=omarchy-ai-0.3.9-linux-x86_64.tar.gz
 base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.8-linux-x86_64
+cd omarchy-ai-0.3.9-linux-x86_64
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
@@ -373,6 +373,22 @@ to `dist/` on `main` to make it discoverable. Same-version source commits are no
 updates. Updates download and run the project's installer, using GitHub HTTPS
 and the accompanying checksum for integrity (the checksum is not a separate
 publisher signature).
+
+If a self-update fails and this machine has a GitHub issue token configured
+(below), Omarchy automatically files a GitHub issue on this repo with the
+failure details and reports the issue's URL via `get_update_status`; without
+a token it reports honestly that no issue could be filed rather than pretending
+one was. The same mechanism backs a general `report_issue` voice tool — say
+something like *"file an issue about this"* for any problem, not just a failed
+update. Set the token with:
+```bash
+GITHUB_ISSUE_TOKEN=<a fine-grained PAT, Issues: write only on omribenami/Omarchy-AI> \
+  .venv/bin/python -m omarchy_ai.cli.settings set-github-issue-token
+```
+This is opt-in and per-machine — no install ships with a token, and nothing
+tries to file an issue on a machine that hasn't set one. The token is stored
+0600 at `~/.config/omarchy-ai/github-issue-token`;
+`forget-github-issue-token` removes it.
 
 ### Jev desktop worker with live conversation
 
