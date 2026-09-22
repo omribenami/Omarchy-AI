@@ -38,17 +38,119 @@ class UpdateTests(unittest.TestCase):
         self.patch = patch.object(updates, 'STATE', self.base / 'state')
         self.patch.start()
         self.addCleanup(self.patch.stop)
-        self.release = {'latest_version': '0.4.0', 'commit': 'a' * 40,
-                        'package': 'omarchy-ai-0.4.0-linux-x86_64.tar.gz'}
+        package = 'omarchy-ai-0.4.0-linux-x86_64.tar.gz'
+        self.release = {
+            'latest_version': '0.4.0', 'commit': None, 'tag': 'v0.4.0', 'package': package,
+            'package_url': f'https://github.com/omribenami/Omarchy-AI/releases/download/v0.4.0/{package}',
+            'checksum_url': f'https://github.com/omribenami/Omarchy-AI/releases/download/v0.4.0/{package}.sha256',
+            'source': 'release',
+        }
+
+    def _github_release(self, version, *, draft=False, prerelease=False, assets=None, tag=None):
+        package = f'omarchy-ai-{version}-linux-x86_64.tar.gz'
+        if assets is None:
+            assets = [{'name': package}, {'name': package + '.sha256'}]
+        return {'tag_name': tag if tag is not None else f'v{version}', 'draft': draft,
+                'prerelease': prerelease, 'assets': assets}
 
     def test_numeric_order_and_ignore_unpaired_or_non_versioned_files(self):
         names = ['omarchy-ai-0.9.0-linux-x86_64.tar.gz', 'omarchy-ai-0.10.0-linux-x86_64.tar.gz',
                  'omarchy-ai-9.0.0-linux-x86_64.tar.gz', 'demo-media', 'omarchy-ai-1.0.0-rc1-linux-x86_64.tar.gz']
         entries = [{'name': n, 'type': 'file'} for n in names + [n + '.sha256' for n in names[:2]]]
-        with patch.object(updates, '_json', side_effect=[{'sha': 'a' * 40}, entries]) as get:
+        releases = [self._github_release('0.1.0', tag='demo-media', assets=[{'name': 'clip.mp4'}])]
+        with patch.object(updates, '_list_releases', return_value=releases), patch.object(
+                updates, '_json', side_effect=[{'sha': 'a' * 40}, entries]) as get:
             result = updates.discover()
         self.assertEqual(result['latest_version'], '0.10.0')
+        self.assertEqual(result['source'], 'dist')
         self.assertIn('ref=' + 'a' * 40, get.call_args.args[0])
+
+    def test_release_assets_ignore_demo_drafts_prereleases_and_mismatched_names(self):
+        releases = [
+            self._github_release('0.1.0', tag='demo-media', assets=[{'name': 'clip.mp4'}]),
+            self._github_release('0.9.0', draft=True),
+            self._github_release('9.0.0', prerelease=True),
+            self._github_release('0.8.0', assets=[
+                {'name': 'omarchy-ai-0.8.0-linux-x86_64.tar.gz'}]),
+            self._github_release('0.7.0', assets=[
+                {'name': 'omarchy-ai-0.4.0-linux-x86_64.tar.gz'},
+                {'name': 'omarchy-ai-0.4.0-linux-x86_64.tar.gz.sha256'}]),
+            self._github_release('0.10.0'),
+            self._github_release('0.9.0'),
+        ]
+        found = updates.candidates_from_releases(releases)
+        versions = sorted(item['latest_version'] for item in found)
+        self.assertEqual(versions, ['0.10.0', '0.9.0'])
+        chosen = [item for item in found if item['latest_version'] == '0.10.0'][0]
+        self.assertEqual(
+            chosen['package_url'],
+            'https://github.com/omribenami/Omarchy-AI/releases/download/v0.10.0/omarchy-ai-0.10.0-linux-x86_64.tar.gz')
+        self.assertNotIn('raw.githubusercontent.com', chosen['package_url'])
+
+    def test_equal_version_prefers_release_asset_over_dist(self):
+        dist = updates.candidates_from_dist('a' * 40, [
+            {'name': 'omarchy-ai-0.4.0-linux-x86_64.tar.gz', 'type': 'file'},
+            {'name': 'omarchy-ai-0.4.0-linux-x86_64.tar.gz.sha256', 'type': 'file'},
+        ])
+        with patch.object(updates, '_list_releases', return_value=[self._github_release('0.4.0')]), \
+                patch.object(updates, '_dist_candidates', return_value=dist):
+            result = updates.discover()
+        self.assertEqual(result['source'], 'release')
+        self.assertTrue(result['package_url'].startswith(
+            'https://github.com/omribenami/Omarchy-AI/releases/download/v0.4.0/'))
+
+    def test_newer_dist_bundle_still_wins_until_a_release_catches_up(self):
+        dist = updates.candidates_from_dist('b' * 40, [
+            {'name': 'omarchy-ai-0.5.0-linux-x86_64.tar.gz', 'type': 'file'},
+            {'name': 'omarchy-ai-0.5.0-linux-x86_64.tar.gz.sha256', 'type': 'file'},
+        ])
+        with patch.object(updates, '_list_releases', return_value=[self._github_release('0.4.0')]), \
+                patch.object(updates, '_dist_candidates', return_value=dist):
+            result = updates.discover()
+        self.assertEqual(result['latest_version'], '0.5.0')
+        self.assertEqual(result['source'], 'dist')
+        self.assertIn('/' + 'b' * 40 + '/dist/', result['package_url'])
+
+    def test_release_listing_failure_does_not_use_dist(self):
+        with patch.object(updates, '_list_releases', side_effect=OSError('rate limit')), \
+                patch.object(updates, '_dist_candidates') as dist:
+            with self.assertRaises(OSError):
+                updates.discover()
+        dist.assert_not_called()
+
+    def test_release_pagination_follows_github_api_only(self):
+        first = updates.API + '/releases?per_page=100'
+        second = updates.API + '/releases?per_page=100&page=2'
+        pages = {
+            first: ([], f'<{second}>; rel="next"'),
+            second: ([self._github_release('0.4.0')], ''),
+        }
+        with patch.object(updates, '_read_github', side_effect=lambda url, limit=2_000_000: pages[url]):
+            found = updates.candidates_from_releases(updates._list_releases())
+        self.assertEqual(found[0]['latest_version'], '0.4.0')
+        with self.assertRaisesRegex(ValueError, 'pagination'):
+            updates._next_link('<https://evil.example/releases?page=2>; rel="next"')
+
+    def test_release_page_cap(self):
+        link = '<https://api.github.com/repos/omribenami/Omarchy-AI/releases?per_page=100&page=2>; rel="next"'
+        with patch.object(updates, '_read_github', return_value=([], link)):
+            with self.assertRaisesRegex(ValueError, 'page limit'):
+                updates._list_releases()
+
+    def test_bundle_url_allows_release_and_pinned_dist_only(self):
+        name = 'omarchy-ai-0.4.0-linux-x86_64.tar.gz'
+        checksum = name + '.sha256'
+        release = f'https://github.com/omribenami/Omarchy-AI/releases/download/v0.4.0/{name}'
+        dist = f'https://raw.githubusercontent.com/omribenami/Omarchy-AI/{"a" * 40}/dist/{name}'
+        self.assertTrue(updates._bundle_url_ok(release, name))
+        self.assertTrue(updates._bundle_url_ok(release + '.sha256', checksum))
+        self.assertTrue(updates._bundle_url_ok(dist, name))
+        self.assertFalse(updates._bundle_url_ok('https://example.com/' + name, name))
+        self.assertFalse(updates._bundle_url_ok(
+            'https://github.com/omribenami/Omarchy-AI/releases/download/v0.4.0/omarchy-ai-0.9.0-linux-x86_64.tar.gz',
+            'omarchy-ai-0.9.0-linux-x86_64.tar.gz'))
+        self.assertFalse(updates._bundle_url_ok(
+            f'https://raw.githubusercontent.com/omribenami/Omarchy-AI/{"a" * 39}/dist/{name}', name))
 
     def test_check_caches_and_announces_only_newer_version(self):
         with patch.object(updates, 'installed_version', return_value='0.3.0'), patch.object(updates, 'discover', return_value=self.release) as discover:
@@ -149,6 +251,32 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(updates.update_status()['state'], 'failed')
         self.assertIn('restored and running', updates.update_status()['message'])
         self.assertTrue((old / 'pyproject.toml').exists())
+
+    def test_install_downloads_release_asset_urls(self):
+        old = self.base / 'old'
+        old.mkdir()
+        (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
+        new = self.base / 'new'
+        new.mkdir()
+        urls = []
+
+        def download(url, path, limit):
+            urls.append(url)
+            path.write_bytes(b'x')
+
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download', side_effect=download), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, '_command'), patch.object(updates, '_snapshot', return_value=[]), patch.object(updates, '_healthy'), patch.object(updates.time, 'sleep'):
+            updates.install('0.4.0', old)
+        self.assertEqual(urls, [self.release['package_url'], self.release['checksum_url']])
+
+    def test_install_refuses_unexpected_download_url(self):
+        old = self.base / 'old'
+        old.mkdir()
+        (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
+        bad = {**self.release, 'package_url': 'https://example.com/omarchy-ai-0.4.0-linux-x86_64.tar.gz'}
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=bad), patch.object(updates, '_download') as download, patch.object(updates, '_command'):
+            with self.assertRaisesRegex(ValueError, 'unexpected update URL'):
+                updates.install('0.4.0', old)
+        download.assert_not_called()
 
     def test_download_failure_never_stops_assistant(self):
         old = self.base / 'old'
