@@ -3793,3 +3793,64 @@ be flawed test setups, not code issues -- `exec -a` only rewrites argv[0]/
 `nvim` pid directly and for its parent shell's pid (tree-walk works).
 `omarchy-ai.service` restarted (idle at the time, no active conversation)
 to deploy the fix.
+
+### 2026-09-21 — Assistant went silent during desktop_task/browser_task: design bug, not a model limit
+
+User report: Omarchy doesn't talk and run actions in parallel. Real
+`journalctl --user -u omarchy-ai.service` sessions show `Gemini action
+started` -> `Gemini action finished` gaps of several seconds to tens of
+seconds with no assistant audio in between, for `desktop_task` (up to
+~25s) and `browser_task` (up to ~90s) -- exactly the two tools the live
+instructions already had to hack around with "say a brief present-tense
+line ('on it'...) right as you call it rather than going quiet for the
+whole wait" (`build_session_config` in `voice/live.py`). That instruction
+text is itself evidence this was a known symptom being papered over in
+the prompt rather than fixed.
+
+Root cause confirmed by inspecting the installed `google-genai` package
+directly (`types.FunctionDeclaration.model_fields['behavior']`,
+`types.FunctionResponse.model_fields['scheduling']`): the Gemini Live API
+supports declaring a tool `"behavior": "NON_BLOCKING"` (async function
+calling) specifically so the model keeps generating audio/listening
+immediately after issuing the call, instead of the server pausing all
+generation for the session until the function response arrives. Every
+tool in `gemini_live.build_live_config` was hardcoded to `"behavior":
+"BLOCKING"` (grep confirmed no prior attempt at `NON_BLOCKING` anywhere
+in this repo) -- so the silence during a 25-90s action was the Gemini
+server correctly honoring our own BLOCKING declaration, not a model
+inability to talk and act at once.
+
+Fix: `desktop_task` and `browser_task` are now declared `NON_BLOCKING`
+(`gemini_live.NON_BLOCKING_ACTIONS`); every other tool stays `BLOCKING`
+since those are fast and some (e.g. `focus_window` before `type_text`)
+need the model to actually see the prior result before its next call.
+`_tools()` now dispatches a `NON_BLOCKING` call as its own tracked
+`asyncio.Task` (`self._bg_tasks`) instead of awaiting it inline in the
+same queue loop -- otherwise a fast action requested right after a slow
+one would still queue up behind it locally even though the server itself
+was no longer blocked. Their `FunctionResponse` is sent with `scheduling
+= WHEN_IDLE`, so the result is folded in once the model naturally has
+nothing else to say rather than cutting off other speech. `run()`'s
+shutdown now cancels/gathers `self._bg_tasks` alongside the existing
+worker tasks so a hangup or session teardown can't leak one.
+
+The OpenAI (`gpt-live-1`, `voice/live.py`) delegation path is unchanged
+-- its tool schema has no documented BLOCKING/NON_BLOCKING equivalent
+("schema not fully documented for this brand-new API", per existing
+comments), so the acknowledgment-line instruction stays as the only
+mitigation there; only softened its wording to stop implying the model
+should go silent again after the one acknowledgment line.
+
+Added `test_non_blocking_action_does_not_serialize_behind_a_fast_call`
+(`tests/test_gemini_live.py`): a mocked `desktop_task` blocks on a
+`threading.Event` while a `volume_up` queued right after it is asserted
+to receive its `send_tool_response` first, proving the fast call isn't
+stuck behind the slow one. Updated the existing config test to assert
+`desktop_task`/`browser_task` are `NON_BLOCKING` and everything else is
+still `BLOCKING`. All 162 tests pass. Not yet confirmed against a real
+Gemini Live session (needs a live desktop_task/browser_task call with the
+assistant genuinely mid-sentence when the result lands) -- the live
+daemon was left running and unmodified for this investigation per this
+repo's convention of not restarting it outside the specific task; a
+restart to deploy this is still needed and should be flagged before
+doing it.
