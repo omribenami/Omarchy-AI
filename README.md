@@ -311,13 +311,13 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.7-linux-x86_64.tar.gz
+package=omarchy-ai-0.3.8-linux-x86_64.tar.gz
 base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.7-linux-x86_64
+cd omarchy-ai-0.3.8-linux-x86_64
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
