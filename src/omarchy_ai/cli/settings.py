@@ -532,6 +532,20 @@ def cmd_restart_status(_args: argparse.Namespace) -> dict:
 
 
 def cmd_restart(_args: argparse.Namespace) -> dict:
+    # Real regression (STATUS.md, 2026-09-22): this busy check was here
+    # originally (c42af67) and was accidentally dropped by a later,
+    # unrelated cleanup (a3cd8c7) -- the "Apply saved changes" button's own
+    # QML comment still documents this as current behavior ("The restart
+    # helper still reports a busy conversation rather than silently doing
+    # nothing"), but the code stopped doing it. Without this, clicking
+    # Apply mid-conversation force-restarts the daemon out from under an
+    # active session (voice connection, a running desktop_task/browser_task
+    # subprocess) instead of refusing -- which can both surface as garbled
+    # errors that look like a crash and, if the old process is slow to
+    # stop, make systemd's restart legitimately fail/timeout.
+    busy, reason = _conversation_busy()
+    if busy:
+        return {"restarted": False, "reason": reason}
     proc = subprocess.run(
         ["systemctl", "--user", "restart", SERVICE],
         capture_output=True, text=True, check=False,

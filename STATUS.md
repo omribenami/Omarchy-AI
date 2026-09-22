@@ -3932,3 +3932,69 @@ web UI.
 outcomes of the update-failure path) plus a manual round-trip of
 `set-github-issue-token`/`get`/`forget-github-issue-token` through the
 real CLI. All 172 tests pass.
+
+### 2026-09-22 — SSH to the reporting machine unreachable; shipped a self-service diagnostic script instead
+
+Tried to SSH into the other machine (user-provided credentials) to pull
+real evidence for the "still says a new version is available after
+updating" report. `ping` succeeds (6-15ms) but TCP 22 times out (not
+refused) -- something on that machine is dropping it, not just a wrong
+password. Rather than guess at the update-notice logic without evidence
+(re-read `wake_notice()`/`check_updates()` closely: both always compare
+the cached "latest" against a *live* re-read of `installed_version()`,
+so in isolation neither should stay wrong after a real successful
+update -- no actionable bug found there by inspection alone), added
+`scripts/diagnose-update.sh`: one read-only script bundling the service's
+actual ExecStart/WorkingDirectory, the running process's real cwd, the
+installed version at that WorkingDirectory, `check.json`/`install.json`,
+and recent update-related journal lines into one log file. Verified it
+runs clean on this machine. Still needs to actually be run on the
+reporting machine before that specific complaint can be root-caused.
+
+### 2026-09-22 — Settings panel: restored the restart-busy-check that a3cd8c7 silently dropped
+
+User report: entering a sudo password in Assistant Settings on another
+machine was immediately followed by a crash ("I can say for sure that
+was the reason"), and separately, "Apply and restart" ended in "restart
+failed". No live access to that machine (see above) -- root-caused by
+reading the code and git history instead.
+
+Found a real, confirmed regression, not a guess: `cli/settings.py`'s
+`cmd_restart` originally checked `_conversation_busy()` and refused to
+restart mid-conversation (`c42af67`, "Add settings CLI backend..."). A
+later, unrelated commit (`a3cd8c7`, "Fix installer paths and settings
+persistence" -- a UI reorg of the API-key section, nothing to do with
+restart logic) silently deleted that check (`git show a3cd8c7 --
+src/omarchy_ai/cli/settings.py` shows the 3 lines removed with no
+mention in the commit). The tell: `Panel.qml`'s own "Apply saved changes"
+button still carries a comment claiming "The restart helper still
+reports a busy conversation rather than silently doing nothing" --
+documentation for behavior the code had stopped doing.
+
+Effect: clicking "Apply saved changes" (which `doRestart()` always does
+unconditionally, regardless of whether a conversation, `desktop_task`, or
+`browser_task` subprocess is active) force-restarted the daemon out from
+under whatever was running instead of refusing. That fits both symptoms:
+a live session getting SIGTERM'd mid-request can produce exactly the kind
+of garbled error output a user would reasonably call "a crash," and if
+the old process was slow enough to stop (an active browser automation
+subprocess, say), the restart could legitimately fail/time out on that
+machine's end.
+
+Restored the original check in `cmd_restart` (same shape as `c42af67`,
+kept the later "service restarted" wording). Also reviewed the rest of
+`Panel.qml`/`cli/settings.py` for related issues by hand -- the earlier
+suspicion that `Process.environment` might replace rather than merge the
+child's environment (which would starve `configure-sudo`'s `secret-tool`
+call of `PATH`/`DBUS_SESSION_BUS_ADDRESS`) was checked against Quickshell's
+own installed `.qmltypes` (`quickshell-io.qmltypes`): a separate
+`clearEnvironment` property exists specifically to opt into replacing the
+environment, implying `environment` merges by default -- not the bug,
+ruled out rather than assumed. No duplicate QML element `id`s found
+either (checked specifically after noticing `a3cd8c7` moved the API-key
+editor without an obviously complete diff).
+
+Added `tests/test_cli_settings.py` (first test coverage `cli/settings.py`
+has ever had) pinning this: busy refuses without ever touching
+`systemctl`, not-busy proceeds and reports the real `systemctl` failure
+text. All 175 tests pass.
