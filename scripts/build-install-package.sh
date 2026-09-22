@@ -21,6 +21,18 @@ if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   exit 1
 fi
 
+# Real incident (STATUS.md, 2026-09-22): a version bump that only edited
+# pyproject.toml and never ran `uv lock` shipped a 0.3.8 archive whose
+# uv.lock still recorded the previous version. `uv sync --locked` -- exactly
+# what core/updates.py's install() runs on every self-update, non-interactively,
+# so it can only fail -- refused it on every machine that tried to update.
+# `uv lock --check` fails the same way `uv sync --locked` would, so catch it
+# here instead of shipping a bundle nobody can actually install.
+if ! uv lock --check >/dev/null 2>&1; then
+  echo 'Refusing to package: uv.lock is out of date with pyproject.toml (run `uv lock`, commit it, then rebuild).' >&2
+  exit 1
+fi
+
 version="$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)"
 staging_dir="$(mktemp -d)"
 trap 'rm -rf -- "$staging_dir"' EXIT
