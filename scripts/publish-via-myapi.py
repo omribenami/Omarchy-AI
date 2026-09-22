@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Publish the committed release tree through MyApi's GitHub connection.
+"""Publish the committed source tree through MyApi's GitHub connection.
 
 This is for environments without a local GitHub credential. It creates Git
 blobs, a tree, one commit, and advances main only if GitHub still points at the
-locally fetched origin/main commit. The release bundle is treated like every
-other tracked file, so its APK and checksum are published with the source.
+locally fetched origin/main commit.
+
+Install archives are not part of that commit. `scripts/publish-github-release.py`
+uploads `dist/omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` as
+assets on the GitHub Release `v<version>`. MyApi's GitHub proxy speaks JSON to
+api.github.com; Release asset upload is a raw body to uploads.github.com, so
+this script does not try to send the tarball through MyApi.
 """
 from __future__ import annotations
 
 import argparse
 import base64
+from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
+from omarchy_ai.core.updates import RELEASE_ARCHIVE, version_tuple
 from omarchy_ai.myapi.client import MyApiClient, MyApiError
 
 OWNER = "omribenami"
@@ -43,16 +51,30 @@ def changed_paths(base: str) -> list[tuple[str, str]]:
     return [(line.split("\t", 1)[0], line.split("\t", 1)[1]) for line in lines if "\t" in line]
 
 
+def release_archive_paths(changes: list[tuple[str, str]]) -> list[str]:
+    return [path for _status, path in changes if RELEASE_ARCHIVE.fullmatch(path)]
+
+
+def commit_message(version: str) -> str:
+    version_tuple(version)
+    return f"Publish Omarchy AI {version}"
+
+
+def project_version() -> str:
+    with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as source:
+        return tomllib.load(source)["project"]["version"]
+
+
 def entry_for(path: str) -> tuple[str, str]:
     line = git("ls-tree", "HEAD", "--", path)
     mode, _kind, _sha, recorded_path = line.split(maxsplit=3)
     return mode, recorded_path
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish", action="store_true", help="perform the GitHub write operations")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if git("status", "--porcelain"):
         parser.error("working tree must be clean")
@@ -61,6 +83,13 @@ def main() -> int:
     if not changes:
         print("No changes to publish.")
         return 0
+    blocked = release_archive_paths(changes)
+    if blocked:
+        parser.error(
+            "release archives are GitHub Release assets, not git blobs: "
+            + ", ".join(blocked)
+            + ". Remove them from the commit and run scripts/publish-github-release.py."
+        )
     print(f"Prepared {len(changes)} paths against origin/main {expected_parent[:12]}")
     for status, path in changes:
         print(f"  {status:>2} {path}")
@@ -91,8 +120,9 @@ def main() -> int:
     tree = request(client, f"/repos/{OWNER}/{REPOSITORY}/git/trees", "POST", {
         "base_tree": base_commit["tree"]["sha"], "tree": entries,
     })
+    message = commit_message(project_version())
     commit = request(client, f"/repos/{OWNER}/{REPOSITORY}/git/commits", "POST", {
-        "message": "Release Omarchy AI 0.2.0", "tree": tree["sha"], "parents": [remote_parent],
+        "message": message, "tree": tree["sha"], "parents": [remote_parent],
     })
     request(client, f"/repos/{OWNER}/{REPOSITORY}/git/refs/heads/{BRANCH}", "PATCH", {
         "sha": commit["sha"], "force": False,
