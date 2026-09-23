@@ -597,9 +597,9 @@ tracked. Leave the historical archives in place; do not `git add` a new tarball.
 3. Publish tag `v<version>` with those two files as Release assets. HEAD must
    be `origin/main` (push the version commit first). Dry-run prints the `gh`
    command and the REST API steps; `--publish` performs the upload. The
-   fast-install block pins `version=0.3.10`. Publish tag `v0.3.10` from the
-   archive already stored in `dist/` (no rebuild required if that file is the
-   one you want to ship) so the install command has an asset to download.
+   fast-install block always installs the newest stable `vX.Y.Z` release, so
+   it picks up the new version as soon as it is published, with no README
+   edit.
 
 ```bash
 .venv/bin/python scripts/publish-github-release.py          # inspect
