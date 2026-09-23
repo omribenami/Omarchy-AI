@@ -134,8 +134,7 @@ been used for, live:
   changing other applications' default audio devices, and its playback keeps
   a small buffer ahead of the speaker so speech does not run dry between
   audio chunks.
-- Ends a conversation on "bye"/"stop"/"that's all" (and non-English
-  equivalents — Hebrew is wired in as the concrete case) by watching the
+- Ends a conversation on "bye"/"stop"/"that's all" (and non-English equivalents) by watching the
   model's own spoken farewell, not just an English keyword match.
 - Cross-session memory: a rolling window of recent conversation history is
   folded into the next session's context, and explicit standing
@@ -164,7 +163,7 @@ been used for, live:
 - `list_commands`/`execute_command` reach every one of Omarchy's ~230 bound
   keybinding commands (theme, reminders, bar layout, clipboard, emoji
   picker, capture tools, and more). Jev ranks them by meaning, in any
-  language including Hebrew, with fuzzy matching as the fallback; mouse-only
+  language, with fuzzy matching as the fallback; mouse-only
   gestures are left out because they cannot be run as commands.
 - `move_window_to_workspace` moves a window in one verified step.
 - Workspace-aware window targeting: "the terminal" means the one on your

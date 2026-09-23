@@ -41,7 +41,23 @@ log = logging.getLogger("omarchy_ai.voice.gemini")
 # depends on that confirmation for many of them.
 # run_mission too: it narrates through this same session while it acts, so
 # Gemini must keep generating audio while the call is open.
-NON_BLOCKING_ACTIONS = {"desktop_task", "browser_task", "run_mission"}
+#
+# The rest are "sub-agents": anything that can take seconds runs in the
+# background so the user can always keep talking. A BLOCKING call makes
+# Gemini stop talking AND listening until it returns; measured over two days
+# of sessions (2026-09-23): myapi_call up to 11.2s, list_cast_targets 4.5s,
+# myapi_service_methods 3.2s median, describe_screen 2.8s, open_browser
+# 2.6s, start_casting 2.5s, list_commands 1.7s (Jev ranking), update check
+# ~0.9s. Fast chained steps (focus_window -> type_text) stay BLOCKING: the
+# next call depends on seeing the previous result.
+NON_BLOCKING_ACTIONS = {
+    "desktop_task", "browser_task", "run_mission",
+    "describe_screen", "open_browser", "start_casting", "stop_casting", "list_cast_targets",
+    "install_receiver_on_tv", "list_commands", "find_skill",
+    "check_assistant_updates", "update_assistant", "get_release_notes", "report_issue",
+    "myapi_list_services", "myapi_service_methods", "myapi_call",
+    "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
+}
 
 # Output buffering for pw-play (see _play_audio). 40ms plus a lock-step
 # writer produced audible gaps/clicks on this 2-core machine under load.

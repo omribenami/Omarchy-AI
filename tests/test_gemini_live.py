@@ -31,9 +31,17 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_name['browser_task'], 'NON_BLOCKING')
         # run_mission narrates through the session while it acts.
         self.assertEqual(by_name['run_mission'], 'NON_BLOCKING')
+        # Slow tools are background "sub-agents" so the user can always keep
+        # talking (measured up to 11.2s for myapi_call while she sat frozen).
+        from omarchy_ai.voice.gemini_live import NON_BLOCKING_ACTIONS
+        for slow in ('describe_screen', 'start_casting', 'list_commands', 'check_assistant_updates'):
+            self.assertEqual(by_name[slow], 'NON_BLOCKING', slow)
+        # Fast chained steps still wait: the next call depends on the result.
+        for chained in ('focus_window', 'type_text', 'press_key', 'list_windows'):
+            self.assertEqual(by_name[chained], 'BLOCKING', chained)
         self.assertTrue(all(
             behavior == 'BLOCKING' for name, behavior in by_name.items()
-            if name not in ('desktop_task', 'browser_task', 'run_mission')
+            if name not in NON_BLOCKING_ACTIONS
         ))
 
     def test_noise_resistant_vad_still_allows_user_interruptions(self):
