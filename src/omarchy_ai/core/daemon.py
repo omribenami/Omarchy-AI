@@ -110,7 +110,7 @@ class OmaDaemon:
                 try:
                     if not (workbench.pending_handover or browser_jev._background_task):
                         continue
-                    if await asyncio.to_thread(operator.user_active) is not False:
+                    if not await asyncio.to_thread(operator.user_idle):
                         continue
                     for name in list(workbench.pending_handover):
                         workbench.pending_handover.discard(name)

@@ -412,10 +412,17 @@ class GeminiLiveSession:
     async def _run_mission(self, session, args: dict) -> ActionResult:
         """Say each step's line while its action runs; verify; stop on failure."""
         from ..execution import missions
+
+        def planner(system, user):
+            from .omarchy import GatewayClient
+            return GatewayClient(self.config).complete_json(system, user)
         try:
-            steps, workspace = missions.validate(args)
+            steps, workspace, notes = await asyncio.to_thread(
+                missions.validate, args, getattr(self, "_script_text", None), planner)
         except (ValueError, TypeError) as exc:
             return ActionResult(False, f"Mission NOT started: {exc}")
+        if notes:
+            log.info("Mission plan repaired: %s", "; ".join(notes))
         done = []
         for i, step in enumerate(steps, 1):
             if self._hangup.is_set():
@@ -445,8 +452,9 @@ class GeminiLiveSession:
                     await asyncio.wait_for(self._turn_done.wait(), self.NARRATION_WAIT_SECONDS)
                 except asyncio.TimeoutError:
                     pass
-        return ActionResult(True, f"Mission completed: all {len(steps)} steps done and verified ({done}). "
-                                  "Briefly tell the user it is finished.")
+        extra = f" Notes: {'; '.join(notes)}." if notes else ""
+        return ActionResult(True, f"Mission completed: all {len(steps)} steps done and verified ({done}).{extra} "
+                                  "Briefly tell the user it is finished. Do not redo any step yourself.")
 
     async def _run_call(self, session, call) -> None:
         from google.genai import types
@@ -483,6 +491,8 @@ class GeminiLiveSession:
                     raise
                 if call.name == "read_file" and result.ok and "[assistant note] This file is a multi-step script" in result.message:
                     self._script_read_at = time.monotonic()
+                    # The planner fills missing step details from the script itself.
+                    self._script_text = result.message.split("\n\n[assistant note]", 1)[0]
                 if call.name == "close_window" and result.ok:
                     self._action_log = [e for e in self._action_log if e["window"] != window]
                 else:

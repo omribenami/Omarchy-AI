@@ -369,11 +369,17 @@ TOOLS: list[dict] = [
     _tool("run_mission", "Run a scripted, narrated sequence of actions: a demo, a commercial, or 'follow the instructions in this file'. Read the file first, then call this ONCE with every step in order. For each step code makes you speak its `say` line while its action runs at the same time (real parallel narration), verifies it, and STOPS at the first failure. After calling it, do not call tools for those steps yourself; just speak the narration prompts you receive. Copy exact names, targets and workspaces from the file; never substitute (a projector that is not found must stop the mission, not be replaced by another TV).", {
         "type": "object", "properties": {
             "workspace": {"type": "integer", "description": "If the script says to work only in one workspace: its number. Code keeps the mission there."},
-            "steps": {"type": "array", "description": "Ordered steps (max 12).", "items": {
+            "steps": {"type": "array", "description": "Ordered steps (max 12). Fill the field each action needs.", "items": {
                 "type": "object", "properties": {
                     "say": {"type": "string", "description": "What to say while this step runs (the script's own words when it gives them)."},
-                    "action": {"type": "string", "enum": ["say", "browser_task", "terminal_run", "start_casting", "stop_casting", "workspace_switch", "move_window_to_workspace", "open_browser", "desktop_task", "wait"]},
-                    "args": {"type": "object", "description": "browser_task: url, goal, steps; terminal_run: command; start_casting: target; workspace_switch/move_window_to_workspace: number; desktop_task: goal; wait: seconds; say: {}."},
+                    "action": {"type": "string", "enum": ["say", "browser_task", "terminal_run", "start_casting", "stop_casting", "workspace_switch", "move_window_to_workspace", "open_browser", "desktop_task", "demo_file", "show_windows", "describe_screen", "wait"]},
+                    "url": {"type": "string", "description": "browser_task: start URL, e.g. https://www.google.com"},
+                    "goal": {"type": "string", "description": "browser_task/desktop_task: the complete goal"},
+                    "command": {"type": "string", "description": "terminal_run: exact shell command, e.g. ls"},
+                    "target": {"type": "string", "description": "start_casting: exact TV name from the script; omit for any TV"},
+                    "number": {"type": "integer", "description": "workspace_switch/move_window_to_workspace"},
+                    "content": {"type": "string", "description": "demo_file: short document text to write and then edit"},
+                    "seconds": {"type": "number", "description": "wait"},
                 }, "required": ["say", "action"]}},
         }, "required": ["steps"]}),
     _tool("move_window_to_workspace", "Move a window to a numbered workspace instantly (one verified step). Use this for any 'move/send/put this window (or the terminal, the browser, ...) to workspace N' request -- never search list_commands for it. The target defaults to the focused window. The view stays on the current workspace unless follow is true (the user wants to go with the window).", {

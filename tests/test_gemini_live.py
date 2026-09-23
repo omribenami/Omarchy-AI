@@ -434,12 +434,56 @@ class MissionTests(unittest.TestCase):
 
     def test_validation(self):
         from omarchy_ai.execution import missions
-        steps, workspace = missions.validate(self.STEPS)
-        self.assertEqual((len(steps), workspace), (4, 5))
-        for bad in ({"steps": []}, {"steps": [{"action": "rm_rf", "say": "x"}]},
-                    {"steps": [{"action": "terminal_run", "say": "x", "args": {}}]}):
-            with self.assertRaises(ValueError):
-                missions.validate(bad)
+        steps, workspace, notes = missions.validate(self.STEPS)
+        self.assertEqual((len(steps), workspace, notes), (4, 5, []))
+        with self.assertRaises(ValueError):
+            missions.validate({"steps": []})
+        # Never rejected for missing details: narrated and reported instead.
+        steps, _, notes = missions.validate({"steps": [{"action": "terminal_run", "say": "listing files"}]})
+        self.assertEqual(steps[0]["action"], "say")
+        self.assertIn("had no command", notes[0])
+
+    def test_the_real_argumentless_plan_is_completed_from_the_script(self):
+        # Regression: 17:45 plan, every action step without args -> rejected ->
+        # Gemini improvised (no narration, background browser, tried to
+        # overwrite the user's prompt file).
+        from omarchy_ai.execution import missions
+        plan = {"workspace": 5, "steps": [
+            {"action": "say", "say": "Hello, I am Omarchy."},
+            {"action": "browser_task", "say": "I am opening the browser and searching Google for Omarchy, navigating to the first result."},
+            {"action": "terminal_run", "say": "I am opening a terminal and performing a list action."},
+            {"action": "desktop_task", "say": "I am editing a document to demonstrate my ability to read and modify files."},
+            {"action": "desktop_task", "say": "I am checking the focused window to monitor my activity."},
+            {"action": "say", "say": "Finally, I can mirror my screen to any discoverable Android TV on the network."},
+        ]}
+        def planner(system, user):
+            fixes = []
+            for st in user["steps"]:
+                if st["action"] == "terminal_run":
+                    fixes.append({"index": st["index"], "action": "terminal_run", "command": "ls"})
+                if st["action"] == "demo_file":
+                    fixes.append({"index": st["index"], "action": "demo_file", "content": "Omarchy demo file."})
+            return {"steps": fixes}
+        script = "5. Terminal Demonstration: ... a list action (ls) ..."
+        steps, ws, notes = missions.validate(plan, script, planner)
+        self.assertEqual([st["action"] for st in steps],
+                         ["say", "browser_task", "terminal_run", "demo_file", "show_windows", "start_casting"])
+        self.assertEqual(steps[1]["args"]["url"], "https://www.google.com")
+        self.assertEqual(steps[2]["args"]["command"], "ls")
+        self.assertEqual(notes, [])
+
+    def test_open_browser_that_promises_a_search_becomes_the_search(self):
+        from omarchy_ai.execution import missions
+        steps, _, _ = missions.validate({"steps": [
+            {"action": "open_browser", "say": "I am opening the browser and searching Google for Omarchy, navigating to the first result."},
+            {"action": "terminal_run", "say": "list", "command": "ls"}]})
+        self.assertEqual(steps[0]["action"], "browser_task")
+        self.assertEqual(steps[0]["args"]["url"], "https://www.google.com")
+
+    def test_flat_fields_are_accepted(self):
+        from omarchy_ai.execution import missions
+        steps, _, _ = missions.validate({"steps": [{"action": "terminal_run", "say": "x", "command": "ls"}]})
+        self.assertEqual(steps[0]["args"], {"command": "ls"})
 
     def run_mission(self, results):
         import asyncio

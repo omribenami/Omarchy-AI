@@ -15,12 +15,12 @@ import subprocess
 import time
 
 _CACHE_SECONDS = 1.5
-_cache: tuple[float, bool | None] = (0.0, None)
+_cache: tuple[float, str | None] = (0.0, None)
 
 
-def user_active() -> bool | None:
-    """True: the user touched keyboard/mouse in the last 30s. False: idle.
-    None: unknown (shell or plugin unavailable)."""
+def _state() -> str | None:
+    """"active" (input in the last 5s), "recent" (5-30s) or "idle" (30s+);
+    None when the shell or plugin is unavailable."""
     global _cache
     now = time.monotonic()
     if now - _cache[0] < _CACHE_SECONDS:
@@ -30,11 +30,23 @@ def user_active() -> bool | None:
         proc = subprocess.run(["omarchy-shell", "watchdog", "operator"], capture_output=True,
                               text=True, timeout=3, check=False)
         answer = proc.stdout.strip().strip('"') if proc.returncode == 0 else ""
-        value = True if answer == "active" else False if answer == "idle" else None
+        value = answer if answer in ("active", "recent", "idle") else None
     except (OSError, subprocess.SubprocessError):
         value = None
     _cache = (now, value)
     return value
+
+
+def user_active() -> bool | None:
+    """True: the user is operating right now (input in the last 5s).
+    False: not. None: unknown."""
+    state = _state()
+    return None if state is None else state == "active"
+
+
+def user_idle() -> bool:
+    """30s without input: the moment to hand background work over."""
+    return _state() == "idle"
 
 
 def visible(show) -> bool:
