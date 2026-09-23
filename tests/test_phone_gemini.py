@@ -26,3 +26,13 @@ class PhoneGeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bytes(second.planes[0]), b'\0' * 960)
         self.assertEqual(second.pts, 480)
         track.stop()
+
+
+
+class PhoneStartupTests(unittest.TestCase):
+    def test_phone_peer_never_waits_on_a_stun_server(self):
+        # Regression: default aiortc STUN made every phone session wait 5.0s.
+        from pathlib import Path
+        source = (Path(__file__).parents[1] / "src/omarchy_ai/phone/gemini.py").read_text()
+        self.assertIn("RTCPeerConnection(RTCConfiguration(iceServers=[]))", source)
+        self.assertNotIn("RTCPeerConnection()", source)

@@ -4751,3 +4751,30 @@ user inactivity.
     → `terminal_task {"name": "install-htop", "command": "sudo pacman -S
     htop"}`.
   - Tests 288/288.
+
+## 2026-09-23 (morning): "Massive lags" → background sub-agents, 5s phone startup
+
+- **Phone startup:** "creating gemini session" → "bridge ready" took 5.3s
+  for every phone session. `build_live_config` takes 5ms, so it was not the
+  cause. With `iceServers` unset, aiortc falls back to Google's STUN and
+  waits out its timeout: a local peer-pair measurement showed the answer
+  ready in 5.01s each time with the default and 0.01s with
+  `RTCConfiguration(iceServers=[])`. The phone reaches this machine over the
+  LAN or Tailscale, so host candidates suffice; STUN is disabled for the
+  phone peer.
+- **Frozen conversation:** a BLOCKING Gemini call stops her talking AND
+  listening until it returns. Measured tool durations over two days:
+  myapi_call up to 11.2s, list_cast_targets 4.5s, myapi_service_methods
+  3.2s median, describe_screen 2.8s, open_browser 2.6s, start_casting 2.5s,
+  list_commands 1.7s, forced update check ~0.9s. All of these are now
+  NON_BLOCKING "sub-agents", with WHEN_IDLE result scheduling. Fast chained
+  steps (focus_window → type_text) stay BLOCKING.
+  - Real Gemini Live, describe_screen's result held back 6s: "what is two
+    plus two?" asked 1.5s into the wait was answered 1.5s later ("Two plus
+    two is four."). When the result arrived she said "By the way, regarding
+    your earlier request, your screen currently shows…".
+  - Non-blocking does not make her *talk* while waiting: with no new input
+    she stayed quiet. What it guarantees is that the user can always talk.
+- **Update sub-agent:** the wake path no longer waits up to 2s on
+  `check_updates`. The 15-minute background checker announces a newly found
+  version to an open conversation through the heartbeat announcer.

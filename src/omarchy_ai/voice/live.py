@@ -136,6 +136,13 @@ def build_session_config(config: Config) -> dict:
         "terminals. Only skip the relay when the user is plainly talking to YOU and did "
         "not ask for anything to be sent anywhere."
     )
+    instructions += (
+        "\n\nBACKGROUND TOOLS: Slow tools (looking at the screen, casting, MyApi/email, the command "
+        "search, update checks, desktop/browser tasks, missions) run in the background so the user can keep "
+        "talking to you. When you call one, say a few words ('checking', 'on it') and keep listening; do not "
+        "go silent waiting, and do not call it again. Its result arrives by itself; use it then. Never say it "
+        "worked before the result is in."
+    )
     # Co-pilot mode (execution/operator.py, workbench.py).
     instructions += (
         "\n\nCO-PILOT: You work alongside the user, not instead of them. For commands, installs, builds "

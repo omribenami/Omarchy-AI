@@ -19,6 +19,16 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- You can always talk to her. Slow actions (looking at the screen, casting,
+  email and other connected services, the command search, update checks) run
+  in the background. She keeps listening and answering, and tells you the
+  result when it is ready.
+- The phone bridge connects about five seconds faster.
+
 ## [0.4.1] - 2026-09-23
 
 ### Highlights

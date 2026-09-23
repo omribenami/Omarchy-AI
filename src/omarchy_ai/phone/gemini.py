@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 import av
-from aiortc import AudioStreamTrack, RTCPeerConnection, RTCSessionDescription
+from aiortc import AudioStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 from google import genai
 from google.genai import types
@@ -57,7 +57,11 @@ class OutputAudio(AudioStreamTrack):
 
 
 async def _serve(config, sdp, answer, cancelled):
-    peer = RTCPeerConnection()
+    # No STUN: with iceServers unset aiortc falls back to Google's STUN and
+    # waits out its timeout before answering -- measured 5.01s per phone
+    # session vs 0.01s without (2026-09-23). The phone reaches this machine
+    # over the LAN or Tailscale, where host candidates are all that is used.
+    peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     adapter = GeminiLiveSession(config)
     peer.addTrack(OutputAudio(adapter))
     incoming = asyncio.Queue(maxsize=1)

@@ -75,9 +75,18 @@ class OmaDaemon:
         loop.add_signal_handler(signal.SIGTERM, terminate)
         server = await control.serve(self.panel_command)
         async def refresh_updates():
+            # Update "sub-agent": checks on its own schedule and notifies the
+            # assistant, instead of any conversation waiting on GitHub.
+            announced = None
             while True:
                 try:
-                    await asyncio.to_thread(updates.check_updates)
+                    result = await asyncio.to_thread(updates.check_updates)
+                    latest = result.get("latest_version") if result.get("available") else None
+                    session = self._session
+                    if latest and latest != announced and session is not None and hasattr(session, "announce"):
+                        session.announce({"id": f"update-{latest}", "title": "Update available",
+                                          "detail": updates.wake_notice()})
+                        announced = latest
                 except Exception:
                     log.warning("Update check unavailable", exc_info=True)
                 await asyncio.sleep(updates.CACHE_SECONDS)
@@ -161,12 +170,9 @@ class OmaDaemon:
             if not woke and not manual:
                 continue
 
-            # Cached checks normally return immediately. An offline GitHub must
-            # never hold up wake activation; a timed-out refresh can finish later.
-            try:
-                await asyncio.wait_for(asyncio.to_thread(updates.check_updates), timeout=2)
-            except Exception:
-                log.debug("Wake update refresh deferred", exc_info=True)
+            # No update check here: the background checker (refresh_updates)
+            # owns it and tells an open conversation when it finds one, so a
+            # slow GitHub never delays her first word (it could wait 2s).
             self._state = 'active'
             feedback.play(feedback.WAKE())
             log.info("wake word detected, starting live session")
