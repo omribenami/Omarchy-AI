@@ -1,4 +1,4 @@
-"""Versioned GitHub bundles, cached wake notices, and isolated self-updates.
+"""Versioned GitHub Release bundles, cached wake notices, and isolated self-updates.
 
 This file is also a standalone worker launched in its own systemd user unit,
 so restarting the voice daemon cannot kill an update halfway through.
@@ -22,6 +22,8 @@ import tempfile
 import threading
 import time
 import tomllib
+import urllib.error
+import urllib.parse
 import urllib.request
 
 log = logging.getLogger(__name__)
@@ -35,6 +37,9 @@ SERVICE = "omarchy-ai.service"
 CACHE_SECONDS = 900
 _CHECK_LOCK = threading.Lock()
 PACKAGE = re.compile(r"omarchy-ai-(\d+\.\d+\.\d+)-linux-x86_64\.tar\.gz\Z")
+# Git path of a bundle that must be a Release asset, not a new git blob.
+RELEASE_ARCHIVE = re.compile(
+    r"dist/omarchy-ai-(\d+\.\d+\.\d+)-linux-x86_64\.tar\.gz(\.sha256)?\Z")
 
 
 def version_tuple(value):
@@ -64,30 +69,187 @@ def _write(path, value):
     temp.replace(path)
 
 
-def _json(url):
+def bundle_names(version):
+    """Archive and checksum filenames for one stable X.Y.Z package."""
+    version_tuple(version)
+    package = f"omarchy-ai-{version}-linux-x86_64.tar.gz"
+    return package, package + ".sha256"
+
+
+def _read_github(url, limit=2_000_000):
     request = urllib.request.Request(url, headers={"User-Agent": "Omarchy-AI-Updater", "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(request, timeout=5) as response:
-        data = response.read(2_000_001)
-    if len(data) > 2_000_000:
+        data = response.read(limit + 1)
+        link = response.headers.get("Link", "")
+    if len(data) > limit:
         raise ValueError("GitHub response too large")
-    return json.loads(data)
+    return json.loads(data), link
+
+
+def _json(url):
+    payload, _link = _read_github(url)
+    return payload
+
+
+def _next_link(header):
+    """Next page of this repo's release list, or None. Other hosts are refused."""
+    if not header:
+        return None
+    for part in header.split(","):
+        bits = [piece.strip() for piece in part.split(";")]
+        if not bits or not bits[0].startswith("<") or not bits[0].endswith(">"):
+            continue
+        if not any(bit in ('rel="next"', "rel='next'") for bit in bits[1:]):
+            continue
+        url = bits[0][1:-1]
+        parsed = urllib.parse.urlparse(url)
+        expected = f"/repos/{REPOSITORY}/releases"
+        if parsed.scheme != "https" or parsed.netloc != "api.github.com" or parsed.path != expected:
+            raise ValueError("Unexpected GitHub pagination link")
+        return url
+    return None
+
+
+def _list_releases():
+    releases = []
+    url = API + "/releases?per_page=100"
+    for _ in range(10):
+        payload, link = _read_github(url, limit=8_000_000)
+        if not isinstance(payload, list):
+            raise ValueError("GitHub releases response was not a list")
+        releases.extend(payload)
+        url = _next_link(link)
+        if not url:
+            return releases
+    raise ValueError("GitHub releases listing exceeded page limit")
+
+
+def _candidate(version, package, *, source, commit=None):
+    _package, checksum = bundle_names(version)
+    if package != _package:
+        raise ValueError("Release asset name does not match its version")
+    if source == "release":
+        base = f"https://github.com/{REPOSITORY}/releases/download/v{version}/"
+        page = f"https://github.com/{REPOSITORY}/releases/tag/v{version}"
+        tag = f"v{version}"
+    elif source == "dist":
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise ValueError("Invalid GitHub commit")
+        base = f"https://raw.githubusercontent.com/{REPOSITORY}/{commit}/dist/"
+        page = f"https://github.com/{REPOSITORY}/tree/{commit}/dist"
+        tag = None
+    else:
+        raise ValueError("Unknown bundle source")
+    return {
+        "latest_version": version,
+        "commit": commit,
+        "tag": tag,
+        "package": package,
+        "package_url": base + package,
+        "checksum_url": base + checksum,
+        "url": page,
+        "source": source,
+    }
+
+
+def candidates_from_releases(releases):
+    """Stable vX.Y.Z releases that publish both the archive and its checksum.
+
+    demo-media, drafts, prereleases, and tags whose asset names do not match
+    the tag version are ignored. Download URLs are built from the tag and
+    filename, not from whatever URL the API echoes back.
+    """
+    if not isinstance(releases, list):
+        raise ValueError("GitHub releases response was not a list")
+    found = []
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+            continue
+        tag = release.get("tag_name")
+        match = re.fullmatch(r"v(\d+\.\d+\.\d+)", tag) if isinstance(tag, str) else None
+        if not match:
+            continue
+        version = match.group(1)
+        package, checksum = bundle_names(version)
+        names = {asset.get("name") for asset in release.get("assets") or []
+                 if isinstance(asset, dict)}
+        if package in names and checksum in names:
+            found.append(_candidate(version, package, source="release"))
+    return found
+
+
+def candidates_from_dist(commit, entries):
+    if not isinstance(entries, list):
+        raise ValueError("GitHub dist listing was not a list")
+    names = {item.get("name") for item in entries
+             if isinstance(item, dict) and item.get("type") == "file"}
+    found = []
+    for name in names:
+        match = PACKAGE.fullmatch(name) if isinstance(name, str) else None
+        if match and name + ".sha256" in names:
+            found.append(_candidate(match.group(1), name, source="dist", commit=commit))
+    return found
+
+
+def _dist_candidates():
+    # Historical bundles committed under dist/ before Release assets existed.
+    # Both files are pinned to one commit, same as the original updater.
+    payload = _json(API + "/commits/main")
+    commit = payload.get("sha") if isinstance(payload, dict) else None
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Invalid GitHub commit")
+    try:
+        entries = _json(API + "/contents/dist?ref=" + commit)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
+    return candidates_from_dist(commit, entries)
+
+
+def _bundle_url_ok(url, filename):
+    if not isinstance(url, str) or not isinstance(filename, str) or url.rsplit("/", 1)[-1] != filename:
+        return False
+    release = re.fullmatch(
+        rf"https://github\.com/{re.escape(REPOSITORY)}/releases/download/v(\d+\.\d+\.\d+)/([^/]+)",
+        url,
+    )
+    if release:
+        version, name = release.groups()
+        package, checksum = bundle_names(version)
+        return name == filename and filename in {package, checksum}
+    dist = re.fullmatch(
+        rf"https://raw\.githubusercontent\.com/{re.escape(REPOSITORY)}/[0-9a-f]{{40}}/dist/([^/]+)",
+        url,
+    )
+    if not dist or dist.group(1) != filename:
+        return False
+    package = filename[:-7] if filename.endswith(".sha256") else filename
+    return PACKAGE.fullmatch(package) is not None and filename in {package, package + ".sha256"}
+
+
+def _require_bundle_url(url, filename):
+    if not _bundle_url_ok(url, filename):
+        raise ValueError("Refusing unexpected update URL")
 
 
 def discover():
-    # Bundles are published in dist/, not GitHub Releases (which also hosts
-    # unversioned demo media). Pin BOTH downloads to one immutable commit.
-    commit = _json(API + "/commits/main")["sha"]
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise ValueError("Invalid GitHub commit")
-    contents = _json(API + "/contents/dist?ref=" + commit)
-    names = {item["name"] for item in contents if item.get("type") == "file"}
-    versions = [(version_tuple(match[1]), match[1], name) for name in names
-                if (match := PACKAGE.fullmatch(name)) and name + ".sha256" in names]
-    if not versions:
+    # Prefer a GitHub Release asset (tag vX.Y.Z) so downloads increment
+    # download_count. A historical dist/ bundle is still a candidate: the
+    # higher version wins, and the same version uses the Release asset.
+    # A failure to list releases aborts the check instead of silently
+    # installing whatever is still in dist/.
+    candidates = candidates_from_releases(_list_releases())
+    try:
+        candidates.extend(_dist_candidates())
+    except Exception as exc:
+        if not candidates:
+            raise
+        log.warning("Historical dist bundle discovery failed: %s", exc)
+    if not candidates:
         raise ValueError("No versioned install bundle with a checksum is published")
-    _, version, name = max(versions)
-    return {"latest_version": version, "commit": commit, "package": name,
-            "url": f"https://github.com/{REPOSITORY}/tree/{commit}/dist"}
+    return max(candidates, key=lambda item: (
+        version_tuple(item["latest_version"]), item["source"] == "release"))
 
 
 CHANGELOG = "CHANGELOG.md"
@@ -131,8 +293,10 @@ def notes_between(releases, current, latest):
     return [entry for _, entry in sorted(picked, reverse=True)]
 
 
-def _fetch_changelog(commit):
-    url = f"https://raw.githubusercontent.com/{REPOSITORY}/{commit}/{CHANGELOG}"
+def _fetch_changelog(ref):
+    if not isinstance(ref, str) or not re.fullmatch(r"[0-9a-f]{40}|v\d+\.\d+\.\d+", ref):
+        raise ValueError("Changelog ref must be a commit or a vX.Y.Z tag")
+    url = f"https://raw.githubusercontent.com/{REPOSITORY}/{ref}/{CHANGELOG}"
     request = urllib.request.Request(url, headers={"User-Agent": "Omarchy-AI-Updater"})
     with urllib.request.urlopen(request, timeout=5) as response:
         data = response.read(500_001)
@@ -172,8 +336,11 @@ def check_updates(force=False):
                 # exactly what would be installed. Optional: a missing or
                 # unreachable changelog must never hide the update itself.
                 try:
+                    # Release assets carry a tag, historical dist/ bundles a
+                    # commit; either pins the changelog to what would install.
+                    ref = release.get("commit") or release.get("tag")
                     result["release_notes"] = notes_between(
-                        parse_changelog(_fetch_changelog(release["commit"])), current, release["latest_version"])
+                        parse_changelog(_fetch_changelog(ref)), current, release["latest_version"])
                 except Exception as exc:
                     result["release_notes"] = []
                     result["release_notes_error"] = f"Could not read release notes: {exc}"
@@ -448,9 +615,10 @@ def install(version, previous_root):
             destination = Path(tempfile.mkdtemp(prefix=f"{version}-", dir=RELEASES))
             archive = destination / release["package"]
             checksum = destination / (release["package"] + ".sha256")
-            base = f"https://raw.githubusercontent.com/{REPOSITORY}/{release['commit']}/dist/"
-            _download(base + archive.name, archive, 1_000_000_000)
-            _download(base + checksum.name, checksum, 4096)
+            _require_bundle_url(release.get("package_url"), release["package"])
+            _require_bundle_url(release.get("checksum_url"), checksum.name)
+            _download(release["package_url"], archive, 1_000_000_000)
+            _download(release["checksum_url"], checksum, 4096)
             new_root = unpack_verified(archive, checksum, destination, version)
             # Prepare all dependencies before touching the running installation.
             _command(["bash", "scripts/check-dependencies.sh"], cwd=new_root)
