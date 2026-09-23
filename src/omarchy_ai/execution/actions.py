@@ -267,9 +267,27 @@ def read_file(args: dict) -> ActionResult:
             args.get("path"), load_config(), args.get("start_line", 1), args.get("max_chars", 4_000),
             system_config=bool(args.get("system_config")),
         )
+        if result and _looks_like_script(result):
+            result += _SCRIPT_HINT
         return ActionResult(True, result or "(empty file)")
     except (local_files.FileAccessError, ValueError) as exc:
         return ActionResult(False, str(exc))
+
+
+# Real Gemini Live, commercial_prompt.md (2026-09-23): after read_file it
+# ignored run_mission and started doing the steps one tool at a time again,
+# which is how narration and step order were lost. The nudge belongs in the
+# result the model is reading at that moment, not only in a long prompt.
+_SCRIPT_HINT = ("\n\n[assistant note] This file is a multi-step script. If the user asked you to perform it, "
+                "call run_mission ONCE now with all of its steps (say + action each, its exact targets and "
+                "workspace rule); do not perform the steps yourself one by one.")
+
+
+def _looks_like_script(text: str) -> bool:
+    lines = [l.strip().lower() for l in text.splitlines() if l.strip()]
+    numbered = sum(1 for l in lines if re.match(r"^(\d+[.)]|step \d+|- )", l))
+    cues = sum(w in text.lower() for w in ("narrat", "demonstrat", "step", "then ", "finally", "workspace"))
+    return numbered >= 3 or (numbered >= 2 and cues >= 2)
 
 
 def write_file(args: dict) -> ActionResult:
@@ -328,6 +346,58 @@ def window_fullscreen_toggle(args: dict) -> ActionResult:
     return _hyprctl_dispatch("hl.dsp.window.fullscreen()", ["fullscreen"])
 
 
+# Wrappers between a terminal and what the user is actually running.
+_WRAPPER_COMMS = {"bash", "zsh", "fish", "sh", "dash", "nu", "script", "tmux", "screen", "login",
+                  "sudo", "su", "env", "xdg-terminal-exec", "uwsm-app", "setsid"}
+
+
+def _process_children() -> dict[int, list[int]]:
+    children: dict[int, list[int]] = {}
+    try:
+        pids = [int(p.name) for p in Path("/proc").iterdir() if p.name.isdigit()]
+    except OSError:
+        return children
+    for pid in pids:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            children.setdefault(int(stat[1]), []).append(pid)
+        except (OSError, ValueError, IndexError):
+            continue
+    return children
+
+
+def _running_program(root_pid, children) -> str | None:
+    """The shallowest non-wrapper process under a terminal: "claude",
+    "codex", "nvim", "htop"... Claude Code titles its window "✳ <task>", so
+    without this "the Claude terminal" matched nothing at all."""
+    if not root_pid:
+        return None
+    level = list(children.get(root_pid, []))
+    for _ in range(8):
+        next_level = []
+        for pid in sorted(level):
+            try:
+                comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            except OSError:
+                continue
+            if comm and comm not in _WRAPPER_COMMS:
+                return comm
+            next_level.extend(children.get(pid, []))
+        if not next_level:
+            return None
+        level = next_level
+    return None
+
+
+def _with_programs(clients: list[dict]) -> list[dict]:
+    children = None
+    for c in clients:
+        if any(k in str(c.get("class") or "").lower() for k in _WINDOW_KINDS["terminal"]):
+            children = children if children is not None else _process_children()
+            c["running"] = _running_program(c.get("pid"), children)
+    return clients
+
+
 def list_windows(args: dict) -> ActionResult:
     """The model has no idea what's actually on screen otherwise — this is
     what lets it target the *right* window instead of guessing that
@@ -346,11 +416,13 @@ def list_windows(args: dict) -> ActionResult:
         clients = json.loads(r.message)
     except json.JSONDecodeError:
         return ActionResult(False, "could not parse window list")
+    clients = _with_programs(clients)
     windows = [
         {
             "address": c.get("address"),
             "app": c.get("class"),
             "title": c.get("title"),
+            **({"running": c["running"]} if c.get("running") else {}),
             "workspace": (c.get("workspace") or {}).get("id"),
             "fullscreen": bool(c.get("fullscreen")),
             "focused": c.get("address") == active_address,
@@ -383,6 +455,91 @@ def update_assistant(args: dict) -> ActionResult:
 def get_update_status(args: dict) -> ActionResult:
     from ..core import updates
     return ActionResult(True, json.dumps(updates.update_status()))
+
+
+def schedule_task(args: dict) -> ActionResult:
+    from ..core import agenda
+    try:
+        job = agenda.create(args)
+    except ValueError as exc:
+        return ActionResult(False, f"Task NOT scheduled: {exc}")
+    agenda.tick()  # a watch's first look happens now, not a heartbeat later
+    return ActionResult(True, json.dumps({"scheduled": agenda.summary(job),
+        "note": "Runs in the background even when no conversation is active; results arrive as desktop "
+                "notifications and in the next conversation."}, ensure_ascii=False))
+
+
+def list_scheduled_tasks(args: dict) -> ActionResult:
+    from ..core import agenda
+    return ActionResult(True, json.dumps(agenda.list_jobs(bool(args.get("include_finished"))), ensure_ascii=False))
+
+
+def cancel_scheduled_task(args: dict) -> ActionResult:
+    from ..core import agenda
+    job = agenda.cancel(str(args.get("id") or ""))
+    return ActionResult(bool(job), f"cancelled {job['id']}: {job['title']}" if job else "no task with that id")
+
+
+def run_scheduled_task_now(args: dict) -> ActionResult:
+    from ..core import agenda
+    job = agenda._update(str(args.get("id") or ""), next_run=time.time())
+    if not job or job.get("status") != "active":
+        return ActionResult(False, "no active task with that id")
+    agenda.tick()
+    return ActionResult(True, f"started {job['id']} in the background; its result arrives as a notification "
+                              "and in list_scheduled_tasks (last_result) — not verified yet")
+
+
+def find_skill(args: dict) -> ActionResult:
+    from ..core import skills
+    request = str(args.get("request") or "").strip()
+    if not request:
+        return ActionResult(False, "request is required")
+    picked = skills.suggest(request[:4000])
+    if picked.get("skill"):
+        skill = skills.load(picked["skill"])
+        picked["instructions"] = skill["body"] if skill else ""
+        picked["description"] = skill.get("description", "") if skill else ""
+    return ActionResult(True, json.dumps(picked, ensure_ascii=False))
+
+
+def load_skill(args: dict) -> ActionResult:
+    from ..core import skills
+    skill = skills.load(str(args.get("name") or ""))
+    if not skill:
+        return ActionResult(False, "no skill with that name")
+    return ActionResult(True, json.dumps(skill, ensure_ascii=False))
+
+
+def save_skill(args: dict) -> ActionResult:
+    from ..core import skills
+    try:
+        skill, created = skills.save(args.get("name", ""), args.get("description", ""), args.get("instructions", ""))
+    except ValueError as exc:
+        return ActionResult(False, f"Skill NOT saved: {exc}")
+    return ActionResult(True, f"{'created' if created else 'updated'} skill {skill['name']} "
+                              f"(revision {skill.get('revision')})")
+
+
+def list_skills(args: dict) -> ActionResult:
+    from ..core import skills
+    return ActionResult(True, json.dumps([{k: s.get(k) for k in ("name", "description", "updated", "revision")}
+                                          for s in skills.roster()], ensure_ascii=False))
+
+
+def delete_skill(args: dict) -> ActionResult:
+    from ..core import skills
+    ok = skills.delete(str(args.get("name") or ""))
+    return ActionResult(ok, "deleted" if ok else "no skill with that name")
+
+
+def get_release_notes(args: dict) -> ActionResult:
+    from ..core import updates
+    try:
+        result = updates.release_notes(str(args.get("version") or "").strip() or None)
+    except ValueError as exc:
+        return ActionResult(False, str(exc))
+    return ActionResult(result["ok"], json.dumps(result, ensure_ascii=False))
 
 
 def report_issue(args: dict) -> ActionResult:
@@ -428,12 +585,55 @@ def execute_command(args: dict) -> ActionResult:
     return ActionResult(ok, message)
 
 
+_TERMINAL_CLASSES = ("foot", "kitty", "alacritty", "ghostty", "wezterm", "konsole", "terminal")
+
+
+def _paste_text(text: str) -> ActionResult:
+    """Paste as one block through the clipboard. wtype turns every newline
+    into a real Return keystroke, so a multi-line prompt for Claude Code or
+    Codex would be submitted after its first line and a multi-line shell
+    snippet would run line by line. Pasting goes through the terminal's
+    bracketed paste and lands as one unit; Return stays a separate,
+    explicit press_key."""
+    if shutil.which("wl-copy") is None:
+        return ActionResult(False, "wl-copy is not installed")
+    try:
+        # wl-copy forks a child that keeps serving the clipboard; with the
+        # output pipes captured subprocess.run would wait on that child.
+        proc = subprocess.run(["wl-copy"], input=text, text=True, timeout=5, check=False,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_desktop_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return ActionResult(False, "wl-copy failed")
+    if proc.returncode:
+        return ActionResult(False, "wl-copy failed")
+    active = _run(["hyprctl", "activewindow", "-j"], timeout=2)
+    try:
+        app = str(json.loads(active.message).get("class") or "").casefold() if active.ok else ""
+    except ValueError:
+        app = ""
+    terminal = any(name in app for name in _TERMINAL_CLASSES)
+    # Terminals reserve plain ctrl+v (literal-next in readline); every
+    # terminal Omarchy ships binds ctrl+shift+v to clipboard paste.
+    argv = ["wtype", "-M", "ctrl"] + (["-M", "shift"] if terminal else []) + ["-k", "v"]
+    argv += (["-m", "shift"] if terminal else []) + ["-m", "ctrl"]
+    result = _run(argv)
+    if result.ok:
+        return ActionResult(True, "pasted multi-line text as one block (clipboard now holds it)")
+    return result
+
+
 def type_text(args: dict) -> ActionResult:
     text = args.get("text")
     if not text:
         return ActionResult(False, "no text given")
     if shutil.which("wtype") is None:
         return ActionResult(False, "wtype is not installed")
+    # A trailing newline would submit implicitly; submission is press_key's job.
+    text = text.rstrip("\r\n")
+    if not text:
+        return ActionResult(False, "no text given")
+    if "\n" in text:
+        return _paste_text(text)
     return _run(["wtype", "--", text])
 
 
@@ -611,11 +811,143 @@ def hide_window_labels(args: dict) -> ActionResult:
     return _run(["omarchy-shell", "-q", "windowLabels", "hide"])
 
 
+# Generic words people use for a kind of window, matched against app class.
+_WINDOW_KINDS = {
+    "terminal": ("foot", "kitty", "alacritty", "ghostty", "wezterm", "konsole", "terminal"),
+    "browser": ("chromium", "chrome", "firefox", "brave", "zen", "vivaldi"),
+    "editor": ("code", "nvim", "neovide", "zed", "gedit", "kate", "sublime"),
+    "files": ("nautilus", "thunar", "dolphin", "files"),
+}
+_THIS_WINDOW = {"focused", "current", "this", "active", "focused window", "current window",
+                "focused terminal", "current terminal", "this terminal", "the focused terminal"}
+
+
+def _rank_windows(clients: list[dict], needle: str, active_address, active_workspace):
+    """Matching windows, best first.
+
+    Real bug (2026-09-22): the first hyprctl client whose class/title
+    contained "terminal" won. On workspace 5 that was a terminal on workspace
+    1 (its title happened to contain "Terminal"), so every "type in the
+    terminal" jumped the user to workspace 1, twice in a row. Now the
+    focused window wins, then windows on the current workspace, then the
+    most recently used; generic words ("terminal") match by app kind."""
+    kinds = next((names for word, names in _WINDOW_KINDS.items()
+                  if needle in (word, "the " + word, word + "s")), None)
+    matches = []
+    for c in clients:
+        if not c.get("mapped"):
+            continue
+        app, title = (c.get("class") or "").lower(), (c.get("title") or "").lower()
+        running = (c.get("running") or "").lower()
+        if kinds is not None:
+            hit = any(k in app for k in kinds)
+        else:
+            words = [w for w in needle.replace("the ", " ").replace(" terminal", " ").replace(" window", " ").split() if w]
+            hit = needle in app or needle in title or bool(running and any(w == running for w in words))
+        if hit:
+            matches.append(c)
+    def key(c):
+        return (c.get("address") != active_address,
+                (c.get("workspace") or {}).get("id") != active_workspace,
+                c.get("focusHistoryID", 1_000))
+    return sorted(matches, key=key)
+
+
+def run_mission(args: dict) -> ActionResult:
+    # Executed inside the live session (it narrates through it); see
+    # GeminiLiveSession._run_mission. Other providers cannot run it.
+    return ActionResult(False, "run_mission needs a live Gemini session")
+
+
+def move_window_to_workspace(args: dict) -> ActionResult:
+    """One Hyprland dispatch, then verified -- no command search, no model
+    round trip. Real session (2026-09-23 00:11): "move the window to
+    workspace 4" went list_windows -> list_commands("move window") -> the
+    SUPER+LEFT MOUSE drag binding at p=0.99, and nothing happened."""
+    try:
+        number = int(args.get("number"))
+    except (TypeError, ValueError):
+        return ActionResult(False, "number must be a workspace number")
+    if not 1 <= number <= 99:
+        return ActionResult(False, "workspace number must be 1-99")
+    follow = bool(args.get("follow", False))
+    target = str(args.get("target") or "focused").strip()
+    r = _run(["hyprctl", "clients", "-j"])
+    active = _run(["hyprctl", "activewindow", "-j"])
+    workspace = _run(["hyprctl", "activeworkspace", "-j"])
+    try:
+        clients = _with_programs(json.loads(r.message)) if r.ok else []
+        active_address = json.loads(active.message).get("address") if active.ok else None
+        active_workspace = json.loads(workspace.message).get("id") if workspace.ok else None
+    except (ValueError, AttributeError):
+        return ActionResult(False, "could not read windows")
+    if target.startswith("0x"):
+        address = target
+    elif target.lower() in _THIS_WINDOW:
+        address = active_address
+    else:
+        ranked = _rank_windows(clients, target.lower(), active_address, active_workspace) or \
+            _jev_window(clients, target, active_workspace)
+        address = ranked[0]["address"] if ranked else None
+    if not address:
+        return ActionResult(False, f"no window matching '{target}' found")
+    result = _hyprctl_dispatch(
+        f'hl.dsp.window.move({{ workspace = {number}, window = "address:{address}", follow = {"true" if follow else "false"} }})',
+        [("movetoworkspace" if follow else "movetoworkspacesilent"), f"{number},address:{address}"])
+    if not result.ok:
+        return result
+    for _ in range(10):
+        after = _run(["hyprctl", "clients", "-j"])
+        try:
+            moved = next((c for c in json.loads(after.message) if c.get("address") == address), None)
+        except ValueError:
+            moved = None
+        if moved and (moved.get("workspace") or {}).get("id") == number:
+            title = str(moved.get("title") or moved.get("class") or address)[:60]
+            return ActionResult(True, f"verified: {title!r} is now on workspace {number}"
+                                      + ("; view followed it" if follow else "; view stayed where it was"))
+        time.sleep(0.03)
+    return ActionResult(False, f"move dispatched but window {address} is not verified on workspace {number}")
+
+
+def _jev_window(clients: list[dict], target: str, active_workspace) -> list[dict]:
+    """Semantic fallback when no window matches by name ("the one with the
+    drone project", "the Codex window"): one Jev Choice over the mapped
+    windows. Only a clear pick counts; otherwise report no match rather than
+    focus a guess."""
+    mapped = [c for c in clients if c.get("mapped")][:100]
+    if not mapped:
+        return []
+    try:
+        from ..core.jev import Jev, JevError, choice
+        criteria = {"none": "No listed window is the one meant."}
+        for i, c in enumerate(mapped):
+            criteria[str(i)] = json.dumps({"app": c.get("class"), "title": c.get("title"),
+                                           "running": c.get("running"),
+                                           "workspace": (c.get("workspace") or {}).get("id"),
+                                           "on_current_workspace": (c.get("workspace") or {}).get("id") == active_workspace},
+                                          ensure_ascii=False)
+        answer = Jev().ask({"requested_window": target}, {"which": choice(
+            "Which listed window is `requested_window`? Choose none if no window clearly fits.", criteria)},
+            timeout=4, retries=1)["which"]
+    except (JevError, ValueError) as exc:
+        log.info("Jev window resolution unavailable: %s", str(exc)[:120])
+        return []
+    # Real probe: "my shell in the tello folder" -> the right window at 0.68
+    # (none 0.28); "the terminal with the drone project" split 0.39/0.26
+    # between two Tello windows. A clear lead is required, not a high bar.
+    runner_up = sorted(answer["probabilities"].values(), reverse=True)[1]
+    if answer["choice"] == "none" or answer["p"] < 0.6 or answer["p"] < 2 * runner_up:
+        return []
+    return [mapped[int(answer["choice"])]]
+
+
 def focus_window(args: dict) -> ActionResult:
     target = (args.get("target") or "").strip()
     if not target:
         return ActionResult(False, "no window specified")
     address = target
+    note = ""
     if not target.startswith("0x"):
         r = _run(["hyprctl", "clients", "-j"])
         if not r.ok:
@@ -624,18 +956,31 @@ def focus_window(args: dict) -> ActionResult:
             clients = json.loads(r.message)
         except json.JSONDecodeError:
             return ActionResult(False, "could not parse window list")
+        active_address = active_workspace = None
+        active = _run(["hyprctl", "activewindow", "-j"])
+        workspace = _run(["hyprctl", "activeworkspace", "-j"])
+        try:
+            active_address = json.loads(active.message).get("address") if active.ok else None
+            active_workspace = json.loads(workspace.message).get("id") if workspace.ok else None
+        except (ValueError, AttributeError):
+            pass
         needle = target.lower()
-        match = next(
-            (
-                c for c in clients
-                if c.get("mapped")
-                and (needle in (c.get("class") or "").lower() or needle in (c.get("title") or "").lower())
-            ),
-            None,
-        )
-        if match is None:
-            return ActionResult(False, f"no window matching '{target}' found")
-        address = match["address"]
+        if needle in _THIS_WINDOW and active_address:
+            address = active_address
+            match = next((c for c in clients if c.get("address") == address), {})
+        else:
+            clients = _with_programs(clients)
+            ranked = _rank_windows(clients, needle, active_address, active_workspace)
+            if not ranked:
+                ranked = _jev_window(clients, target, active_workspace)
+            if not ranked:
+                return ActionResult(False, f"no window matching '{target}' found")
+            match = ranked[0]
+            address = match["address"]
+        workspace_id = (match.get("workspace") or {}).get("id")
+        if active_workspace is not None and workspace_id not in (None, active_workspace):
+            note = (f" -- NOTE: it is on workspace {workspace_id}, so the view moved there from workspace "
+                    f"{active_workspace}")
     result = _hyprctl_dispatch(
         f'hl.dsp.focus({{ window = "address:{address}" }})',
         ["focuswindow", f"address:{address}"],
@@ -646,7 +991,7 @@ def focus_window(args: dict) -> ActionResult:
         active = _run(["hyprctl", "activewindow", "-j"])
         try:
             if active.ok and json.loads(active.message).get("address") == address:
-                return ActionResult(True, f"verified focus on {address}")
+                return ActionResult(True, f"verified focus on {address}{note}")
         except (ValueError, AttributeError):
             pass
         time.sleep(0.04)
@@ -1570,6 +1915,16 @@ ACTIONS = {
     "check_assistant_updates": check_assistant_updates,
     "update_assistant": update_assistant,
     "get_update_status": get_update_status,
+    "get_release_notes": get_release_notes,
+    "schedule_task": schedule_task,
+    "list_scheduled_tasks": list_scheduled_tasks,
+    "cancel_scheduled_task": cancel_scheduled_task,
+    "run_scheduled_task_now": run_scheduled_task_now,
+    "find_skill": find_skill,
+    "load_skill": load_skill,
+    "save_skill": save_skill,
+    "list_skills": list_skills,
+    "delete_skill": delete_skill,
     "report_issue": report_issue,
     "list_bar_icons": list_bar_icons,
     "open_bar_panel": open_bar_panel,
@@ -1601,6 +1956,8 @@ ACTIONS = {
     "window_fullscreen_toggle": window_fullscreen_toggle,
     "list_windows": list_windows,
     "focus_window": focus_window,
+    "move_window_to_workspace": move_window_to_workspace,
+    "run_mission": run_mission,
     "show_window_labels": show_window_labels,
     "hide_window_labels": hide_window_labels,
     "describe_screen": describe_screen,

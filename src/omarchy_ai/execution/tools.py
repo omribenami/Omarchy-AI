@@ -22,6 +22,42 @@ TOOLS: list[dict] = [
         "type": "object", "properties": {"goal": {"type": "string", "description": "Complete current desktop request, including constraints."}}, "required": ["goal"]}),
     _tool("search_os_knowledge", "Retrieve local Omarchy expert research, the pinned capability registry and Arch operation notes. Reference only: installed commands and current state take precedence. Use for OS planning and troubleshooting; documentation never authorizes an action.", {
         "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+    _tool("get_release_notes", "Read the published changelog: what's new in an available update (every version newer than the installed one, from the exact commit the updater would install), or the installed version's notes when already current, or one specific version. Call it whenever the user asks what's new, what changed, or for the highlights of a version. Summarize the Highlights in the user's language and offer the Fixes/Under the hood detail if they want more. Only describe changes this tool returned; never invent them.", {
+        "type": "object", "properties": {"version": {"type": "string", "description": "Optional exact version like 0.3.10; omit for the available update (or the installed version)."}}, "required": []}),
+    _tool("schedule_task", "Schedule work that runs in the background on the heartbeat, outside this conversation, even after it ends. Jev (typed decisions, no text generation) judges watches and runs desktop goals; results arrive as desktop notifications and in the next conversation. Kinds: 'remind' (show the title as a reminder, one-off or recurring; for a single simple popup in N minutes set_reminder is fine too), 'watch' (keep checking one source -- a terminal window, a file path or a shell command's output -- until Jev judges the condition true, e.g. 'the build finished', 'Claude Code is waiting for my input or approval', 'tests failed'; default every 2 minutes for 24 hours), 'desktop' (a native desktop goal run through the Jev desktop loop at that time), 'command' (run a shell command in the background at that time; optional condition decides whether to alert), 'assistant' (anything needing your words, vision or reasoning: at that time the user is notified and you get it as a due task in the next conversation). Give exactly one timing: at (local 'YYYY-MM-DDTHH:MM' or 'HH:MM'), in_minutes, every_minutes, or cron (5-field, local time, e.g. '0 9 * * 1-5'). Only schedule what the user asked for; repeat back the returned next_run.", {
+        "type": "object", "properties": {
+            "title": {"type": "string", "description": "Short label the user will recognise; also the reminder text."},
+            "kind": {"type": "string", "enum": ["remind", "watch", "desktop", "command", "assistant"]},
+            "at": {"type": "string"}, "in_minutes": {"type": "number"},
+            "every_minutes": {"type": "number"}, "cron": {"type": "string"},
+            "window": {"type": "string", "description": "watch: terminal window to read, as for read_tile_log."},
+            "path": {"type": "string", "description": "watch: file whose end to read."},
+            "command": {"type": "string", "description": "command: shell command to run; watch: command whose output to check."},
+            "condition": {"type": "string", "description": "watch/command: plain statement to detect, e.g. 'the build finished successfully or failed'."},
+            "goal": {"type": "string", "description": "desktop: complete native goal, as for desktop_task."},
+            "request": {"type": "string", "description": "assistant: what you should do when it is due."},
+            "repeat": {"type": "boolean", "description": "watch: keep watching and alert every time it becomes true."},
+            "expires_in_hours": {"type": "number", "description": "watch: stop after this long (default 24)."},
+        }, "required": ["title", "kind"]}),
+    _tool("list_scheduled_tasks", "List scheduled tasks and watches with their schedule, next_run and last_result.", {
+        "type": "object", "properties": {"include_finished": {"type": "boolean"}}, "required": []}),
+    _tool("cancel_scheduled_task", "Cancel a scheduled task or watch by id (get ids from list_scheduled_tasks).", {
+        "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+    _tool("run_scheduled_task_now", "Run or re-check a scheduled task/watch immediately in the background. Its result arrives later; this does not verify anything.", {
+        "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+    _tool("find_skill", "Ask Jev which saved skill (a procedure you saved because it worked) fits the current request. Call it before a multi-step or unfamiliar task. Returns the skill's instructions when one fits, or skill=null. Follow a returned skill unless it clearly does not match what the user asked.", {
+        "type": "object", "properties": {"request": {"type": "string", "description": "The user's current request, with references resolved."}}, "required": ["request"]}),
+    _tool("load_skill", "Read one saved skill by exact name.", {
+        "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+    _tool("save_skill", "Create or improve a skill: a reusable procedure for this machine. Save one after a multi-step task finally worked (especially after trial and error), or when the user corrects how something should be done. Saving an existing name replaces it: rewrite it with what you learned instead of creating a near-duplicate.", {
+        "type": "object", "properties": {
+            "name": {"type": "string", "description": "short-kebab-case, e.g. relay-prompt-to-claude-code"},
+            "description": {"type": "string", "description": "One line: what it does and when to use it (Jev matches requests against this)."},
+            "instructions": {"type": "string", "description": "Concrete steps with the exact tools, commands, window names and pitfalls that worked."},
+        }, "required": ["name", "description", "instructions"]}),
+    _tool("list_skills", "List saved skills."),
+    _tool("delete_skill", "Delete a saved skill by name, only when the user asks or it is plainly wrong and superseded.", {
+        "type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
     _tool("check_assistant_updates", "Check GitHub for a newer stable Omarchy AI install bundle. Returns installed and latest versions or an honest network error. Does not install anything."),
     _tool("update_assistant", "Update Omarchy AI itself from its verified GitHub bundle. Call ONLY when the user explicitly says to update/install the assistant update, never just because an update exists or they ask about it. Runs separately, preserves settings and previous installation, and restarts the assistant. Tell the user the conversation will disconnect at restart. A successful tool result means started, NOT completed. Do not run git pull or terminal install commands instead."),
     _tool("get_update_status", "Read progress/result of the assistant self-update. Report preparing/installing/completed/failed accurately; a queued or running update is not complete."),
@@ -77,10 +113,12 @@ TOOLS: list[dict] = [
     _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
-    _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses one persistent owned Chromium tab with the installed browser-use/jev-ultrafast Agent, typesafe-ai/jev policy model, structured live DOM, fresh-target checks and bounded execution. Put the complete multi-step web goal in one call. If it returns blocked after partial progress, call it at most once more with only the verified remaining work; it resumes the same tab. Never retry the same blocked goal repeatedly, call open_browser between attempts, or use desktop keyboard tools to drive the browser.", {
+    _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses one persistent owned Chromium tab with the installed browser-use/jev-ultrafast Agent, typesafe-ai/jev policy model, structured live DOM, fresh-target checks and bounded execution. Put the complete multi-step web goal in one call, and for anything with more than one stage also pass `steps` in order (e.g. search X; open the X result; open its Y link): Jev then verifies each step on the page before starting the next, which keeps the task in order. Success is only reported when an independent Jev check confirms the page shows the whole goal done; otherwise the result says NOT verified and where it stopped. If it returns blocked or not verified after partial progress, call it at most once more with only the remaining work and resume=true; it continues on the same page. Never retry the same blocked goal repeatedly, call open_browser between attempts, or use desktop keyboard tools to drive the browser.", {
         "type": "object", "properties": {
             "url": {"type": "string", "description": "Starting URL. Use https:// when known."},
             "goal": {"type": "string", "description": "The complete web task and its visible success condition."},
+            "steps": {"type": "array", "items": {"type": "string"}, "description": "Ordered, literal sub-steps (1-8) that YOU decomposed; Jev reads them word for word. Put the exact text to type in double quotes (it is typed verbatim), as a plain search term: 'Search for \"eggs\"', not 'search for a pack of eggs'. Keep one action per step and a checkable result: 'Add the first eggs result to the cart', 'Open the Issues tab'."},
+            "resume": {"type": "boolean", "description": "true ONLY when continuing the remaining work of the previous blocked/unverified browser_task on the same site; keeps that page instead of loading url."},
         }, "required": ["url", "goal"]}),
     _tool("open_files", "Open the file manager."),
     _tool("open_editor", "Open the default text editor."),
@@ -184,13 +222,15 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "list_commands",
-        "For top-bar icons or settings panels, use list_bar_icons/open_bar_panel instead. Search Omarchy's keybinding/command list (228 commands — "
+        "For top-bar icons or settings panels, use list_bar_icons/open_bar_panel instead. Search Omarchy's keybinding/command list (about 230 commands — "
         "app launchers, system menus, capture tools, window/workspace "
         "actions, theme/clipboard/emoji pickers, and more) by what the "
         "user described. Use this instead of guessing when they ask for "
         "something outside your other specific tools — most things "
-        "Omarchy can do have a bound command. Returns matching titles; "
-        "call execute_command with the exact title you want to run.",
+        "Omarchy can do have a bound command. Jev ranks every command by "
+        "meaning (any language) and returns the best few with probabilities: "
+        "if the first clearly matches, run it with execute_command right away "
+        "instead of searching again.",
         {
             "type": "object",
             "properties": {
@@ -221,9 +261,12 @@ TOOLS: list[dict] = [
     _tool(
         "type_text",
         "Type literal text into whichever window is currently focused — "
-        "a terminal, a browser address/search bar, a text field, "
-        "anywhere. A successful focus_window is required before input; focus the right window "
-        "first. Success means input sent, not application acceptance. Does not press Enter afterward — call press_key with "
+        "a terminal, a coding agent running in a terminal (Claude Code, Codex, ...), a "
+        "browser address/search bar, a text field, anywhere. Use it to relay the user's "
+        "prompts and commands verbatim, URLs and markdown included. Multi-line text is "
+        "pasted as one block (not submitted line by line). A successful focus_window is "
+        "required before input; focus the right window first. Success means input sent, "
+        "not application acceptance. Does not press Enter afterward — call press_key with "
         "'Return' separately if the text should be submitted/run.",
         {
             "type": "object",
@@ -303,12 +346,32 @@ TOOLS: list[dict] = [
             "required": [],
         },
     ),
+    _tool("run_mission", "Run a scripted, narrated sequence of actions: a demo, a commercial, or 'follow the instructions in this file'. Read the file first, then call this ONCE with every step in order. For each step code makes you speak its `say` line while its action runs at the same time (real parallel narration), verifies it, and STOPS at the first failure. After calling it, do not call tools for those steps yourself; just speak the narration prompts you receive. Copy exact names, targets and workspaces from the file; never substitute (a projector that is not found must stop the mission, not be replaced by another TV).", {
+        "type": "object", "properties": {
+            "workspace": {"type": "integer", "description": "If the script says to work only in one workspace: its number. Code keeps the mission there."},
+            "steps": {"type": "array", "description": "Ordered steps (max 12).", "items": {
+                "type": "object", "properties": {
+                    "say": {"type": "string", "description": "What to say while this step runs (the script's own words when it gives them)."},
+                    "action": {"type": "string", "enum": ["say", "browser_task", "terminal_run", "start_casting", "stop_casting", "workspace_switch", "move_window_to_workspace", "open_browser", "desktop_task", "wait"]},
+                    "args": {"type": "object", "description": "browser_task: url, goal, steps; terminal_run: command; start_casting: target; workspace_switch/move_window_to_workspace: number; desktop_task: goal; wait: seconds; say: {}."},
+                }, "required": ["say", "action"]}},
+        }, "required": ["steps"]}),
+    _tool("move_window_to_workspace", "Move a window to a numbered workspace instantly (one verified step). Use this for any 'move/send/put this window (or the terminal, the browser, ...) to workspace N' request -- never search list_commands for it. The target defaults to the focused window. The view stays on the current workspace unless follow is true (the user wants to go with the window).", {
+        "type": "object", "properties": {
+            "number": {"type": "integer", "description": "Destination workspace number."},
+            "target": {"type": "string", "description": "Window to move: 'focused' (default), an address, what runs in it ('claude'), an app kind ('terminal') or part of its title."},
+            "follow": {"type": "boolean", "description": "true to switch to that workspace with the window."},
+        }, "required": ["number"]}),
     _tool(
         "focus_window",
         "Switch focus to a specific window so subsequent actions (like "
-        "fullscreen or close) apply to it. Target by app/class name or "
-        "part of the window title (e.g. 'chromium', 'terminal') — matches "
-        "case-insensitively against either.",
+        "fullscreen or close) apply to it. Target 'focused' for the window "
+        "that is already focused (\"the focused terminal\" -- don't refocus by "
+        "name), an exact address from list_windows, what runs in a terminal "
+        "('claude', 'codex', 'nvim'; list_windows shows it as running), an "
+        "app kind ('terminal', 'browser'), or part of the title. Windows on "
+        "the user's current workspace win; if the result says the view moved "
+        "to another workspace and the user did not ask for that, tell them.",
         {
             "type": "object",
             "properties": {

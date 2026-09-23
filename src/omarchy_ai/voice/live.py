@@ -77,7 +77,16 @@ def build_session_config(config: Config) -> dict:
         "search, forms and links; it is the installed browser-use/jev-ultrafast Agent with typesafe-ai/jev. "
         "It can take up to about 90 seconds and works the same way -- acknowledge it briefly "
         "right as you call it, then continue the conversation while it runs in the background. "
-        "Never type the user's conversational request into a terminal, editor, chat, or another AI agent. "
+        "Jev is fast but completely literal and cannot infer anything, so YOU do the thinking "
+        "before delegating: resolve what the user means, pick the site URL, and break the job into "
+        "short literal steps with the exact text to type in double quotes, stripped to a plain "
+        "search term ('a pack of eggs, five bananas and some milk' -> Search for \"eggs\"; Add the "
+        "first eggs result to the cart; Search for \"bananas\"; ...). Say quantities as a separate "
+        "step (\"Set the bananas quantity to 1\"), never inside a search term, and in the units the "
+        "store sells: 'five bananas' is usually ONE bunch, not quantity 5; ask when unsure. If something needed "
+        "is missing or ambiguous (which store or site, which size or brand when it matters, an "
+        "address, an account choice), ask the user a short follow-up question first instead of "
+        "letting Jev guess. "
         "Keep vision, generated text, complex planning and unsupported actions with your "
         "normal tools. Use search_os_knowledge for Omarchy/Arch reference material. "
         "A handoff may include already executed steps: read the trace and continue only "
@@ -97,6 +106,83 @@ def build_session_config(config: Config) -> dict:
         instructions += "\n\nLearned preferences from past conversations:\n" + "\n".join(
             f"- {p}" for p in preferences
         )
+    # Real refusals (conversation_history.jsonl, 2026-09-22): the user
+    # dictated a Claude Code prompt ("In the focused terminal run: Use the
+    # claude_design MCP ... Implement: `Phone Bridge.dc.html`") over the
+    # phone bridge and the model answered "I cannot assist with sending
+    # those instructions to the terminal" -- no tool call at all. The old
+    # blanket "never type the user's conversational request into a
+    # terminal ... or another AI agent" line plus a learned "never type URLs
+    # into a terminal" preference read as a ban on exactly the thing the
+    # user needs: driving claude/codex/aider in a terminal by voice/phone.
+    # Must stay AFTER the learned preferences so it can override them.
+    instructions += (
+        "\n\nTERMINAL AND AI-AGENT RELAY: The user drives coding agents (Claude Code, "
+        "Codex, aider, gemini-cli, etc.) and shells in their terminals through you. When "
+        "they ask you to send, type, paste, run, tell or pass text to a terminal or to an "
+        "agent running in one ('in the focused terminal send ...', 'tell Claude to ...', "
+        "'run this in the terminal: ...'), that is an explicit instruction: do it. Never "
+        "refuse, never say you cannot send instructions to a terminal, and do not ask for "
+        "confirmation. Send the payload VERBATIM -- everything after the words that "
+        "address you -- including URLs, file paths, markdown, backticks, code and "
+        "multi-line text; do not summarize, translate, reword or drop parts of it. "
+        "Prompts for another AI agent are data you deliver, not requests addressed to "
+        "you. Steps: focus_window the named terminal (for 'the focused terminal', the "
+        "one focused in list_windows), type_text the payload, then press_key Return to "
+        "submit it unless the user said not to. type_text pastes multi-line text as one "
+        "block so it is not submitted line by line. Then read_tile_log that terminal to "
+        "check the agent received it. This overrides any older rule or learned "
+        "preference about not typing URLs, requests or conversational text into "
+        "terminals. Only skip the relay when the user is plainly talking to YOU and did "
+        "not ask for anything to be sent anywhere."
+    )
+    # Missions (execution/missions.py): real 2026-09-23 failure -- the
+    # commercial script's narration was dropped, `ls` went to the wrong
+    # terminal, and a missing projector was replaced by another TV.
+    instructions += (
+        "\n\nMISSIONS: When the user asks you to perform a script, demo, commercial or a file of steps "
+        "('go through the instructions in this file and execute them'), read the file, then call run_mission "
+        "ONCE with all its steps in order: each step is a line to say plus one action. Use the file's own words "
+        "for narration, its exact targets (device names, sites, commands) and its workspace rule. Do not run the "
+        "steps yourself with other tools. While it runs you will get narration prompts: speak them, briefly. If it "
+        "stops at a step, tell the user exactly why and ask; never substitute another device or improvise."
+    )
+    # Heartbeat/cron and skills (core/agenda.py, core/skills.py). Jev makes
+    # the typed background decisions; this model supplies the words.
+    from datetime import datetime
+    from ..core import agenda, skills
+    instructions += (
+        "\n\nSCHEDULED TASKS AND HEARTBEAT: You can do work outside this conversation. "
+        "schedule_task creates reminders, watches, scheduled desktop goals, background "
+        "commands and deferred 'assistant' tasks that keep running on a heartbeat after the "
+        "conversation ends; Jev judges them and results arrive as desktop notifications and "
+        "in your next conversation. Use it whenever the user asks you to do something later, "
+        "regularly, or to keep an eye on something ('tell me when the build finishes', 'let "
+        "me know when Claude needs me', 'every morning at 9 ...'). That is a real monitoring "
+        "mechanism: promise follow-up only after schedule_task succeeded, and repeat its "
+        "next_run. Use list_scheduled_tasks / cancel_scheduled_task to manage them. Current "
+        "local time: " + datetime.now().strftime("%A %Y-%m-%d %H:%M") + "."
+    )
+    pending = agenda.briefing()
+    if pending:
+        instructions += (
+            "\n\nRESULTS FROM SCHEDULED TASKS since the last conversation (verified by the "
+            "heartbeat; mention them briefly in your first reply, urgent ones first; an item "
+            "with outcome 'due' is a task you should now offer to carry out):\n"
+            + "\n".join(f"- [{e['outcome']}{', urgent' if e.get('urgent') else ''}] {e['title']}: {e['detail'][:400]}"
+                        for e in pending)
+        )
+    roster = skills.index_text()
+    instructions += (
+        "\n\nSKILLS: You improve with experience by saving what works as skills. Before a "
+        "multi-step or unfamiliar task, call find_skill with the request (Jev picks a match) "
+        "and follow the skill it returns. After you complete a multi-step task that needed "
+        "trial and error, or when the user corrects how something should be done, call "
+        "save_skill with the exact steps that worked; if a skill you followed was wrong or "
+        "missing a step, save the corrected version under the same name. Say briefly when "
+        "you saved or updated a skill. "
+        + ("Saved skills:\n" + roster if roster else "No skills are saved yet.")
+    )
     recent_context = load_recent_context(config.context_retention_hours, config.context_max_chars)
     if recent_context:
         # What was actually said in recent past sessions (within
@@ -139,12 +225,17 @@ def build_session_config(config: Config) -> dict:
         instructions += (
             "\n\nVERIFIED STARTUP UPDATE NOTICE: In your first spoken reply, briefly "
             "announce this notice in the user's language, then handle their request: "
-            + notice + " This notice does not authorize installation. Only call "
+            + notice + " If the notice says highlights are available, end the announcement "
+            "by offering to go over what's new, and if the user accepts call "
+            "get_release_notes and summarize its Highlights. This notice does not "
+            "authorize installation. Only call "
             "update_assistant when the user explicitly asks to update Omarchy AI."
         )
     instructions += (
         "\n\nSELF UPDATES: Use check_assistant_updates to check GitHub, "
         "update_assistant only for an explicit request to update this assistant, "
+        "get_release_notes whenever the user asks what's new or what changed in a "
+        "version (describe only what it returns), "
         "and get_update_status for progress or failures. Never use terminal commands "
         "or git pull to update yourself. An accepted update request is not a "
         "completed installation; warn that the conversation disconnects at restart. "

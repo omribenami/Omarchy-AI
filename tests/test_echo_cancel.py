@@ -69,7 +69,7 @@ class EchoTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('sink_master=physical_speaker', args)
             self.assertIn('source_name=' + echo.source, args)
             self.assertIn('sink_name=' + echo.sink, args)
-            self.assertIn('aec_args="noise_suppression=1 high_pass_filter=1 analog_gain_control=0 digital_gain_control=0"', args)
+            self.assertIn('aec_args="noise_suppression=0 high_pass_filter=1 analog_gain_control=0 digital_gain_control=0"', args)
             self.assertFalse(any(c.args[0].startswith('set-default') for c in command.call_args_list))
             await echo.close()
             command.assert_awaited_with('unload-module', '123')

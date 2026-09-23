@@ -5,6 +5,7 @@ then return to listening. There is no always-on remote voice connection.
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import logging
 import signal
 import threading
@@ -59,6 +60,11 @@ class OmaDaemon:
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
         def terminate():
+            # The previous process ignored SIGTERM for systemd's full 90s and
+            # logged nothing (2026-09-22). If shutdown stalls again, dump
+            # every thread's stack to the journal so the blocker is visible.
+            log.info("SIGTERM received; shutting down")
+            faulthandler.dump_traceback_later(20, exit=False)
             self.stop()
             task.cancel()
         # Let active audio sessions unload their private PipeWire modules
@@ -73,12 +79,24 @@ class OmaDaemon:
                     log.warning("Update check unavailable", exc_info=True)
                 await asyncio.sleep(updates.CACHE_SECONDS)
         update_checker = asyncio.create_task(refresh_updates())
+        async def heartbeat():
+            # Scheduled tasks and watches run here, conversation or not.
+            from . import agenda
+            while True:
+                try:
+                    await asyncio.to_thread(agenda.tick)
+                except Exception:
+                    log.warning("Heartbeat tick failed", exc_info=True)
+                await asyncio.sleep(max(15, self.config.heartbeat_seconds))
+        heart = asyncio.create_task(heartbeat()) if self.config.heartbeat_enabled else None
         try:
             async with server:
                 await self._run_sessions()
         finally:
             update_checker.cancel()
-            await asyncio.gather(update_checker, return_exceptions=True)
+            if heart is not None:
+                heart.cancel()
+            await asyncio.gather(update_checker, *([heart] if heart else []), return_exceptions=True)
             loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
 
@@ -124,6 +142,9 @@ class OmaDaemon:
             try:
                 self._last_error = None
                 await session.run()
+                # The session prompt carried the heartbeat's pending results.
+                from . import agenda
+                agenda.mark_briefed()
             except Exception:  # noqa: BLE001
                 log.exception("live session crashed")
                 self._last_error = "Connection ended unexpectedly. Check the service log, then try again."
@@ -153,3 +174,4 @@ def main() -> None:
         asyncio.run(daemon.run())
     except (KeyboardInterrupt, asyncio.CancelledError):
         daemon.stop()
+    log.info("event loop finished; exiting")

@@ -30,6 +30,34 @@ def bundle(directory, version='0.4.0', extra=None):
     return archive, checksum
 
 
+CHANGELOG = """# Changelog
+
+## [Unreleased]
+
+### Highlights
+
+- Not announced yet.
+
+## [0.4.0] - 2026-10-01
+
+### Highlights
+
+- Scheduled tasks keep running between
+  conversations.
+- Skills.
+
+### Fixes
+
+- A fix.
+
+## [0.3.9] - 2026-09-22
+
+### Highlights
+
+- Older.
+"""
+
+
 class UpdateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -40,6 +68,10 @@ class UpdateTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         self.release = {'latest_version': '0.4.0', 'commit': 'a' * 40,
                         'package': 'omarchy-ai-0.4.0-linux-x86_64.tar.gz'}
+        # Never fetch a real changelog from GitHub in tests.
+        self.changelog = patch.object(updates, '_fetch_changelog', return_value=CHANGELOG)
+        self.fetch = self.changelog.start()
+        self.addCleanup(self.changelog.stop)
 
     def test_numeric_order_and_ignore_unpaired_or_non_versioned_files(self):
         names = ['omarchy-ai-0.9.0-linux-x86_64.tar.gz', 'omarchy-ai-0.10.0-linux-x86_64.tar.gz',
@@ -123,6 +155,61 @@ class UpdateTests(unittest.TestCase):
         tools = [t['name'] for t in config['delegation']['responses']['tools']]
         for name in ('check_assistant_updates', 'update_assistant', 'get_update_status'):
             self.assertIn(name, tools)
+
+    def test_changelog_parsing_joins_wrapped_bullets_and_skips_unreleased(self):
+        releases = updates.parse_changelog(CHANGELOG)
+        self.assertEqual(releases['0.4.0']['sections']['Highlights'][0],
+                         'Scheduled tasks keep running between conversations.')
+        self.assertEqual([e['version'] for e in updates.notes_between(releases, '0.3.8', '0.4.0')], ['0.4.0', '0.3.9'])
+        self.assertEqual(updates.notes_between(releases, '0.4.0', '0.4.0'), [])
+
+    def test_available_update_caches_its_highlights_from_the_pinned_commit(self):
+        with patch.object(updates, 'installed_version', return_value='0.3.9'), patch.object(updates, 'discover', return_value=self.release):
+            result = updates.check_updates()
+            self.fetch.assert_called_once_with('a' * 40)
+            self.assertEqual(result['release_notes'][0]['version'], '0.4.0')
+            notice = updates.wake_notice()
+        self.assertIn("what's new", notice)
+
+    def test_no_offer_to_explain_when_the_changelog_cannot_be_read(self):
+        self.fetch.side_effect = OSError('offline')
+        with patch.object(updates, 'installed_version', return_value='0.3.9'), patch.object(updates, 'discover', return_value=self.release):
+            self.assertTrue(updates.check_updates()['available'])
+            notice = updates.wake_notice()
+            notes = updates.release_notes()
+        self.assertIn('0.4.0', notice)
+        self.assertNotIn("what's new", notice)
+        self.assertFalse(notes['ok'])
+
+    def test_release_notes_for_update_and_for_installed_version(self):
+        with patch.object(updates, 'installed_version', return_value='0.3.9'), patch.object(updates, 'discover', return_value=self.release):
+            notes = updates.release_notes()
+        self.assertTrue(notes['update_available'])
+        self.assertEqual(notes['releases'][0]['sections']['Fixes'], ['A fix.'])
+        with patch.object(updates, 'installed_version', return_value='0.4.0'), patch.object(updates, 'discover', return_value=self.release), \
+                patch.object(updates, 'local_changelog', return_value=updates.parse_changelog(CHANGELOG)):
+            notes = updates.release_notes()
+        self.assertFalse(notes['update_available'])
+        self.assertEqual(notes['releases'][0]['version'], '0.4.0')
+
+    def test_first_wakes_after_a_completed_update_offer_its_highlights_then_stop(self):
+        updates._write(updates.STATE / 'install.json', {'state': 'completed', 'version': '0.4.0'})
+        with patch.object(updates, 'installed_version', return_value='0.4.0'), \
+                patch.object(updates, 'local_changelog', return_value=updates.parse_changelog(CHANGELOG)):
+            first = updates.wake_notice()
+            same_session = updates.wake_notice()
+            with patch.object(updates.time, 'time', return_value=time.time() + 3600):
+                later = updates.wake_notice()
+        self.assertIn('just updated to Omarchy AI version 0.4.0', first)
+        self.assertIn("what's new", first)
+        self.assertEqual(first, same_session)
+        self.assertEqual(later, '')
+
+    def test_repo_changelog_has_highlights_for_the_packaged_version(self):
+        root = Path(updates.__file__).resolve().parents[3]
+        version = updates.installed_version(root)
+        entry = updates.parse_changelog((root / 'CHANGELOG.md').read_text())[version]
+        self.assertTrue(entry['sections'].get('Highlights'))
 
     def test_health_check_rejects_restart_loop(self):
         replies = [subprocess.CompletedProcess([], 0, f'ActiveState=active\nMainPID={pid}\n') for pid in (1, 2)]

@@ -1,0 +1,158 @@
+# Changelog
+
+This file is read by the assistant itself. When a new version is published,
+the updater fetches this file from the exact commit it pins for the bundle
+(`core/updates.py`), and the assistant uses the `### Highlights` of every
+version newer than the installed one to answer "what's new?".
+
+Rules for every release:
+
+- One `## [x.y.z] - YYYY-MM-DD` section per published version, newest first.
+  `scripts/build-install-package.sh` refuses to build a bundle whose version
+  has no section here.
+- `### Highlights` is required: short, user-facing bullets. They are spoken
+  aloud, so write for a listener. Say what changed for the user, not which
+  file changed.
+- `### Fixes` and `### Under the hood` are optional, for detail the user can
+  ask about.
+- Work lands under `## [Unreleased]` first. Rename it to the version when
+  releasing.
+
+## [Unreleased]
+
+### Highlights
+
+- Terminal relay: she now sends whatever you ask into a terminal or a coding
+  agent (Claude Code, Codex, aider), including URLs, markdown and multi-line
+  prompts. Multi-line text is pasted as one block instead of being submitted
+  line by line.
+- Scheduled tasks and a heartbeat, decided by Jev: recurring or one-off
+  reminders, watches ("tell me when the build in that terminal finishes", "let
+  me know when Claude is waiting for me"), scheduled desktop goals and
+  background commands. They keep running between conversations. Their results
+  arrive as desktop notifications and are summarised in the next conversation.
+- Skills that improve over time: she can save a procedure that worked as a
+  named skill, update it when it turns out wrong, and Jev picks the matching
+  skill when a similar request comes up again.
+- Release highlights: when an update is available she tells you, offers to go
+  through what's new, and can actually do it from this changelog.
+- Browser tasks that finish what they start. She only reports success after
+  Jev confirms the page really shows the goal done. Multi-step web tasks go
+  step by step, in order. Everything stays in one tab.
+- She stays on your workspace. Asking her to type into "the terminal" uses the
+  terminal where you are, not one on another workspace, and the browser comes
+  to you instead of pulling you to it.
+- Faster, more accurate command and window matching. Jev picks the right
+  Omarchy command by meaning, in any language including Hebrew, and she can
+  find "the Claude terminal" by what is running in it.
+- The assistant overlay shows every state: connecting while she starts up,
+  listening, thinking whenever she is busy (a MyApi call, a background task,
+  or working out her answer), and speaking. Tools that succeed light it
+  green, and tools that fail light it red.
+- Cleaner voice: her speech no longer crackles or drops out when the
+  computer is busy.
+- Smarter web tasks: she breaks your request into simple steps for the
+  browser (searching "eggs", not "a pack of eggs") and asks you when
+  something is missing, like which store.
+
+### Fixes
+
+- Removed the "looks like a conversational request" filter that refused to
+  type prompts into a terminal running an editor.
+- Clicking a Google result now opens it. Before, the click landed on an
+  overlay, nothing happened, and the task gave up after repeating the click.
+- Browser tasks no longer report "done" on a results page or on the wrong
+  article.
+- A dropped browser connection heals itself instead of failing every browser
+  task until a restart.
+- A busy browser is no longer mistaken for a crashed one.
+- A button that changes its own label (a cart's "81 added", "82 added")
+  can no longer be clicked dozens of times in a row.
+- Slow, heavy shopping sites no longer time out the browser connection.
+
+## [0.3.10] - 2026-09-22
+
+### Highlights
+
+- Restarting the assistant from the Settings panel no longer cuts off a
+  conversation that is in progress. The panel waits and tells you why.
+
+### Under the hood
+
+- The installer build refuses to package a stale `uv.lock`.
+- New `scripts/diagnose-update.sh` for "it still says an update is available
+  after updating" reports.
+
+## [0.3.9] - 2026-09-22
+
+### Highlights
+
+- Self-updates to 0.3.8 failed on every machine because of a stale lock file.
+  That is fixed.
+- When a self-update fails, a GitHub issue can be filed automatically
+  (requires a GitHub token on the machine).
+
+## [0.3.8] - 2026-09-21
+
+### Highlights
+
+- She keeps talking and listening while longer desktop and browser tasks run,
+  instead of going silent until they finish.
+
+## [0.3.7] - 2026-09-20
+
+### Highlights
+
+- Fixed a crash when typing text into windows.
+- She says what she is doing while she works, instead of staying silent.
+
+### Fixes
+
+- The installer no longer checks `uv` through pacman, and it refreshes a stale
+  `uv.lock`.
+- New `--skip-android` build option.
+
+## [0.3.6] - 2026-09-19
+
+### Highlights
+
+- Browser tasks that search for several items at once work reliably.
+
+## [0.3.5] - 2026-09-18
+
+### Highlights
+
+- The Jev browser agent is bundled with the installer, so browser tasks work
+  out of the box.
+
+## [0.3.4] - 2026-09-18
+
+### Highlights
+
+- Saving the Gateway key works on clean installs.
+
+## [0.3.3] - 2026-09-18
+
+### Highlights
+
+- Refreshed Settings panel. It fixes upgrades and exposes the Jev Gateway key.
+
+## [0.3.2] - 2026-09-18
+
+### Highlights
+
+- Jev desktop worker: fast, verified workspace, window, volume, brightness,
+  theme and bar-panel actions.
+- More stable live audio.
+
+## [0.3.1] - 2026-09-18
+
+### Highlights
+
+- Omarchy AI gateway mode and browser automation updates.
+
+## [0.3.0] - 2026-09-17
+
+### Highlights
+
+- Gemini desktop and phone audio, echo suppression, and a portable installer.

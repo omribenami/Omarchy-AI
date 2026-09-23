@@ -67,7 +67,13 @@ class EchoCancellation:
             # Low priority keeps these private virtual nodes from becoming defaults.
             self.module_id = await pactl(
                 "load-module", "module-echo-cancel", "aec_method=webrtc",
-                'aec_args="noise_suppression=1 high_pass_filter=1 analog_gain_control=0 digital_gain_control=0"',
+                # noise_suppression=0: the WebRTC chain's 10ms real-time
+                # processing is the main source of audio-graph xruns during a
+                # conversation on this 2-core machine (silent-chain probe:
+                # 0-10 xruns/20s without echo-cancel, 23-69 with it, 7-47
+                # with suppression off; STATUS.md 2026-09-23). Every xrun is
+                # an audible click in her voice and in recordings.
+                'aec_args="noise_suppression=0 high_pass_filter=1 analog_gain_control=0 digital_gain_control=0"',
                 "rate=48000", "channels=1", "channel_map=mono",
                 f"source_master={source}", f"sink_master={sink}",
                 f"source_name={self.source}", f"sink_name={self.sink}",

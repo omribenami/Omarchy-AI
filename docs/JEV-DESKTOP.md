@@ -19,9 +19,13 @@ Sources: https://docs.typesafe.ai/introduction and
 https://docs.typesafe.ai/primitives/choice
 
 A valid type is not proof of a correct decision. TypeSafe's confidence statistic
-is distinct from the probability of the selected option. Gateway currently
-returns choice distributions without that confidence field. This worker records
-it as absent instead of inventing it. Mutation and target decisions require
+is distinct from the probability of the selected option. Correction
+(2026-09-22): Gateway *does* return it, just not inside the answer object; it
+arrives as `providerMetadata.typesafe.confidence.<question>`. The desktop worker
+still reads only `answers`, so it still records confidence as absent. That keeps
+its behaviour unchanged. Reading it would activate the `confidence >= 0.8` gate
+below for the first time. `core/jev.py` (heartbeat and skills) reads it. See
+STATUS.md 2026-09-22 for the probe. Mutation and target decisions require
 selected probability >=0.95; when confidence is supplied it must also be >=0.8.
 These are conservative initial thresholds, not calibrated desktop reliability
 claims. Uncertainty returns control to the live model. Handoff itself never

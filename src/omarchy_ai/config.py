@@ -311,6 +311,16 @@ class Config:
     context_retention_hours: float = 24.0
     context_max_chars: int = 4000
 
+    # Heartbeat for scheduled tasks/watches (core/agenda.py). The tick only
+    # starts jobs that are due; with no tasks it costs a file read. Jev is
+    # only called for due watches whose observed text changed.
+    # Jev decides simple desktop commands (workspace switch, move window,
+    # volume, play/pause, fullscreen) from the transcript the moment the
+    # user pauses, instead of waiting for Gemini's turn (voice/jev_fast.py).
+    jev_fast_path: bool = True
+    heartbeat_enabled: bool = True
+    heartbeat_seconds: int = 60
+
     log_level: str = "INFO"
 
     # Watch Dogs overlay (the hacking-HUD Quickshell panel — see

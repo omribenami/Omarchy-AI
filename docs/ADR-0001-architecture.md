@@ -549,6 +549,9 @@ one-line command the user needs to run.
 - `avahi-daemon` active (mDNS/DNS-SD for device discovery — Cast/receiver
   advertisement)
 - 93GB free disk (Android SDK + Gradle + JDK, if approved, fit comfortably)
+- `wl-clipboard` 2.3.0 (`wl-copy`/`wl-paste`), `wtype` 0.4, `libnotify` 0.8.8 (`notify-send`).
+  Confirmed 2026-09-22 and used by `type_text`'s multi-line paste and by
+  heartbeat notifications.
 
 ## Toolchain — resolved
 

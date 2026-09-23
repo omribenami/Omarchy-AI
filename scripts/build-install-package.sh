@@ -34,6 +34,21 @@ if ! uv lock --check >/dev/null 2>&1; then
 fi
 
 version="$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)"
+
+# The assistant announces an update's highlights from CHANGELOG.md at the
+# bundle's own commit (core/updates.py). A version without them would ship
+# an update she offers to explain but cannot.
+if ! awk -v v="$version" '
+    index($0, "## [" v "]") == 1 { inside = 1; next }
+    inside && /^## / { exit }
+    inside && /^### Highlights/ { highlights = 1; next }
+    inside && highlights && /^### / { exit }
+    inside && highlights && /^[-*] / { found = 1; exit }
+    END { exit !found }' CHANGELOG.md; then
+  echo "Refusing to package: CHANGELOG.md has no '## [${version}]' section with '### Highlights' bullets (rename [Unreleased] to [${version}] - $(date +%F), commit, then rebuild)." >&2
+  exit 1
+fi
+
 staging_dir="$(mktemp -d)"
 trap 'rm -rf -- "$staging_dir"' EXIT
 package_dir="$staging_dir/omarchy-ai-${version}-linux-x86_64"

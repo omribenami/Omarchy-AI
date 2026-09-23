@@ -146,6 +146,8 @@ async def _serve(config, sdp, answer, cancelled):
 
     try:
         async with client.aio.live.connect(model=config.gemini_model, config=build_live_config(config)) as session:
+            from ..core import agenda
+            agenda.mark_briefed()  # this prompt carried the heartbeat's pending results
             await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
             await peer.setLocalDescription(await peer.createAnswer())
             if cancelled.is_set():
@@ -154,7 +156,8 @@ async def _serve(config, sdp, answer, cancelled):
             log.info('Phone Gemini WebRTC bridge ready: %s', config.gemini_model)
             tasks = [asyncio.create_task(coro) for coro in (
                 send_audio(session), send_text(session), adapter._receive(session),
-                adapter._tools(session), watch_offer(), adapter._hangup.wait())]
+                adapter._tools(session), watch_offer(), adapter._hangup.wait(),
+                *([adapter._fast_path()] if config.jev_fast_path else []))]
             done, _ = await asyncio.wait(tasks, timeout=config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
