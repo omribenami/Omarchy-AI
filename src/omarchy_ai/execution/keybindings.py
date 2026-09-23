@@ -81,9 +81,44 @@ def _load() -> list[Binding]:
     return bindings
 
 
+def _jev_rank(query: str, bindings: list[Binding], limit: int) -> list[dict] | None:
+    """One Jev Choice over every binding (230 today, under Choice's 255).
+
+    Real probe on this machine's bindings (2026-09-22): lexical WRatio put
+    the right command first for 4/9 requests ("pick a color" -> "Expand
+    window left a little", "lock the screen" -> "Swap window to the left",
+    nothing at all for Hebrew "צלמי מסך"); Jev got 9/9 in ~0.4s. Returns
+    None when Jev is unavailable, so the caller falls back to lexical."""
+    if not 1 <= len(bindings) <= 255:
+        return None
+    try:
+        from ..core.jev import Jev, JevError, choice
+        criteria = {str(i): b.title + (f" ({b.keys})" if b.keys else "") for i, b in enumerate(bindings)}
+        answer = Jev().ask({"request": query}, {"which": choice(
+            "Which of these desktop commands does the user's `request` ask to run?", criteria)},
+            timeout=4, retries=1)["which"]
+    except (JevError, ValueError) as exc:
+        log.info("Jev command ranking unavailable, using lexical: %s", str(exc)[:120])
+        return None
+    ranked = sorted(answer["probabilities"].items(), key=lambda kv: -kv[1])
+    return [{"title": bindings[int(k)].title, "keys": bindings[int(k)].keys, "probability": round(p, 2)}
+            for k, p in ranked[:limit] if p >= 0.01]
+
+
+def _runnable(binding: Binding) -> bool:
+    """Mouse gestures (drag to move/resize, wheel scrolling) cannot be run as
+    a command. Offering them let "move window" resolve to the SUPER+LEFT
+    MOUSE drag at p=0.99 in a real session, and nothing happened."""
+    keys = binding.keys.upper()
+    return "MOUSE" not in keys
+
+
 def list_commands(query: str | None, limit: int = 15) -> list[dict]:
-    bindings = _load()
+    bindings = [b for b in _load() if _runnable(b)]
     if query:
+        ranked = _jev_rank(query, bindings, min(limit, 5))
+        if ranked:
+            return ranked
         scored = sorted(
             bindings,
             key=lambda b: fuzz.WRatio(query.lower(), b.title.lower()),

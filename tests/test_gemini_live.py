@@ -29,9 +29,11 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         # deciding what to call next.
         self.assertEqual(by_name['desktop_task'], 'NON_BLOCKING')
         self.assertEqual(by_name['browser_task'], 'NON_BLOCKING')
+        # run_mission narrates through the session while it acts.
+        self.assertEqual(by_name['run_mission'], 'NON_BLOCKING')
         self.assertTrue(all(
             behavior == 'BLOCKING' for name, behavior in by_name.items()
-            if name not in ('desktop_task', 'browser_task')
+            if name not in ('desktop_task', 'browser_task', 'run_mission')
         ))
 
     def test_noise_resistant_vad_still_allows_user_interruptions(self):
@@ -266,3 +268,243 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Input NOT sent', responses[1]['message'])
         self.assertIn('Input NOT sent', adapter._action_log[-1]['message'])
         self.assertEqual(adapter._action_log[-1]['call_id'], '1')
+
+
+class OverlayStateTests(unittest.TestCase):
+    """The ASCII overlay's thinking/listening/speaking derivation."""
+
+    def session(self):
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config())
+
+    def test_a_running_tool_is_thinking(self):
+        s = self.session()
+        self.assertEqual(s._display_state(100.0), "listening")
+        s._running_blocking = 1          # e.g. a MyApi call
+        self.assertEqual(s._display_state(100.0), "thinking")
+
+    def test_user_mid_sentence_stays_listening_then_thinking_until_the_reply(self):
+        s = self.session()
+        s._last_user_speech = s._awaiting_since = 100.0
+        self.assertEqual(s._display_state(100.3), "listening")
+        self.assertEqual(s._display_state(101.0), "thinking")
+        s._state, s._playback_until = "speaking", 103.0
+        self.assertEqual(s._display_state(101.5), "speaking")
+        # Once the queued speech has played out it is no longer speaking.
+        self.assertNotEqual(s._display_state(103.5), "speaking")
+
+    def test_play_audio_keeps_a_cushion_instead_of_lock_step_sleeping(self):
+        import asyncio
+        from omarchy_ai.voice import gemini_live
+        s = self.session()
+        writes, sleeps = [], []
+        class Stdin:
+            def write(self, raw): writes.append(len(raw))
+            async def drain(self): pass
+        class Speaker:
+            returncode = None
+            stdin = Stdin()
+        async def run():
+            s._speaker, s._speaker_generation = Speaker(), s._generation
+            for _ in range(3):   # three 0.2 s chunks arriving back to back
+                s._audio.put_nowait((s._generation, b"\x00\x00" * 4800))
+            task = asyncio.create_task(s._play_audio())
+            for _ in range(20):
+                await real_sleep(0.005)
+            task.cancel()
+        real_sleep = asyncio.sleep
+        async def fake_sleep(seconds):
+            if seconds > 0.01:
+                sleeps.append(round(seconds, 2))
+            await real_sleep(0)
+        with patch.object(gemini_live.asyncio, "sleep", fake_sleep):
+            asyncio.run(run())
+        self.assertEqual(len(writes), 3)
+        # Old code slept 0.2 s after EVERY chunk, draining the pipe to empty
+        # right when pw-play read it. Now nothing waits until more than the
+        # 0.3 s cushion is queued, and then only for the excess (the fake
+        # sleep does not advance the clock, hence 0.1 then 0.3).
+        self.assertEqual(sleeps, [0.1, 0.3])
+
+    def test_a_reply_that_never_comes_does_not_stick_on_thinking(self):
+        s = self.session()
+        s._last_user_speech = s._awaiting_since = 100.0
+        self.assertEqual(s._display_state(100.0 + s.REPLY_WAIT_SECONDS + 1), "listening")
+
+    def test_background_task_shows_busy_between_turns(self):
+        s = self.session()
+        s._running_background = 1        # browser_task / desktop_task
+        self.assertEqual(s._display_state(100.0), "thinking")
+
+
+class JevFastPathTests(unittest.TestCase):
+    """Simple commands run from the transcript, and Gemini cannot redo or contradict them."""
+
+    def session(self):
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config())
+
+    def call(self, name, args):
+        return type("Call", (), {"name": name, "args": args, "id": "c1"})()
+
+    def test_utterance_is_judged_once_after_the_pause_and_executed(self):
+        import asyncio
+        from omarchy_ai.execution.actions import ActionResult
+        s = self.session()
+        s._utterance = ["Can you switch to ", "workspace 4?"]
+        s._last_user_speech = 0.0   # long ago: the pause has passed
+        with patch("omarchy_ai.voice.jev_fast.decide", return_value=("workspace_switch", {"number": 4}, {})) as decide, \
+                patch("omarchy_ai.voice.jev_fast.execute", return_value=ActionResult(True, "verified: now on workspace 4")) as execute:
+            async def run():
+                task = asyncio.create_task(s._fast_path())
+                await asyncio.sleep(0.25)
+                task.cancel()
+            asyncio.run(run())
+        decide.assert_called_once_with("Can you switch to workspace 4?")
+        execute.assert_called_once_with("workspace_switch", {"number": 4})
+        self.assertEqual(s._jev_done[:2], ("workspace_switch", {"number": 4}))
+
+    def test_jev_does_not_repeat_what_gemini_already_did(self):
+        import asyncio, time
+        s = self.session()
+        s._utterance, s._last_user_speech = ["move this terminal to workspace 4"], 0.0
+        s._gemini_inflight = [("move_window_to_workspace", {"number": 4}, time.monotonic())]
+        with patch("omarchy_ai.voice.jev_fast.decide", return_value=("move_window_to_workspace", {"number": 4}, {})), \
+                patch("omarchy_ai.voice.jev_fast.execute") as execute:
+            async def run():
+                task = asyncio.create_task(s._fast_path())
+                await asyncio.sleep(0.25)
+                task.cancel()
+            asyncio.run(run())
+        execute.assert_not_called()
+
+    def test_gemini_repeating_the_same_command_is_not_executed_twice(self):
+        import time
+        s = self.session()
+        s._jev_done = ("workspace_switch", {"number": 4}, time.monotonic(), "verified: now on workspace 4", "switch to 4")
+        answer = s._jev_already(self.call("workspace_switch", {"number": 4}))
+        self.assertTrue(answer["ok"])
+        self.assertIn("Already done", answer["message"])
+
+    def test_gemini_contradicting_jev_is_refused(self):
+        # Regression: user said 4, Gemini switched to 5.
+        import time
+        s = self.session()
+        s._jev_done = ("workspace_switch", {"number": 4}, time.monotonic(), "verified: now on workspace 4", "Can you switch to workspace 4?")
+        answer = s._jev_already(self.call("workspace_switch", {"number": 5}))
+        self.assertFalse(answer["ok"])
+        self.assertIn("workspace 4", answer["message"])
+
+    def test_dedupe_expires_and_ignores_other_tools(self):
+        import time
+        s = self.session()
+        s._jev_done = ("workspace_switch", {"number": 4}, time.monotonic() - 60, "m", "t")
+        self.assertIsNone(s._jev_already(self.call("workspace_switch", {"number": 5})))
+        s._jev_done = ("workspace_switch", {"number": 4}, time.monotonic(), "m", "t")
+        self.assertIsNone(s._jev_already(self.call("volume_up", {})))
+
+
+class MissionTests(unittest.TestCase):
+    """The commercial_prompt.md failure: narration dropped, wrong terminal, substituted TV."""
+
+    STEPS = {"workspace": 5, "steps": [
+        {"say": "Hello, I am Omarchy.", "action": "say"},
+        {"say": "Now I will open the browser.", "action": "browser_task", "args": {"url": "https://www.google.com", "goal": "open the first result"}},
+        {"say": "I will open a terminal and list files.", "action": "terminal_run", "args": {"command": "ls"}},
+        {"say": "Finally I will mirror my screen.", "action": "start_casting", "args": {"target": "HY300 Pro"}},
+    ]}
+
+    def session(self):
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config())
+
+    def test_validation(self):
+        from omarchy_ai.execution import missions
+        steps, workspace = missions.validate(self.STEPS)
+        self.assertEqual((len(steps), workspace), (4, 5))
+        for bad in ({"steps": []}, {"steps": [{"action": "rm_rf", "say": "x"}]},
+                    {"steps": [{"action": "terminal_run", "say": "x", "args": {}}]}):
+            with self.assertRaises(ValueError):
+                missions.validate(bad)
+
+    def run_mission(self, results):
+        import asyncio
+        from omarchy_ai.execution.actions import ActionResult
+        s = self.session()
+        narrated, ran = [], []
+        async def narrate(session, text, i, n):
+            narrated.append(text)
+            s._turn_done.set()     # the line "finished"
+        s._narrate = narrate
+        def run_step(step):
+            ran.append(step["action"])
+            return results.get(step["action"], ActionResult(True, "ok"))
+        with patch("omarchy_ai.execution.missions.run_step", side_effect=run_step), \
+                patch("omarchy_ai.execution.missions.ensure_workspace", return_value=ActionResult(True, "on ws5")) as ws:
+            result = asyncio.run(s._run_mission(object(), self.STEPS))
+        return result, narrated, ran, ws
+
+    def test_every_line_is_narrated_with_its_step_in_order(self):
+        result, narrated, ran, ws = self.run_mission({})
+        self.assertTrue(result.ok)
+        self.assertEqual(narrated[0], "Hello, I am Omarchy.")
+        self.assertEqual(ran, ["say", "browser_task", "terminal_run", "start_casting"])
+        self.assertEqual(ws.call_count, 4)   # workspace rule enforced before every step
+
+    def test_a_missing_projector_stops_the_mission_instead_of_a_substitute(self):
+        from omarchy_ai.execution.actions import ActionResult
+        result, narrated, ran, _ = self.run_mission(
+            {"start_casting": ActionResult(False, "no TV named 'HY300 Pro' found")})
+        self.assertFalse(result.ok)
+        self.assertIn("step 4", result.message)
+        self.assertIn("Do NOT substitute", result.message)
+
+    def test_terminal_run_types_into_the_terminal_it_opened(self):
+        from omarchy_ai.execution import missions
+        from omarchy_ai.execution.actions import ActionResult
+        calls = []
+        def fake(name, args):
+            calls.append((name, args))
+            if name == "open_terminal":
+                return ActionResult(True, "opened Omarchy AI 4fd86de1; use that exact title when focusing it")
+            return ActionResult(True, "file_a file_b" if name == "read_tile_log" else "ok")
+        with patch.object(missions, "run_action", side_effect=fake), patch.object(missions.time, "sleep"):
+            result = missions.terminal_run("ls")
+        self.assertTrue(result.ok)
+        self.assertIn(("focus_window", {"target": "Omarchy AI 4fd86de1"}), calls)
+        self.assertEqual([c[0] for c in calls], ["open_terminal", "focus_window", "type_text", "press_key", "read_tile_log"])
+
+
+class MissionRedirectTests(unittest.TestCase):
+    def session(self):
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config())
+
+    def call(self, name):
+        return type("Call", (), {"name": name, "args": {}, "id": "c"})()
+
+    def test_first_action_after_reading_a_script_is_redirected_once(self):
+        import time
+        s = self.session()
+        s._script_read_at = time.monotonic()
+        self.assertIsNone(s._mission_redirect(self.call("list_windows")))      # read-only is fine
+        blocked = s._mission_redirect(self.call("workspace_switch"))
+        self.assertFalse(blocked.ok)
+        self.assertIn("run_mission", blocked.message)
+        self.assertIsNone(s._mission_redirect(self.call("workspace_switch")))  # only once
+
+    def test_no_redirect_without_a_script_or_for_run_mission(self):
+        import time
+        s = self.session()
+        self.assertIsNone(s._mission_redirect(self.call("workspace_switch")))
+        s._script_read_at = time.monotonic()
+        self.assertIsNone(s._mission_redirect(self.call("run_mission")))
+        self.assertIsNone(s._mission_redirect(self.call("workspace_switch")))

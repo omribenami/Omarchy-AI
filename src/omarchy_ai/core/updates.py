@@ -90,6 +90,64 @@ def discover():
             "url": f"https://github.com/{REPOSITORY}/tree/{commit}/dist"}
 
 
+CHANGELOG = "CHANGELOG.md"
+_SECTION = re.compile(r"^## \[(\d+\.\d+\.\d+|Unreleased)\](?:\s*-\s*(\S+))?\s*$")
+
+
+def parse_changelog(text):
+    """{version: {"date", "sections": {"Highlights": [bullet, ...], ...}}}.
+
+    Bullets keep their wrapped continuation lines joined into one string, so
+    each one is a complete sentence the assistant can read out."""
+    releases, entry, section = {}, None, None
+    for raw in str(text or "").splitlines():
+        line = raw.rstrip()
+        match = _SECTION.match(line)
+        if match:
+            entry = {"date": match[2], "sections": {}}
+            releases[match[1]] = entry
+            section = None
+        elif entry is not None and line.startswith("### "):
+            section = entry["sections"].setdefault(line[4:].strip(), [])
+        elif line.startswith("## "):
+            entry = section = None
+        elif section is not None and re.match(r"^\s*[-*] ", line):
+            section.append(re.sub(r"^\s*[-*] ", "", line).strip())
+        elif section is not None and section and line.startswith("  ") and line.strip():
+            section[-1] += " " + line.strip()
+    return releases
+
+
+def notes_between(releases, current, latest):
+    """Published entries newer than `current`, up to `latest`, newest first."""
+    picked = []
+    for version, entry in releases.items():
+        try:
+            key = version_tuple(version)
+        except ValueError:
+            continue  # "Unreleased" is never announced
+        if version_tuple(current) < key <= version_tuple(latest):
+            picked.append((key, {"version": version, **entry}))
+    return [entry for _, entry in sorted(picked, reverse=True)]
+
+
+def _fetch_changelog(commit):
+    url = f"https://raw.githubusercontent.com/{REPOSITORY}/{commit}/{CHANGELOG}"
+    request = urllib.request.Request(url, headers={"User-Agent": "Omarchy-AI-Updater"})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        data = response.read(500_001)
+    if len(data) > 500_000:
+        raise ValueError("Changelog too large")
+    return data.decode("utf-8", errors="replace")
+
+
+def local_changelog(root=ROOT):
+    try:
+        return parse_changelog((root / CHANGELOG).read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+
+
 def check_updates(force=False):
     with _CHECK_LOCK:
         now = time.time()
@@ -109,6 +167,16 @@ def check_updates(force=False):
             release = discover()
             result = {**release, "ok": True, "checked_at": now, "current_version": current,
                       "available": version_tuple(release["latest_version"]) > version_tuple(current)}
+            if result["available"]:
+                # Same pinned commit as the bundle, so the notes describe
+                # exactly what would be installed. Optional: a missing or
+                # unreachable changelog must never hide the update itself.
+                try:
+                    result["release_notes"] = notes_between(
+                        parse_changelog(_fetch_changelog(release["commit"])), current, release["latest_version"])
+                except Exception as exc:
+                    result["release_notes"] = []
+                    result["release_notes_error"] = f"Could not read release notes: {exc}"
         except Exception as exc:
             result = {"ok": False, "available": False, "checked_at": now,
                       "current_version": current, "error": f"Could not check GitHub: {exc}"}
@@ -117,17 +185,88 @@ def check_updates(force=False):
         return result
 
 
+def _has_highlights(entries):
+    return any(entry.get("sections", {}).get("Highlights") for entry in entries or [])
+
+
+# One wake notice is read twice per session (instructions, then Gemini's
+# spoken announcement), so "already announced" means announced more than
+# this long ago, not "seen once".
+_ANNOUNCE_GRACE_SECONDS = 180
+
+
+def _post_update_notice():
+    """Once, after a completed self-update: say so and offer the highlights."""
+    status = _read(STATE / "install.json")
+    try:
+        version = installed_version()
+        if status.get("state") != "completed" or status.get("version") != version:
+            return ""
+        announced = _read(STATE / "announced.json")
+        now = time.time()
+        if announced.get("version") == version and now - announced.get("at", 0) > _ANNOUNCE_GRACE_SECONDS:
+            return ""
+        if announced.get("version") != version:
+            _write(STATE / "announced.json", {"version": version, "at": now})
+        entry = local_changelog().get(version)
+        if entry and entry["sections"].get("Highlights"):
+            return (f"I was just updated to Omarchy AI version {version}. "
+                    "Offer to go over what's new in it; call get_release_notes if the user wants that.")
+        return f"I was just updated to Omarchy AI version {version}."
+    except (KeyError, ValueError, TypeError, OSError):
+        return ""
+
+
 def wake_notice():
     """Read cached evidence only; never add network latency to session setup."""
     cache = _read(STATE / "check.json")
     try:
         if (cache.get("ok") and 0 <= time.time() - cache["checked_at"] < CACHE_SECONDS * 2
                 and version_tuple(cache["latest_version"]) > version_tuple(installed_version())):
-            return (f"Omarchy AI version {cache['latest_version']} is available. "
-                    "I recommend updating. You can say 'update yourself' to install it.")
+            notice = (f"Omarchy AI version {cache['latest_version']} is available. "
+                      "I recommend updating. You can say 'update yourself' to install it.")
+            # Only offer what can really be delivered: the highlights must
+            # already be cached from the pinned changelog.
+            if _has_highlights(cache.get("release_notes")):
+                notice += (" I can also tell you what's new in it -- just ask for the highlights"
+                           " (get_release_notes has them).")
+            return notice
     except (KeyError, ValueError, TypeError, OSError):
         pass
-    return ""
+    return _post_update_notice()
+
+
+def release_notes(version=None):
+    """Notes for a specific version, or for what an available update brings,
+    or (when current) for the installed version. Never invents an entry."""
+    current = installed_version()
+    local = local_changelog()
+    if version:
+        version_tuple(version)
+        cache = _read(STATE / "check.json")
+        cached = {e.get("version"): e for e in cache.get("release_notes") or []}
+        entry = cached.get(version) or ({"version": version, **local[version]} if version in local else None)
+        if not entry:
+            return {"ok": False, "installed_version": current,
+                    "error": f"No changelog entry for {version} is available on this machine."}
+        return {"ok": True, "installed_version": current, "releases": [entry]}
+    cache = check_updates()
+    if cache.get("available"):
+        entries = cache.get("release_notes") or []
+        if not entries:
+            cache = check_updates(force=True)
+            entries = cache.get("release_notes") or []
+        if entries:
+            return {"ok": True, "installed_version": current, "latest_version": cache["latest_version"],
+                    "update_available": True, "releases": entries}
+        return {"ok": False, "installed_version": current, "latest_version": cache.get("latest_version"),
+                "update_available": True,
+                "error": cache.get("release_notes_error") or "The published version has no changelog entry."}
+    if current in local:
+        return {"ok": True, "installed_version": current, "update_available": False,
+                "releases": [{"version": current, **local[current]}]}
+    return {"ok": False, "installed_version": current, "update_available": False,
+            "error": f"No changelog entry for the installed version {current}."}
 
 
 def update_status():

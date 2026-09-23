@@ -43,26 +43,15 @@ class InputGuardTests(unittest.TestCase):
         self.guard.run(self.execute, 'focus_window', {'target': self.address})
         self.assertFalse(InputGuard().run(self.execute, 'type_text', {'text': 'hello'}).ok)
 
-    def test_conversational_request_is_not_typed_into_an_open_editor(self):
+    def test_prompt_for_another_agent_is_relayed_verbatim(self):
+        # Regression: the user dictated a Claude Code prompt into a terminal
+        # and it must reach the terminal untouched (URLs, markdown, the lot).
+        prompt = ("please use the claude_design MCP (https://api.anthropic.com/v1/design/mcp) "
+                  "to import this project:\n- `Phone Bridge.dc.html`\nImplement: `Phone Bridge.dc.html`")
         self.guard.run(self.execute, 'focus_window', {'target': self.address})
-        with patch.object(InputGuard, '_editor_running', return_value=True):
-            result = self.guard.run(self.execute, 'type_text', {
-                'text': 'please make sure we are using the Jev model and browser'
-            })
-        self.assertFalse(result.ok)
-        self.assertIn('conversational request', result.message)
-        self.assertEqual([call.args[0] for call in self.execute.call_args_list].count('type_text'), 0)
-
-    def test_conversational_phrasing_is_allowed_at_a_plain_shell_prompt(self):
-        self.guard.run(self.execute, 'focus_window', {'target': self.address})
-        with patch.object(InputGuard, '_editor_running', return_value=False):
-            result = self.guard.run(self.execute, 'type_text', {
-                'text': 'please make sure we are using the Jev model and browser'
-            })
+        result = self.guard.run(self.execute, 'type_text', {'text': prompt})
         self.assertTrue(result.ok)
-        self.execute.assert_called_with('type_text', {
-            'text': 'please make sure we are using the Jev model and browser'
-        })
+        self.execute.assert_called_with('type_text', {'text': prompt})
 
     def test_focus_dispatch_success_is_not_focus_verification(self):
         with patch('omarchy_ai.execution.actions._hyprctl_dispatch', return_value=ActionResult(True)), patch('omarchy_ai.execution.actions._run', return_value=ActionResult(True, '{"address":"0x456"}')), patch('omarchy_ai.execution.actions.time.sleep'):
