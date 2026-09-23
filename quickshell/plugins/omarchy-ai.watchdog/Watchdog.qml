@@ -63,6 +63,18 @@ Item {
   // Rare full-column artifacts spliced in at low probability — the
   // "dropped frame" flicker of a glitching readout.
   readonly property string glitchChars: "▓▒░╳┃╎"
+  // Failure reads as breakage, not just a color swap: after an "err"
+  // outcome the visualizer splices in far more artifacts and they are
+  // mostly crossed glyphs. The mock's ✖ (U+2716 HEAVY MULTIPLICATION X)
+  // is deliberately absent: it carries the Unicode Emoji property, so
+  // fontconfig serves it from Noto Color Emoji, which renders a grey
+  // bitmap X that ignores the Text color entirely (confirmed on screen —
+  // one grey glyph in an otherwise red row). ✕ and the box-drawing
+  // crosses come from the UI font and take the color.
+  readonly property string errChars: "╳╳╳✕✕╳╱╲"
+  // Ticks only while the assistant is thinking — that state carries no
+  // audio levels, so the row has nothing to redraw on without it.
+  property int thinkTick: 0
 
   function pushLevel(v) {
     var next = levels.slice()
@@ -74,6 +86,24 @@ Item {
   }
 
   function visualizerLine() {
+    if (root.convState === "thinking") {
+      // No audio to meter while she thinks, so the row becomes the word
+      // itself with a pulse travelling through it — the letters nearest
+      // the head dissolve into glitch/braille and settle again behind it.
+      var word = "THINKING"
+      var head = ((root.thinkTick * 42) / 110) % (word.length + 5)
+      var out = ""
+      for (var k = 0; k < word.length; k++) {
+        var d = Math.abs(head - k)
+        if (d < 0.9)
+          out += root.glitchChars.charAt(Math.floor(Math.random() * root.glitchChars.length))
+        else if (d < 2)
+          out += root.brailleChars[Math.max(0, 8 - Math.round(d * 3))]
+        else
+          out += word.charAt(k)
+      }
+      return out
+    }
     if (root.levels.length === 0) {
       // Faint idle baseline rather than a blank row, so the visualizer
       // reads as "waiting" instead of looking broken/empty. Sparse and
@@ -89,8 +119,10 @@ Item {
       // Match the richer server/phone visualizer: mostly braille texture,
       // some solid meter blocks, and rare glitch artifacts.
       var r = Math.random()
-      if (r < 0.04 && idx > 0) {
-        s += root.glitchChars.charAt(Math.floor(Math.random() * root.glitchChars.length))
+      var broken = root.outcomeTone === "err"
+      if (r < (broken ? 0.34 : 0.04) && idx > 0) {
+        var set = broken ? root.errChars : root.glitchChars
+        s += set.charAt(Math.floor(Math.random() * set.length))
       } else if (r < 0.62) {
         s += root.brailleChars[idx]
       } else {
@@ -100,37 +132,52 @@ Item {
     return s
   }
 
-  readonly property color rainGreen: "#39ff88"
-  readonly property color rainCyan: "#39e6ff"
-  readonly property color rainLime: "#a6ff4d"
-  readonly property color rainErr: "#ff5f5f"
-  readonly property color rainDim: Util.alpha(rainGreen, 0.55)
+  // Palette shared with the phone bridge (src/omarchy_ai/phone/static/
+  // index.html): one signal color per conversation state, read the same
+  // way on a phone across the room and on the desktop overlay.
+  //   red   = not listening   amber = connecting/thinking
+  //   green = mic live        blue  = assistant speaking
+  // Names are kept from the original "rain" set so every call site below
+  // (and the settings panel preview) keeps working.
+  readonly property color rainGreen: "#3fb950"   // live / ok
+  readonly property color rainCyan: "#4493f8"    // speaking / accent
+  readonly property color rainLime: "#d29922"    // thinking / connecting
+  readonly property color rainErr: "#f85149"     // not listening / error
+  readonly property color inkMuted: "#9198a1"
+  readonly property color inkFaint: "#6e7681"
+  readonly property color hairline: "#2a313c"
+  readonly property color surface: "#05080d"
+  readonly property color rainDim: Util.alpha(inkFaint, 0.8)
 
+  // The wave carries the same signal color as the dot, so a glance at the
+  // bottom of the screen answers "is it hearing me?" without the card.
   function visualizerColor() {
     if (root.outcomeTone === "err") return root.rainErr
     if (root.outcomeTone === "ok") return root.rainGreen
-    return root.convState === "speaking" ? root.rainCyan : Util.alpha(root.rainCyan, 0.30)
+    return root.stateColor(root.convState)
   }
 
   function stateColor(s) {
-    if (s === "listening") return rainCyan
+    if (s === "listening") return rainGreen
     if (s === "thinking") return rainLime
-    if (s === "speaking") return rainGreen
-    if (s === "connecting") return rainDim
-    return rainDim
+    if (s === "speaking") return rainCyan
+    if (s === "connecting") return rainLime
+    // Anything else means the assistant is not hearing you — red, the
+    // same "not listening" signal the phone bridge shows.
+    return rainErr
   }
 
   // Busy/processing states get a pulsing dot (a cheap stand-in for a
   // "glitch" cue); settled states hold solid.
   function statePulses(s) {
-    return s === "connecting" || s === "thinking"
+    return s === "connecting" || s === "thinking" || s === "idle"
   }
 
   function toneColor(tone) {
-    if (tone === "ok") return rainCyan
+    if (tone === "ok") return rainGreen
     if (tone === "err") return rainErr
-    if (tone === "state") return Util.alpha(rainCyan, 0.6)
-    return rainGreen // "call" and anything unrecognized
+    if (tone === "state") return inkFaint
+    return inkMuted // "call" and anything unrecognized
   }
 
   function reset() {
@@ -169,12 +216,23 @@ Item {
     repeat: true
     running: root.opened
     onTriggered: {
+      // Idle means the assistant is not hearing anything — the HUD should
+      // look switched off, not busy.
+      if (root.convState === "idle") { root.glitchLine = ""; return }
       var chars = "01/#%<>[]{}+=_*:;!?"
       var line = ""
       for (var i = 0; i < 18 + Math.floor(Math.random() * 18); i++)
         line += chars.charAt(Math.floor(Math.random() * chars.length))
       root.glitchLine = line
     }
+  }
+
+  Timer {
+    id: thinkTimer
+    interval: 42
+    repeat: true
+    running: root.opened && root.convState === "thinking"
+    onTriggered: root.thinkTick += 1
   }
 
   function pushLine(text, tone) {
@@ -262,11 +320,46 @@ Item {
       // Visual-only, like the OSD and window labels: never steal input.
       mask: Region {}
 
+      // The noise floor. Under the wake-up artwork, which is under the
+      // card — the card must stay readable through all of it.
+      AmbientRain {
+        anchors.fill: parent
+        active: root.opened
+        broken: root.outcomeTone === "err"
+        idle: root.convState === "idle"
+        accent: root.rainCyan
+        errColor: root.rainErr
+      }
+
       ActivationEffects {
         anchors.fill: parent
         active: root.opened
-        accent: root.rainGreen
+        accent: root.rainCyan
         activationNonce: root.activationNonce
+      }
+
+      // The drifting glyph row along the very bottom edge. root.glitchLine
+      // has been computed by glitchTimer since the first version of this
+      // plugin and never rendered anywhere — the property was dead. This
+      // is the element the mock draws it as.
+      Text {
+        id: glitchRow
+        visible: root.glitchLine.length > 0
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(14)
+        width: Math.min(parent.width - Style.space(48), Style.space(980))
+        textFormat: Text.PlainText
+        text: root.glitchLine
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+        maximumLineCount: 1
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        font.letterSpacing: Style.font.caption * 0.24
+        color: root.outcomeTone === "err" ? root.rainErr : root.rainCyan
+        opacity: root.opened ? 0.32 : 0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
       }
 
       readonly property int cardWidth: Style.space(440)
@@ -293,14 +386,19 @@ Item {
         // property read inside visualizerLine() should invalidate this
         // binding. Without this, levels changed over IPC but the rendered
         // ASCII row stayed at its initial idle value.
-        text: { var samples = root.levels; return root.visualizerLine() }
+        text: { var samples = root.levels; var t = root.thinkTick; return root.visualizerLine() }
         font.family: Style.font.family
         font.pixelSize: Style.font.displayLarge
+        // The word needs air between its letters; the meter does not.
+        font.letterSpacing: Style.font.displayLarge * (root.convState === "thinking" ? 0.12 : 0.04)
         color: root.visualizerColor()
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignBottom
         elide: Text.ElideNone
-        opacity: root.opened ? 1 : 0
+        // Full strength only while there is something to say — a faint
+        // ghost of the row the rest of the time.
+        opacity: !root.opened ? 0
+          : (root.convState === "speaking" || root.convState === "thinking") ? 1 : 0.28
 
         Behavior on color { ColorAnimation { duration: 200 } }
         Behavior on opacity { NumberAnimation { duration: 180 } }
@@ -318,9 +416,11 @@ Item {
         anchors.bottom: parent.bottom
         anchors.rightMargin: panel.cardMargin
         anchors.bottomMargin: panel.cardMargin
-        color: Util.alpha(Color.background, 0.88)
+        // Hairline card, not a glowing frame — matches the bridge, where
+        // color is spent on state and everything else stays quiet.
+        color: Util.alpha(root.surface, 0.92)
         radius: Style.cornerRadius
-        borderSpec: Border.flat(Util.alpha(root.rainGreen, 0.55), Math.max(1, Style.space(2)))
+        borderSpec: Border.flat(root.hairline, 1)
         opacity: root.opened ? 1 : 0
 
         // Scanline sweep — a single translucent bar drifting down the card
@@ -331,7 +431,7 @@ Item {
           x: 0
           width: card.width
           height: Math.max(1, Style.space(2))
-          color: Util.alpha(root.rainGreen, 0.10)
+          color: Util.alpha(root.rainCyan, 0.06)
           y: 0
           SequentialAnimation on y {
             running: root.opened
@@ -358,8 +458,8 @@ Item {
 
             Rectangle {
               id: stateDot
-              width: Style.space(9)
-              height: Style.space(9)
+              width: Style.space(7)
+              height: Style.space(7)
               radius: width / 2
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
@@ -397,7 +497,7 @@ Item {
               font.family: Style.font.family
               font.bold: true
               font.pixelSize: Style.font.caption
-              color: Util.alpha(root.rainGreen, 0.4)
+              color: root.inkFaint
             }
           }
 
@@ -405,7 +505,7 @@ Item {
             id: divider
             width: parent.width
             height: 1
-            color: Util.alpha(root.rainGreen, 0.25)
+            color: root.hairline
           }
 
           ListView {
