@@ -311,8 +311,12 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-# Current package. Bump this one line when a newer GitHub Release is published.
-version=0.3.10
+# Newest stable vX.Y.Z GitHub Release (skips demo-media and non-version tags).
+version="$(curl -fsSL "https://api.github.com/repos/omribenami/Omarchy-AI/releases?per_page=100" \
+  | grep -o '"tag_name": *"v[0-9]*\.[0-9]*\.[0-9]*"' | grep -o '[0-9]*\.[0-9]*\.[0-9]*' \
+  | sort -V | tail -1)"
+[ -n "$version" ] || { echo "Could not find an Omarchy AI release" >&2; exit 1; }
+echo "Installing Omarchy AI $version"
 package="omarchy-ai-${version}-linux-x86_64.tar.gz"
 base="https://github.com/omribenami/Omarchy-AI/releases/download/v${version}"
 curl -fL "$base/$package" -o "$package"
@@ -326,11 +330,11 @@ systemctl --user restart omarchy-ai.service
 )
 ```
 
-`version=0.3.10` matches GitHub Release tag `v0.3.10`. The archive name includes
-that version, and this repository also has a non-package `demo-media` release,
-so the command names the tag directly
-(`https://github.com/omribenami/Omarchy-AI/releases/download/v0.3.10/...`).
-Change `version=` when you publish a newer release. The `.sha256` file is
+The block looks up the newest stable `vX.Y.Z` GitHub Release itself, so it
+never needs editing when a new version is published. This repository also has
+a non-package `demo-media` release, which the tag filter skips. To install a
+specific version instead, replace the `version=...` lines with, for example,
+`version=0.4.1`. The `.sha256` file is
 checked with `sha256sum` before the archive is unpacked.
 
 Keep the extracted directory: the service runs from it. The installer installs
