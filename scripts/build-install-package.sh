@@ -74,9 +74,9 @@ else
 fi
 
 echo '==> Staging exact release source'
-# Release archives are committed under dist/ for convenient installation.
-# Exclude previous archives and original demo captures; neither is needed at
-# runtime, and the raw media can push GitHub-hosted installers past 100 MB.
+# The built archive is a GitHub Release asset, not a new git blob. Exclude
+# dist/ so historical tarballs are not nested inside this one. Original demo
+# captures are excluded too: the raw media can push the archive past 100 MB.
 git archive --format=tar HEAD -- . \
   ':(exclude)dist' \
   ':(exclude)docs/media/original' \
@@ -86,3 +86,9 @@ chmod 0755 "$package_dir/install.sh"
 tar -C "$staging_dir" -czf "$archive" "$(basename "$package_dir")"
 (cd dist && sha256sum "$(basename "$archive")" >"$(basename "$archive").sha256")
 echo "Built $archive"
+if git ls-files --error-unmatch -- "$archive" >/dev/null 2>&1; then
+  echo "NOTE: $archive is a historical tracked file. Do not stage this rebuild." >&2
+fi
+echo "This archive stays out of git. Inspect and publish the GitHub Release with:"
+echo "  .venv/bin/python scripts/publish-github-release.py"
+echo "  .venv/bin/python scripts/publish-github-release.py --publish"

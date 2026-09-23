@@ -311,18 +311,27 @@ Existing API keys and settings are preserved.
 set -euo pipefail
 mkdir -p "$HOME/.local/share/omachy-ai-releases"
 cd "$HOME/.local/share/omachy-ai-releases"
-package=omarchy-ai-0.3.10-linux-x86_64.tar.gz
-base=https://raw.githubusercontent.com/omribenami/Omarchy-AI/main/dist
+# Current package. Bump this one line when a newer GitHub Release is published.
+version=0.3.10
+package="omarchy-ai-${version}-linux-x86_64.tar.gz"
+base="https://github.com/omribenami/Omarchy-AI/releases/download/v${version}"
 curl -fL "$base/$package" -o "$package"
 curl -fL "$base/$package.sha256" -o "$package.sha256"
 sha256sum -c "$package.sha256"
 tar -xzf "$package"
-cd omarchy-ai-0.3.10-linux-x86_64
+cd "omarchy-ai-${version}-linux-x86_64"
 bash install.sh
 systemctl --user enable --now omarchy-ai.service
 systemctl --user restart omarchy-ai.service
 )
 ```
+
+`version=0.3.10` matches GitHub Release tag `v0.3.10`. The archive name includes
+that version, and this repository also has a non-package `demo-media` release,
+so the command names the tag directly
+(`https://github.com/omribenami/Omarchy-AI/releases/download/v0.3.10/...`).
+Change `version=` when you publish a newer release. The `.sha256` file is
+checked with `sha256sum` before the archive is unpacked.
 
 Keep the extracted directory: the service runs from it. The installer installs
 missing native packages, creates the locked Python environment, installs the desktop plugins,
@@ -346,18 +355,21 @@ run `bash install.sh` there, then restart `omarchy-ai.service`.
 
 ### Voice updates
 
-Omarchy checks the versioned bundles in this repository's `dist/` directory at
-startup and every 15 minutes. On wake, it refreshes an expired check with a
-2-second foreground limit and recommends a newer version in its first spoken
-reply. Offline checks do not prevent conversation. Unversioned demo releases
-and bundles without a checksum are ignored.
+Omarchy checks GitHub Releases at startup and every 15 minutes. A release
+counts when its tag is a stable `vX.Y.Z` (for example `v0.3.10`) and it has
+both `omarchy-ai-X.Y.Z-linux-x86_64.tar.gz` and the matching `.sha256` asset.
+The `demo-media` release, drafts, and prereleases are ignored. On wake, it
+refreshes an expired check with a 2-second foreground limit and recommends a
+newer version in its first spoken reply. Offline checks do not prevent
+conversation.
 
 Say **“Check for updates”**, **“Update yourself”**, or **“What's the update
 status?”**. Only an explicit update request starts installation. The updater
-pins the download and SHA-256 file to the same GitHub commit, verifies and
-unpacks the bundle, and prepares a new Python environment before stopping the
-assistant. It keeps your API keys, settings, conversation history, and existing
-source checkout. The conversation disconnects when the new version starts.
+downloads the archive and its `.sha256` from the same release, verifies the
+checksum, unpacks the bundle, and prepares a new Python environment before
+stopping the assistant. It keeps your API keys, settings, conversation history,
+and existing source checkout. The conversation disconnects when the new version
+starts.
 
 The updater runs in the separate `omarchy-ai-update.service` user unit. It
 retains the previous installation and backs up the service and shell integration;
@@ -368,11 +380,19 @@ runtime dependencies and `uv`; missing system packages are reported rather than
 prompting for sudo from a background voice session. Android receiver updates
 remain separate from the desktop assistant update.
 
-Publish a bundle and matching `.sha256` with a **higher `pyproject.toml` version**
-to `dist/` on `main` to make it discoverable. Same-version source commits are not
-updates. Updates download and run the project's installer, using GitHub HTTPS
-and the accompanying checksum for integrity (the checksum is not a separate
-publisher signature).
+Historical bundles still committed under [`dist/`](dist/) stay in the version
+list. The highest version wins. When that version is a GitHub Release, the
+download URL is
+`https://github.com/omribenami/Omarchy-AI/releases/download/vX.Y.Z/omarchy-ai-X.Y.Z-linux-x86_64.tar.gz`
+(and the sibling `.sha256`). That is the download GitHub counts. A failure to
+list releases aborts the check.
+
+Publish a GitHub Release tagged `vX.Y.Z` with a **higher `pyproject.toml`
+version**, and attach both the archive and its `.sha256`. Same-version source
+commits are not updates. Updates download and run the project's installer.
+Integrity is the SHA-256 file shipped as a Release asset (the checksum is not
+a separate publisher signature). See [Build a release package](#build-a-release-package).
+Leave the historical `dist/` archives in git; new tarballs are Release assets.
 
 If a self-update fails and this machine has a GitHub issue token configured
 (below), Omarchy automatically files a GitHub issue on this repo with the
@@ -439,7 +459,9 @@ future sessions. One-off requests are not saved as preferences.
 ### Release package
 
 Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` file
-from this repository's [`dist/`](dist/) directory, verify it, then unpack and install:
+from the GitHub Release `v<version>`
+(`https://github.com/omribenami/Omarchy-AI/releases/download/v<version>/`),
+verify it, then unpack and install:
 
 ```bash
 sha256sum -c omarchy-ai-<version>-linux-x86_64.tar.gz.sha256
@@ -547,32 +569,72 @@ Then `omarchy-ai-dashboard` shows live per-service usage in a terminal.
 
 ### Build a release package
 
-Maintainers can build the exact offline-installable archive from a clean,
-committed checkout:
+Maintainers build the archive from a clean, committed checkout, then publish
+it as a GitHub Release. The tarball is not a new git commit.
+
+1. Bump `version` in `pyproject.toml`, run `uv lock`, and set the same
+   `version=` in the fast-install block above. Commit and push that source.
+2. Build:
 
 ```bash
 ./scripts/build-install-package.sh
 ```
 
 This writes `dist/omarchy-ai-<version>-linux-x86_64.tar.gz` and a SHA-256
-checksum. It builds the Python wheel and source distribution, a fresh Android
-receiver APK, and packages all tracked runtime files. Native Omarchy packages
-are verified by `scripts/check-dependencies.sh` during installation and remain
-listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md). Pass `--skip-android`
-to omit the Gradle build (the slowest step) and ship a bundle without the
-receiver APK — `install.sh` skips the optional `adb install` step when it's
-absent.
+checksum beside it. It builds the Python wheel and source distribution, a
+fresh Android receiver APK, and packages all tracked runtime files. Native
+Omarchy packages are verified by `scripts/check-dependencies.sh` during
+installation and remain listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
+Pass `--skip-android` to omit the Gradle build (the slowest step) and ship a
+bundle without the receiver APK — `install.sh` skips the optional `adb install`
+step when it's absent. `dist/` is gitignored for files that are not already
+tracked. Leave the historical archives in place; do not `git add` a new tarball.
+
+3. Publish tag `v<version>` with those two files as Release assets. HEAD must
+   be `origin/main` (push the version commit first). Dry-run prints the `gh`
+   command and the REST API steps; `--publish` performs the upload. The
+   fast-install block pins `version=0.3.10`. Publish tag `v0.3.10` from the
+   archive already stored in `dist/` (no rebuild required if that file is the
+   one you want to ship) so the install command has an asset to download.
+
+```bash
+.venv/bin/python scripts/publish-github-release.py          # inspect
+.venv/bin/python scripts/publish-github-release.py --publish
+```
+
+The publisher uses the `gh` CLI when it is on `PATH`. Otherwise it uses
+`GH_TOKEN` or `GITHUB_TOKEN` (contents: write) against the GitHub REST API:
+create `POST /repos/omribenami/Omarchy-AI/releases` when tag `v<version>` has
+no release yet, then upload each file to
+`https://uploads.github.com/repos/omribenami/Omarchy-AI/releases/<id>/assets?name=<filename>`.
+Re-running deletes and replaces those two assets. The exact headers and JSON
+body are in the script's dry-run output and its module docstring.
+
+GitHub counts downloads of each Release asset. On the release page the count
+is beside the file. API:
+`GET https://api.github.com/repos/omribenami/Omarchy-AI/releases/tags/v<version>`
+field `assets[].download_count`. The `.tar.gz` count is the package download
+count; the `.sha256` count is separate.
+
+```bash
+gh release view v<version> --repo omribenami/Omarchy-AI --json assets \
+  --jq '.assets[] | {name, downloadCount}'
+```
 
 If the checkout has no local GitHub credential, a connected MyApi identity can
-publish the committed release through its GitHub connection:
+still publish the **source commit** through its GitHub connection. It refuses
+a dirty checkout, refuses to advance `main` if the remote moved after it was
+fetched, and refuses to push `dist/omarchy-ai-*.tar.gz` or its `.sha256`
+(those bytes are the Release upload above, which MyApi's JSON GitHub proxy
+does not send):
 
 ```bash
 .venv/bin/python scripts/publish-via-myapi.py          # inspect the exact change set
 .venv/bin/python scripts/publish-via-myapi.py --publish # create one commit on main
 ```
 
-The publisher refuses a dirty checkout and refuses to advance `main` if the
-remote moved after it was fetched.
+Run `scripts/publish-github-release.py` on a machine that has `gh` or a token
+after that commit is on `main`.
 
 ### Known gaps
 

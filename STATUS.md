@@ -4641,3 +4641,28 @@ dependency the THINKING animation needs. The service was restarted cleanly
   - Real Gemini Live: "Move this window to workspace 4" → first and only call
     `move_window_to_workspace {"number": 4}`.
   - Tests 245/245. Restarted cleanly.
+
+### 2026-09-22 — Install packages are GitHub Release assets
+
+Fast-install and `core/updates.py` now resolve
+`https://github.com/omribenami/Omarchy-AI/releases/download/vX.Y.Z/omarchy-ai-X.Y.Z-linux-x86_64.tar.gz`
+plus the sibling `.sha256`. Stable tags only: `demo-media`, drafts, and
+prereleases are ignored. Historical `dist/` bundles stay in the candidate
+list (higher version wins; the same version uses the Release asset so
+GitHub's `download_count` includes the install). Listing releases is
+required; a releases API failure does not fall through to `dist/`.
+
+`scripts/build-install-package.sh` still writes the local archive.
+`scripts/publish-github-release.py` creates or updates tag `v<version>` and
+uploads the `.tar.gz` and `.sha256` (`gh`, or the REST API with `GH_TOKEN` /
+`GITHUB_TOKEN`). `scripts/publish-via-myapi.py` still publishes the source
+commit and refuses to push those archives. MyApi's GitHub proxy is JSON to
+`api.github.com`; asset bytes go to `uploads.github.com`, so the tarball is
+not sent through MyApi.
+
+No Release was created from this change. The README fast-install URL for
+`v0.3.10` starts working when a maintainer runs
+`scripts/publish-github-release.py --publish` for that already-built archive
+(or for the next version). No anonymous install-success ping was added;
+there is no endpoint to send it to, and it is not required for
+`download_count`.
