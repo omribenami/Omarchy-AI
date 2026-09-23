@@ -19,10 +19,16 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
-## [Unreleased]
+## [0.4.1] - 2026-09-23
 
 ### Highlights
 
+- Co-pilot mode: she works alongside you. Installs, commands and long jobs
+  run in her own terminal and never type into your windows. When you are not
+  using the computer, you see her work on your screen. While you are working,
+  she carries on in the background and hands the work over to your screen
+  once you stop for about 30 seconds. Say "show me" to watch, or "in the
+  background" to keep it out of the way.
 - She tells you when a check finishes, even after you said goodbye. When one
   of Jev's watches fires ("let me know when Claude is done"), she wakes up on
   her own and tells you. If you answer, it is done. If you are away, she

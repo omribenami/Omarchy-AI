@@ -217,10 +217,10 @@ def create(args: dict, now: float | None = None) -> dict:
            "status": "active", "runs": 0}
     job["schedule"] = _schedule_from(args, kind, now)
     if kind == "watch":
-        sources = {k: _text(args, k, 1000) for k in ("window", "path", "command")}
+        sources = {k: _text(args, k, 1000) for k in ("window", "terminal", "path", "command")}
         sources = {k: v for k, v in sources.items() if v}
         if len(sources) != 1:
-            raise ValueError("A watch needs exactly one source: window, path or command")
+            raise ValueError("A watch needs exactly one source: window, terminal, path or command")
         job.update(sources)
         job["condition"] = _text(args, "condition", 500)
         if not job["condition"]:
@@ -258,7 +258,7 @@ def cancel(job_id: str) -> dict | None:
 
 
 def summary(job: dict) -> dict:
-    keys = ("id", "title", "kind", "status", "window", "path", "command", "goal", "condition",
+    keys = ("id", "title", "kind", "status", "window", "terminal", "path", "command", "goal", "condition",
             "repeat", "request", "runs", "last_result")
     out = {k: job[k] for k in keys if job.get(k) not in (None, "")}
     sched = job.get("schedule", {})
@@ -313,6 +313,12 @@ def _observe(job: dict) -> tuple[str, dict]:
             raise LookupError(text)
         # Drop the "Source: ..." header; it is metadata, not output.
         return text.split("\n", 1)[1] if text.startswith("Source:") and "\n" in text else text, {}
+    if job.get("terminal"):  # the assistant's own tmux terminal (terminal_task)
+        from ..execution import workbench
+        result = workbench.read(job["terminal"], lines=80)
+        if not result.ok:
+            raise LookupError(result.message)
+        return result.message, {}
     if job.get("path"):
         path = Path(os.path.expanduser(job["path"]))
         with path.open("rb") as stream:

@@ -161,7 +161,9 @@ def run_step(step: dict) -> ActionResult:
         time.sleep(min(max(float(args["seconds"]), 0), 30))
         return ActionResult(True, "waited")
     if action == "terminal_run":
-        return terminal_run(str(args["command"]))
+        # A mission is a demonstration: always on screen, typed via tmux.
+        from .actions import terminal_task
+        return terminal_task({"command": str(args["command"]), "name": "mission", "show": "yes"})
     if action == "workspace_switch":
         run_action(action, {"number": int(args["number"])})
         return ensure_workspace(int(args["number"]))

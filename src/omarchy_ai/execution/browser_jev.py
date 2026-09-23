@@ -27,6 +27,9 @@ log = logging.getLogger("omarchy_ai.execution.browser_jev")
 _browser_process = None
 _owned_browser = None
 _task_lock = threading.Lock()
+# A browser task running without being shown (the user was working); the
+# daemon's handover loop shows it once the user stops touching the screen.
+_background_task = False
 _cancel_generation = 0
 _MAX_ACTIONS = 50
 _MAX_SECONDS = 90
@@ -716,6 +719,8 @@ def run_browser_task(args: dict, config) -> ActionResult:
             os.environ.pop("TYPESAFE_MODEL", None)
         else:
             os.environ["TYPESAFE_MODEL"] = old_typesafe_model
+        global _background_task
+        _background_task = False
         _task_lock.release()
 
 
@@ -738,13 +743,22 @@ def _run_agent(Agent, url, args, progress, generation, started, config):
         # has a dedicated profile, so make that tab visible and active.  Keep
         # the harness startup target intact: its daemon is attached to that
         # target and closing it would disconnect the CDP socket.
-        try:
-            from browser_harness.helpers import cdp
-            _focus_dedicated_window()  # first: bring it to this workspace
-            cdp("Target.activateTarget", targetId=agent.browser.target)
-            log.info("dedicated browser target active: %s", agent.browser.target)
-        except Exception:
-            log.exception("could not activate dedicated browser target")
+        from . import operator
+        if operator.visible(args.get("show", "auto")):
+            try:
+                from browser_harness.helpers import cdp
+                _focus_dedicated_window()  # first: bring it to this workspace
+                cdp("Target.activateTarget", targetId=agent.browser.target)
+                log.info("dedicated browser target active: %s", agent.browser.target)
+            except Exception:
+                log.exception("could not activate dedicated browser target")
+        else:
+            # Co-pilot: the user is working. CDP drives the page without OS
+            # focus, so leave the window where it is and never activate it
+            # (misc:focus_on_activate would pull the user over to it).
+            global _background_task
+            _background_task = True
+            log.info("browser task running in the background while the user works")
         agent.state["page"] = _settle(agent.browser)
         final = None
         recovery_attempts = 0

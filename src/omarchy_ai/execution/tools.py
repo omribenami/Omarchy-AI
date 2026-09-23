@@ -31,6 +31,7 @@ TOOLS: list[dict] = [
             "at": {"type": "string"}, "in_minutes": {"type": "number"},
             "every_minutes": {"type": "number"}, "cron": {"type": "string"},
             "window": {"type": "string", "description": "watch: terminal window to read, as for read_tile_log."},
+            "terminal": {"type": "string", "description": "watch: an assistant terminal name from terminal_task."},
             "path": {"type": "string", "description": "watch: file whose end to read."},
             "command": {"type": "string", "description": "command: shell command to run; watch: command whose output to check."},
             "condition": {"type": "string", "description": "watch/command: plain statement to detect, e.g. 'the build finished successfully or failed'."},
@@ -118,6 +119,7 @@ TOOLS: list[dict] = [
             "url": {"type": "string", "description": "Starting URL. Use https:// when known."},
             "goal": {"type": "string", "description": "The complete web task and its visible success condition."},
             "steps": {"type": "array", "items": {"type": "string"}, "description": "Ordered, literal sub-steps (1-8) that YOU decomposed; Jev reads them word for word. Put the exact text to type in double quotes (it is typed verbatim), as a plain search term: 'Search for \"eggs\"', not 'search for a pack of eggs'. Keep one action per step and a checkable result: 'Add the first eggs result to the cart', 'Open the Issues tab'."},
+            "show": {"type": "string", "enum": ["auto", "yes", "no"], "description": "auto (default): on the user's screen when you are the only operator, in the background while they work."},
             "resume": {"type": "boolean", "description": "true ONLY when continuing the remaining work of the previous blocked/unverified browser_task on the same site; keeps that page instead of loading url."},
         }, "required": ["url", "goal"]}),
     _tool("open_files", "Open the file manager."),
@@ -346,6 +348,24 @@ TOOLS: list[dict] = [
             "required": [],
         },
     ),
+    _tool("terminal_task", "PREFERRED way to run commands, installs, builds or long jobs: runs in the assistant's OWN terminal (tmux) without the user's keyboard, so it never types into the user's windows. show='auto' (default): on the user's screen when you are the only one operating, in the background while the user is working (it is handed to their screen after ~30s of no input). show='yes' when the user wants to watch, 'no' when they want it in the background. Then use terminal_read to check output, terminal_sudo for sudo prompts, and schedule_task watch with terminal=<name> to be told when it finishes or needs the user.", {
+        "type": "object", "properties": {
+            "command": {"type": "string", "description": "Exact shell command, e.g. 'yay -S claude-code'."},
+            "name": {"type": "string", "description": "Short name for this terminal, e.g. 'install-claude'."},
+            "show": {"type": "string", "enum": ["auto", "yes", "no"]},
+        }, "required": ["command"]}),
+    _tool("terminal_read", "Read the current screen/output of an assistant terminal (instant text).", {
+        "type": "object", "properties": {"name": {"type": "string", "description": "The assistant terminal name returned by terminal_task."}, "lines": {"type": "integer"}}, "required": ["name"]}),
+    _tool("terminal_type", "Type into an assistant terminal (answer a prompt, e.g. 'y'); Enter is pressed unless enter=false. Never for passwords.", {
+        "type": "object", "properties": {"name": {"type": "string", "description": "The assistant terminal name returned by terminal_task."}, "text": {"type": "string"}, "enter": {"type": "boolean"}}, "required": ["name", "text"]}),
+    _tool("terminal_sudo", "Submit the saved sudo password (Assistant Settings > Sudo Access) to an assistant terminal showing a sudo prompt. Read the terminal first to confirm the prompt.", {
+        "type": "object", "properties": {"name": {"type": "string", "description": "The assistant terminal name returned by terminal_task."}}, "required": ["name"]}),
+    _tool("terminal_show", "Put an assistant terminal on the user's screen (their current workspace).", {
+        "type": "object", "properties": {"name": {"type": "string", "description": "The assistant terminal name returned by terminal_task."}}, "required": ["name"]}),
+    _tool("terminal_hide", "Take an assistant terminal off the screen; its work continues in the background.", {
+        "type": "object", "properties": {"name": {"type": "string", "description": "The assistant terminal name returned by terminal_task."}}, "required": ["name"]}),
+    _tool("terminal_close", "End an assistant terminal and its work.", {
+        "type": "object", "properties": {"name": {"type": "string", "description": "The assistant terminal name returned by terminal_task."}}, "required": ["name"]}),
     _tool("run_mission", "Run a scripted, narrated sequence of actions: a demo, a commercial, or 'follow the instructions in this file'. Read the file first, then call this ONCE with every step in order. For each step code makes you speak its `say` line while its action runs at the same time (real parallel narration), verifies it, and STOPS at the first failure. After calling it, do not call tools for those steps yourself; just speak the narration prompts you receive. Copy exact names, targets and workspaces from the file; never substitute (a projector that is not found must stop the mission, not be replaced by another TV).", {
         "type": "object", "properties": {
             "workspace": {"type": "integer", "description": "If the script says to work only in one workspace: its number. Code keeps the mission there."},

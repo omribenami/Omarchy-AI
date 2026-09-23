@@ -92,6 +92,29 @@ class OmaDaemon:
                     log.warning("Heartbeat tick failed", exc_info=True)
                 await asyncio.sleep(max(15, self.config.heartbeat_seconds))
         heart = asyncio.create_task(heartbeat()) if self.config.heartbeat_enabled else None
+        async def handover():
+            # Co-pilot: work started in the background while the user was
+            # busy moves onto their screen once they stop touching it.
+            from ..execution import browser_jev, operator, workbench
+            while True:
+                await asyncio.sleep(3)
+                try:
+                    if not (workbench.pending_handover or browser_jev._background_task):
+                        continue
+                    if await asyncio.to_thread(operator.user_active) is not False:
+                        continue
+                    for name in list(workbench.pending_handover):
+                        workbench.pending_handover.discard(name)
+                        if workbench.exists(name):
+                            result = await asyncio.to_thread(workbench.show, name)
+                            log.info("handover: assistant terminal %s -> user's screen (%s)", name, result.message)
+                    if browser_jev._background_task:
+                        browser_jev._background_task = False
+                        await asyncio.to_thread(browser_jev._focus_dedicated_window)
+                        log.info("handover: background browser task -> user's screen")
+                except Exception:
+                    log.warning("handover check failed", exc_info=True)
+        handing = asyncio.create_task(handover())
         from . import agenda
         agenda.listeners.append(lambda entry: loop.call_soon_threadsafe(self._on_agenda_result, entry))
         try:
@@ -99,6 +122,7 @@ class OmaDaemon:
                 await self._run_sessions()
         finally:
             update_checker.cancel()
+            handing.cancel()
             if heart is not None:
                 heart.cancel()
             await asyncio.gather(update_checker, *([heart] if heart else []), return_exceptions=True)
