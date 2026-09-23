@@ -4666,3 +4666,37 @@ No Release was created from this change. The README fast-install URL for
 (or for the next version). No anonymous install-success ping was added;
 there is no endpoint to send it to, and it is not required for
 `download_count`.
+
+## 2026-09-23: 0.4.0 released; bridge for 0.3.x updaters; heartbeat wakes her
+
+- **Published v0.4.0 as a GitHub Release asset** via
+  `scripts/publish-github-release.py --publish`. That script refuses to run
+  until HEAD equals origin/main, so the commits were pushed first.
+  - Checked against the live release: this code's `discover()` returns
+    source=release, tag v0.4.0.
+  - `check_updates()` running as 0.3.10 fetches the v0.4.0 changelog and
+    offers its 12 Highlights, and the published checksum matches the local
+    build.
+  - Merge fix: release candidates carry `tag` and `commit=None`, so the
+    changelog is now fetched at `commit or tag`.
+- **Bridge.** Installs on 0.3.10 still run the old updater, which lists only
+  `dist/` at main (`git show 6b5e6e2:src/omarchy_ai/core/updates.py`), so
+  they could never see a Release asset. The user chose to commit the 0.4.0
+  archive into `dist/` once (commit 8011c04). Running the 0.3.10 `discover()`
+  against GitHub now returns 0.4.0, with a checksum identical to the release
+  asset. Later bundles stay out of git.
+- **"Let me know when you're done" → "bye" → nothing (00:57).** The watch
+  "Notify when Claude is done" fired at 01:03 (p=0.89). Its only outputs were
+  a desktop popup and an inbox entry for the next conversation.
+  - Now `agenda.listeners` sends every new result to the daemon. An idle
+    daemon starts a Gemini conversation itself (the manual-activation path)
+    and `GeminiLiveSession._announcer` says the result once nobody is
+    talking. An open conversation (starting or active) gets it mid-session.
+  - Delivery requires an answer: user speech after her audio ended. Leaked
+    echo of her own voice is transcribed as the user ("Sure."), so speech
+    during playback does not count.
+  - A self-started conversation nobody answers ends after 25s of silence.
+    Its results stay pending, and pending prompt results are marked
+    delivered only if the user spoke in the conversation
+    (`forget_briefed()` otherwise).
+  - Tests: 281/281.
