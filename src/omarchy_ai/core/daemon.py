@@ -67,7 +67,7 @@ class OmaDaemon:
             # logged nothing (2026-09-22). If shutdown stalls again, dump
             # every thread's stack to the journal so the blocker is visible.
             log.info("SIGTERM received; shutting down")
-            faulthandler.dump_traceback_later(20, exit=False)
+            faulthandler.dump_traceback_later(10, exit=False)
             self.stop()
             task.cancel()
         # Let active audio sessions unload their private PipeWire modules
