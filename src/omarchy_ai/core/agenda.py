@@ -98,6 +98,11 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
         INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
         with INBOX_PATH.open("a") as stream:
             stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    for listener in list(listeners):
+        try:
+            listener(dict(entry))
+        except Exception:
+            log.warning("agenda: result listener failed", exc_info=True)
 
 
 def _inbox_read() -> list[dict]:
@@ -114,6 +119,10 @@ def _inbox_read() -> list[dict]:
     return entries
 
 
+# Called with every new result (the daemon wakes the assistant to say it).
+# Runs on the job's worker thread: listeners must hand off to their loop.
+listeners: list = []
+
 # Ids folded into a session prompt but not yet confirmed as delivered.
 # build_session_config() must stay read-only (tests call it against the real
 # state dir), so the code that actually starts a conversation marks them.
@@ -128,11 +137,24 @@ def briefing(limit: int = 8) -> list[dict]:
         return pending
 
 
+def forget_briefed() -> None:
+    """The conversation ended without the user saying anything: keep every
+    briefed result pending for the next one."""
+    with _lock:
+        _briefed.clear()
+
+
 def mark_briefed() -> None:
-    """Call once a conversation that received briefing() really started."""
+    """Call once a conversation that received briefing() reached the user."""
     with _lock:
         ids = set(_briefed)
         _briefed.clear()
+    mark_delivered(ids)
+
+
+def mark_delivered(ids) -> None:
+    with _lock:
+        ids = set(ids)
         if not ids:
             return
         entries = _inbox_read()

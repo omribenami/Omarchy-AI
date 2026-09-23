@@ -82,8 +82,19 @@ async def announce_update(session):
 
 
 class GeminiLiveSession:
-    def __init__(self, config):
+    # A conversation she started herself to report a heartbeat result ends
+    # this long after she finished speaking if the user never answers; the
+    # result then stays pending for the next conversation.
+    PROACTIVE_SILENCE_SECONDS = 25
+
+    def __init__(self, config, announcements=None):
         self.config = config
+        self._announcements = asyncio.Queue()
+        for entry in announcements or []:
+            self._announcements.put_nowait(entry)
+        self.proactive = bool(announcements)
+        self._announced = []        # (inbox id, monotonic time said)
+        self.user_spoke_at = 0.0
         self._hangup = asyncio.Event()
         self._transcript = []
         self._audio = asyncio.Queue(maxsize=250)
@@ -164,6 +175,11 @@ class GeminiLiveSession:
                         self._transcript.append({"role": role, "text": transcription.text})
                         if role == "user":
                             self._last_user_speech = time.monotonic()
+                            # Her own voice leaking back is transcribed as the
+                            # user ("Sure." right after she said it, 2026-09-23).
+                            # Only speech after her audio ended is an answer.
+                            if self._last_user_speech > self._playback_until + 0.3:
+                                self.user_spoke_at = self._last_user_speech
                             self._awaiting_since = self._last_user_speech
                             if self._utterance_checked:
                                 self._utterance, self._utterance_checked = [], False
@@ -298,6 +314,50 @@ class GeminiLiveSession:
         # flip-flop. Jev followed the user's transcribed words.
         return {"ok": False, "message": (f"Not executed: the Jev fast path already did {tool} {args} for the user's "
                                          f"words {text!r} ({message}). If the user wants something else, ask them.")}
+
+    def announce(self, entry: dict) -> None:
+        """A heartbeat result arrived while this conversation is open."""
+        self._announcements.put_nowait(entry)
+
+    def acknowledged_ids(self) -> list[str]:
+        """Results the user heard AND answered (spoke after them)."""
+        return [i for i, said in self._announced if self.user_spoke_at > said]
+
+    def _idle(self) -> bool:
+        now = time.monotonic()
+        return (self._display_state(now) == "listening" and now - self._last_user_speech > 1.5
+                and not self._running_blocking)
+
+    async def _announcer(self, session):
+        """Say heartbeat results (Jev's watches, reminders, finished tasks)
+        without talking over anyone; end a self-started conversation that
+        nobody answers."""
+        from google.genai import types
+        while not self._hangup.is_set():
+            try:
+                entry = await asyncio.wait_for(self._announcements.get(), 0.5)
+            except asyncio.TimeoutError:
+                entry = None
+            if entry is not None:
+                while not self._idle():
+                    await asyncio.sleep(0.2)
+                what = f"{entry.get('title')}: {entry.get('detail', '')[:500]}"
+                opener = ("You started this conversation yourself because a scheduled check finished. "
+                          if self.proactive and not self._announced else "")
+                await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
+                    f"[Heartbeat result, automatic] {opener}Tell the user now, briefly, in their language: {what}. "
+                    "Then ask if they got it. If they do not answer, say nothing more."))]), turn_complete=True)
+                self._announced.append((entry.get("id"), time.monotonic()))
+                log.info("Heartbeat result announced: session=%s id=%s title=%r", self._audit_session,
+                         entry.get("id"), entry.get("title"))
+                continue
+            if self.proactive and self._announced and self.user_spoke_at <= self._announced[0][1]:
+                quiet_since = max(self._announced[-1][1], self._playback_until)
+                if time.monotonic() - quiet_since > self.PROACTIVE_SILENCE_SECONDS:
+                    log.info("Heartbeat announcement unanswered for %ds; ending and keeping it pending",
+                             self.PROACTIVE_SILENCE_SECONDS)
+                    self._hangup.set()
+                    return
 
     # Read-only calls that may legitimately come between reading a script
     # and calling run_mission.
@@ -569,6 +629,7 @@ class GeminiLiveSession:
                     workers.append(self._visuals())
                 if self.config.jev_fast_path:
                     workers.append(self._fast_path())
+                workers.append(self._announcer(session))
                 tasks = [asyncio.create_task(worker) for worker in workers]
                 await announce_update(session)
                 done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)

@@ -42,6 +42,9 @@ class OmaDaemon:
         # needed. start() itself is a no-op returning None when
         # config.phone_bridge_enabled is off.
         self._phone_server = phone_server.start(self.config)
+        # Heartbeat results waiting for a conversation (see _on_agenda_result).
+        self._pending_announcements = []
+        self._session = None
 
     def panel_command(self, command):
         if command == 'activate':
@@ -89,6 +92,8 @@ class OmaDaemon:
                     log.warning("Heartbeat tick failed", exc_info=True)
                 await asyncio.sleep(max(15, self.config.heartbeat_seconds))
         heart = asyncio.create_task(heartbeat()) if self.config.heartbeat_enabled else None
+        from . import agenda
+        agenda.listeners.append(lambda entry: loop.call_soon_threadsafe(self._on_agenda_result, entry))
         try:
             async with server:
                 await self._run_sessions()
@@ -99,6 +104,20 @@ class OmaDaemon:
             await asyncio.gather(update_checker, *([heart] if heart else []), return_exceptions=True)
             loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
+
+    def _on_agenda_result(self, entry: dict) -> None:
+        """Jev's heartbeat produced a result: tell the user now. Real gap
+        (2026-09-23): "let me know when Claude is done", then "bye"; the
+        watch fired at 01:03 and only a desktop popup appeared."""
+        session = self._session
+        if session is not None and hasattr(session, 'announce'):  # starting or active
+            session.announce(entry)
+            return
+        self._pending_announcements.append(entry)
+        if self._state == 'listening' and self.config.provider == "gemini":
+            log.info("heartbeat result %s: waking the assistant to report it", entry.get("id"))
+            self._manual = True
+            self._listen_stop.set()
 
     async def _run_sessions(self) -> None:
         log.info(
@@ -131,7 +150,9 @@ class OmaDaemon:
                 log.info('conversation activated from assistant panel')
             if self.config.provider == "gemini":
                 self._state = 'starting'
-                session = GeminiLiveSession(self.config)
+                announcements, self._pending_announcements = self._pending_announcements, []
+                session = GeminiLiveSession(self.config, announcements=announcements)
+                self._session = session
                 session.on_connected = lambda: setattr(self, '_state', 'active')
             elif self.config.provider == "omarchy":
                 self._state = 'starting'
@@ -141,10 +162,18 @@ class OmaDaemon:
                 session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
             try:
                 self._last_error = None
+                self._session = session
                 await session.run()
-                # The session prompt carried the heartbeat's pending results.
+                # Pending results in the prompt and results said aloud count
+                # as delivered only if the user actually spoke; otherwise they
+                # stay pending and she catches up next time.
                 from . import agenda
-                agenda.mark_briefed()
+                if getattr(session, 'user_spoke_at', 1):
+                    agenda.mark_briefed()
+                else:
+                    agenda.forget_briefed()
+                if hasattr(session, 'acknowledged_ids'):
+                    agenda.mark_delivered(session.acknowledged_ids())
             except Exception:  # noqa: BLE001
                 log.exception("live session crashed")
                 self._last_error = "Connection ended unexpectedly. Check the service log, then try again."
@@ -152,6 +181,7 @@ class OmaDaemon:
             finally:
                 from ..execution.browser_jev import cancel_browser_tasks
                 cancel_browser_tasks()
+            self._session = None
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")
             self._state = 'listening'

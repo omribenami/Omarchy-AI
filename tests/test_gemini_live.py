@@ -508,3 +508,58 @@ class MissionRedirectTests(unittest.TestCase):
         s._script_read_at = time.monotonic()
         self.assertIsNone(s._mission_redirect(self.call("run_mission")))
         self.assertIsNone(s._mission_redirect(self.call("workspace_switch")))
+
+
+class HeartbeatAnnouncementTests(unittest.TestCase):
+    """Jev's heartbeat result wakes her; delivered only if the user answers."""
+
+    def session(self, announcements=None):
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config(), announcements=announcements)
+
+    def test_result_is_said_and_an_unanswered_self_started_call_hangs_up(self):
+        import asyncio
+        s = self.session([{"id": "r1", "title": "Notify when Claude is done", "detail": "Watch fired"}])
+        sent = []
+        class FakeSession:
+            async def send_client_content(self, turns, turn_complete):
+                sent.append(turns.parts[0].text)
+        s.PROACTIVE_SILENCE_SECONDS = 0.3
+        async def run():
+            await asyncio.wait_for(s._announcer(FakeSession()), 5)
+        asyncio.run(run())
+        self.assertTrue(s.proactive)
+        self.assertIn("Notify when Claude is done", sent[0])
+        self.assertIn("started this conversation yourself", sent[0])
+        self.assertTrue(s._hangup.is_set())
+        self.assertEqual(s.acknowledged_ids(), [])     # nobody answered: stays pending
+
+    def test_an_answer_after_her_speech_acknowledges(self):
+        import time
+        s = self.session()
+        s._announced = [("r1", time.monotonic() - 5)]
+        s.user_spoke_at = time.monotonic()
+        self.assertEqual(s.acknowledged_ids(), ["r1"])
+
+
+class AgendaDeliveryTests(unittest.TestCase):
+    def test_listeners_get_every_new_result_and_forget_keeps_it_pending(self):
+        import tempfile
+        from pathlib import Path
+        from omarchy_ai.core import agenda
+        with tempfile.TemporaryDirectory() as d, patch.object(agenda, "INBOX_PATH", Path(d) / "inbox.jsonl"):
+            got = []
+            agenda.listeners.append(got.append)
+            try:
+                agenda._inbox_add({"id": "t-1", "title": "Build watch", "kind": "watch"}, "condition_met", "done")
+            finally:
+                agenda.listeners.remove(got.append)
+            self.assertEqual(got[0]["title"], "Build watch")
+            self.assertEqual(len(agenda.briefing()), 1)
+            agenda.forget_briefed()                        # user never spoke
+            self.assertEqual(len(agenda.briefing()), 1)    # still pending next time
+            agenda.mark_delivered([got[0]["id"]])
+            agenda.forget_briefed()
+            self.assertEqual(agenda.briefing(), [])

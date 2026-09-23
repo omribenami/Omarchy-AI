@@ -19,6 +19,15 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- She tells you when a check finishes, even after you said goodbye. When one
+  of Jev's watches fires ("let me know when Claude is done"), she wakes up on
+  her own and tells you. If you answer, it is done. If you are away, she
+  catches you up the next time you talk.
+
 ## [0.4.0] - 2026-09-23
 
 ### Highlights

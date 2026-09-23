@@ -223,3 +223,29 @@ class SkillTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DaemonWakeTests(unittest.TestCase):
+    def daemon(self, state, session=None):
+        import threading
+        from omarchy_ai.config import Config
+        from omarchy_ai.core.daemon import OmaDaemon
+        d = OmaDaemon.__new__(OmaDaemon)
+        d.config, d._state, d._session = Config(provider="gemini"), state, session
+        d._pending_announcements, d._manual, d._listen_stop = [], False, threading.Event()
+        return d
+
+    def test_idle_assistant_is_woken_to_report(self):
+        d = self.daemon("listening")
+        d._on_agenda_result({"id": "r1", "title": "Claude is done"})
+        self.assertTrue(d._listen_stop.is_set())       # breaks out of wake-word listening
+        self.assertTrue(d._manual)
+        self.assertEqual(d._pending_announcements[0]["id"], "r1")
+
+    def test_open_conversation_hears_it_without_a_second_session(self):
+        from unittest.mock import Mock
+        session = Mock()
+        d = self.daemon("active", session)
+        d._on_agenda_result({"id": "r2", "title": "Build finished"})
+        session.announce.assert_called_once()
+        self.assertFalse(d._listen_stop.is_set())
