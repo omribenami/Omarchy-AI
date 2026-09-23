@@ -360,7 +360,7 @@ run `bash install.sh` there, then restart `omarchy-ai.service`.
 ### Voice updates
 
 Omarchy checks GitHub Releases at startup and every 15 minutes. A release
-counts when its tag is a stable `vX.Y.Z` (for example `v0.3.10`) and it has
+counts when its tag is a stable `vX.Y.Z` (for example `v0.4.1`) and it has
 both `omarchy-ai-X.Y.Z-linux-x86_64.tar.gz` and the matching `.sha256` asset.
 The `demo-media` release, drafts, and prereleases are ignored. On wake, it
 refreshes an expired check with a 2-second foreground limit and recommends a
