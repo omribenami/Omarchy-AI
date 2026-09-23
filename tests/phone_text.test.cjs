@@ -11,7 +11,8 @@ function page({offerFails = false} = {}) {
     if (!elements.has(id)) elements.set(id, {value: '', hidden: true, style: {}, dataset: {}, children: [],
       handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; },
       setAttribute() {}, removeAttribute(name) {delete this[name];}, focus() {}, append(value) { this.children.push(value); },
-      appendChild(value) { this.children.push(value); }, getContext() { return {setTransform() {}}; }, play: async () => {}});
+      appendChild(value) { this.children.push(value); }, insertBefore(value) { this.children.push(value); },
+      firstElementChild: null, getContext() { return {setTransform() {}}; }, play: async () => {}});
     return elements.get(id);
   }
   class Peer {
@@ -30,6 +31,7 @@ function page({offerFails = false} = {}) {
     window: {AudioContext, handlers:windowHandlers, addEventListener(name, fn, options) {windowHandlers[name] = {fn, options};}}, navigator: {mediaDevices: {getUserMedia: async () => {
       micRequests++; const track = {stop() {stopped++;}}; return {getTracks: () => [track], getAudioTracks: () => [track]};
     }}}, RTCPeerConnection: Peer, Uint8Array, Math, Set, Promise, AbortSignal,
+    ResizeObserver: class { observe() {} disconnect() {} },
     performance: {now: () => 0}, innerWidth: 390, innerHeight: 844, devicePixelRatio: 1,
     matchMedia: () => ({matches: false}), addEventListener() {}, requestAnimationFrame() {}, setInterval() {},
     setTimeout() {return 1;}, clearTimeout() {},
@@ -158,21 +160,21 @@ test('first page tap requests fullscreen once, in either view', async () => {
     assert.equal(requests, 1);
   }
 });
-test('mirror hands-free keeps microphone during replies until Unlisten', async () => {
+test('mirror hands-free keeps microphone during replies until stopped', async () => {
   const p = page();
   p.sandbox.navigator.audioSession = {type:'auto'};
   vm.runInContext('mirrorOn = true', p.sandbox);
   await p.click('mirrorListen');
   assert.equal(p.stats().micRequests, 1);
   assert.equal(p.stats().stopped, 0);
-  assert.equal(p.element('mirrorListen').textContent, 'Unlisten');
+  assert.equal(p.element('mirrorListen').textContent, 'Stop listening');
   await p.send('Describe the screen');
   assert.equal(p.stats().stopped, 0);
   assert.equal(p.sandbox.navigator.audioSession.type, 'auto');
   await p.click('mirrorListen');
   assert.equal(p.stats().stopped, 1);
   assert.equal(vm.runInContext('localStream', p.sandbox), null);
-  assert.equal(p.element('mirrorListen').textContent, 'Listen');
+  assert.equal(p.element('mirrorListen').textContent, 'Start listening');
   await p.click('mirrorListen');
   assert.equal(p.stats().peers, 2);
   assert.equal(p.stats().micRequests, 2);
@@ -202,15 +204,36 @@ test('switching mirror views preserves the live microphone and audio output', as
   assert.equal(p.stats().peers, 1);
 });
 test('microphone state distinguishes a connected text session from a live microphone', async () => {
+  // A text session is live but deaf, and the HUD has to say so in red:
+  // data-hud is what the whole colour scheme keys off.
   const p = page(); await p.click('modeBtn'); await p.send('Hello');
-  assert.equal(p.element('body').dataset.mic, 'off');
+  assert.equal(p.element('body').dataset.hud, 'off');
+  assert.equal(p.element('micState').textContent, 'NOT LISTENING');
   await p.click('modeBtn');
-  assert.equal(p.element('body').dataset.mic, 'on');
+  assert.equal(p.element('body').dataset.hud, 'listening');
+  assert.equal(p.element('micState').textContent, 'LISTENING');
   vm.runInContext('hangup()', p.sandbox);
-  assert.equal(p.element('body').dataset.mic, 'off');
+  assert.equal(p.element('body').dataset.hud, 'off');
 });
 test('empty text does not connect and pending reply prevents duplicate sends', async () => {
   const p = page(); await p.click('modeBtn'); await p.send('   ');
   assert.equal(p.stats().peers, 0);
   await p.send('First'); await p.send('Second'); assert.equal(p.sent.length, 2);
+});
+test('mirror chrome auto-hides on a timer but never out from under an open chat', async () => {
+  const p = page();
+  let fire = null;
+  p.sandbox.setTimeout = (fn) => { fire = fn; return 1; };
+  vm.runInContext('setMirror(true)', p.sandbox);
+  assert.equal(p.element('body').dataset.mirrorControls, 'visible');
+  assert.ok(fire, 'showing the chrome arms the hide timer');
+  fire();
+  assert.equal(p.element('body').dataset.mirrorControls, 'hidden');
+  // Tapping the mirrored screen brings the controls back.
+  p.element('mirrorViewport').handlers.click();
+  assert.equal(p.element('body').dataset.mirrorControls, 'visible');
+  // With the chat open the keyboard is up, so no hide is armed at all.
+  fire = null;
+  await p.click('mirrorText');
+  assert.equal(fire, null);
 });

@@ -1,151 +1,171 @@
 import QtQuick
+import "Wordmark.js" as Wordmark
 
-// Additive, input-transparent artwork. Timers sleep between glitch bursts.
+// The wake-up: random glyphs rain in from off-screen left and lock into
+// the Omarchy wordmark, it holds for a beat, then blows outward in every
+// direction, scrambling as it goes.
+//
+// This replaces the original hand-typed ASCII block logo, which only ever
+// scrambled *out* — there was no arrival, and the letterforms were drawn
+// by hand rather than taken from the real mark. The wordmark now comes
+// from Wordmark.js (the actual logo raster, 252x53), so it is the real
+// logo rather than an approximation of it.
+//
+// Additive, input-transparent artwork. The frame timer runs only for the
+// ~3s the sequence lasts and then stops itself.
 Canvas {
     id: art
     required property bool active
     property int activationNonce: 0
-    property color accent: "#39e6ff"
+    property color accent: "#4493f8"
+
+    // Same alphabet the ambient rain scrambles through, so the wake-up and
+    // the idle noise read as the same system.
+    readonly property string noise: "01/#%<>[]{}+=_*:;!?"
+
+    // Beat boundaries, seconds from the start of the sequence:
+    //   0  -> T1  glyphs fly in from the left and decrypt into place
+    //   T1 -> T2  the solid mark holds, subtitle under it
+    //   T2 -> T3  everything scatters outward and fades
+    readonly property real t1: 0.9
+    readonly property real t2: 1.75
+    readonly property real t3: 2.9
+
     property var particles: []
-    property var glitches: []
     property real started: 0
-    property real burstStarted: 0
-    // Same block/braille vocabulary as the live voice visualizer.
-    // Broad but coherent terminal alphabet: the same meter blocks/braille,
-    // plus shaded cells and a few small console separators for scrambling.
-    readonly property string noise: " ▁▂▃▄▅▆▇█⠂⠁⠃⠇⡇⡏⡟⡿⣿▓▒░╳┃╎·•:;+=<>[]{}01"
-    readonly property var logo: [
-        "                 ▄▄▄",
-        " ▄█████▄    ▄███████████▄    ▄███████   ▄███████   ▄███████   ▄█   █▄    ▄█   █▄",
-        "███   ███  ███   ███   ███  ███   ███  ███   ███  ███   ███  ███   ███  ███   ███",
-        "███   ███  ███   ███   ███  ███   ███  ███   ███  ███   █▀   ███   ███  ███   ███",
-        "███   ███  ███   ███   ███ ▄███▄▄▄███ ▄███▄▄▄██▀  ███       ▄███▄▄▄███▄ ███▄▄▄███",
-        "███   ███  ███   ███   ███ ▀███▀▀▀███ ▀███▀▀▀▀    ███      ▀▀███▀▀▀███  ▀▀▀▀▀▀███",
-        "███   ███  ███   ███   ███  ███   ███ ██████████  ███   █▄   ███   ███  ▄██   ███",
-        "███   ███  ███   ███   ███  ███   ███  ███   ███  ███   ███  ███   ███  ███   ███",
-        " ▀█████▀    ▀█   ███   █▀   ███   █▀   ███   ███  ███████▀   ███   █▀    ▀█████▀",
-        "                                       ███   █▀",
-        "",
-        "                         [o_o]",
-        "                       <| AI |>"
-    ]
 
     function begin() {
-        var points = []
-        for (var row = 0; row < logo.length; row++) {
-            for (var col = 0; col < logo[row].length; col++) {
-                if (logo[row][col] === " ") continue
-                var angle = Math.atan2(row - 6, (col - 23) * 0.5) + (Math.random() - 0.5) * 1.2
-                points.push({ch: logo[row][col], col: col, row: row,
-                    dx: Math.cos(angle) * (250 + Math.random() * 650),
-                    dy: Math.sin(angle) * (250 + Math.random() * 650),
-                    // Each character exits at a different time, like a
-                    // terminal text-scramble rather than a fade animation.
-                    delay: Math.random() * 4200})
-            }
+        var cells = Wordmark.cells
+        var maxCol = 1
+        for (var c = 0; c < cells.length; c++) maxCol = Math.max(maxCol, cells[c][0])
+        var parts = []
+        for (var i = 0; i < cells.length; i++) {
+            parts.push({
+                cx: cells[i][0], cy: cells[i][1],
+                // Every glyph flies in from off-screen left; the left-most
+                // columns land first, so the mark decrypts left to right.
+                ox: -(0.55 + Math.random() * 0.8),
+                oy: (Math.random() - 0.5) * 0.06,
+                delay: (cells[i][0] / maxCol) * 0.45 + Math.random() * 0.12,
+                ang: Math.random() * Math.PI * 2,
+                spd: 0.35 + Math.random(),
+                seed: (i * 7919) % 997
+            })
         }
-        particles = points
-        glitches = []
+        particles = parts
         started = Date.now()
         frames.start()
-        scheduleGlitch()
     }
-    function scheduleGlitch() {
-        // Several short bursts per turn: the HUD feels active without
-        // becoming a permanent wall of noise.
-        // Once the identity has faded, only rare, tiny meter-like glitches
-        // remain: two or three characters every five to eight seconds.
-        nextGlitch.interval = 5000 + Math.random() * 3000
-        nextGlitch.restart()
-    }
+
     onActivationNonceChanged: if (active) begin()
     onActiveChanged: {
-        if (active) begin()
-        else {
+        if (active) {
+            begin()
+        } else {
             frames.stop()
-            nextGlitch.stop()
             particles = []
-            glitches = []
             requestPaint()
         }
     }
     Component.onCompleted: if (active) begin()
 
     Timer {
-        id: nextGlitch
-        onTriggered: {
-            if (!art.active) return
-            var fragments = []
-            // One group per burst, always two or three adjacent characters.
-            fragments.push({
-                length: 2 + Math.floor(Math.random() * 2),
-                x: 0.08 + Math.random() * 0.84,
-                y: 0.12 + Math.random() * 0.72,
-                phase: Math.random() * Math.PI * 2,
-                size: 0.7 + Math.random() * 0.7
-            })
-            art.glitches = fragments
-            art.burstStarted = Date.now()
-            frames.start()
-            art.scheduleGlitch()
-        }
-    }
-    Timer {
         id: frames
         interval: 33
         repeat: true
         onTriggered: {
-            // All logo characters have completed their two scramble frames.
-            if (Date.now() - art.started > 6200) art.particles = []
-            if (Date.now() - art.burstStarted > 520) art.glitches = []
+            if ((Date.now() - art.started) / 1000 > art.t3) {
+                art.particles = []
+                stop()
+            }
             art.requestPaint()
-            if (!art.particles.length && !art.glitches.length) stop()
         }
     }
+
     onPaint: {
         var ctx = getContext("2d")
         ctx.reset()
-        if (!active) return
-        var size = Math.max(7, Math.min(15, width / 78, height / 28))
-        var cell = size * 0.61
-        var columns = 0
-        for (var row = 0; row < logo.length; row++) columns = Math.max(columns, logo[row].length)
-        var left = (width - columns * cell) / 2
-        var top = (height - logo.length * size * 1.2) / 2
-        ctx.font = "bold " + size + "px monospace"
-        ctx.textBaseline = "top"
+        if (!active || !particles.length) return
+
+        var age = (Date.now() - started) / 1000
+        if (age < 0 || age > t3) return
+
+        var mw = Wordmark.w, mh = Wordmark.h
+        var unit = Math.min((width * 0.62) / mw, (height * 0.3) / mh)
+        var logoW = mw * unit, logoH = mh * unit
+        var x0 = width / 2 - logoW / 2
+        var y0 = height * 0.42 - logoH / 2
+        var cellPx = Wordmark.step * unit
+
+        ctx.save()
+        ctx.textAlign = "center"
+        ctx.textBaseline = "middle"
+        ctx.font = Math.max(8, cellPx * 1.1) + "px monospace"
         ctx.fillStyle = accent
-        var age = Date.now() - started
-        for (var i = 0; i < particles.length; i++) {
-            var p = particles[i]
-            // Fixed-position text scramble: original -> two changing ASCII
-            // frames -> gone. No opacity fade and no spatial movement.
-            var exitStart = 1200 + p.delay
-            if (age < exitStart) {
-                ctx.globalAlpha = 1.0
-                ctx.fillText(p.ch, left + p.col * cell, top + p.row * size * 1.2)
-                continue
+
+        // The solid mark, crisp, while it is held.
+        var markAlpha = 0
+        if (age >= t1 && age < t1 + 0.14) markAlpha = (age - t1) / 0.14
+        else if (age >= t1 + 0.14 && age < t2) markAlpha = 1
+        else if (age >= t2 && age < t2 + 0.22) markAlpha = 1 - (age - t2) / 0.22
+
+        if (markAlpha > 0) {
+            var runs = Wordmark.runs
+            // A cheap stand-in for the mock's shadowBlur: the same spans
+            // drawn once oversized and faint. Qt's Canvas applies a shadow
+            // per fill, and 663 shadowed fills a frame is not worth it.
+            var bleed = unit * 1.6
+            ctx.globalAlpha = markAlpha * 0.16
+            for (var g = 0; g < runs.length; g++) {
+                ctx.fillRect(x0 + runs[g][0] * unit - bleed, y0 + runs[g][1] * unit - bleed,
+                             runs[g][2] * unit + bleed * 2, unit + bleed * 2)
             }
-            var scrambleStep = Math.floor((age - exitStart) / 160)
-            if (scrambleStep >= 2) continue
-            var scrambleGlyph = noise[Math.floor(Math.abs(Math.sin((scrambleStep + 1) * 17.17 + p.col * 3.1 + p.row * 7.7)) * noise.length) % noise.length]
-            ctx.globalAlpha = 1.0
-            ctx.fillText(scrambleGlyph, left + p.col * cell, top + p.row * size * 1.2)
-        }
-        ctx.font = "bold " + Math.max(11, size) + "px monospace"
-        for (var k = 0; k < glitches.length; k++) {
-            var g = glitches[k]
-            var burstAge = Date.now() - burstStarted
-            var burstStep = Math.floor(burstAge / 170)
-            if (burstStep >= 3) continue
-            ctx.globalAlpha = 1.0
-            ctx.fillStyle = accent
-            ctx.font = "bold " + Math.max(10, size * g.size) + "px monospace"
-            // Adjacent characters form one tiny scramble cluster.
-            for (var c = 0; c < 3; c++) {
-                var text = noise[Math.floor(Math.abs(Math.sin((burstStep + 1) * 13.7 + g.phase + c * 4.2)) * noise.length) % noise.length]
-                ctx.fillText(text, g.x * width + c * size * 0.62, g.y * height)
+            ctx.globalAlpha = markAlpha
+            for (var r = 0; r < runs.length; r++) {
+                ctx.fillRect(x0 + runs[r][0] * unit, y0 + runs[r][1] * unit,
+                             runs[r][2] * unit, unit)
             }
         }
+
+        for (var p = 0; p < particles.length; p++) {
+            var q = particles[p]
+            var tx = x0 + q.cx * cellPx + cellPx / 2
+            var ty = y0 + q.cy * cellPx + cellPx / 2
+            var sx = tx, sy = ty, alpha = 0, iter = 0
+            if (age < t1) {
+                var t = Math.max(0, Math.min(1, (age - q.delay) / (t1 - q.delay)))
+                var ease = t * t * (3 - 2 * t)
+                sx = tx + q.ox * width * (1 - ease)
+                sy = ty + q.oy * height * (1 - ease)
+                alpha = 0.25 + 0.6 * t
+                iter = Math.floor(age / 0.075)          // decrypt churn on the way in
+            } else if (age < t2) {
+                alpha = Math.max(0, 1 - (age - t1) / 0.18) * 0.7
+                iter = Math.floor(age / 0.075)
+            } else {
+                // Reverse decrypt: exactly five glyph iterations while the
+                // mark scatters outward and fades.
+                var k = Math.min(1, (age - t2) / (t3 - t2))
+                var dist = k * k * Math.max(width, height) * 0.6 * q.spd
+                sx = tx + Math.cos(q.ang) * dist
+                sy = ty + Math.sin(q.ang) * dist
+                alpha = (1 - k) * 0.85
+                iter = Math.floor(k * 5)
+            }
+            if (alpha <= 0.01) continue
+            ctx.globalAlpha = alpha
+            ctx.fillText(noise.charAt((q.seed + iter * 17) % noise.length), sx, sy)
+        }
+
+        if (markAlpha > 0) {
+            ctx.globalAlpha = markAlpha * 0.75
+            ctx.font = Math.max(10, cellPx * 0.8) + "px monospace"
+            ctx.fillText("A I   V O I C E   A S S I S T A N T",
+                         width / 2, y0 + logoH + cellPx * 1.4)
+        }
+
+        ctx.globalAlpha = (age < t2 ? 1 : Math.max(0, 1 - (age - t2))) * 0.14
+        ctx.fillRect(0, ((age % 1.05) / 1.05) * height, width, 2)
+        ctx.restore()
     }
 }
