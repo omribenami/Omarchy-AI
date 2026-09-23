@@ -1,9 +1,10 @@
 # Changelog
 
 This file is read by the assistant itself. When a new version is published,
-the updater fetches this file from the exact commit it pins for the bundle
-(`core/updates.py`), and the assistant uses the `### Highlights` of every
-version newer than the installed one to answer "what's new?".
+the updater fetches this file from the release tag (or, for historical
+`dist/` bundles, the commit) it would install (`core/updates.py`), and the
+assistant uses the `### Highlights` of every version newer than the
+installed one to answer "what's new?".
 
 Rules for every release:
 
@@ -18,7 +19,7 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-23
 
 ### Highlights
 
@@ -49,8 +50,15 @@ Rules for every release:
   listening, thinking whenever she is busy (a MyApi call, a background task,
   or working out her answer), and speaking. Tools that succeed light it
   green, and tools that fail light it red.
-- Cleaner voice: her speech no longer crackles or drops out when the
-  computer is busy.
+- Less crackling in her voice: her speech no longer runs dry between audio
+  chunks. On a busy computer some clicks remain; that part comes from echo
+  cancellation and is being worked on.
+- Instant desktop commands: Jev handles "switch to workspace 4", "move this
+  window to workspace 3", volume and play/pause the moment you stop talking,
+  without waiting for the conversation model.
+- Scripted demos: ask her to perform a file of steps and she narrates each
+  step while doing it, keeps to the workspace it names, and stops to ask
+  instead of improvising when something is missing.
 - Smarter web tasks: she breaks your request into simple steps for the
   browser (searching "eggs", not "a pack of eggs") and asks you when
   something is missing, like which store.
