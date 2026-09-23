@@ -288,8 +288,22 @@ Item {
     }
   }
 
+  // Co-pilot mode: is the user touching keyboard/mouse? ext-idle-notify,
+  // the same IdleMonitor Omarchy's own idle service uses. Idle after 30s
+  // without input means the assistant is the only operator, so her work is
+  // shown on the user's workspace; while the user is active she works in
+  // the background (src/omarchy_ai/execution/operator.py). Inhibitors
+  // (video playback) are ignored: they say nothing about who operates.
+  IdleMonitor {
+    id: operatorIdle
+    enabled: true
+    timeout: 30
+    respectInhibitors: false
+  }
+
   IpcHandler {
     target: "watchdog"
+    function operator(): string { return operatorIdle.isIdle ? "idle" : "active" }
     function start(payloadJson: string): string {
       root.open(payloadJson)
       return "ok"

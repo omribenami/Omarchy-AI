@@ -4700,3 +4700,54 @@ there is no endpoint to send it to, and it is not required for
     delivered only if the user spoke in the conversation
     (`forget_briefed()` otherwise).
   - Tests: 281/281.
+
+## 2026-09-23: Co-pilot mode (parallel work without interrupting the user)
+
+User rule: "as long as she is the only operator her actions must be
+displayed". Otherwise she works in parallel and hands over after ~30s of
+user inactivity.
+
+- **Blocker, stated before building:** Hyprland has one input seat, so
+  wtype keystrokes always land in the focused window. Typing in parallel
+  into arbitrary GUI apps is not possible. Terminals and the browser can
+  avoid the keyboard entirely, so the user's examples (installs, commands,
+  monitoring Claude, web tasks) are covered. Handover for generic GUI apps
+  is not built.
+- **Idle signal:** the watchdog plugin gained a Quickshell `IdleMonitor`
+  (ext-idle-notify, 30s, the same component Omarchy's idle service uses)
+  and IPC `watchdog operator` → idle/active.
+  - **Real bug caught while testing:** `omarchy-shell -q` suppresses ALL
+    output, so `-q` calls can never return a value. `operator.py` calls it
+    without `-q`.
+  - A plugin rescan kept the old instance ("Function not found"), and
+    `omarchy restart shell` was needed.
+  - **My mistake:** `settings restart-status` reported busy, but it exits 0
+    either way, so `restart-status && install-plugins.sh` reinstalled the
+    plugins mid-conversation. The daemon and the conversation survived:
+    Quickshell hot-reloaded without restarting (same PID). The shell was
+    restarted properly once the conversation ended. **Do not chain on
+    restart-status's exit code**; grep for `"busy": false`.
+- **`execution/workbench.py`:** tmux sessions `oai-<name>`. Keys go in
+  through `send-keys -l`, and output is read with `capture-pane`. A viewer
+  window (`omarchy-launch-terminal tmux attach`) is opened on the user's
+  workspace to show her work and detached to hide it; the work never depends
+  on the window.
+  - sudo: the keyring password is fed on stdin to `tmux load-buffer`, then
+    `paste-buffer -d`.
+  - Live test with a random in-process secret, against a `read -rs` prompt:
+    received correctly (19 chars); the secret appeared in 0 of 40 `ps -eo
+    args` snapshots during the submit, and no tmux buffer was left.
+  - Visible mode live: the viewer opened on the user's workspace in 0.6s,
+    titled "Omarchy AI · visible-probe". Hiding closed the window and the
+    job kept running.
+- **Tools:** `terminal_task` (show auto/yes/no) plus terminal_read, type,
+  sudo, show, hide and close. Watch source `terminal=<name>`. `browser_task`
+  takes `show`, and in background mode it skips moving and activating the
+  window (`misc:focus_on_activate` would pull the user over).
+  - The daemon's handover loop (3s) shows pending auto-mode work once the
+    watchdog reports idle.
+  - Missions' terminal steps now use the workbench, always visible.
+  - Real Gemini Live: "Install htop for me, and let me know when it's done"
+    → `terminal_task {"name": "install-htop", "command": "sudo pacman -S
+    htop"}`.
+  - Tests 288/288.

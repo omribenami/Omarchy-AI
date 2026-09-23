@@ -853,6 +853,78 @@ def _rank_windows(clients: list[dict], needle: str, active_address, active_works
     return sorted(matches, key=key)
 
 
+def terminal_task(args: dict) -> ActionResult:
+    """Run a command in the assistant's own terminal (tmux): visible on the
+    user's screen when she is the only operator, in the background while the
+    user is working. Nothing is typed through the user's keyboard."""
+    from . import operator, workbench
+    command = str(args.get("command") or "").strip()
+    if not command:
+        return ActionResult(False, "command is required")
+    try:
+        name = workbench.slug(args.get("name") or command.split()[0])
+    except ValueError as exc:
+        return ActionResult(False, str(exc))
+    started = workbench.start(name)
+    if not started.ok:
+        return started
+    show = args.get("show", "auto")
+    on_screen = operator.visible(show)
+    if on_screen:
+        shown = workbench.show(name)
+        if not shown.ok:
+            return shown
+    elif show in (None, "", "auto"):
+        workbench.pending_handover.add(name)
+    typed = workbench.send(name, command)
+    if not typed.ok:
+        return typed
+    where = ("on the user's screen" if on_screen else
+             "in the background because the user is working (it moves to their screen when they stop "
+             "touching it for ~30s, or say terminal_show)")
+    return ActionResult(True, f"started {command!r} in assistant terminal {name!r}, {where}. Output is "
+                              "NOT verified yet: use terminal_read, or schedule_task watch with "
+                              f"terminal={name!r} to be told when it finishes.")
+
+
+def terminal_read(args: dict) -> ActionResult:
+    from . import workbench
+    return workbench.read(str(args.get("name") or ""), int(args.get("lines") or 120))
+
+
+def terminal_type(args: dict) -> ActionResult:
+    from . import workbench
+    return workbench.send(str(args.get("name") or ""), str(args.get("text") or ""), bool(args.get("enter", True)))
+
+
+def terminal_show(args: dict) -> ActionResult:
+    from . import workbench
+    name = str(args.get("name") or "")
+    workbench.pending_handover.discard(name)
+    return workbench.show(name)
+
+
+def terminal_hide(args: dict) -> ActionResult:
+    from . import workbench
+    return workbench.hide(str(args.get("name") or ""))
+
+
+def terminal_close(args: dict) -> ActionResult:
+    from . import workbench
+    workbench.pending_handover.discard(str(args.get("name") or ""))
+    return workbench.stop(str(args.get("name") or ""))
+
+
+def terminal_sudo(args: dict) -> ActionResult:
+    from . import workbench
+    if not load_config().sudo_access_enabled:
+        return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
+    password = sudo_approval.retrieve()
+    if password is None:
+        return ActionResult(False, "no sudo password is saved in GNOME Keyring; add it in Assistant Settings")
+    return workbench.submit_password(str(args.get("name") or ""), password)
+
+
 def run_mission(args: dict) -> ActionResult:
     # Executed inside the live session (it narrates through it); see
     # GeminiLiveSession._run_mission. Other providers cannot run it.
@@ -1958,6 +2030,13 @@ ACTIONS = {
     "focus_window": focus_window,
     "move_window_to_workspace": move_window_to_workspace,
     "run_mission": run_mission,
+    "terminal_task": terminal_task,
+    "terminal_read": terminal_read,
+    "terminal_type": terminal_type,
+    "terminal_show": terminal_show,
+    "terminal_hide": terminal_hide,
+    "terminal_close": terminal_close,
+    "terminal_sudo": terminal_sudo,
     "show_window_labels": show_window_labels,
     "hide_window_labels": hide_window_labels,
     "describe_screen": describe_screen,

@@ -136,6 +136,17 @@ def build_session_config(config: Config) -> dict:
         "terminals. Only skip the relay when the user is plainly talking to YOU and did "
         "not ask for anything to be sent anywhere."
     )
+    # Co-pilot mode (execution/operator.py, workbench.py).
+    instructions += (
+        "\n\nCO-PILOT: You work alongside the user, not instead of them. For commands, installs, builds "
+        "and long jobs use terminal_task (your own terminal; it never types into the user's windows) rather "
+        "than open_terminal + type_text. It is shown on the user's screen when you are the only operator and "
+        "runs in the background while they are working, handing over to their screen after ~30s without "
+        "input. If the user asks to watch, pass show='yes'; if they want it out of the way, show='no'. Tell "
+        "them briefly where it runs. For anything that takes a while, schedule_task a watch on "
+        "terminal=<name> for when it finishes or needs them (a prompt, a password, an error), so they are "
+        "told even after this conversation ends."
+    )
     # Missions (execution/missions.py): real 2026-09-23 failure -- the
     # commercial script's narration was dropped, `ls` went to the wrong
     # terminal, and a missing projector was replaced by another TV.
