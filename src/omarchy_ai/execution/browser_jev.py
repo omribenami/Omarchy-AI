@@ -148,6 +148,20 @@ def _focus_dedicated_window() -> None:
         log.debug("could not focus dedicated browser window", exc_info=True)
 
 
+def show_running_task() -> None:
+    """Bring the browser AND the task's own tab to the user. Moving only the
+    window left Chromium showing whichever tab was in front ("it happened on
+    a different tab", 2026-09-23)."""
+    _focus_dedicated_window()
+    browser = _owned_browser
+    if browser is not None and getattr(browser, "target", None):
+        try:
+            from browser_harness.helpers import cdp
+            cdp("Target.activateTarget", targetId=browser.target)
+        except Exception:
+            log.debug("could not activate the task tab", exc_info=True)
+
+
 def _ensure_dedicated_browser() -> None:
     """Start the browser-use-only Chromium profile with a stable CDP port."""
     global _browser_process

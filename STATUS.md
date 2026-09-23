@@ -4778,3 +4778,32 @@ user inactivity.
 - **Update sub-agent:** the wake path no longer waits up to 2s on
   `check_updates`. The 15-minute background checker announces a newly found
   version to an open conversation through the heartbeat announcer.
+
+## 2026-09-23 13:43 session: cut-off sentences, demo browser hidden, narration
+
+- **Cut off mid-sentence (the user: "unacceptable, must be fixed").** All
+  four interruptions were logged `state=speaking` with 10-22 chunks queued.
+  The "user" transcripts at those moments were her own words ("because
+  the", "Because the", "because the", "terminal"). About 22s of her audio
+  was discarded (received 3.86MB, played 2.78MB).
+  - Fix: a mic gate in `_send_audio`. While her audio plays (plus 0.35s) the
+    stream to Gemini carries silence of the same length, unless the user
+    clearly barges in: 5 consecutive 20ms frames at or above max(6000 RMS,
+    1.6 × the 90th percentile of her recent echo). The held frames are sent,
+    so the onset is kept.
+  - Thresholds come from logged levels: real user interruptions at RMS
+    5100-12000, her echo at 1700-4600.
+  - A test caught a bug: loud user frames were raising the echo reference
+    and closing the gate on the user. Only sub-threshold frames count now.
+  - The session summary logs `echo_gated_frames` and `user_barge_ins`, so
+    the next real session can be checked.
+- **Demo browser hidden:** the log said "browser task running in the
+  background while the user works", i.e. co-pilot background mode for a
+  mission step. Missions now force `show="yes"` for browser steps. Handover
+  of a background browser task also activates the task's own tab
+  (`show_running_task`); before, only the window was moved, so Chromium
+  could be showing another tab.
+- **Narration:** the mission ran all four steps, narrating step 2 while the
+  browser loaded. Steps 3-4 narration was lost to the self-interruptions
+  above, so the gate is the fix there too. Step 4 stopped correctly on the
+  missing HY300 Pro instead of substituting a device.

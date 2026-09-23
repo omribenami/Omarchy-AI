@@ -28,6 +28,10 @@ Rules for every release:
   in the background. She keeps listening and answering, and tells you the
   result when it is ready.
 - The phone bridge connects about five seconds faster.
+- She finishes her sentences. Her own voice leaking back through the
+  microphone can no longer cut her off; you can still interrupt her by
+  speaking up.
+- Scripted demos always show the browser on screen, on the right tab.
 
 ## [0.4.1] - 2026-09-23
 
