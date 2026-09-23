@@ -119,7 +119,7 @@ class OmaDaemon:
                             log.info("handover: assistant terminal %s -> user's screen (%s)", name, result.message)
                     if browser_jev._background_task:
                         browser_jev._background_task = False
-                        await asyncio.to_thread(browser_jev._focus_dedicated_window)
+                        await asyncio.to_thread(browser_jev.show_running_task)
                         log.info("handover: background browser task -> user's screen")
                 except Exception:
                     log.warning("handover check failed", exc_info=True)

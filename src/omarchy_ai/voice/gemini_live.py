@@ -130,6 +130,11 @@ class GeminiLiveSession:
         self._last_user_speech = 0.0
         self._awaiting_since = 0.0  # 0: no reply pending
         self._playback_until = 0.0  # monotonic time the queued speech finishes
+        self._echo_levels = deque(maxlen=150)   # mic RMS while she speaks (~3s)
+        self._barge_run = deque(maxlen=5)
+        self._barge_open = False
+        self._gated_frames = 0
+        self._barge_count = 0
         # Jev fast path (voice/jev_fast.py): the current utterance, whether
         # Jev has judged it, and what Jev last did (dedupe against Gemini).
         self._turn_done = asyncio.Event()  # set on every Gemini turn_complete
@@ -512,6 +517,45 @@ class GeminiLiveSession:
                      self._audit_session, call.id, call.id in self._interrupted_calls)
         self._pending_calls.discard(call.id)
 
+    # Self-interruption guard. Real session 2026-09-23 13:45: she was cut off
+    # four times mid-sentence by her OWN voice leaking back through the mic
+    # (echo transcribed as the user: "because the", "Because the", "because
+    # the"), losing ~22s of speech. While her audio plays (+ a short tail) the
+    # mic stream carries silence instead, unless it is clearly the user
+    # barging in: sustained loudness well above her echo. Logged user
+    # interruptions measured RMS 5100-12000; her echo 1700-4600.
+    ECHO_TAIL_SECONDS = 0.35
+    BARGE_FLOOR_RMS = 6000.0
+    BARGE_FRAMES = 5            # 5 x 20ms of sustained loud speech
+
+    def _gate(self, chunk: bytes, rms: float, now: float) -> list[bytes]:
+        """Chunks to send for this mic frame (silence while she speaks)."""
+        speaking = now < self._playback_until + self.ECHO_TAIL_SECONDS
+        if not speaking:
+            self._barge_run.clear()
+            self._barge_open = False
+            return [chunk]
+        if self._barge_open:
+            return [chunk]
+        echo = sorted(self._echo_levels)[int(len(self._echo_levels) * 0.9)] if self._echo_levels else 0.0
+        threshold = max(self.BARGE_FLOOR_RMS, 1.6 * echo)
+        if rms < threshold:
+            # Only quieter frames describe her echo; the user's own loud
+            # frames must not raise the bar they are measured against.
+            self._echo_levels.append(rms)
+        if rms >= threshold:
+            self._barge_run.append(chunk)
+            if len(self._barge_run) >= self.BARGE_FRAMES:
+                # Clearly the user: let it through, onset included.
+                self._barge_open = True
+                self._barge_count += 1
+                held, self._barge_run = list(self._barge_run), deque(maxlen=self.BARGE_FRAMES)
+                return held
+        else:
+            self._barge_run.clear()
+        self._gated_frames += 1
+        return [bytes(len(chunk))]
+
     async def _send_audio(self, session, mic):
         from google.genai import types
         while True:
@@ -519,10 +563,11 @@ class GeminiLiveSession:
             if not chunk:
                 raise RuntimeError("Microphone stream ended")
             samples = np.frombuffer(chunk[:len(chunk) // 2 * 2], dtype="<i2").astype(np.float32)
+            rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
             if samples.size:
-                self._mic_levels.append((time.monotonic(), float(np.sqrt(np.mean(samples * samples))),
-                                         int(np.max(np.abs(samples)))))
-            await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+                self._mic_levels.append((time.monotonic(), rms, int(np.max(np.abs(samples)))))
+            for part in self._gate(chunk, rms, time.monotonic()):
+                await session.send_realtime_input(audio=types.Blob(data=part, mime_type="audio/pcm;rate=16000"))
 
     @staticmethod
     async def _stop_process(process):
@@ -652,8 +697,10 @@ class GeminiLiveSession:
                 for task in done:
                     task.result()
         finally:
-            log.info("Gemini session audio summary: session=%s interruptions=%d received_audio_bytes=%d submitted_audio_bytes=%d",
-                     self._audit_session, self._interruptions, self._received_audio_bytes, self._submitted_audio_bytes)
+            log.info("Gemini session audio summary: session=%s interruptions=%d received_audio_bytes=%d submitted_audio_bytes=%d "
+                     "echo_gated_frames=%d user_barge_ins=%d",
+                     self._audit_session, self._interruptions, self._received_audio_bytes, self._submitted_audio_bytes,
+                     self._gated_frames, self._barge_count)
             from ..execution.browser_jev import cancel_browser_tasks
             cancel_browser_tasks()
             self._hangup.set()

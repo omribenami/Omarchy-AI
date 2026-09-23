@@ -571,3 +571,58 @@ class AgendaDeliveryTests(unittest.TestCase):
             agenda.mark_delivered([got[0]["id"]])
             agenda.forget_briefed()
             self.assertEqual(agenda.briefing(), [])
+
+
+class EchoGateTests(unittest.TestCase):
+    """She must be able to finish her sentence (13:45 session: cut off 4x by her own echo)."""
+
+    def session(self):
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config())
+
+    def frame(self, n):
+        return bytes([n % 256]) * 640
+
+    def test_her_echo_never_reaches_gemini_while_she_speaks(self):
+        s = self.session()
+        s._playback_until = 100.0
+        for i, rms in enumerate([1764.9, 2385.9, 3163.7, 4556.3] * 10):   # the logged echo levels
+            sent = s._gate(self.frame(i), rms, 99.0)
+            self.assertEqual(sent, [bytes(640)], "echo must be replaced by silence")
+        self.assertEqual(s._barge_count, 0)
+
+    def test_the_user_can_still_barge_in_and_the_onset_is_kept(self):
+        s = self.session()
+        s._playback_until = 100.0
+        for i in range(20):
+            s._gate(self.frame(i), 3000.0, 99.0)             # her echo, learned as the baseline
+        out = []
+        for i in range(s.BARGE_FRAMES):
+            out = s._gate(self.frame(50 + i), 8952.0, 99.0)  # a logged real interruption level
+        self.assertEqual(out, [self.frame(50 + i) for i in range(s.BARGE_FRAMES)])
+        self.assertEqual(s._barge_count, 1)
+        self.assertEqual(s._gate(self.frame(99), 1000.0, 99.0), [self.frame(99)])  # stays open
+
+    def test_a_short_loud_blip_is_not_a_barge_in(self):
+        s = self.session()
+        s._playback_until = 100.0
+        for i in range(3):
+            s._gate(self.frame(i), 9000.0, 99.0)
+        self.assertEqual(s._gate(self.frame(9), 2000.0, 99.0), [bytes(640)])
+        self.assertEqual(s._barge_count, 0)
+
+    def test_mic_passes_untouched_when_she_is_silent(self):
+        s = self.session()
+        s._playback_until = 10.0
+        self.assertEqual(s._gate(self.frame(1), 500.0, 20.0), [self.frame(1)])
+
+
+class MissionVisibilityTests(unittest.TestCase):
+    def test_mission_browser_steps_are_always_shown(self):
+        from omarchy_ai.execution import missions
+        from omarchy_ai.execution.actions import ActionResult
+        with patch.object(missions, "run_action", return_value=ActionResult(True, "ok")) as run:
+            missions.run_step({"action": "browser_task", "say": "", "args": {"url": "https://www.google.com", "goal": "x"}})
+        self.assertEqual(run.call_args.args[1]["show"], "yes")

@@ -167,4 +167,9 @@ def run_step(step: dict) -> ActionResult:
     if action == "workspace_switch":
         run_action(action, {"number": int(args["number"])})
         return ensure_workspace(int(args["number"]))
+    if action == "browser_task":
+        # A demo is watched: never the co-pilot background mode. Real
+        # 2026-09-23 run: "browser task running in the background while the
+        # user works", so the page never appeared on screen.
+        args = {**args, "show": "yes"}
     return run_action(action, args)
