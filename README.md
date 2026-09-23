@@ -102,10 +102,21 @@ been used for, live:
 - *"Remind me in 20 minutes to check the oven"* — a real desktop
   notification via Omarchy's own reminder mechanism, not a fake promise.
 - *"Switch to the catppuccin theme"* — routed straight through Omarchy's
-  own 228 built-in commands.
+  own ~230 built-in commands.
 - *"What did that build in the terminal end up doing?"* — reads the real
   text a terminal it opened has printed, instead of taking (and paying for)
   a vision-model screenshot.
+- *"In the focused terminal, tell Claude: …"* — relays your prompt to a
+  coding agent (Claude Code, Codex, aider) word for word, URLs, markdown and
+  multi-line text included.
+- *"Install htop, and let me know when it's done"* — runs it in her own
+  terminal (on your screen if you're not using the computer, in the
+  background if you are), and tells you when it finishes, even if you
+  already said goodbye.
+- *"Move this terminal to workspace 4"* — done by Jev the moment you stop
+  talking, without waiting for the conversation model.
+- *"Go through the instructions in this file and execute them"* — performs
+  a scripted demo step by step, narrating each step while doing it.
 
 ## Features
 
@@ -119,8 +130,10 @@ been used for, live:
 - Two-way, low-latency realtime voice via `gpt-live-1` over WebRTC
   (`aiortc`), delegated to `gpt-5` for reasoning/tool-calling.
 - Selectable Gemini Live on desktop and phone, with non-blocking desktop
-  actions. Desktop Gemini uses private PipeWire echo cancellation and noise
-  suppression without changing other applications' default audio devices.
+  actions. Desktop Gemini uses private PipeWire echo cancellation without
+  changing other applications' default audio devices, and its playback keeps
+  a small buffer ahead of the speaker so speech does not run dry between
+  audio chunks.
 - Ends a conversation on "bye"/"stop"/"that's all" (and non-English
   equivalents — Hebrew is wired in as the concrete case) by watching the
   model's own spoken farewell, not just an English keyword match.
@@ -129,7 +142,7 @@ been used for, live:
   preferences ("always confirm before muting") are remembered permanently
   via a dedicated tool call.
 
-**Real desktop control** — ~25 typed tools plus Omarchy's full command set:
+**Real desktop control**: about 85 typed tools plus Omarchy's full command set.
 - Volume/mute, mic mute, brightness, night light, Bluetooth, battery,
   media playback.
 - `set_reminder`/`list_reminders`/`clear_reminders` — Omarchy's own
@@ -144,13 +157,20 @@ been used for, live:
   file by default and only replaces an existing file when you explicitly
   ask it to. Add other project locations with `file_access_roots` in
   `~/.config/omarchy-ai/config.yaml`.
-- Typing and key-press injection (`type_text`/`press_key`) into whatever
-  window is focused — including modifier combos, so it can e.g. focus a
-  browser's address bar before typing a URL.
-- `list_commands`/`execute_command` reach every one of Omarchy's 228 bound
+- Typing and key-press injection (`type_text`/`press_key`) into a verified,
+  focused window, including modifier combos, so it can e.g. focus a
+  browser's address bar before typing a URL. Multi-line text is pasted as one
+  block, so it is not submitted line by line.
+- `list_commands`/`execute_command` reach every one of Omarchy's ~230 bound
   keybinding commands (theme, reminders, bar layout, clipboard, emoji
-  picker, capture tools, and more) by fuzzy description instead of needing
-  a dedicated tool per command.
+  picker, capture tools, and more). Jev ranks them by meaning, in any
+  language including Hebrew, with fuzzy matching as the fallback; mouse-only
+  gestures are left out because they cannot be run as commands.
+- `move_window_to_workspace` moves a window in one verified step.
+- Workspace-aware window targeting: "the terminal" means the one on your
+  current workspace, never one elsewhere that would pull you away. Terminals
+  can be named by what runs in them ("the Claude terminal"), and Jev resolves
+  vaguer names only when one window is a clear match.
 - `run_omarchy_command` runs a scoped allowlist of the `omarchy` CLI itself
   (theme/toggle/reminder/bar/capture) — package installs, system updates,
   reboots, and anything destructive are explicitly refused, not just
@@ -204,9 +224,10 @@ been used for, live:
   paired, and a hard 403 on every request without a valid paired session —
   this is a real access gate, not a cosmetic prompt. Pairings can be
   revoked all at once.
-- The page shares this project's own visual identity (dark background,
-  `#39ff88` green glow, the same ASCII/braille audio visualizer as the
-  desktop HUD) rather than looking like a bolted-on debug page.
+- The page shows one clear state at a glance, readable from across the room:
+  off, connecting, listening and speaking, where red means she cannot hear
+  you. The mirror view goes edge to edge. It shares the desktop HUD's colours
+  and ASCII/braille visualizer.
 
 **"Watch Dogs" HUD overlay**
 - A Quickshell/QML overlay (styled after the hacking-terminal HUD from
@@ -214,6 +235,9 @@ been used for, live:
   assistant makes them (`> execute_command("Browser")`, `> volume_up() ->
   ok`), a reactive ASCII/braille audio visualizer while it's speaking, or
   both — selectable per user preference.
+- Shows every conversation state in one colour: connecting, listening,
+  thinking (a tool running, a background task, or her working out an
+  answer), and speaking. Successful tools tint it green, failed ones red.
 - Driven entirely by the daemon's own lifecycle (connect/tool-call/state
   change/disconnect), not something the model has to remember to call.
 
@@ -250,6 +274,84 @@ been used for, live:
 - `omarchy-ai-dashboard` — a live terminal dashboard (built with `rich`)
   showing which services are connected and how much each has actually been
   used, refreshed in real time from a local call log.
+
+**Jev at the core**
+- Jev (TypeSafe's typed decision model, through Vercel AI Gateway) makes the
+  fast, checkable decisions, while the live model does the talking,
+  reasoning and planning.
+- Jev fast path: as soon as you stop talking, Jev reads what you said.
+  Simple commands (switch workspace, move a window, volume, play/pause,
+  fullscreen) run at once and are verified, typically in about 0.4s. Anything
+  negated, conditional, multi-part or uncertain goes to the live model
+  instead, and the two never repeat or contradict each other's action.
+- `desktop_task`: a Jev observe → act → verify loop for native desktop goals.
+
+**Co-pilot mode**
+- She works alongside you. Installs, commands and long jobs run in her own
+  terminals (`terminal_task`, tmux-backed), so she never types into your
+  windows or takes your keyboard focus.
+- While she is the only one using the computer, her work is shown on your
+  screen. While you are working, she carries on in the background, and hands
+  the work over to your screen once you stop for about 30 seconds (idle
+  detection from the watchdog plugin). "Show me" or "in the background"
+  overrides this.
+- sudo prompts in her terminals are answered from the Sudo Access password
+  in GNOME Keyring. It goes through a stdin-fed buffer and never appears in
+  a command line.
+- Browser tasks follow the same rule. They are driven over DevTools, so they
+  run without focus.
+
+**Scheduled tasks and heartbeat**
+- `schedule_task`: one-off or recurring reminders (cron, intervals, times),
+  watches, scheduled desktop goals and background commands. They keep
+  running between conversations.
+- Watches follow a terminal, one of her terminals, a file or a command, and
+  Jev judges when your condition has happened ("the build finished",
+  "Claude is waiting for my approval"). It points to the real output line
+  as evidence.
+- When a result comes in, she wakes up and tells you. If you answer, it is
+  delivered. If you are away, she catches you up the next time you talk.
+
+**Missions (scripted demos)**
+- `run_mission`: give her a file of steps ("introduce yourself, open the
+  browser and search…, run ls, cast to the projector") and she performs it
+  step by step. She narrates each step while its action runs, keeps to the
+  workspace the script names, verifies every step, and stops to ask instead
+  of improvising when something is missing, such as a TV that is not found.
+
+**Skills that improve over time**
+- She saves a procedure that worked as a named skill (`SKILL.md` under
+  `~/.config/omarchy-ai/skills/`), and rewrites it when it turns out to be
+  wrong. Jev picks the matching skill for a new request with a two-stage
+  check, and suggests nothing when no skill fits.
+
+**Terminal and coding-agent relay**
+- Prompts for Claude Code, Codex, aider and other terminal agents are
+  delivered word for word, URLs, markdown and multi-line text included, then
+  submitted, and she reads the terminal back to check they arrived.
+
+**Jev browser**
+- Web tasks run in one dedicated Chromium tab driven by Jev. Success is
+  reported only after an independent Jev check confirms the page shows the
+  goal done; otherwise the result says it was not verified and where it
+  stopped.
+- The live model breaks requests into literal steps, with plain search terms
+  in quotes ("eggs", not "a pack of eggs"), and asks you when something
+  needed is missing, like which store. Steps run in order.
+- Tabs a click opens are folded back into the one tab. Clicks land on the
+  element itself, not an overlay covering it. A dropped browser connection
+  heals itself. A control clicked over and over (a cart's "81 added", "82
+  added" button) is capped.
+
+**Updates and release highlights**
+- `check_assistant_updates` / `update_assistant` install checksum-verified
+  release bundles from GitHub Releases in a separate service, keeping the
+  previous installation to roll back to. A failed update can file a GitHub
+  issue.
+- When an update is available she says so, offers to go through what's new,
+  and can do it: `get_release_notes` reads the highlights from `CHANGELOG.md`
+  at the release tag. After updating, she mentions it once and offers the
+  highlights.
 
 ## Architecture, briefly
 
