@@ -203,6 +203,20 @@ class GatewayClient:
             return "openai/gpt-5-mini"
         return self.config.omarchy_text_model
 
+    def complete_json(self, system: str, user: dict, *, timeout: float = 15) -> dict:
+        """One JSON-object answer from the Gateway text model."""
+        payload = {"model": self._text_model(), "temperature": 0, "max_tokens": 1500,
+                   "response_format": {"type": "json_object"},
+                   "messages": [{"role": "system", "content": system},
+                                {"role": "user", "content": json.dumps(user, ensure_ascii=False)}]}
+        raw = self._request("/chat/completions", json.dumps(payload).encode(), "application/json", timeout=timeout)
+        choices = json.loads(raw).get("choices") or []
+        content = (choices[0].get("message") or {}).get("content") if choices else None
+        value = json.loads(content or "{}")
+        if not isinstance(value, dict):
+            raise GatewayError("planner did not return a JSON object")
+        return value
+
     def text_value(self, context: dict) -> str:
         """Get one browser field value without exposing desktop tools."""
         payload = {

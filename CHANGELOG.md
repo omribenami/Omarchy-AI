@@ -32,6 +32,12 @@ Rules for every release:
   microphone can no longer cut her off; you can still interrupt her by
   speaking up.
 - Scripted demos always show the browser on screen, on the right tab.
+- Scripted demos run as planned even when details are missing: she fills them
+  in from the script file (the command, the site, which document to edit)
+  instead of giving up and improvising.
+- While you are talking to her, her work is shown on screen. It only moves to
+  the background if you are actively using the keyboard or mouse at that
+  moment.
 
 ## [0.4.1] - 2026-09-23
 

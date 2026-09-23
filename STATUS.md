@@ -4807,3 +4807,41 @@ user inactivity.
   browser loaded. Steps 3-4 narration was lost to the self-interruptions
   above, so the gate is the fix there too. Step 4 stopped correctly on the
   missing HY300 Pro instead of substituting a device.
+
+## 2026-09-23 17:44 session ("it still works very bad"): the plan without arguments
+
+- **Echo fix confirmed on a real session:** `echo_gated_frames=1232` (~25s
+  of her echo muted) and zero self-interruptions. Both interruptions were
+  the user (mic_rms 27776, clipping).
+- **What went wrong:** the user updated `~/commercial_prompt.md` to 8 steps.
+  Gemini's `run_mission` plan carried every action step with NO arguments
+  (browser without url/goal, terminal_run without the script's `ls`,
+  desktop_task without a goal). Validation rejected the whole plan, and
+  Gemini then improvised the steps with ordinary tools: no parallel
+  narration, the browser and terminal in co-pilot background mode (the user
+  had touched input within 30s), and a `write_file` to overwrite the user's
+  prompt file, which the file-safety check refused.
+- **Fixes:**
+  - Missions are never rejected for missing details. `validate` flattens
+    step fields (url/goal/command/target/number/content/seconds; Gemini
+    fills flat fields far more reliably than a nested args object) and
+    repairs obvious cases. It then sends every still-incomplete step to the
+    Gateway text model once, with the script text (captured when read_file
+    returned it). Anything unresolvable becomes a narration-only step and
+    is reported.
+  - New actions: `demo_file` (write, then edit, a demo document at
+    `~/Omarchy-AI-demo.txt`), `show_windows`, `describe_screen`, and
+    `start_casting` with an optional target.
+  - An `open_browser` whose narration promises a search becomes the
+    browser_task.
+  - Real planner on the real argument-less plan with the real file: all 8
+    steps completed in 0.9s (terminal_run `ls` recovered from the script),
+    with no narrated-only fallbacks.
+  - Real Gemini with the flat schema, 2 runs: it now fills `command: ls`,
+    demo content and browser url/goal itself.
+- **Visibility:** the watchdog plugin now reports three levels: "active"
+  (input in the last 5s), "recent" (5-30s) and "idle" (30s+). Auto
+  visibility hides her work only while the user is operating right now; the
+  30s handover is unchanged.
+- Tests 303/303. The shell and daemon were restarted (not busy; stopped in
+  0.2s).

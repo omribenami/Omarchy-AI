@@ -24,7 +24,26 @@ class OperatorTests(unittest.TestCase):
             run.return_value.returncode, run.return_value.stdout = 0, "idle\n"
             operator._cache = (0.0, None)
             self.assertFalse(operator.user_active())
+            self.assertTrue(operator.user_idle())
         self.assertNotIn("-q", run.call_args.args[0])
+
+
+class ActivityLevelsTests(unittest.TestCase):
+    def state(self, answer):
+        with patch.object(operator.subprocess, "run") as run:
+            run.return_value.returncode, run.return_value.stdout = 0, answer + "\n"
+            operator._cache = (0.0, None)
+            return operator.user_active(), operator.user_idle(), operator.visible("auto")
+
+    def test_touched_seconds_ago_while_talking_still_shows_her_work(self):
+        # Regression: a 30s window hid demo work while the user talked to her.
+        self.assertEqual(self.state("recent"), (False, False, True))
+
+    def test_operating_right_now_means_background(self):
+        self.assertEqual(self.state("active"), (True, False, False))
+
+    def test_handover_only_after_thirty_seconds(self):
+        self.assertEqual(self.state("idle"), (False, True, True))
 
 
 class TerminalTaskTests(unittest.TestCase):

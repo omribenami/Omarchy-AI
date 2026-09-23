@@ -300,10 +300,22 @@ Item {
     timeout: 30
     respectInhibitors: false
   }
+  // "Is the user operating right now?" A 30s window was far too eager: the
+  // user touches the keyboard/mouse within 30s of talking to her all the
+  // time, so demo work ran hidden in the background (2026-09-23 17:45).
+  IdleMonitor {
+    id: operatorBusy
+    enabled: true
+    timeout: 5
+    respectInhibitors: false
+  }
 
   IpcHandler {
     target: "watchdog"
-    function operator(): string { return operatorIdle.isIdle ? "idle" : "active" }
+    function operator(): string {
+      if (!operatorBusy.isIdle) return "active"   // input in the last 5s
+      return operatorIdle.isIdle ? "idle" : "recent"
+    }
     function start(payloadJson: string): string {
       root.open(payloadJson)
       return "ok"
