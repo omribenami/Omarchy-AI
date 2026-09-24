@@ -8,7 +8,7 @@
                    ╚██████╔╝██║ ╚═╝ ██║██║  ██║╚██████╗██║  ██║   ██║   
                     ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝   ╚═╝   
 
-                    A I  —  v o i c e   f o r   t h e   d e s k t o p
+             A I  —  a n   a g e n t   t h a t   r u n s   y o u r   d e s k t o p
 
 ```
 
@@ -24,9 +24,24 @@
 
 ---
 
-## Demo
+**Omarchy AI** is a self-hosted, voice-driven **agentic assistant** for
+[Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. You say what
+you want done. She plans it, does it with real tools on your machine (and on
+machines you're connected to), checks the result herself, and tells you when
+it is verified. She is not a chatbot bolted onto a terminal.
 
-A condensed walkthrough of the assistant in action:
+- **She takes on whole jobs.** "Find what's using port 8080", "fix this bug
+  and test it", "copy the Minecraft server from my home server and run it
+  here". She works in the background, hands code to Claude Code or Codex
+  when that fits, and certifies the result from evidence, not from her own
+  claims.
+- **She works alongside you.** Her commands run in her own terminals, so she
+  never takes your keyboard. You can keep talking to her while she works.
+- **She keeps her promises.** "Tell me when the build finishes" sets up a
+  real watch. When it fires she wakes up, tells you, and does the next step
+  you asked for.
+- **She asks before anything risky.** Installs, service restarts, deletes
+  and root need your OK; root needs a click, not just a spoken yes.
 
 <div align="center">
 
@@ -36,31 +51,59 @@ https://github.com/user-attachments/assets/49467e18-0e00-4db6-ba63-bbaf9927b218
 
 ---
 
-**Omarchy AI** is an independent, self-hosted voice assistant for
-[Omarchy](https://omarchy.org) — the Arch-based Hyprland desktop. Say a wake
-word, talk in plain language, and it *does things* on your machine: windows,
-volume, themes, reminders, casting to a TV, phone bridge — not a chatbot
-bolted onto a terminal.
+## What she does
 
-It's powered by two layers of models, not one. The conversation itself —
-hearing you, talking back, deciding which tool to call — runs on a realtime
-voice model you choose: OpenAI's **Live** API (`gpt-live-1`, delegated to
-`gpt-5` for reasoning) or Google's **Gemini Live**. Neither of those models
-drives the mouse or DOM directly: for native desktop actions (workspaces,
-window focus, volume, themes, bar panels) and for web browser navigation,
-decisions are delegated instead to [**Typesafe AI's `jev`**](https://github.com/browser-use/jev-ultrafast)
-— a small, typed evaluation model built for exactly this, via `desktop_task`
-and `browser_task` respectively — rather than asking the conversational
-voice model to reason about every click. The conversation loop, tool
-registry, wake-word pipeline, casting subsystem, and desktop UI are all this
-project's own code — not Open Interpreter or another agent framework.
+Say the wake word, then talk normally. Real requests from daily use:
 
+**Whole jobs, done and verified**
+- *"Find what is using port 8080"* / *"why does my Bluetooth keep
+  disconnecting?"* / *"fix this bug and test it"* — the Task Runtime plans
+  acceptance criteria, routes each step to the right worker (her Linux
+  agent, Claude Code, Codex, a test or review agent), and reports **verified
+  done** only when the harness's own evidence proves it.
+- *"Take the Minecraft service from the server's docker-compose and bring it
+  up here with the data we copied"* — reads the real file in your ssh
+  terminal, exits to this machine, writes an exact copy pointing at the
+  copied folder, starts it, and checks it is up.
+- *"Install htop, and let me know when it's done"* — runs it in her own
+  terminal, answers the sudo prompt from your keyring, and tells you when it
+  finishes, even if you already said goodbye.
+- *"Go through the instructions in this file and execute them"* — performs a
+  scripted demo step by step, narrating each step while it runs.
+
+**Your terminals and coding agents**
+- *"In the focused terminal, tell Claude: …"* — relays your prompt to Claude
+  Code, Codex or aider word for word, URLs, markdown and multi-line text
+  included, then checks it arrived.
+- *"SSH to the server with the same password as here"* — types your saved
+  password into the prompt when you ask, without ever seeing it.
+- *"Go to the Docker folder"* — finds `docker` when you said "Docker", and
+  asks when several names fit.
+- *"What did that build end up doing?"* — reads the terminal's real text,
+  not a screenshot.
+
+**Around the house**
+- *"Cast this to the living room TV"* — mirrors screen and audio to a paired
+  Android TV or projector, picks the right TV, and walks you through pairing
+  a new one.
+- From your phone: talk to her from a paired phone, anywhere on your LAN or
+  tailnet, while mirroring the PC to the phone or the TV.
+- *"Check my email for the invoice and save the attachment"* — reads Gmail
+  (and 200+ other services) through MyApi instead of screen-scraping.
+
+**Instant desktop control**
+- *"Move this terminal to workspace 4"*, *"volume up"*, *"fullscreen the
+  terminal, not the browser"* — Jev handles simple commands the moment you
+  stop talking (about 0.4s), verifies them, and she just says "done".
+- *"Switch to the catppuccin theme"*, *"remind me in 20 minutes to check the
+  oven"* — straight through Omarchy's own ~230 commands and its real
+  reminder popups.
 
 ---
 
-## Feature gallery
+## Gallery
 
-**Phone session** — mirror the screen to your phone and operate the PC by talking to Omarchy.
+**Phone session**: mirror the screen to your phone and operate the PC by talking to Omarchy.
 
 <div align="center">
 
@@ -68,7 +111,7 @@ https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
 
 </div>
 
-**Phone bridge** — talk from a paired phone to Omarchy while mirroring the PC to Android TVs in your network.
+**Phone bridge**: talk from a paired phone to Omarchy while mirroring the PC to Android TVs in your network.
 
 <div align="center">
 
@@ -76,368 +119,364 @@ https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 </div>
 
-**TV screen mirroring** — WebRTC cast to a paired Android TV / projector.
+**TV screen mirroring**: WebRTC cast to a paired Android TV / projector.
 
 <div align="center">
 <img src="docs/media/tv-mirroring-1.jpg" alt="TV screen mirroring 1" width="420" />
 <img src="docs/media/tv-mirroring-2.jpg" alt="TV screen mirroring 2" width="420" />
 </div>
 
-
 ---
 
-## What it does
+## How it works
 
-Say the wake word, then talk normally. A few real examples of what it's
-been used for, live:
+Omarchy AI splits the work between models that are each good at one thing,
+and code that owns everything that must be exact.
 
-- *"Turn the volume up"* / *"set brightness to 40%"* — done immediately.
-- *"Fullscreen the terminal, not the browser"* — it lists open windows,
-  figures out which one you mean (asking you, with a floating label over
-  the actual window, if it's still ambiguous), focuses it, then acts.
-- *"Cast this to the living room TV"* — mirrors your screen and audio to a
-  paired Android TV or projector over WebRTC, picks the right TV if more
-  than one is on the network, and can walk you through pairing a brand new
-  one it's never seen before.
-- *"Remind me in 20 minutes to check the oven"* — a real desktop
-  notification via Omarchy's own reminder mechanism, not a fake promise.
-- *"Switch to the catppuccin theme"* — routed straight through Omarchy's
-  own ~230 built-in commands.
-- *"What did that build in the terminal end up doing?"* — reads the real
-  text a terminal it opened has printed, instead of taking (and paying for)
-  a vision-model screenshot.
-- *"In the focused terminal, tell Claude: …"* — relays your prompt to a
-  coding agent (Claude Code, Codex, aider) word for word, URLs, markdown and
-  multi-line text included.
-- *"Install htop, and let me know when it's done"* — runs it in her own
-  terminal (on your screen if you're not using the computer, in the
-  background if you are), and tells you when it finishes, even if you
-  already said goodbye.
-- *"Move this terminal to workspace 4"* — done by Jev the moment you stop
-  talking, without waiting for the conversation model.
-- *"Go through the instructions in this file and execute them"* — performs
-  a scripted demo step by step, narrating each step while doing it.
-- *"Find what is using port 8080"* / *"fix this bug and test it"* — takes on
-  the whole task in the background with the right helper (her own Linux
-  agent, or Claude Code / Codex for code), checks the result herself, and
-  tells you when it is verified done.
-- *"SSH to the server with the same password as here"* — types the saved
-  sudo password into the prompt in your terminal when you ask her to.
-- *"Take the Minecraft service from the server's docker-compose and bring it
-  up here"* — reads the real file in the ssh terminal, exits to this
-  machine, writes an exact copy, and starts it.
+```mermaid
+flowchart TB
+    subgraph Ears["Ears (local, always on)"]
+        W[openWakeWord<br/>desktop + TV mic]
+    end
+    subgraph Voice["Conversation (only while you talk)"]
+        L[Gemini Live · OpenAI Live<br/>or Omarchi-ai turn-based]
+        G[Echo gate + stuck-turn guard]
+    end
+    subgraph Jev["Jev: typed decisions"]
+        F[Fast path<br/>simple commands in ~0.4s]
+        D[desktop_task<br/>observe → act → verify]
+        B[browser_task<br/>DOM decisions + goal check]
+        H[Heartbeat judge<br/>watch conditions]
+        S[Skill picker]
+    end
+    subgraph Runtime["Task Runtime (whole jobs)"]
+        R[Jev: route · direct · validate · certify]
+        X[Harness: state · permissions · evidence]
+        E[System agent · Claude Code · Codex<br/>test + review agents · desktop tools]
+    end
+    subgraph Hands["Execution"]
+        T[~80 typed tools · Omarchy commands]
+        K[Own terminals tmux · your terminals<br/>verified input · readable logs]
+        A[Scheduled jobs · watches · reminders]
+    end
+    subgraph Surfaces
+        U[Watch Dogs HUD · bar panels · phone page · TV]
+    end
+    W --> L
+    G --> L
+    L -- tools --> T & K
+    L -- fast --> F
+    L --> D & B & S
+    L -- start_task --> R
+    R --> X --> E
+    E --> K
+    L -- schedule_task --> A
+    A --> H -- wakes her --> L
+    T & K --> U
+```
 
-## Features
+- **The live model talks, reasons and plans.** It is the only part that
+  generates words: OpenAI Live (`gpt-live-1`, delegating to `gpt-5`), Google
+  Gemini Live, or Omarchi-ai (Jev with Gateway speech models). Slow tools run
+  as background sub-agents (`NON_BLOCKING`), so you can always keep talking.
+- **Jev makes the checkable decisions.** [Typesafe AI's
+  Jev](https://github.com/browser-use/jev-ultrafast) is a small, typed
+  evaluation model: it answers narrow questions with probabilities ("is this
+  a simple command?", "which window?", "did the build finish?", "is this
+  task done?") instead of generating text. Uncertain answers go back to the
+  live model or to you.
+- **Code owns time, commands and permissions.** When a job is due, what
+  exactly runs, and what needs approval are decided by code, never by a
+  model. Every shell command in the Task Runtime is risk-classified (LOW,
+  NORMAL, ELEVATED, HIGH, BLOCKED) before it runs.
+- **Claims are not evidence.** Keyboard input reports "sent, not verified";
+  results are read back from terminal logs, window state or the page; the
+  Task Runtime certifies only from commands, exit codes, diffs and tests the
+  harness collected itself.
 
-**Voice & wake word**
-- Fully local wake-word detection (`openWakeWord`), listening continuously
-  and opening a conversation with the selected provider only when triggered — no
-  connection (and no per-second billing) outside an active conversation.
-- Any number of custom wake-word models can be loaded at once
-  (`~/.config/omarchy-ai/wake_models/*.onnx`) — whichever one fires wakes
-  it, configurable threshold/trigger-frame sensitivity.
-- Two-way, low-latency realtime voice via `gpt-live-1` over WebRTC
-  (`aiortc`), delegated to `gpt-5` for reasoning/tool-calling.
-- Selectable Gemini Live on desktop and phone, with non-blocking desktop
-  actions. Desktop Gemini uses private PipeWire echo cancellation without
-  changing other applications' default audio devices, and its playback keeps
-  a small buffer ahead of the speaker so speech does not run dry between
-  audio chunks.
-- Stuck-turn guard: a TV or people talking in the background used to keep
-  Gemini from deciding you had finished speaking (answers came 40-108s
-  late). Once your words stop she sends a short silence, and replies in
-  about two seconds.
-- Quick actions are quiet: "switch to workspace 4" is done and confirmed
-  with "done", without a "switching now" before and an "I switched" after.
-- Ends a conversation on "bye"/"stop"/"that's all" (and non-English equivalents) by watching the
-  model's own spoken farewell, not just an English keyword match.
-- Cross-session memory: a rolling window of recent conversation history is
-  folded into the next session's context, and explicit standing
-  preferences ("always confirm before muting") are remembered permanently
-  via a dedicated tool call.
+The conversation loop, tool registry, wake-word pipeline, Task Runtime,
+casting stack and desktop UI are this project's own code, not Open
+Interpreter or another agent framework.
 
-**Real desktop control**: about 85 typed tools plus Omarchy's full command set.
-- Volume/mute, mic mute, brightness, night light, Bluetooth, battery,
-  media playback.
-- `set_reminder`/`list_reminders`/`clear_reminders` — Omarchy's own
-  lightweight notification-popup reminders, not a new mechanism. Only
-  understands minutes from now, so the assistant converts whatever time
-  you gave ("in 20 minutes", "at 3pm") into a minute count itself.
-- Workspace switching, window listing/focusing, fullscreen toggle, close,
-  screenshots, screen lock.
-- Launchers: terminal, browser, files, editor.
-- Local files: `list_files`, `read_file`, and `write_file` let Omarchy AI
-  work with text files in your home directory and `/tmp`. It creates a new
-  file by default and only replaces an existing file when you explicitly
-  ask it to. Add other project locations with `file_access_roots` in
-  `~/.config/omarchy-ai/config.yaml`.
-- Typing and key-press injection (`type_text`/`press_key`) into a verified,
-  focused window, including modifier combos, so it can e.g. focus a
-  browser's address bar before typing a URL. Multi-line text is pasted as one
-  block, so it is not submitted line by line.
-- `list_commands`/`execute_command` reach every one of Omarchy's ~230 bound
-  keybinding commands (theme, reminders, bar layout, clipboard, emoji
-  picker, capture tools, and more). Jev ranks them by meaning, in any
-  language, with fuzzy matching as the fallback; mouse-only
-  gestures are left out because they cannot be run as commands.
-- `move_window_to_workspace` moves a window in one verified step.
-- Workspace-aware window targeting: "the terminal" means the one on your
-  current workspace, never one elsewhere that would pull you away. Terminals
-  can be named by what runs in them ("the Claude terminal"), and Jev resolves
-  vaguer names only when one window is a clear match.
-- `run_omarchy_command` runs a scoped allowlist of the `omarchy` CLI itself
-  (theme/toggle/reminder/bar/capture) — package installs, system updates,
-  reboots, and anything destructive are explicitly refused, not just
-  undocumented.
-- Arch-aware shell guidance: when it types a shell command into a terminal
-  on your behalf, its instructions specifically steer it to `pacman`/`yay`
-  syntax, never `apt`/`dnf`/`brew`, which don't exist on this distro.
-- `describe_screen` — a screenshot plus a separate vision-model call, used
-  only as a fallback when window state and conversation context aren't
-  enough to tell what you mean.
-- `read_tile_log` — terminals the assistant opens have a full real-text
-  transcript (via `script(1)`). Every interactive Bash or Zsh terminal
-  also writes a compact command, working-directory, and exit-status context
-  log, so Omarchy AI can understand terminals you opened yourself too.
-- Floating window name-label badges (`show_window_labels`) — instead of
-  reading a list of window titles out loud when it's not sure which window
-  you mean, it drops a real on-screen badge over each candidate so you can
-  just point at (or name) the right one.
+### What changed in 0.5
 
-**Android TV / projector casting**
-- Mirrors the desktop's screen and system audio to a paired Android TV or
-  projector over WebRTC — direct `wlr-screencopy-unstable-v1` capture
-  (bypassing the portal/PipeWire ScreenCast path, which turned out to wedge
-  permanently on this hardware — see `STATUS.md`), `openh264enc`/opus
-  encode, relayed through a small local signaling server.
-- Real-time mDNS auto-discovery of Android TV targets on the LAN
-  (`_androidtvremote2._tcp`) — asks which TV you mean if more than one is
-  found, remembers the last one otherwise.
-- Asking to cast opens a small centered, glitchy device-picker overlay
-  (`omarchy-ai.tv-discovery`) that stays live-updated while it's open and
-  can be resolved by saying a device's name or by clicking it — it reads
-  and writes the exact same shared device registry (`display/registry.py`)
-  the voice agent itself uses, so the UI and the assistant never disagree
-  about what's online.
-- Guided pairing for a TV that's never been set up before: narrates the
-  exact on-device steps (Developer options → Wireless debugging → pairing
-  code), then completes ADB pairing/connect/install once you read the code
-  back to it.
-- A Kotlin/Jetpack Compose Android receiver app (`android-receiver/`) —
-  receive-only WebRTC via `stream-webrtc-android`, auto-connects on launch,
-  shows the Omarchy wallpaper while idle.
+- **Task Runtime** ([ADR-0002](docs/ADR-0002-task-runtime.md)): a persistent
+  control plane (Jev) and execution plane (harness) for multi-step work, with
+  executors for the System agent, Claude Code, Codex, test and review agents,
+  permission levels, approvals, rollback checkpoints and an
+  `omarchy-ai-task` CLI.
+- **Always talkable**: slow tools (screen, casting, MyApi, command search,
+  updates) run in the background instead of freezing the conversation.
+- **Stuck-turn guard**: background speech used to keep Gemini's
+  end-of-speech detection open for 40-108s. Reproduced against the live API
+  (`scripts/probe_stuck_turn.py`); a short silence after your last words now
+  gets a reply in about two seconds.
+- **Terminals you can rely on**: logs survive daemon restarts and updates,
+  windows are read by address (never a same-titled neighbour), watches pin
+  the window even when ssh renames it, and typed text is not submitted twice.
+- **Behaviour rules** learned from real sessions: quiet instant actions,
+  approximate names, "which machine am I on", copy real config instead of
+  inventing it, and no promise without a watch.
 
-**Phone bridge**
-- A local page (self-signed HTTPS, so mobile mic access works) that a
-  paired phone can open to talk to Omarchy AI directly from a browser —
-  the phone uses WebRTC directly with OpenAI, or through this computer's
-  Gemini bridge when Gemini is selected. API keys remain on the computer.
-  Browser microphone capture requests echo cancellation and noise suppression.
-- QR-code pairing, generated from the settings panel: single-use,
-  5-minute-TTL pairing token, a signed session cookie good for a year once
-  paired, and a hard 403 on every request without a valid paired session —
-  this is a real access gate, not a cosmetic prompt. Pairings can be
-  revoked all at once.
-- The page shows one clear state at a glance, readable from across the room:
-  off, connecting, listening and speaking, where red means she cannot hear
-  you. The mirror view goes edge to edge. It shares the desktop HUD's colours
-  and ASCII/braille visualizer.
-
-**"Watch Dogs" HUD overlay**
-- A Quickshell/QML overlay (styled after the hacking-terminal HUD from
-  *Watch Dogs*) that shows either a live feed of tool calls as the
-  assistant makes them (`> execute_command("Browser")`, `> volume_up() ->
-  ok`), a reactive ASCII/braille audio visualizer while it's speaking, or
-  both — selectable per user preference.
-- Shows every conversation state in one colour: connecting, listening,
-  thinking (a tool running, a background task, or her working out an
-  answer), and speaking. Successful tools tint it green, failed ones red.
-- Driven entirely by the daemon's own lifecycle (connect/tool-call/state
-  change/disconnect), not something the model has to remember to call.
-
-**Settings panel**
-- A Quickshell bar panel (gear icon next to the system tray) for picking
-  the wake word/sensitivity, the response voice, entering the OpenAI API
-  key, choosing the Watch Dogs display mode, and pairing/revoking phones —
-  reads and writes the same `config.yaml` the daemon itself uses, and
-  refuses to trigger a restart while a conversation is actually in
-  progress.
-- The bar's Omarchy icon also carries a live-status dot (green while an
-  actual `gpt-live-1` session is connected, otherwise idle) independent of
-  whether the HUD overlay itself is enabled.
-
-**Connect other services (MyApi)**
-- An "Enable" switch in the settings panel turns on a separate MyApi bar
-  icon/panel (off by default) — from there, one code pasted from your
-  [MyApi](https://www.myapiai.com) dashboard connects Gmail, Calendar,
-  Drive, Notion, Slack, and 200+ other services (no OAuth redirect, no
-  token ever shown). Requires a MyApi Pro/Heavy/Enterprise plan.
-- That panel also shows live per-service usage — a proportional-share
-  breakdown styled after Omarchy's own Agents bar panel, so it reads as a
-  sibling of it rather than a one-off look.
-- Once connected, the assistant prefers a real API call through MyApi over
-  opening a browser and taking a screenshot whenever a request is covered
-  by a connected service ("check my email" reads Gmail directly rather
-  than paying for a vision call) — read-only for now, it can't send,
-  create, or delete anything yet.
-- Gmail attachment requests have a dedicated flow: Omarchy AI searches the
-  requested mail for attachment IDs, then downloads the chosen file to
-  `~/Downloads/Omarchy_AI/`. MyApi transports those provider reads through
-  its execute endpoint; the assistant only exposes the allowlisted read
-  operations, never Gmail send or mailbox mutation.
-- `omarchy-ai-dashboard` — a live terminal dashboard (built with `rich`)
-  showing which services are connected and how much each has actually been
-  used, refreshed in real time from a local call log.
-
-**Jev at the core**
-- Jev (TypeSafe's typed decision model, through Vercel AI Gateway) makes the
-  fast, checkable decisions, while the live model does the talking,
-  reasoning and planning.
-- Jev fast path: as soon as you stop talking, Jev reads what you said.
-  Simple commands (switch workspace, move a window, volume, play/pause,
-  fullscreen) run at once and are verified, typically in about 0.4s. Anything
-  negated, conditional, multi-part or uncertain goes to the live model
-  instead, and the two never repeat or contradict each other's action.
-- `desktop_task`: a Jev observe → act → verify loop for native desktop goals.
-
-**Co-pilot mode**
-- She works alongside you. Installs, commands and long jobs run in her own
-  terminals (`terminal_task`, tmux-backed), so she never types into your
-  windows or takes your keyboard focus.
-- While she is the only one using the computer, her work is shown on your
-  screen. While you are working, she carries on in the background, and hands
-  the work over to your screen once you stop for about 30 seconds (idle
-  detection from the watchdog plugin). "Show me" or "in the background"
-  overrides this.
-- sudo prompts in her terminals are answered from the Sudo Access password
-  in GNOME Keyring. It goes through a stdin-fed buffer and never appears in
-  a command line. In your own terminal windows she types it into a password
-  prompt (sudo, or ssh/scp when you say the password is the same) after
-  checking that the prompt is really there, and never sees it herself.
-- She keeps working in the terminal you point her at, including an ssh
-  session on another machine, and checks the prompt to know which machine
-  she is on. She reads terminals by window address, so two windows with the
-  same title are never confused, and terminals opened before a restart or
-  update stay readable.
-- Spoken names are treated as approximate: "the Docker folder" finds
-  `docker`, and when several names fit she asks.
-- Browser tasks follow the same rule. They are driven over DevTools, so they
-  run without focus.
-
-**Scheduled tasks and heartbeat**
-- `schedule_task`: one-off or recurring reminders (cron, intervals, times),
-  watches, scheduled desktop goals and background commands. They keep
-  running between conversations.
-- Watches follow a terminal, one of her terminals, a file or a command, and
-  Jev judges when your condition has happened ("the build finished",
-  "Claude is waiting for my approval"). It points to the real output line
-  as evidence.
-- When she says she will tell you when something finishes, she sets up a
-  watch on it, with the next step you asked for ("then start the
-  container"). Watches on your terminal windows follow the window even when
-  ssh changes its title.
-- When a result comes in, she wakes up and tells you. If you answer, it is
-  delivered. If you are away, she catches you up the next time you talk.
-
-**Whole tasks (Task Runtime)**
-- `start_task` hands a multi-step goal to a persistent Task Runtime. Jev
-  routes each step to a worker (the System agent that runs and combines
-  installed Linux tools, direct desktop tools, test and review subagents,
-  Claude Code or Codex), decides what happens next, and certifies the result
-  only from evidence the harness collected itself (commands and exit codes,
-  the git diff, tests it ran).
-- Risky steps (installs, service restarts, deletes, root) wait for your
-  approval; root-level actions need a click on the notification. Tasks
-  survive restarts and can be followed from the terminal with
-  `omarchy-ai-task`. See [ADR-0002](docs/ADR-0002-task-runtime.md).
-
-**Missions (scripted demos)**
-- `run_mission`: give her a file of steps ("introduce yourself, open the
-  browser and search…, run ls, cast to the projector") and she performs it
-  step by step. She narrates each step while its action runs, keeps to the
-  workspace the script names, verifies every step, and stops to ask instead
-  of improvising when something is missing, such as a TV that is not found.
-
-**Skills that improve over time**
-- She saves a procedure that worked as a named skill (`SKILL.md` under
-  `~/.config/omarchy-ai/skills/`), and rewrites it when it turns out to be
-  wrong. Jev picks the matching skill for a new request with a two-stage
-  check, and suggests nothing when no skill fits.
-
-**Terminal and coding-agent relay**
-- Prompts for Claude Code, Codex, aider and other terminal agents are
-  delivered word for word, URLs, markdown and multi-line text included, then
-  submitted, and she reads the terminal back to check they arrived.
-
-**Jev browser**
-- Web tasks run in one dedicated Chromium tab driven by Jev. Success is
-  reported only after an independent Jev check confirms the page shows the
-  goal done; otherwise the result says it was not verified and where it
-  stopped.
-- The live model breaks requests into literal steps, with plain search terms
-  in quotes ("eggs", not "a pack of eggs"), and asks you when something
-  needed is missing, like which store. Steps run in order.
-- Tabs a click opens are folded back into the one tab. Clicks land on the
-  element itself, not an overlay covering it. A dropped browser connection
-  heals itself. A control clicked over and over (a cart's "81 added", "82
-  added" button) is capped.
-
-**Updates and release highlights**
-- `check_assistant_updates` / `update_assistant` install checksum-verified
-  release bundles from GitHub Releases in a separate service, keeping the
-  previous installation to roll back to. A failed update can file a GitHub
-  issue.
-- When an update is available she says so, offers to go through what's new,
-  and can do it: `get_release_notes` reads the highlights from `CHANGELOG.md`
-  at the release tag. After updating, she mentions it once and offers the
-  highlights.
-
-## Architecture, briefly
+### Source layout
 
 ```
 src/omarchy_ai/
-  core/       daemon loop (listen -> wake -> converse -> listen), cross-
-              session history and learned-preference memory
-  voice/      wake word (openWakeWord), the gpt-live-1 WebRTC client
-              (aiortc), the Watch Dogs/status-icon IPC bridges
-  execution/  Hyprland/PipeWire/desktop actions, the tool schemas exposed
-              to the model, per-terminal output logs retained after a
-              terminal closes or service restart, the vision fallback
-  display/    mDNS device discovery, the WebRTC signaling relay for casting
-  phone/      the local HTTPS phone-bridge server + paired web page
-  myapi/      the MyApi (myapiai.com) client — ASC Quick Connect, signed
-              requests, the local usage log the terminal dashboard reads
-  cli/        the omarchy-ai-settings CLI the settings panel shells out to,
-              and omarchy-ai-dashboard (live MyApi usage in the terminal)
-  policy/     scaffolded, not yet built (see "Known gaps" below)
-android-receiver/   Kotlin/Compose Android TV receiver app (Gradle project)
-quickshell/         the 4 Quickshell/QML user plugins (HUD overlay, window
-                    labels, settings panel, MyApi panel) — see
-                    quickshell/README.md
-systemd/            omarchy-ai.service unit template
-docs/                architecture decision record (ADR-0001) + dependency list
-scripts/             the original WebRTC/API reverse-engineering spikes,
-                      setup.sh / uninstall.sh
+  core/       daemon loop (listen → wake → converse), history and preference
+              memory, Jev client, agenda/heartbeat and schedules, skills,
+              updates, GitHub issue reporting
+  voice/      wake word, OpenAI Live (aiortc), Gemini Live (echo gate,
+              stuck-turn guard, missions), Omarchi-ai provider, Jev fast
+              path, echo cancellation, TV microphone, HUD/status IPC
+  runtime/    Task Runtime: task records, Jev control, permissions, shell,
+              executors (system agent, direct tools, Claude Code, Codex)
+  execution/  desktop actions and tool schemas, verified input, terminal
+              logs, assistant terminals (workbench), co-pilot operator, Jev
+              desktop and browser workers, files, vision, OS knowledge
+  display/    mDNS discovery, device registry, casting session, signaling
+  phone/      HTTPS phone bridge, Gemini phone bridge, audio to TV
+  myapi/      MyApi client, usage log and dashboard
+  knowledge/  packaged Omarchy expert guide, capability registry, Arch notes
+  cli/        omarchy-ai-settings, omarchy-ai-task, omarchy-ai-dashboard
+android-receiver/  Kotlin/Compose Android TV receiver app
+quickshell/        Quickshell/QML plugins: HUD, window labels, settings, MyApi
+systemd/           omarchy-ai.service template
+docs/              ADR-0001 (architecture), ADR-0002 (Task Runtime),
+                   JEV-DESKTOP, gemini-live, DEPENDENCIES, media
+scripts/           install/build/publish, probes and the original spikes
 ```
 
-- **Python**, managed with [`uv`](https://astral.sh/uv), targeting the
-  system Python (needs `--system-site-packages` for `python-gobject`/
-  GStreamer bindings — see below).
-- **Quickshell/QML** for every on-screen desktop UI piece (the HUD overlay,
-  the window-label badges, the settings panel) — these are Omarchy *user
-  plugins*, developed in place under `~/.config/omarchy/plugins/` and kept
-  in this repo under [`quickshell/`](quickshell/) (see
-  [`quickshell/README.md`](quickshell/README.md) for installing them).
-- **`aiortc`** (pure Python) for the desktop voice client's own WebRTC
-  connection to `gpt-live-1`.
-- **`pywayland`** talking to `wlr-screencopy-unstable-v1` directly for
-  screen capture (not the `xdg-desktop-portal` ScreenCast path, which
-  proved permanently broken on this Hyprland/PipeWire combination).
-- **Kotlin + Jetpack Compose** for the Android TV receiver app, using
-  `stream-webrtc-android` (Maven Central's maintained `org.webrtc` drop-in).
+- **Python**, managed with [`uv`](https://astral.sh/uv), on the system
+  Python with `--system-site-packages` (for `python-gobject`/GStreamer).
+- **Quickshell/QML** for every on-screen piece, as Omarchy user plugins (see
+  [`quickshell/README.md`](quickshell/README.md)).
+- **`aiortc`** for WebRTC, **`pywayland`** with `wlr-screencopy-unstable-v1`
+  for screen capture (the portal ScreenCast path wedged on this hardware),
+  **Kotlin + Jetpack Compose** with `stream-webrtc-android` for the TV app.
 
-Full reasoning behind each of these choices — including the dead ends — is
-in [`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md).
+Every choice, including the dead ends, is in
+[`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md), and the
+full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
+
+---
+
+## Features
+
+### Agentic work
+
+**Whole tasks (Task Runtime)**
+- `start_task` hands a multi-step goal to a persistent runtime. A worker
+  model writes the objective and acceptance criteria; Jev routes each step
+  to an executor, then directs what happens next (continue, retry, change
+  executor, spawn a subagent, run tests, request review, roll back, ask you,
+  fail or certify).
+- Executors: the **System agent** (runs and combines installed Linux tools,
+  reads local `--help`/man pages for the installed version, launches apps,
+  uses the desktop loop and vision), **direct desktop tools**, **test** and
+  **review** agents, **Claude Code** and **Codex** (detected and used only
+  when installed and logged in). Reviews go to an agent that did not write
+  the change.
+- Certification needs harness evidence: fresh command output after the last
+  change, validated tests run after it, no failed test or review. Jev never
+  sees a raw transcript, and executor claims are marked untrusted.
+- Permission levels: LOW and NORMAL run; ELEVATED (installs, config,
+  service restarts) waits for your OK; HIGH (root, credential access,
+  deleting significant data) needs a click on the notification; BLOCKED
+  (disk erase, `rm -rf ~`, reverse shells) is refused. Code changes get a git
+  checkpoint so they can be rolled back.
+- Tasks are saved after every change, survive restarts, and are announced
+  when they finish, need approval or have a question. Follow them with
+  `omarchy-ai-task`.
+
+**Co-pilot mode**
+- Installs, commands and long jobs run in her own tmux terminals
+  (`terminal_task`), never in your windows or under your keyboard focus.
+- While you're away her work is on your screen; while you're working she
+  carries on in the background and hands it over when you stop for about 30
+  seconds. "Show me" or "in the background" overrides this.
+- Browser tasks run over DevTools, so they don't need focus either.
+
+**Promises, schedules and the heartbeat**
+- `schedule_task`: one-off or recurring reminders (times, intervals, cron),
+  watches, scheduled desktop goals and background commands. They keep
+  running between conversations.
+- Watches follow one of your terminals, one of hers, a file or a command.
+  Jev judges when your condition is true ("the build finished", "Claude is
+  waiting for my approval") and points to the real output line as evidence.
+- When she says she'll tell you when something finishes, she sets up a watch
+  with the next step you asked for ("then start the container"). When it
+  fires she wakes up and tells you; if you're away, she catches you up next
+  time.
+
+**Skills that improve over time**
+- A procedure that worked is saved as a named skill (`SKILL.md` under
+  `~/.config/omarchy-ai/skills/`) and rewritten when it turns out wrong. Jev
+  picks the matching skill with a two-stage check and suggests nothing when
+  none fits.
+
+**Missions (scripted demos)**
+- `run_mission`: give her a file of steps and she performs them in order,
+  narrating each step while its action runs, keeping to the workspace the
+  script names, verifying each step, and stopping to ask instead of
+  improvising when something is missing.
+
+### Terminals, machines and coding agents
+
+- **Readable terminals**: terminals she opens are recorded with `script(1)`;
+  every interactive Bash/Zsh terminal also writes a compact command, cwd and
+  exit-status log, so she understands terminals you opened yourself.
+  Terminals are read by window address, and logs stay readable across daemon
+  restarts and updates.
+- **Verified input**: `type_text`/`press_key` only go to a window whose
+  focus was just verified; results say the input was sent, not that it
+  worked, and she reads the output back. Multi-line text is pasted as one
+  block; a second Enter with nothing typed in between is not sent.
+- **Other machines**: in an ssh session she works on that machine through
+  its terminal, checks the prompt to know where she is, and exits before
+  local work.
+- **Passwords**: sudo prompts in her terminals are answered from the Sudo
+  Access password in GNOME Keyring through a stdin-fed buffer (never in a
+  command line). In your windows she types it into a sudo, or on request
+  ssh/scp, prompt after checking the prompt is there. She never sees it.
+- **Coding-agent relay**: prompts for Claude Code, Codex, aider and other
+  terminal agents are delivered verbatim, submitted, and checked.
+- **Approximate names**: "the Docker folder" finds `docker`; missing paths
+  come back with near names; several matches mean she asks.
+- **Copy, don't invent**: to mirror a setup she copies the real text and
+  changes only what must change; screenshots are never used to write files.
+- Arch-aware shell guidance: `pacman`/`yay`, never `apt`/`dnf`/`brew`.
+
+### Web
+
+**Jev browser**
+- Web tasks run in one dedicated Chromium tab driven by
+  [`browser-use/jev-ultrafast`](https://github.com/browser-use/jev-ultrafast)
+  with screenshots off; each DOM decision is a `typesafe-ai/jev` call.
+  Success is reported only after an independent Jev check confirms the page
+  shows the goal done; otherwise she says where it stopped.
+- The live model breaks requests into literal steps with plain search terms
+  ("eggs", not "a pack of eggs") and asks when something is missing, like
+  which store.
+- New tabs are folded back into the one tab, clicks land on the element
+  itself, a dropped browser connection heals, and a control clicked over and
+  over is capped. Runs stop at 20 actions or 45 seconds.
+
+### Desktop control
+
+About 80 typed tools plus Omarchy's full command set:
+- Volume/mute, mic mute, brightness, night light, Bluetooth, battery, media
+  playback, screenshots, screen lock.
+- Workspaces, window listing/focus/fullscreen/close, and
+  `move_window_to_workspace` in one verified step. Targeting is
+  workspace-aware ("the terminal" is the one on your current workspace), and
+  terminals can be named by what runs in them ("the Claude terminal").
+- `desktop_task`: a Jev observe → act → verify loop for native goals
+  (workspaces, focus, volume, brightness, themes, bar panels), with
+  `search_os_knowledge` over the packaged Omarchy guide and Arch notes. See
+  [research and measured limits](docs/JEV-DESKTOP.md).
+- `list_commands`/`execute_command` reach all ~230 Omarchy keybinding
+  commands; Jev ranks them by meaning in any language, with fuzzy matching
+  as the fallback.
+- `run_omarchy_command` runs a scoped allowlist of the `omarchy` CLI; package
+  installs, updates, reboots and destructive commands are refused.
+- Reminders through Omarchy's own popups (`set_reminder` and friends; she
+  converts "at 3pm" into minutes herself).
+- Launchers for terminal, browser, files and editor.
+- Local files: `list_files`, `read_file`, `write_file`, and exact-replacement
+  edits in your home directory and `/tmp` (add more with `file_access_roots`
+  in `~/.config/omarchy-ai/config.yaml`). New files by default; overwriting
+  only when you ask.
+- Floating name-label badges over candidate windows when she isn't sure
+  which one you mean.
+- `describe_screen`: a screenshot and a vision call, only as a fallback;
+  on a terminal she is pointed to its text instead.
+
+### Voice and conversation
+
+- Local wake word (`openWakeWord`), listening continuously and connecting to
+  a provider only when triggered: no connection, and no per-second billing,
+  outside a conversation. Load any number of custom models from
+  `~/.config/omarchy-ai/wake_models/*.onnx`; "omachy", "omri" and "roni" ship.
+- Three providers: **OpenAI Live** (`gpt-live-1` over WebRTC), **Gemini
+  Live** (full duplex, desktop and phone), and **Omarchi-ai** (turn-based:
+  Jev decisions, Gateway transcription and TTS, a compact model for
+  wording).
+- **Jev fast path**: when you stop talking, Jev reads the utterance; simple
+  commands run at once and are verified. Negated, conditional, multi-part or
+  uncertain requests go to the live model, and the two never repeat or
+  contradict each other.
+- Gemini on the desktop uses private PipeWire echo cancellation without
+  touching other apps' audio devices. Her own voice leaking back can't cut
+  her off (you still can, by speaking up), and a stuck-turn guard answers
+  within about two seconds even with a TV on.
+- Quick actions are quiet: done, then "done". No "switching now" and "I
+  switched" around a 0.1-second action.
+- Ends on "bye"/"that's all" in any language by watching her own spoken
+  farewell.
+- Memory: recent conversations are folded into the next session, and
+  standing preferences ("always type terminal commands in English") are
+  saved with `remember_preference`.
+
+### Casting, phone and TV
+
+**Android TV / projector casting**
+- Screen and system audio over WebRTC: direct `wlr-screencopy` capture,
+  `openh264enc`/Opus, a small local signaling server. Runs in
+  `omarchy-ai-cast.service`, independent of conversations and restarts, with
+  bounded retries.
+- mDNS discovery of Android TVs (`_androidtvremote2._tcp`), a live
+  device-picker overlay you can answer by voice or click, and guided ADB
+  pairing for a TV never set up before.
+- A Kotlin/Compose receiver app (`android-receiver/`) that auto-connects and
+  shows the Omarchy wallpaper while idle.
+- A USB or headset microphone on the TV can wake her and carry the
+  conversation; desktop and TV wake detection run independently.
+
+**Phone bridge**
+- A self-signed HTTPS page on port 8766 (LAN and Tailscale) that a paired
+  phone opens to talk to her: WebRTC to OpenAI, or through this computer's
+  Gemini bridge. API keys stay on the computer.
+- QR pairing from the settings panel: single-use 5-minute token, a signed
+  session cookie, and a hard 403 without it. Pairings can be revoked.
+- A full-screen state field readable across the room (red: can't hear you),
+  an edge-to-edge mirror view, **Text** mode for typing, and **Audio: phone
+  → TV** to route her voice into the TV while mirroring.
+- With Tailscale connected, new pairing QRs use the tailnet address and the
+  certificate covers LAN, tailnet IP and DNS name.
+
+### Surfaces and integrations
+
+**"Watch Dogs" HUD overlay**
+- A Quickshell overlay with a live feed of tool calls, a reactive
+  ASCII/braille visualizer, or both. One colour per state (connecting,
+  listening, thinking, speaking); successful tools tint green, failures red.
+  Driven by the daemon's lifecycle, not by the model.
+
+**Settings panel**
+- A bar panel for provider and keys (OpenAI, Gemini, Jev / Vercel AI
+  Gateway), wake word and sensitivity, voice, HUD mode, Sudo Access, phone
+  pairing and MyApi. It refuses to restart the assistant mid-conversation.
+  The bar icon carries a live-status dot.
+
+**Connect other services (MyApi)**
+- One code from your [MyApi](https://www.myapiai.com) dashboard connects
+  Gmail, Calendar, Drive, Notion, Slack and 200+ services, with no OAuth
+  redirect and no token shown. She prefers a real API call over a browser and
+  a screenshot, read-only for now. Gmail attachments have a dedicated
+  search-and-download flow into `~/Downloads/Omarchy_AI/`.
+- A MyApi bar panel and `omarchy-ai-dashboard` show live per-service usage.
+  Requires a MyApi Pro/Heavy/Enterprise plan.
+
+**Updates, release notes and issues**
+- `check_assistant_updates` / `update_assistant` install checksum-verified
+  GitHub Release bundles in a separate service, keeping the previous install
+  to roll back to. She mentions a new version on wake, offers to go through
+  the highlights (`get_release_notes` reads them from `CHANGELOG.md`), and
+  only installs when you ask.
+- A failed update, or *"file an issue about this"*, can open a GitHub issue
+  when a token is configured.
+
+---
 
 ## Installation
 
@@ -471,142 +510,35 @@ systemctl --user restart omarchy-ai.service
 )
 ```
 
-The block looks up the newest stable `vX.Y.Z` GitHub Release itself, so it
-never needs editing when a new version is published. This repository also has
-a non-package `demo-media` release, which the tag filter skips. To install a
-specific version instead, replace the `version=...` lines with, for example,
-`version=0.4.1`. The `.sha256` file is
-checked with `sha256sum` before the archive is unpacked.
+The block finds the newest stable `vX.Y.Z` release itself (the non-package
+`demo-media` release is skipped), so it never needs editing. To install a
+specific version, replace the `version=...` lines with, for example,
+`version=0.5.0`. The `.sha256` file is checked before the archive is unpacked.
 
-Keep the extracted directory: the service runs from it. The installer installs
-missing native packages, creates the locked Python environment, installs the desktop plugins,
-copies the bundled wake-word models, creates the user config, and installs the
-systemd service. It does not guess or overwrite your API key. Open the
-**Omarchy AI** settings panel on the right side of the bar, choose **OpenAI**,
-**Gemini**, or **Gateway voice**, add that provider's key, then
-press **Apply saved changes**.
-For Jev desktop and browser actions while using OpenAI Live or Gemini Live,
-also save a **Jev / Vercel AI Gateway key** in the same panel. This integration
-uses the Gateway key for Jev; it does not accept a separate TypeSafe token.
-Keys are saved with owner-only permissions in `~/.config/omarchy-ai/key`
-or `~/.config/omarchy-ai/gemini-key`; Omarchy-ai stores its Vercel AI Gateway
-key in `~/.config/omarchy-ai/vercel-ai-gateway-key`. Saved keys show an
-**Edit key** button.
-New installs default to the `omachy` wake word and ASCII visualizer; existing
-preferences are not overwritten. Refresh paired phone pages after upgrading.
+Keep the extracted directory: the service runs from it. The installer
+installs missing native packages, creates the locked Python environment,
+installs the desktop plugins, copies the wake-word models, creates the user
+config and installs the systemd service. It never guesses or overwrites your
+API key.
 
-For an existing source checkout, pull the update with `git pull --ff-only`,
-run `bash install.sh` there, then restart `omarchy-ai.service`.
+Then open the **Omarchy AI** settings panel on the right side of the bar,
+choose **OpenAI**, **Gemini** or **Gateway voice**, add that provider's key,
+and press **Apply saved changes**. For Jev desktop, browser and Task Runtime
+decisions, also save a **Jev / Vercel AI Gateway key** (this integration uses
+the Gateway key; it does not take a separate TypeSafe token). Keys are saved
+owner-only in `~/.config/omarchy-ai/key`, `gemini-key` and
+`vercel-ai-gateway-key`. To let her answer sudo prompts, enable **Sudo
+Access**; the password is kept in GNOME Keyring. New installs default to the
+`omachy` wake word and the ASCII visualizer. Refresh paired phone pages after
+upgrading.
 
-### Voice updates
-
-Omarchy checks GitHub Releases at startup and every 15 minutes. A release
-counts when its tag is a stable `vX.Y.Z` (for example `v0.4.1`) and it has
-both `omarchy-ai-X.Y.Z-linux-x86_64.tar.gz` and the matching `.sha256` asset.
-The `demo-media` release, drafts, and prereleases are ignored. On wake, it
-refreshes an expired check with a 2-second foreground limit and recommends a
-newer version in its first spoken reply. Offline checks do not prevent
-conversation.
-
-Say **“Check for updates”**, **“Update yourself”**, or **“What's the update
-status?”**. Only an explicit update request starts installation. The updater
-downloads the archive and its `.sha256` from the same release, verifies the
-checksum, unpacks the bundle, and prepares a new Python environment before
-stopping the assistant. It keeps your API keys, settings, conversation history,
-and existing source checkout. The conversation disconnects when the new version
-starts.
-
-The updater runs in the separate `omarchy-ai-update.service` user unit. It
-retains the previous installation and backs up the service and shell integration;
-if setup or startup fails, it restores them. Progress and errors are stored in
-`~/.local/state/omarchy-ai/updates/install.json`; detailed output is available via
-`journalctl --user -u omarchy-ai-update.service`. Updates require existing native
-runtime dependencies and `uv`; missing system packages are reported rather than
-prompting for sudo from a background voice session. Android receiver updates
-remain separate from the desktop assistant update.
-
-Historical bundles still committed under [`dist/`](dist/) stay in the version
-list. The highest version wins. When that version is a GitHub Release, the
-download URL is
-`https://github.com/omribenami/Omarchy-AI/releases/download/vX.Y.Z/omarchy-ai-X.Y.Z-linux-x86_64.tar.gz`
-(and the sibling `.sha256`). That is the download GitHub counts. A failure to
-list releases aborts the check.
-
-Publish a GitHub Release tagged `vX.Y.Z` with a **higher `pyproject.toml`
-version**, and attach both the archive and its `.sha256`. Same-version source
-commits are not updates. Updates download and run the project's installer.
-Integrity is the SHA-256 file shipped as a Release asset (the checksum is not
-a separate publisher signature). See [Build a release package](#build-a-release-package).
-Leave the historical `dist/` archives in git; new tarballs are Release assets.
-
-If a self-update fails and this machine has a GitHub issue token configured
-(below), Omarchy automatically files a GitHub issue on this repo with the
-failure details and reports the issue's URL via `get_update_status`; without
-a token it reports honestly that no issue could be filed rather than pretending
-one was. The same mechanism backs a general `report_issue` voice tool — say
-something like *"file an issue about this"* for any problem, not just a failed
-update. Set the token with:
-```bash
-GITHUB_ISSUE_TOKEN=<a fine-grained PAT, Issues: write only on omribenami/Omarchy-AI> \
-  .venv/bin/python -m omarchy_ai.cli.settings set-github-issue-token
-```
-This is opt-in and per-machine — no install ships with a token, and nothing
-tries to file an issue on a machine that hasn't set one. The token is stored
-0600 at `~/.config/omarchy-ai/github-issue-token`;
-`forget-github-issue-token` removes it.
-
-### Jev desktop worker with live conversation
-
-OpenAI and Gemini Live can delegate native OS goals to `desktop_task` while
-remaining the conversational model. Jev selects typed operations and observed
-targets; code checks freshness, executes existing actions and verifies native
-state afterward. Supported areas are workspaces, window focus, output volume,
-brightness, installed themes and bar panels. Vision, generated text, complex
-planning and unsupported work remain with the live model and its other tools.
-
-The worker uses the configured Vercel Gateway key. `search_os_knowledge` retrieves
-the packaged Omarchy expert guide, capability registry and Arch operation notes.
-Uncertain decisions and unverified outcomes return a trace and any verified
-steps to the live model. See [research, architecture and measured limits](docs/JEV-DESKTOP.md).
-
-Web tasks run through the upstream
-[`browser-use/jev-ultrafast`](https://github.com/browser-use/jev-ultrafast)
-`Agent` with screenshots disabled. Each DOM decision explicitly requests
-`typesafe-ai/jev`; a small Gateway text model is used only when a field needs
-generated text. Release bundles include a pinned Jev Ultrafast wheel and the
-installer verifies that its `Agent` imports successfully. Browser runs stop at
-20 actions or 45 seconds rather than continuing an unproductive loop.
-
-### Omarchi-ai (Jev + Vercel AI Gateway)
-
-Omarchi-ai is the third provider. It uses `typesafe-ai/jev` through Vercel AI
-Gateway for typed, confidence-aware action/end-of-conversation/risk decisions;
-Jev is an evaluation model, not a chat text generator. Gateway's
-`openai/gpt-4o-mini-transcribe` performs automatic multilingual transcription,
-`openai/tts-1` returns low-latency PCM speech, and a compact Gateway language
-model supplies conversational wording and tool arguments only after Jev's
-decision. The existing Watch Dogs visualizer remains live because it is driven
-from the PCM samples sent to PipeWire.
-
-This provider captures one spoken turn at a time (the configured speak window),
-unlike the WebRTC full-duplex OpenAI and Gemini Live providers. The phone bridge
-continues to listen securely on port 8766 for pairing, mirroring, and the two
-realtime phone providers; Gateway turn-based phone voice is not exposed as a
-misleading WebRTC Live session.
-
-### Persistent preferences
-
-You can give the assistant a standing instruction in conversation, for
-example: “Always type terminal commands in English.” It saves explicit,
-general preferences with its `remember_preference` tool and applies them in
-future sessions. One-off requests are not saved as preferences.
+For an existing source checkout: `git pull --ff-only`, `bash install.sh`,
+then restart `omarchy-ai.service`.
 
 ### Release package
 
-Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` file
-from the GitHub Release `v<version>`
-(`https://github.com/omribenami/Omarchy-AI/releases/download/v<version>/`),
-verify it, then unpack and install:
+Download `omarchy-ai-<version>-linux-x86_64.tar.gz` and its `.sha256` from the
+GitHub Release `v<version>`, then:
 
 ```bash
 sha256sum -c omarchy-ai-<version>-linux-x86_64.tar.gz.sha256
@@ -615,19 +547,16 @@ cd omarchy-ai-<version>-linux-x86_64
 ./install.sh
 ```
 
-The bundle includes the Android receiver at
-`android/omarchy-ai-receiver.apk`. The installer sets up the desktop service
-and plugins, and requests installation of missing native packages via pacman.
-It does not alter firewall rules. It prints the `adb install -r` command for
-the receiver. The archive contains the app wheel/source, dependency lockfile,
-plugins, wake models, and prebuilt APK; Python dependencies and native packages
-are downloaded during installation, so this is not an offline installer.
+The bundle contains the app wheel and source, the dependency lockfile,
+plugins, wake models, a pinned Jev Ultrafast wheel (the installer checks its
+`Agent` imports) and the Android receiver at `android/omarchy-ai-receiver.apk`.
+It does not change firewall rules, and prints the `adb install -r` command
+for the receiver. Python dependencies and native packages are downloaded
+during installation, so it is not an offline installer.
 
 ### From source
 
-**1. Native dependencies** (needs `sudo`; see
-[`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md) for the full list and why
-each is needed):
+**1. Native dependencies** (see [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md)):
 
 ```bash
 sudo pacman -S --needed android-tools gst-plugins-bad gst-plugins-good \
@@ -635,10 +564,9 @@ sudo pacman -S --needed android-tools gst-plugins-bad gst-plugins-good \
 yay -S android-sdk-cmdline-tools-latest
 ```
 
-GStreamer, PipeWire, `xdg-desktop-portal-hyprland`, `avahi-daemon`, and
-`python-gobject` ship on a stock Omarchy install already — the setup script
-checks them, and `install.sh` installs missing runtime packages. The Android
-SDK and Gradle are needed only to rebuild the receiver, not to use the bundle.
+GStreamer, PipeWire, `xdg-desktop-portal-hyprland`, `avahi-daemon` and
+`python-gobject` ship with Omarchy; `install.sh` installs missing runtime
+packages. The Android SDK and Gradle are only needed to rebuild the receiver.
 
 **2. Clone and install:**
 
@@ -648,30 +576,21 @@ cd ~/Git/omarchy-ai
 bash install.sh
 ```
 
-`setup.sh` creates a `uv`-managed venv **with `--system-site-packages`**
-(required so it can see the system's `python-gobject`/GStreamer bindings —
-a plain `uv venv` will not work here), runs `uv sync`, writes a starter
-`~/.config/omarchy-ai/config.yaml`, and installs the systemd user unit from
-`systemd/omarchy-ai.service`.
+`setup.sh` creates a `uv` venv **with `--system-site-packages`** (a plain
+`uv venv` can't see the system GStreamer bindings), runs `uv sync`, writes a
+starter `~/.config/omarchy-ai/config.yaml` and installs the systemd user unit.
 
-**3. Set your OpenAI API key** (needs `gpt-live-1` access). The real,
-secure path is the settings panel's key field, which writes it to
-`~/.config/omarchy-ai/key` with `0600` permissions and never round-trips
-the value back out anywhere. Without the Quickshell panel installed (see
-the gap below), the same mechanism is reachable directly:
+**3. API key.** Use the settings panel, which writes the key `0600` and never
+echoes it back. Without the panel, pipe it on stdin (never as an argument,
+since argv is readable through `/proc/<pid>/cmdline`):
 
 ```bash
 echo -n "sk-..." | .venv/bin/omarchy-ai-settings set-api-key
 ```
 
-(Piped via stdin deliberately — never as a command-line argument, since
-argv is readable by any process on the machine via `/proc/<pid>/cmdline`.)
-
-**4. Wake word:** three real, trained openWakeWord models ship in
-[`wake_models/`](wake_models/) — "omachy" (the default), "omri", and
-"roni" — installed to `~/.config/omarchy-ai/wake_models/` automatically by
-`setup.sh`. Any of the three wakes it; drop in more `.onnx` models of your
-own there to add to the set, or remove these to replace them entirely.
+**4. Wake word:** "omachy" (default), "omri" and "roni" ship in
+[`wake_models/`](wake_models/) and are installed to
+`~/.config/omarchy-ai/wake_models/`. Add or remove `.onnx` models there.
 
 **5. Enable and start the service:**
 
@@ -680,187 +599,148 @@ systemctl --user enable --now omarchy-ai
 journalctl --user -u omarchy-ai -f
 ```
 
-**6. Open firewall ports**, if you want casting or the phone bridge
-reachable from other devices on your LAN — `ufw` (or your firewall of
-choice) blocks these by default:
+**6. Firewall**, if casting or the phone bridge should be reachable on your
+LAN (adjust the subnet):
 
 ```bash
 sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp  # casting signaling
 sudo ufw allow from 192.168.1.0/24 to any port 8766 proto tcp  # phone bridge
 ```
 
-(Adjust the subnet to your own LAN.)
+For the phone bridge over Tailscale, both devices must be on the tailnet and
+its rules must allow TCP 8766. Restart the service if Tailscale connects after
+it started, to refresh the certificate, and pair again after a hostname or IP
+change.
 
-**7. Android receiver app** (only needed for TV/projector casting): the
-release package includes a ready-to-install APK. From source, it is built
-automatically on first `install_receiver_on_tv` call, or manually via
-`cd android-receiver && mise exec -- ./gradlew :app:assembleDebug`. Building
-from source needs the JDK/Android SDK pinned in `mise.toml` — run `mise
-install` in that directory first.
+**7. Android receiver** (casting only): the release package includes the APK.
+From source it is built on the first `install_receiver_on_tv` call, or with
+`cd android-receiver && mise exec -- ./gradlew :app:assembleDebug` (run
+`mise install` there first for the pinned JDK/SDK).
 
-**8. Connect services via MyApi** (optional, needs a
-[MyApi](https://www.myapiai.com) Pro/Heavy/Enterprise account): flip
-"Enable" in the settings panel's "Connect services to Omarchy AI" section
-— a separate MyApi bar icon appears — open it, click through to
-myapiai.com to generate a one-time connection code from your dashboard,
-paste it in, and click Connect. Without the Quickshell panels installed,
-the same mechanism is reachable directly:
+**8. MyApi** (optional): flip **Enable** in the settings panel's "Connect
+services" section, open the MyApi bar icon, generate a one-time code on
+myapiai.com, paste it and click **Connect**. Or:
 
 ```bash
 echo -n "MYAPI-XXXXXXXX-XXXXXXXX" | .venv/bin/omarchy-ai-settings connect-myapi
 ```
 
-Then `omarchy-ai-dashboard` shows live per-service usage in a terminal.
+---
 
-### Build a release package
+## Updates
 
-Maintainers build the archive from a clean, committed checkout, then publish
-it as a GitHub Release. The tarball is not a new git commit.
+Omarchy AI checks GitHub Releases at startup and every 15 minutes. A release
+counts when its tag is a stable `vX.Y.Z` and it has both
+`omarchy-ai-X.Y.Z-linux-x86_64.tar.gz` and the matching `.sha256`; drafts,
+prereleases and `demo-media` are ignored. On wake she refreshes an expired
+check (2-second limit) and mentions a newer version in her first reply.
+Offline checks never block a conversation.
 
-1. Bump `version` in `pyproject.toml`, run `uv lock`, and set the same
-   `version=` in the fast-install block above. Commit and push that source.
+Say **"Check for updates"**, **"Update yourself"** or **"What's the update
+status?"**. Only an explicit request installs. The updater verifies the
+checksum, unpacks the bundle and prepares a new environment before stopping
+the assistant, keeping your keys, settings, history and source checkout. It
+runs in `omarchy-ai-update.service`, keeps the previous install, and restores
+it if setup or startup fails. Progress is in
+`~/.local/state/omarchy-ai/updates/install.json`, output in
+`journalctl --user -u omarchy-ai-update.service`. Missing system packages are
+reported rather than prompting for sudo from a background session. Android
+receiver updates are separate.
+
+Historical bundles under [`dist/`](dist/) stay in the version list; the
+highest version wins. Integrity is the SHA-256 file shipped as a Release asset
+(not a separate publisher signature).
+
+**Issue reporting.** With a GitHub token configured, a failed self-update
+files an issue with the details, and *"file an issue about this"* works for
+any problem (`report_issue`). Without a token she says honestly that nothing
+was filed. Opt-in, per machine, stored `0600` at
+`~/.config/omarchy-ai/github-issue-token`:
+
+```bash
+GITHUB_ISSUE_TOKEN=<a fine-grained PAT, Issues: write only on omribenami/Omarchy-AI> \
+  .venv/bin/python -m omarchy_ai.cli.settings set-github-issue-token
+```
+
+`forget-github-issue-token` removes it.
+
+---
+
+## Maintainers: build and publish a release
+
+Build from a clean, committed checkout; the tarball is a Release asset, not a
+git commit.
+
+1. Bump `version` in `pyproject.toml`, run `uv lock`, and rename
+   `## [Unreleased]` in `CHANGELOG.md` to `## [<version>] - <date>` (its
+   `### Highlights` are what she reads aloud as "what's new"). Commit and push.
 2. Build:
 
-```bash
-./scripts/build-install-package.sh
-```
+   ```bash
+   ./scripts/build-install-package.sh
+   ```
 
-This writes `dist/omarchy-ai-<version>-linux-x86_64.tar.gz` and a SHA-256
-checksum beside it. It builds the Python wheel and source distribution, a
-fresh Android receiver APK, and packages all tracked runtime files. Native
-Omarchy packages are verified by `scripts/check-dependencies.sh` during
-installation and remain listed in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
-Pass `--skip-android` to omit the Gradle build (the slowest step) and ship a
-bundle without the receiver APK — `install.sh` skips the optional `adb install`
-step when it's absent. `dist/` is gitignored for files that are not already
-tracked. Leave the historical archives in place; do not `git add` a new tarball.
+   This refuses a dirty checkout, a stale `uv.lock` or a version without
+   CHANGELOG highlights, then writes `dist/omarchy-ai-<version>-linux-x86_64.tar.gz`
+   and its `.sha256`: the Python wheel and sdist, a fresh receiver APK
+   (`--skip-android` omits it) and all tracked runtime files. `dist/` is
+   gitignored; don't `git add` new tarballs.
+3. Publish tag `v<version>` with both files. HEAD must be `origin/main`.
+   Dry-run prints the `gh` command and REST steps; `--publish` uploads.
 
-3. Publish tag `v<version>` with those two files as Release assets. HEAD must
-   be `origin/main` (push the version commit first). Dry-run prints the `gh`
-   command and the REST API steps; `--publish` performs the upload. The
-   fast-install block always installs the newest stable `vX.Y.Z` release, so
-   it picks up the new version as soon as it is published, with no README
-   edit.
+   ```bash
+   .venv/bin/python scripts/publish-github-release.py          # inspect
+   .venv/bin/python scripts/publish-github-release.py --publish
+   ```
 
-```bash
-.venv/bin/python scripts/publish-github-release.py          # inspect
-.venv/bin/python scripts/publish-github-release.py --publish
-```
-
-The publisher uses the `gh` CLI when it is on `PATH`. Otherwise it uses
-`GH_TOKEN` or `GITHUB_TOKEN` (contents: write) against the GitHub REST API:
-create `POST /repos/omribenami/Omarchy-AI/releases` when tag `v<version>` has
-no release yet, then upload each file to
-`https://uploads.github.com/repos/omribenami/Omarchy-AI/releases/<id>/assets?name=<filename>`.
-Re-running deletes and replaces those two assets. The exact headers and JSON
-body are in the script's dry-run output and its module docstring.
-
-GitHub counts downloads of each Release asset. On the release page the count
-is beside the file. API:
-`GET https://api.github.com/repos/omribenami/Omarchy-AI/releases/tags/v<version>`
-field `assets[].download_count`. The `.tar.gz` count is the package download
-count; the `.sha256` count is separate.
+The publisher uses `gh` when available, otherwise `GH_TOKEN`/`GITHUB_TOKEN`
+(contents: write) against the REST API; re-running replaces the two assets.
+Download counts are `assets[].download_count` on the release, or:
 
 ```bash
 gh release view v<version> --repo omribenami/Omarchy-AI --json assets \
   --jq '.assets[] | {name, downloadCount}'
 ```
 
-If the checkout has no local GitHub credential, a connected MyApi identity can
-still publish the **source commit** through its GitHub connection. It refuses
-a dirty checkout, refuses to advance `main` if the remote moved after it was
-fetched, and refuses to push `dist/omarchy-ai-*.tar.gz` or its `.sha256`
-(those bytes are the Release upload above, which MyApi's JSON GitHub proxy
-does not send):
+Without a local GitHub credential, a connected MyApi identity can publish the
+**source commit** (it refuses a dirty checkout, a moved `main`, and the
+tarball bytes); run the Release publisher afterwards on a machine with `gh`:
 
 ```bash
-.venv/bin/python scripts/publish-via-myapi.py          # inspect the exact change set
-.venv/bin/python scripts/publish-via-myapi.py --publish # create one commit on main
+.venv/bin/python scripts/publish-via-myapi.py          # inspect the change set
+.venv/bin/python scripts/publish-via-myapi.py --publish
 ```
 
-Run `scripts/publish-github-release.py` on a machine that has `gh` or a token
-after that commit is on `main`.
+---
 
-### Known gaps
+## Known gaps
 
 Documented honestly rather than papered over:
 
-- **The daemon degrades gracefully without the Quickshell plugins enabled**
-  (the IPC calls to the HUD/window-labels/status-dot just log a warning and
-  continue) — but note that `omarchy-ai.settings/Panel.qml`'s path to the
-  settings CLI is hardcoded to this project's original checkout location;
-  see [`quickshell/README.md`](quickshell/README.md) if you cloned
-  somewhere else.
-- **The policy/permission layer described in `docs/ADR-0001-architecture.md`
-  (read-only / reversible / confirm-required / denied-by-default tool
-  tiers) is designed but not implemented as a separate enforcement layer**
-  — today the tool list itself is hand-curated to only expose read-only and
-  reversible actions (see `src/omarchy_ai/execution/tools.py`'s own
-  docstring), which is a real but informal version of that same idea.
-- **Phone bridge has no per-phone action history**, and doesn't (yet) drive
-  the bar's live-status dot or the HUD overlay the way the desktop client
-  does.
-- **Audio quality on casting** is verified for video (steady 15fps, zero
-  drops in testing) but not yet measured with the same rigor for the audio
-  branch.
-- **MyApi calls are read-only** — Gmail attachment search/download uses
-  MyApi's POST-based provider-read transport, while the generic service
-  tool remains GET-only. Sending an email or creating a calendar event
-  through MyApi isn't wired up.
-  Disconnecting from the Omarchy AI settings panel only stops this machine
-  from using the connection — no programmatic revoke was found on MyApi's
-  side, so fully cutting access also means removing the device from your
-  MyApi dashboard.
+- **Permissions are enforced in the Task Runtime, not yet for every live
+  tool.** Task Runtime commands go through the risk classifier and
+  approvals. The live model's own tools are still a hand-curated list of
+  read-only and reversible actions (plus Sudo Access, which you enable
+  explicitly), not a separate enforcement layer.
+- **Behaviour rules are prompts.** "Which machine", "copy, don't invent" and
+  "no promise without a watch" were verified against the live model with
+  scripted terminals, and still depend on the model following them; she can
+  still call a job done before reading the final check.
+- **The phone bridge** has no per-phone action history and doesn't drive the
+  bar's status dot or the HUD. The stuck-turn guard is desktop-only.
+- **Casting audio** is not yet measured as rigorously as video (steady 15fps,
+  zero drops in testing).
+- **MyApi is read-only**: sending mail or creating events isn't wired up.
+  Disconnecting in the panel only stops this machine; remove the device in
+  your MyApi dashboard to fully revoke access.
+- The settings panel's path to the settings CLI is hardcoded to the original
+  checkout location; see [`quickshell/README.md`](quickshell/README.md) if you
+  cloned elsewhere. The daemon runs fine without the plugins (IPC calls just
+  log a warning).
 
-See [`STATUS.md`](STATUS.md) for the full, unabridged debugging history —
-every bug found, how it was diagnosed, and how it was fixed — and
-[`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md) for the
-architecture decisions behind all of the above.
+See [`STATUS.md`](STATUS.md) for the full debugging history and
+[`docs/`](docs/) for the architecture decisions.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-### Phone voice over Tailscale and mirrored-TV audio
-
-The HTTPS phone bridge listens on port **8766** on LAN and Tailscale.
-When Tailscale is connected, a newly generated **Pair phone** QR uses its
-IPv4 address; otherwise it uses LAN. The TLS certificate includes both
-addresses and the Tailscale DNS name. Pair again when changing hostname/IP:
-browser pairing cookies belong to the address used. Restart the assistant
-service if Tailscale is first connected after the service started, to refresh
-the certificate. Both devices must be on the tailnet and its access rules
-must permit TCP 8766. Direct access uses the existing self-signed certificate.
-
-The mobile page is a full-screen glyph field: red when idle, green ripples
-where you tap, and desktop cyan while live, responding to assistant audio.
-Tap the field to start/end a conversation; transcripts are optional.
-
-During a connected screen mirror, **Audio: phone → TV** routes assistant
-speech into the casting sender's existing audio track. Tap **Audio: TV** to
-return to the phone. Ending mirroring or a failed audio upload automatically
-returns playback to the phone. This uses the existing Android receiver and
-requires no new APK. Start a fresh mirror after updating the sender script.
-The phone must support AudioWorklet (HTTPS); PCM uploads are bounded and drop
-packets on slow links to avoid accumulating delayed speech.
-
-Tap **Text** to type without microphone access. Replies stream into the
-transcript and text mode stays silent. **Voice** switches the same connected
-session back to microphone input. Connection failures preserve the draft.
-
-### Mirror recovery and TV microphones
-
-Mirroring runs in `omarchy-ai-cast.service`, independently of voice conversations
-and assistant restarts. Ask the assistant to start/stop casting as usual.
-Connection failures and bounded retries are recorded in:
-
-```sh
-journalctl --user -u omarchy-ai-cast.service -u omarchy-ai-signaling.service -f
-```
-
-A USB microphone or wired headset with a microphone plugged into the receiver
-can supply the assistant's wake word and conversation audio. Grant the receiver's
-microphone permission; **TV microphone active** appears when the external input
-is available. Desktop and TV wake-word detection run independently. A conversation
-uses the microphone that heard its wake word; losing TV audio falls back to the
-desktop microphone. An attached TV microphone never disables desktop wake detection.
