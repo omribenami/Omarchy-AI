@@ -11,6 +11,11 @@ intents plus a gate) reads the transcribed request as soon as the user
 pauses. Only an unambiguous single command from a small, code-owned action
 set is executed, then verified. Everything else, including anything
 conditional, negated, multi-part or uncertain, goes to Gemini as before.
+
+The same Jev call also classifies the request into a ROUTE: the fast first
+pass of the switchboard (voice/switchboard.py). Gemini then generates the
+payload, and the switchboard's second pass uses this route when it makes
+the final decision on each of Gemini's tool calls.
 """
 from __future__ import annotations
 
@@ -37,6 +42,19 @@ ACTIONS.update({
     "fullscreen": ("window_fullscreen_toggle", {}, "Make the focused window fullscreen, or leave fullscreen."),
 })
 
+ROUTES = {
+    "instant": "One simple desktop command: a workspace, moving the focused window, volume, media, fullscreen.",
+    "desktop_goal": "Another native desktop goal: focusing or arranging windows, brightness, theme, bar panels.",
+    "web": "Something to do on a website.",
+    "whole_task": "A job the assistant itself must carry out in several steps: investigation or diagnosis, an "
+                  "install or configuration, or a code change with tests. Not text to pass on to someone else.",
+    "terminal": "Typing or running something in a specific terminal, or passing dictated text on to a coding "
+                "agent ('tell Claude: ...', 'send this to Codex'), whatever that text asks for.",
+    "files": "Reading or writing files on this computer.",
+    "info": "A question answered by reading state or looking something up.",
+    "conversation": "Talk only, no action.",
+}
+
 THRESHOLD = 0.95        # desktop_jev's mutation bar
 SINGLE_THRESHOLD = 0.9
 
@@ -55,25 +73,33 @@ def questions() -> dict:
             "Does `request` ask the assistant to do exactly one simple desktop action right now? A polite "
             "request phrased as a question ('can you switch to...?') counts. It does not count if it asks for "
             "information, adds a second task, sets a condition, or says not to do it."),
+        "route": choice("What kind of request is the user's latest `request`?", ROUTES),
     }
 
 
-def decide(text: str, jev: Jev | None = None) -> tuple[str, dict, dict] | None:
-    """(tool, args, evidence) for a clear fast command, else None."""
+def judge(text: str, jev: Jev | None = None) -> tuple[tuple[str, dict, dict] | None, dict | None]:
+    """First pass: ((tool, args, evidence) for a clear fast command or None,
+    {"route", "p"} or None when Jev is unavailable)."""
     text = " ".join(str(text or "").split())
     if not 2 <= len(text) <= 300:
-        return None
+        return None, None
     try:
         answers = (jev or Jev()).ask({"request": text}, questions(), timeout=3, retries=1)
     except JevError as exc:
         log.info("Jev fast path unavailable: %s", str(exc)[:120])
-        return None
+        return None, None
+    route = {"route": answers["route"]["choice"], "p": round(answers["route"]["p"], 2)}
     command, single = answers["command"], answers["single"]["p"]
     evidence = {"choice": command["choice"], "p": round(command["p"], 2), "single": round(single, 2)}
     if command["choice"] == "other" or command["p"] < THRESHOLD or single < SINGLE_THRESHOLD:
-        return None
+        return None, route
     tool, args, _ = ACTIONS[command["choice"]]
-    return tool, dict(args), evidence
+    return (tool, dict(args), evidence), route
+
+
+def decide(text: str, jev: Jev | None = None) -> tuple[str, dict, dict] | None:
+    """(tool, args, evidence) for a clear fast command, else None."""
+    return judge(text, jev)[0]
 
 
 def _active_workspace():
