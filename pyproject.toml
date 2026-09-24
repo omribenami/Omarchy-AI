@@ -35,6 +35,8 @@ omarchy-ai = "omarchy_ai:main"
 # absolute .venv/bin path from QML (same reasoning as the systemd unit's
 # @VENV@/bin/python), this entry point just makes it easy to run by hand.
 omarchy-ai-settings = "omarchy_ai.cli.settings:main"
+# Task Runtime CLI -- see src/omarchy_ai/cli/task.py.
+omarchy-ai-task = "omarchy_ai.cli.task:main"
 # Live terminal dashboard for the MyApi integration — see
 # src/omarchy_ai/cli/dashboard.py's module docstring.
 omarchy-ai-dashboard = "omarchy_ai.cli.dashboard:main"

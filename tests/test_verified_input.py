@@ -32,6 +32,26 @@ class InputGuardTests(unittest.TestCase):
         self.assertIn('NOT verified', result.message)
         self.execute.assert_called_with('type_text', {'text': 'hello'})
 
+    def test_typed_text_says_it_is_not_submitted_and_where_to_read(self):
+        # 2026-09-24: 'ls' typed ten times without Return; the log read came
+        # from another terminal with the same title.
+        self.guard.run(self.execute, 'focus_window', {'target': self.address})
+        typed = self.guard.run(self.execute, 'type_text', {'text': 'ls'})
+        self.assertIn('press_key Return', typed.message)
+        self.assertIn("read_tile_log window='0x123'", typed.message)
+        pressed = self.guard.run(self.execute, 'press_key', {'key': 'Return'})
+        self.assertNotIn('press_key Return', pressed.message)
+
+    def test_a_second_return_with_nothing_typed_is_not_sent(self):
+        self.guard.run(self.execute, 'focus_window', {'target': self.address})
+        self.guard.run(self.execute, 'type_text', {'text': 'ssh host'})
+        self.guard.run(self.execute, 'press_key', {'key': 'Return'})
+        second = self.guard.run(self.execute, 'press_key', {'key': 'Return'})
+        self.assertIn('Not pressed', second.message)
+        self.assertEqual([c.args[0] for c in self.execute.call_args_list].count('press_key'), 1)
+        self.guard.run(self.execute, 'type_text', {'text': 'ls'})
+        self.assertNotIn('Not pressed', self.guard.run(self.execute, 'press_key', {'key': 'Return'}).message)
+
     def test_focus_change_blocks_return_until_refocused(self):
         self.guard.run(self.execute, 'focus_window', {'target': self.address})
         self.address = '0x456'

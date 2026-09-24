@@ -135,6 +135,12 @@ class GeminiLiveSession:
         self._barge_open = False
         self._gated_frames = 0
         self._barge_count = 0
+        self._splice_armed = False   # user words transcribed, no reply yet
+        self._splice_until = 0.0
+        self._loud_run = 0
+        self._last_loud_at = 0.0
+        self._spliced_at = 0.0
+        self._splices = 0
         # Jev fast path (voice/jev_fast.py): the current utterance, whether
         # Jev has judged it, and what Jev last did (dedupe against Gemini).
         self._turn_done = asyncio.Event()  # set on every Gemini turn_complete
@@ -178,6 +184,7 @@ class GeminiLiveSession:
                     from ..execution.browser_jev import cancel_browser_tasks
                     cancel_browser_tasks()
                 if message.tool_call:
+                    self._replied()
                     for call in message.tool_call.function_calls or []:
                         if call.name == "end_conversation":
                             from ..execution.browser_jev import cancel_browser_tasks
@@ -205,6 +212,9 @@ class GeminiLiveSession:
                             if self._utterance_checked:
                                 self._utterance, self._utterance_checked = [], False
                             self._utterance.append(transcription.text)
+                            self._splice_armed = True
+                if server.interrupted or server.turn_complete:
+                    self._replied()
                 if server.interrupted:
                     self._interruptions += 1
                     now = time.monotonic()
@@ -239,6 +249,7 @@ class GeminiLiveSession:
                 if server.model_turn:
                     for part in server.model_turn.parts or []:
                         if part.inline_data and part.inline_data.data:
+                            self._replied()
                             self._awaiting_since = 0.0
                             self._received_audio_bytes += len(part.inline_data.data)
                             self._audio.put_nowait((self._generation, part.inline_data.data))
@@ -538,9 +549,76 @@ class GeminiLiveSession:
     BARGE_FLOOR_RMS = 6000.0
     BARGE_FRAMES = 5            # 5 x 20ms of sustained loud speech
 
+    # Stuck-turn guard. Real sessions 2026-09-23 (23:38, 23:44 and five
+    # more over a day): the user's words were transcribed, then no reply for
+    # 40-108s; repeats were transcribed too and finally answered together as
+    # ONE turn -- Gemini's end-of-speech detection never closed the turn.
+    # Reproduced against the live API (STATUS.md): steady room noise, even
+    # at 60% mic gain, is answered in <1s, but background SPEECH-LIKE sound
+    # (TV, people, at a tenth of the user's level) keeps the turn open for
+    # 40s+; audio_stream_end does not close it. 0.8s of digital silence does,
+    # reply ~0.9s later. So once the user's words have stopped for
+    # SPLICE_AFTER_SECONDS with no reply started, send silence -- and keep
+    # it until her reply starts (at most SPLICE_SECONDS): a louder background
+    # talker otherwise counts as a new user turn and cuts her reply off
+    # before it starts (probe: closed 3 times, never answered). That is the
+    # same rule as while she speaks: only the user's own loud voice passes.
+    # "The user's words" are both transcripts and runs of speech-loud mic
+    # frames: under background speech the live API also withheld the
+    # transcript until the turn closed.
+    # With a clean room Gemini's own 600ms end-of-speech has already fired
+    # by then, so this only ever acts on a turn that is stuck anyway. A
+    # few frames that could be the user talking again (logged user speech
+    # 5100+, room at session gain well below; one frame is just a keyboard
+    # click) end or prevent the splice: a missed splice is only the old
+    # behavior, a clipped sentence is worse.
+    SPLICE_AFTER_SECONDS = 1.5
+    SPLICE_SECONDS = 4.0
+    SPLICE_ABORT_RMS = 3500.0
+    SPLICE_ABORT_FRAMES = 3
+
+    def _replied(self) -> None:
+        if self._spliced_at:
+            log.info("Stuck-turn guard: reply %.1fs after the silence splice", time.monotonic() - self._spliced_at)
+            self._spliced_at = 0.0
+        self._splice_armed = False
+        self._splice_until = 0.0
+
+    def _splice(self, chunk: bytes, rms: float, now: float, speaking: bool) -> bytes | None:
+        """Silence to send instead of this frame, if a stuck turn needs closing."""
+        loud = rms >= self.SPLICE_ABORT_RMS
+        self._loud_run = self._loud_run + 1 if loud else 0
+        if self._loud_run >= self.SPLICE_ABORT_FRAMES and not speaking:
+            # The user talking (again): wait for them to stop first.
+            self._last_loud_at, self._splice_armed, self._splice_until = now, True, 0.0
+            return None
+        if self._splice_until:
+            if now < self._splice_until:
+                return bytes(len(chunk))
+            self._splice_until = 0.0
+            return None
+        if not self._splice_armed or speaking or loud:
+            return None
+        last_words = max(self._last_user_speech, self._last_loud_at)
+        if now - last_words < self.SPLICE_AFTER_SECONDS:
+            return None
+        levels = sorted(r for ts, r, _ in self._mic_levels if now - ts <= 1.0)
+        log.info("Stuck-turn guard: no reply %.1fs after the user's last words; sending silence until she "
+                 "replies, at most %.1fs "
+                 "(mic_rms_1s p50=%.0f max=%.0f)", now - last_words, self.SPLICE_SECONDS,
+                 levels[len(levels) // 2] if levels else 0, levels[-1] if levels else 0)
+        self._splice_armed = False
+        self._splice_until = now + self.SPLICE_SECONDS
+        self._spliced_at = now
+        self._splices += 1
+        return bytes(len(chunk))
+
     def _gate(self, chunk: bytes, rms: float, now: float) -> list[bytes]:
         """Chunks to send for this mic frame (silence while she speaks)."""
         speaking = now < self._playback_until + self.ECHO_TAIL_SECONDS
+        silence = self._splice(chunk, rms, now, speaking)
+        if silence is not None:
+            return [silence]
         if not speaking:
             self._barge_run.clear()
             self._barge_open = False
@@ -708,9 +786,9 @@ class GeminiLiveSession:
                     task.result()
         finally:
             log.info("Gemini session audio summary: session=%s interruptions=%d received_audio_bytes=%d submitted_audio_bytes=%d "
-                     "echo_gated_frames=%d user_barge_ins=%d",
+                     "echo_gated_frames=%d user_barge_ins=%d stuck_turn_splices=%d",
                      self._audit_session, self._interruptions, self._received_audio_bytes, self._submitted_audio_bytes,
-                     self._gated_frames, self._barge_count)
+                     self._gated_frames, self._barge_count, self._splices)
             from ..execution.browser_jev import cancel_browser_tasks
             cancel_browser_tasks()
             self._hangup.set()

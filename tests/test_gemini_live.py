@@ -663,6 +663,64 @@ class EchoGateTests(unittest.TestCase):
         self.assertEqual(s._gate(self.frame(1), 500.0, 20.0), [self.frame(1)])
 
 
+class StuckTurnGuardTests(unittest.TestCase):
+    """23:44 session: 'move to workspace 5' transcribed, answered 64s later --
+    background sound kept Gemini's turn open until the stream went quiet."""
+
+    def session(self):
+        s = EchoGateTests.session(self)
+        s._last_user_speech, s._splice_armed = 100.0, True
+        return s
+
+    def frame(self, n):
+        return bytes([n % 256 or 1]) * 640
+
+    def test_room_sound_after_the_user_stops_is_replaced_by_one_silence_splice(self):
+        s = self.session()
+        self.assertEqual(s._gate(self.frame(1), 1500.0, 101.0), [self.frame(1)])   # still within the pause
+        n = round(s.SPLICE_SECONDS / .02)
+        sent = [s._gate(self.frame(i), 1500.0, 101.5 + i * .02)[0] for i in range(n + 20)]
+        self.assertEqual(sent[:n - 1], [bytes(640)] * (n - 1))   # silence, at most SPLICE_SECONDS
+        self.assertEqual(sent[n + 1:], [self.frame(i) for i in range(n + 1, n + 20)])
+        self.assertEqual(s._splices, 1)
+        self.assertEqual(s._gate(self.frame(1), 1500.0, 110.0), [self.frame(1)])   # once per utterance
+
+    def test_her_reply_ends_the_silence(self):
+        s = self.session()
+        self.assertEqual(s._gate(self.frame(1), 1500.0, 102.0), [bytes(640)])
+        s._replied()
+        self.assertEqual(s._gate(self.frame(2), 1500.0, 102.1), [self.frame(2)])
+
+    def test_no_splice_once_she_replied(self):
+        s = self.session()
+        s._replied()
+        self.assertEqual(s._gate(self.frame(1), 1500.0, 105.0), [self.frame(1)])
+        self.assertEqual(s._splices, 0)
+
+    def test_the_user_talking_again_ends_the_splice_but_a_click_does_not(self):
+        s = self.session()
+        s._gate(self.frame(1), 1500.0, 102.0)
+        self.assertEqual(s._gate(self.frame(2), 9000.0, 102.02), [bytes(640)])     # a click
+        self.assertEqual(s._gate(self.frame(3), 1500.0, 102.04), [bytes(640)])
+        out = [s._gate(self.frame(i), 5100.0, 102.06 + i * .02) for i in range(3)]
+        self.assertEqual(out[-1], [self.frame(2)])
+
+    def test_speech_loud_frames_arm_it_without_a_transcript(self):
+        # Under background speech the live API withheld the transcript too.
+        s = EchoGateTests.session(self)
+        for i in range(10):
+            s._gate(self.frame(i), 8000.0, 50.0 + i * .02)
+        self.assertEqual(s._gate(self.frame(1), 1500.0, 51.0), [self.frame(1)])
+        self.assertEqual(s._gate(self.frame(2), 1500.0, 51.8), [bytes(640)])
+        self.assertEqual(s._splices, 1)
+
+    def test_no_splice_while_she_is_speaking(self):
+        s = self.session()
+        s._playback_until = 200.0
+        s._gate(self.frame(1), 1500.0, 105.0)
+        self.assertEqual(s._splices, 0)
+
+
 class MissionVisibilityTests(unittest.TestCase):
     def test_mission_browser_steps_are_always_shown(self):
         from omarchy_ai.execution import missions

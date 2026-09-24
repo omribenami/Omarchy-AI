@@ -143,6 +143,61 @@ def build_session_config(config: Config) -> dict:
         "go silent waiting, and do not call it again. Its result arrives by itself; use it then. Never say it "
         "worked before the result is in."
     )
+    # 2026-09-24 sessions: "Sure, switching to workspace 4 now." + "I've
+    # switched to workspace 4." for a 0.1s action, every time; the user
+    # called it intolerable. The line above is for slow tools only.
+    instructions += (
+        "\n\nINSTANT ACTIONS: Everything else (workspaces, windows, volume, brightness, typing, keys, opening "
+        "apps or terminals) finishes in a fraction of a second. Do NOT announce it first and do NOT repeat the "
+        "request back. Call the tool without speaking, then confirm in one or two words ('done', 'on 5') -- "
+        "never both a before-line and an after-line. Say more only if it failed or the user asked a question."
+    )
+    # 2026-09-24 00:29 session: 'cd Docker' twice into "No such file or
+    # directory" before the user had to ask for ls; the folder was 'docker'.
+    # Then "I'll let you know once the transfer finishes" with nothing
+    # watching the scp -- the conversation ended and no one ever told him.
+    instructions += (
+        "\n\nNAMES ARE APPROXIMATE: The user speaks names; case, spacing and spelling are often off ('Docker' "
+        "for docker, 'minecraft' for minecraft_new). When a folder, file, window or command is not found, do "
+        "not report failure yet: list the parent (ls in that terminal, or list_files) and look for a "
+        "case-insensitive or similar match yourself. One clear match: use it and mention the real name in "
+        "passing. Several plausible ones: ask which. None: say so and name what is there. After typing a "
+        "command, always read that same window's log (by address) before saying it worked."
+        "\n\nPROMISES NEED A WATCHER: Never say you will notify the user, keep an eye on something, or do "
+        "something once it finishes unless you actually set that up: call schedule_task kind 'watch' on that "
+        "terminal window (or terminal / path) with a condition like 'the scp transfer finished or failed', and "
+        "put any follow-up the user asked for in the title (e.g. 'scp of minecraft_new done -> start the "
+        "Minecraft container'). When it fires you are woken to tell the user and do the follow-up. If you "
+        "cannot set up a watch, say plainly that you will not see it finish."
+    )
+    # 2026-09-24 01:11-01:20 (phone): "bring the Minecraft server up on OUR
+    # machine the same way as on the server". She searched this machine with
+    # list_files/find in new terminals for a file that was on the server,
+    # said she could not reach the server while an ssh terminal was open,
+    # then -- still inside ssh -- wrote an invented docker-compose from
+    # screenshot summaries, started it ON THE SERVER, and said it was done.
+    instructions += (
+        "\n\nWHICH MACHINE: list_files, read_file, search and terminal_task always act on THIS computer. A "
+        "terminal whose prompt shows another host (user@other-host, an ssh session) acts on THAT machine: for "
+        "files or commands there, use that terminal (type_text + Return, then read_tile_log by its address). "
+        "Before running commands, read the prompt in the log and check it is the machine the user meant; to "
+        "work here after ssh, type exit and confirm the local prompt first. You CAN work on other machines "
+        "through such terminals: never say you cannot reach a remote machine or ask the user to paste a remote "
+        "file before calling list_windows and looking for a terminal whose title shows that host."
+        "\n\nSTAY IN THE USER'S TERMINAL: When the user is working in a terminal or points you at one, keep "
+        "working in that same window. Do not open new terminals (terminal_task, open_terminal) unless they ask "
+        "or the job is a separate local background job. Do not close windows you did not open unless told."
+        "\n\nCOPY, DON'T INVENT: When asked to reproduce or mirror a setup (a docker-compose service, a "
+        "config, a command), copy the real text from the source -- read it with read_tile_log or read_file -- "
+        "and change only what must change (paths, hosts). Screenshots (describe_screen) are summaries and lose "
+        "lines: never write a file or command from them. If you cannot read the exact source text, stop and say "
+        "so."
+        "\n\nMULTI-STEP JOBS: For a request with several steps, say the plan in one short sentence (e.g. "
+        "'read the Minecraft service on the server, exit, write it here pointing at ~/minecraft_new, start "
+        "it'), then do every step without waiting to be pushed, reading the output after each one. Report done "
+        "only after you have seen the final output that proves it (e.g. docker compose ps showing it Up on "
+        "the right machine); otherwise report exactly where it stopped."
+    )
     # Co-pilot mode (execution/operator.py, workbench.py).
     instructions += (
         "\n\nCO-PILOT: You work alongside the user, not instead of them. For commands, installs, builds "

@@ -221,6 +221,16 @@ def create(args: dict, now: float | None = None) -> dict:
         sources = {k: v for k, v in sources.items() if v}
         if len(sources) != 1:
             raise ValueError("A watch needs exactly one source: window, terminal, path or command")
+        from ..execution import tile_logs, workbench
+        if "terminal" in sources and not workbench.exists(sources["terminal"]):
+            # 2026-09-24: the user's own terminal passed as `terminal`; that
+            # watch could never read anything.
+            sources = {"window": sources["terminal"]}
+        if "window" in sources:
+            address = tile_logs.address_for(sources["window"])
+            if not address:
+                raise ValueError(f"no terminal window matches {sources['window']!r}; use its address from list_windows")
+            sources["window"] = address
         job.update(sources)
         job["condition"] = _text(args, "condition", 500)
         if not job["condition"]:

@@ -38,6 +38,57 @@ Rules for every release:
 - While you are talking to her, her work is shown on screen. It only moves to
   the background if you are actively using the keyboard or mouse at that
   moment.
+- She can take on whole tasks, not just single actions: "why does my
+  Bluetooth keep disconnecting", "find what is using port 8080", "fix this
+  bug and test it". She works in the background with the right helper
+  (her own Linux expert, or Claude Code and Codex for code), checks the
+  result herself, and tells you when it is verified done.
+- Anything risky (installing, restarting services, deleting, root) waits for
+  your OK first. Root-level actions need a click on the notification, not
+  just a spoken yes.
+- She no longer freezes on "thinking" for up to a minute and a half when
+  there is a TV or people talking in the background. Once you stop
+  talking, she answers within about two seconds.
+- Quick actions are quiet: she no longer says "switching to workspace 4"
+  and then "I've switched to workspace 4". She just does it and says
+  "done".
+- When you ask her to use your password for ssh, scp or sudo in your own
+  terminal, she does it instead of asking you to type it.
+- Names don't have to be exact. Ask for the "Docker" folder and she finds
+  "docker", or asks which one if there are several.
+- When she says she'll tell you when something finishes, she really sets up
+  a watch on it and wakes up to tell you, and to do the next step you asked
+  for.
+- She keeps working in the terminal you're using, including over ssh on
+  another machine. She checks which machine she is on before running
+  anything, and copies real settings instead of making them up.
+- For jobs with several steps she says the plan and carries it through,
+  and only says it's done once she has seen it work.
+
+### Fixes
+
+- Stuck turns: background speech-like sound kept Gemini's end-of-speech
+  detection from ever closing your turn (repeats piled up and were answered
+  together, 40-108s later). She now sends a short silence once your words
+  stop and no reply has started.
+- She read the wrong terminal when two had the same title; she now reads
+  the one she typed into (by window address).
+- A second Enter right after the first, with nothing typed in between, is
+  no longer sent (at an ssh password prompt it sent an empty password).
+- Watches on your own terminal windows follow the window even after ssh
+  changes its title.
+- Terminals opened before a restart or update could no longer be read (their
+  logs were deleted at startup while still in use). They now stay readable.
+- She can read her own background terminals with the same terminal-reading
+  tool, and is pointed to the terminal's text instead of screenshots.
+
+### Under the hood
+
+- New Task Runtime (`src/omarchy_ai/runtime/`, docs/ADR-0002-task-runtime.md):
+  Jev routes, directs, validates and certifies; a persistent harness owns
+  state, permission levels and evidence; executors are the System agent,
+  test and review subagents, direct desktop tools, Claude Code and Codex.
+  New `omarchy-ai-task` command and `task_*` settings.
 
 ## [0.4.1] - 2026-09-23
 

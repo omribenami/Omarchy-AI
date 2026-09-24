@@ -9,6 +9,7 @@ machine configuration or another user's private files.
 
 from __future__ import annotations
 
+import difflib
 import os
 import subprocess
 import tempfile
@@ -37,8 +38,23 @@ def resolve_path(value: object, config: Config, *, must_exist: bool = False) -> 
     if not any(path == root or root in path.parents for root in allowed_roots(config)):
         raise FileAccessError("that path is outside Omarchy AI's allowed file locations")
     if must_exist and not path.exists():
-        raise FileAccessError("that file or folder does not exist")
+        raise FileAccessError("that file or folder does not exist" + _similar(path))
     return path
+
+
+def _similar(path: Path) -> str:
+    """Near names in the parent folder ('Docker' -> 'docker'), so the model
+    can pick the obvious one or ask instead of giving up."""
+    try:
+        names = [p.name for p in path.parent.iterdir()]
+    except OSError:
+        return ""
+    wanted = path.name.lower()
+    by_lower = {n.lower(): n for n in names}
+    close = difflib.get_close_matches(wanted, list(by_lower), n=5, cutoff=0.6)
+    close += [n for n in by_lower if wanted and wanted in n and n not in close]
+    close = [by_lower[n] for n in close]
+    return f"; similar names in {path.parent}: {', '.join(close[:5])}" if close else ""
 
 
 def list_files(value: object, config: Config, recursive: bool = False) -> list[dict]:
