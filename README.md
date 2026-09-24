@@ -26,21 +26,20 @@
 
 **Omarchy AI** is a self-hosted, voice-driven **agentic assistant** for
 [Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. You say what
-you want done. She plans it, does it with real tools on your machine (and on
-machines you're connected to), checks the result herself, and tells you when
-it is verified. She is not a chatbot bolted onto a terminal.
+you want done. It plans the work, does it with real tools on your machine
+(and on machines you're connected to), checks the result itself, and tells
+you when it is verified. It is not a chatbot bolted onto a terminal.
 
-- **She takes on whole jobs.** "Find what's using port 8080", "fix this bug
-  and test it", "copy the Minecraft server from my home server and run it
-  here". She works in the background, hands code to Claude Code or Codex
-  when that fits, and certifies the result from evidence, not from her own
-  claims.
-- **She works alongside you.** Her commands run in her own terminals, so she
-  never takes your keyboard. You can keep talking to her while she works.
-- **She keeps her promises.** "Tell me when the build finishes" sets up a
-  real watch. When it fires she wakes up, tells you, and does the next step
-  you asked for.
-- **She asks before anything risky.** Installs, service restarts, deletes
+- **Whole jobs, not single commands.** "Find what's using port 8080", "why
+  does my Bluetooth keep disconnecting?", "fix this bug and test it". It
+  works in the background, hands code to Claude Code or Codex when that
+  fits, and certifies the result from evidence, not from its own claims.
+- **Works alongside you.** Its commands run in its own terminals, so it
+  never takes your keyboard, and you can keep talking while it works.
+- **Keeps its promises.** "Tell me when the build finishes" sets up a real
+  watch. When it fires, the assistant wakes up, tells you, and does the next
+  step you asked for.
+- **Asks before anything risky.** Installs, service restarts, deletes
   and root need your OK; root needs a click, not just a spoken yes.
 
 <div align="center">
@@ -51,21 +50,17 @@ https://github.com/user-attachments/assets/49467e18-0e00-4db6-ba63-bbaf9927b218
 
 ---
 
-## What she does
+## What it does
 
 Say the wake word, then talk normally. Real requests from daily use:
 
 **Whole jobs, done and verified**
 - *"Find what is using port 8080"* / *"why does my Bluetooth keep
   disconnecting?"* / *"fix this bug and test it"* — the Task Runtime plans
-  acceptance criteria, routes each step to the right worker (her Linux
+  acceptance criteria, routes each step to the right worker (its Linux
   agent, Claude Code, Codex, a test or review agent), and reports **verified
   done** only when the harness's own evidence proves it.
-- *"Take the Minecraft service from the server's docker-compose and bring it
-  up here with the data we copied"* — reads the real file in your ssh
-  terminal, exits to this machine, writes an exact copy pointing at the
-  copied folder, starts it, and checks it is up.
-- *"Install htop, and let me know when it's done"* — runs it in her own
+- *"Install htop, and let me know when it's done"* — runs it in its own
   terminal, answers the sudo prompt from your keyring, and tells you when it
   finishes, even if you already said goodbye.
 - *"Go through the instructions in this file and execute them"* — performs a
@@ -86,15 +81,16 @@ Say the wake word, then talk normally. Real requests from daily use:
 - *"Cast this to the living room TV"* — mirrors screen and audio to a paired
   Android TV or projector, picks the right TV, and walks you through pairing
   a new one.
-- From your phone: talk to her from a paired phone, anywhere on your LAN or
-  tailnet, while mirroring the PC to the phone or the TV.
+- From your phone: talk to Omarchy AI from a paired phone anywhere on your
+  LAN or tailnet, and watch the PC's screen live on the phone or send it to
+  the TV. The computer runs the server for both.
 - *"Check my email for the invoice and save the attachment"* — reads Gmail
   (and 200+ other services) through MyApi instead of screen-scraping.
 
 **Instant desktop control**
 - *"Move this terminal to workspace 4"*, *"volume up"*, *"fullscreen the
   terminal, not the browser"* — Jev handles simple commands the moment you
-  stop talking (about 0.4s), verifies them, and she just says "done".
+  stop talking (about 0.4s), verifies them, and the reply is just "done".
 - *"Switch to the catppuccin theme"*, *"remind me in 20 minutes to check the
   oven"* — straight through Omarchy's own ~230 commands and its real
   reminder popups.
@@ -171,7 +167,7 @@ flowchart TB
     R --> X --> E
     E --> K
     L -- schedule_task --> A
-    A --> H -- wakes her --> L
+    A --> H -- wakes the assistant --> L
     T & K --> U
 ```
 
@@ -289,9 +285,9 @@ full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
   `omarchy-ai-task`.
 
 **Co-pilot mode**
-- Installs, commands and long jobs run in her own tmux terminals
+- Installs, commands and long jobs run in its own tmux terminals
   (`terminal_task`), never in your windows or under your keyboard focus.
-- While you're away her work is on your screen; while you're working she
+- While you're away its work is on your screen; while you're working it
   carries on in the background and hands it over when you stop for about 30
   seconds. "Show me" or "in the background" overrides this.
 - Browser tasks run over DevTools, so they don't need focus either.
@@ -303,10 +299,10 @@ full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
 - Watches follow one of your terminals, one of hers, a file or a command.
   Jev judges when your condition is true ("the build finished", "Claude is
   waiting for my approval") and points to the real output line as evidence.
-- When she says she'll tell you when something finishes, she sets up a watch
+- A promise to tell you when something finishes is backed by a real watch,
   with the next step you asked for ("then start the container"). When it
-  fires she wakes up and tells you; if you're away, she catches you up next
-  time.
+  fires the assistant wakes up and tells you; if you're away, it catches you
+  up next time.
 
 **Skills that improve over time**
 - A procedure that worked is saved as a named skill (`SKILL.md` under
@@ -315,34 +311,35 @@ full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
   none fits.
 
 **Missions (scripted demos)**
-- `run_mission`: give her a file of steps and she performs them in order,
+- `run_mission`: give it a file of steps and it performs them in order,
   narrating each step while its action runs, keeping to the workspace the
   script names, verifying each step, and stopping to ask instead of
   improvising when something is missing.
 
 ### Terminals, machines and coding agents
 
-- **Readable terminals**: terminals she opens are recorded with `script(1)`;
+- **Readable terminals**: terminals it opens are recorded with `script(1)`;
   every interactive Bash/Zsh terminal also writes a compact command, cwd and
-  exit-status log, so she understands terminals you opened yourself.
+  exit-status log, so it understands terminals you opened yourself.
   Terminals are read by window address, and logs stay readable across daemon
   restarts and updates.
 - **Verified input**: `type_text`/`press_key` only go to a window whose
   focus was just verified; results say the input was sent, not that it
-  worked, and she reads the output back. Multi-line text is pasted as one
+  worked, and the output is read back. Multi-line text is pasted as one
   block; a second Enter with nothing typed in between is not sent.
-- **Other machines**: in an ssh session she works on that machine through
-  its terminal, checks the prompt to know where she is, and exits before
+- **Other machines**: in an ssh session it works on that machine through
+  its terminal, checks the prompt to know where it is, and exits before
   local work.
-- **Passwords**: sudo prompts in her terminals are answered from the Sudo
+- **Passwords**: sudo prompts in its terminals are answered from the Sudo
   Access password in GNOME Keyring through a stdin-fed buffer (never in a
-  command line). In your windows she types it into a sudo, or on request
-  ssh/scp, prompt after checking the prompt is there. She never sees it.
+  command line). In your windows it types it into a sudo, or on request
+  ssh/scp, prompt after checking the prompt is there. The model never sees
+  the password.
 - **Coding-agent relay**: prompts for Claude Code, Codex, aider and other
   terminal agents are delivered verbatim, submitted, and checked.
 - **Approximate names**: "the Docker folder" finds `docker`; missing paths
-  come back with near names; several matches mean she asks.
-- **Copy, don't invent**: to mirror a setup she copies the real text and
+  come back with near names; several matches mean it asks.
+- **Copy, don't invent**: to mirror a setup it copies the real text and
   changes only what must change; screenshots are never used to write files.
 - Arch-aware shell guidance: `pacman`/`yay`, never `apt`/`dnf`/`brew`.
 
@@ -353,7 +350,7 @@ full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
   [`browser-use/jev-ultrafast`](https://github.com/browser-use/jev-ultrafast)
   with screenshots off; each DOM decision is a `typesafe-ai/jev` call.
   Success is reported only after an independent Jev check confirms the page
-  shows the goal done; otherwise she says where it stopped.
+  shows the goal done; otherwise it says where it stopped.
 - The live model breaks requests into literal steps with plain search terms
   ("eggs", not "a pack of eggs") and asks when something is missing, like
   which store.
@@ -379,17 +376,17 @@ About 80 typed tools plus Omarchy's full command set:
   as the fallback.
 - `run_omarchy_command` runs a scoped allowlist of the `omarchy` CLI; package
   installs, updates, reboots and destructive commands are refused.
-- Reminders through Omarchy's own popups (`set_reminder` and friends; she
-  converts "at 3pm" into minutes herself).
+- Reminders through Omarchy's own popups (`set_reminder` and friends; "at
+  3pm" is converted into minutes).
 - Launchers for terminal, browser, files and editor.
 - Local files: `list_files`, `read_file`, `write_file`, and exact-replacement
   edits in your home directory and `/tmp` (add more with `file_access_roots`
   in `~/.config/omarchy-ai/config.yaml`). New files by default; overwriting
   only when you ask.
-- Floating name-label badges over candidate windows when she isn't sure
+- Floating name-label badges over candidate windows when it isn't sure
   which one you mean.
 - `describe_screen`: a screenshot and a vision call, only as a fallback;
-  on a terminal she is pointed to its text instead.
+  on a terminal it is pointed to the terminal's text instead.
 
 ### Voice and conversation
 
@@ -406,43 +403,74 @@ About 80 typed tools plus Omarchy's full command set:
   uncertain requests go to the live model, and the two never repeat or
   contradict each other.
 - Gemini on the desktop uses private PipeWire echo cancellation without
-  touching other apps' audio devices. Her own voice leaking back can't cut
-  her off (you still can, by speaking up), and a stuck-turn guard answers
+  touching other apps' audio devices. Its own voice leaking back can't cut
+  it off (you still can, by speaking up), and a stuck-turn guard answers
   within about two seconds even with a TV on.
 - Quick actions are quiet: done, then "done". No "switching now" and "I
   switched" around a 0.1-second action.
-- Ends on "bye"/"that's all" in any language by watching her own spoken
+- Ends on "bye"/"that's all" in any language by watching its own spoken
   farewell.
 - Memory: recent conversations are folded into the next session, and
   standing preferences ("always type terminal commands in English") are
   saved with `remember_preference`.
 
-### Casting, phone and TV
+### Phone, mirroring and TV: the server on your computer
 
-**Android TV / projector casting**
-- Screen and system audio over WebRTC: direct `wlr-screencopy` capture,
-  `openh264enc`/Opus, a small local signaling server. Runs in
-  `omarchy-ai-cast.service`, independent of conversations and restarts, with
-  bounded retries.
+Omarchy AI runs its own small servers on the computer, so a phone or a TV
+never needs a cloud relay or your API keys.
+
+```mermaid
+flowchart LR
+    P[Phone browser<br/>paired page] -- "HTTPS :8766<br/>voice · tools · screen" --> S[Phone bridge server<br/>on the computer]
+    S -- OpenAI: SDP relay + tool calls --> O[OpenAI Live]
+    S -- Gemini: audio bridged server-side --> GL[Gemini Live]
+    S -- desktop actions --> D[Desktop tools]
+    S -- "assistant voice (Audio: TV)" --> C
+    C[Cast sender<br/>omarchy-ai-cast.service] -- "WebRTC video + audio" --> TV[Android TV / projector<br/>receiver app]
+    C <-- "signaling :8765" --> G[Signaling relay] <--> TV
+```
+
+**Phone bridge server** (HTTPS, port 8766, LAN and Tailscale)
+- **Talking through the phone.** The phone opens a page served by the
+  computer. With OpenAI, the server relays the phone's WebRTC offer to the
+  Live API with the key it holds, and runs the model's tool calls on the
+  desktop; the phone talks to OpenAI directly for audio. With Gemini, the
+  server bridges the phone's WebRTC audio to Gemini Live itself (up to two
+  phones at once), so no key or tool authority ever reaches the phone.
+- **Mirroring the screen to the phone.** Start **Mirror** on the page and the
+  server streams live screenshots of the desktop over the same authenticated
+  HTTPS connection, edge to edge, while you keep talking. Stop it from the
+  page.
+- **Sending the voice to the TV.** While the desktop is cast to a TV,
+  **Audio: phone → TV** sends the assistant's speech into the cast sender's
+  audio track over a private local socket; **Audio: TV** returns it to the
+  phone. It falls back to the phone when mirroring ends or an upload fails.
+- **Pairing is the access gate.** A QR code from the settings panel carries
+  a single-use 5-minute token; the phone gets a signed session cookie, and
+  every page, stream and API call without it gets a 403. Pairings can be
+  revoked all at once.
+- **Certificates.** Self-signed, so mobile browsers allow the microphone.
+  With Tailscale connected, new pairing QRs use the tailnet address and the
+  certificate covers the LAN IP, tailnet IP and DNS name.
+- The page is a full-screen state field readable across the room (red: it
+  can't hear you), with **Text** mode for typing instead of talking.
+
+**TV / projector mirroring**
+- `omarchy-ai-cast.service` captures the screen directly with
+  `wlr-screencopy`, encodes `openh264enc` video and Opus system audio, and
+  sends them over WebRTC to the TV. A signaling relay
+  (`omarchy-ai-signaling.service`, WebSocket port 8765) introduces the two
+  and buffers the offer until the TV app is ready. Casting runs
+  independently of conversations and assistant restarts, with bounded
+  retries (`journalctl --user -u omarchy-ai-cast.service -u
+  omarchy-ai-signaling.service -f`).
 - mDNS discovery of Android TVs (`_androidtvremote2._tcp`), a live
   device-picker overlay you can answer by voice or click, and guided ADB
   pairing for a TV never set up before.
 - A Kotlin/Compose receiver app (`android-receiver/`) that auto-connects and
   shows the Omarchy wallpaper while idle.
-- A USB or headset microphone on the TV can wake her and carry the
+- A USB or headset microphone on the TV can wake the assistant and carry the
   conversation; desktop and TV wake detection run independently.
-
-**Phone bridge**
-- A self-signed HTTPS page on port 8766 (LAN and Tailscale) that a paired
-  phone opens to talk to her: WebRTC to OpenAI, or through this computer's
-  Gemini bridge. API keys stay on the computer.
-- QR pairing from the settings panel: single-use 5-minute token, a signed
-  session cookie, and a hard 403 without it. Pairings can be revoked.
-- A full-screen state field readable across the room (red: can't hear you),
-  an edge-to-edge mirror view, **Text** mode for typing, and **Audio: phone
-  → TV** to route her voice into the TV while mirroring.
-- With Tailscale connected, new pairing QRs use the tailnet address and the
-  certificate covers LAN, tailnet IP and DNS name.
 
 ### Surfaces and integrations
 
@@ -461,7 +489,7 @@ About 80 typed tools plus Omarchy's full command set:
 **Connect other services (MyApi)**
 - One code from your [MyApi](https://www.myapiai.com) dashboard connects
   Gmail, Calendar, Drive, Notion, Slack and 200+ services, with no OAuth
-  redirect and no token shown. She prefers a real API call over a browser and
+  redirect and no token shown. It prefers a real API call over a browser and
   a screenshot, read-only for now. Gmail attachments have a dedicated
   search-and-download flow into `~/Downloads/Omarchy_AI/`.
 - A MyApi bar panel and `omarchy-ai-dashboard` show live per-service usage.
@@ -470,7 +498,7 @@ About 80 typed tools plus Omarchy's full command set:
 **Updates, release notes and issues**
 - `check_assistant_updates` / `update_assistant` install checksum-verified
   GitHub Release bundles in a separate service, keeping the previous install
-  to roll back to. She mentions a new version on wake, offers to go through
+  to roll back to. It mentions a new version on wake, offers to go through
   the highlights (`get_release_notes` reads them from `CHANGELOG.md`), and
   only installs when you ask.
 - A failed update, or *"file an issue about this"*, can open a GitHub issue
@@ -527,7 +555,7 @@ and press **Apply saved changes**. For Jev desktop, browser and Task Runtime
 decisions, also save a **Jev / Vercel AI Gateway key** (this integration uses
 the Gateway key; it does not take a separate TypeSafe token). Keys are saved
 owner-only in `~/.config/omarchy-ai/key`, `gemini-key` and
-`vercel-ai-gateway-key`. To let her answer sudo prompts, enable **Sudo
+`vercel-ai-gateway-key`. To let it answer sudo prompts, enable **Sudo
 Access**; the password is kept in GNOME Keyring. New installs default to the
 `omachy` wake word and the ASCII visualizer. Refresh paired phone pages after
 upgrading.
@@ -632,8 +660,8 @@ echo -n "MYAPI-XXXXXXXX-XXXXXXXX" | .venv/bin/omarchy-ai-settings connect-myapi
 Omarchy AI checks GitHub Releases at startup and every 15 minutes. A release
 counts when its tag is a stable `vX.Y.Z` and it has both
 `omarchy-ai-X.Y.Z-linux-x86_64.tar.gz` and the matching `.sha256`; drafts,
-prereleases and `demo-media` are ignored. On wake she refreshes an expired
-check (2-second limit) and mentions a newer version in her first reply.
+prereleases and `demo-media` are ignored. On wake it refreshes an expired
+check (2-second limit) and mentions a newer version in its first reply.
 Offline checks never block a conversation.
 
 Say **"Check for updates"**, **"Update yourself"** or **"What's the update
@@ -653,7 +681,7 @@ highest version wins. Integrity is the SHA-256 file shipped as a Release asset
 
 **Issue reporting.** With a GitHub token configured, a failed self-update
 files an issue with the details, and *"file an issue about this"* works for
-any problem (`report_issue`). Without a token she says honestly that nothing
+any problem (`report_issue`). Without a token it says honestly that nothing
 was filed. Opt-in, per machine, stored `0600` at
 `~/.config/omarchy-ai/github-issue-token`:
 
@@ -673,7 +701,7 @@ git commit.
 
 1. Bump `version` in `pyproject.toml`, run `uv lock`, and rename
    `## [Unreleased]` in `CHANGELOG.md` to `## [<version>] - <date>` (its
-   `### Highlights` are what she reads aloud as "what's new"). Commit and push.
+   `### Highlights` are what the assistant reads aloud as "what's new"). Commit and push.
 2. Build:
 
    ```bash
@@ -724,7 +752,7 @@ Documented honestly rather than papered over:
   explicitly), not a separate enforcement layer.
 - **Behaviour rules are prompts.** "Which machine", "copy, don't invent" and
   "no promise without a watch" were verified against the live model with
-  scripted terminals, and still depend on the model following them; she can
+  scripted terminals, and still depend on the model following them; it can
   still call a job done before reading the final check.
 - **The phone bridge** has no per-phone action history and doesn't drive the
   bar's status dot or the HUD. The stuck-turn guard is desktop-only.
