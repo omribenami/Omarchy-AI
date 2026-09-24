@@ -4845,3 +4845,299 @@ user inactivity.
   30s handover is unchanged.
 - Tests 303/303. The shell and daemon were restarted (not busy; stopped in
   0.2s).
+
+## 2026-09-23 (evening): Task Runtime — Jev control plane + execution harness
+
+- **Asked:** turn the assistant into a persistent multi-agent OS agent,
+  using MiniMax Code as a reference for the harness: Jev routes, directs,
+  validates and certifies; a Task Runtime owns state; Claude Code, Codex,
+  internal subagents and system tools are workers; permissions enforced by
+  the harness. Design, reuse table and roadmap: `docs/ADR-0002-task-runtime.md`.
+- **Built:** `src/omarchy_ai/runtime/` (permissions, structured shell,
+  discovery, persistent tasks, Jev control plane, executors: DIRECT_TOOL,
+  SYSTEM_AGENT, TEST_AGENT, REVIEW_AGENT, CLAUDE_CODE, CODEX), voice tools
+  `start_task`/`task_status`/`task_respond`, the daemon announce hook, the
+  `omarchy-ai-task` CLI, and `task_*` config.
+- **Live evidence** (real Jev/Gateway/Codex/Claude Code, scratch
+  workspaces): six port-8080 runs and two code-fix runs, each failure read
+  from the saved task record and fixed. Details in ADR-0002 "Evidence".
+  The key findings: Jev re-picked CERTIFY on unchanged evidence (now
+  needs new evidence); `grep` no-match counted as failure; test plans
+  masked exit codes (`; echo $?`); a compound VALIDATE question
+  under-scored sound plans (0.26) while the counterfactual "would one of
+  these fail if it were still broken?" separated good (0.80–0.95) from
+  bad (0.32–0.39) plans; CONTINUE could loop the test agent. Final runs:
+  port question certified p=0.87 in 1 step; calc fix certified in 2 steps
+  (Codex fix, 3/3 harness-run checks, p=0.80). Claude Code review: $0.17.
+- **Not done:** no live voice test. `omarchy-ai.service` was not restarted
+  (a live voice session depends on it), so the daemon still runs the old
+  code; the new tools arrive on its next restart. `src/omarchy_ai/voice/`
+  was not modified.
+- Tests 340/340 (37 new in tests/test_task_runtime.py).
+
+## 2026-09-23 (late): code review of the Task Runtime, 9 fixes
+
+A /code-review of the uncommitted runtime found 9 problems; all fixed, each
+with a regression test (`ReviewRegressionTests` in tests/test_task_runtime.py):
+
+1. Any CLI command marked the daemon's live tasks `interrupted` (each
+   process only knew its own threads). Tasks now record their owner
+   (pid + kernel start time, so a reused pid does not count); only tasks
+   whose owner is dead are marked, and respond/resume refuse tasks another
+   live process is driving.
+2. `approve|answer|resume <id>` could restart a certified/failed/cancelled
+   task (explicit ids skipped the status check). Now checked.
+3. Cancelling from another process was undone by the driver's next save.
+   Saves now take an flock and adopt an on-disk `cancelled`; the driver
+   stops at its next save (a command already running finishes first unless
+   it runs in the same process).
+4. A git repo with no commits (or SHA-256 ids) crashed the task at setup.
+   The empty tree is now the baseline; 64-hex ids are accepted.
+5. Rollback in a repo subdirectory silently did nothing but recorded
+   success (`git diff` paths are root-relative, ls-files/ls-tree are
+   cwd-relative; confirmed by hand). Now `git diff --relative`, and rollback
+   evidence reports what the workspace actually shows afterwards.
+6. Voice tasks without a workspace ran in the daemon's cwd (this repo).
+   They now default to the home directory, as the tool says.
+7. With `~` as the workspace, writes to ~/.config, ~/.bashrc, ~/.local/bin
+   were NORMAL (auto-run). The config check now comes first, and `~` or `/`
+   never count as a project workspace.
+8. `omarchy-ai-task resume` without an id exited at once and orphaned the
+   task. It now follows the task it resumed.
+9. A voice approval without an id could resume a newer interrupted task
+   and report success. Approvals now go only to a task waiting for
+   approval, answers only to one waiting for an answer.
+
+Tests 349/349; a live port-8080 run still certifies (p=0.80) and releases
+ownership at the end. Not verified: that each new regression test fails
+on the pre-fix code (the runtime files were never committed, so there is
+no old version to run them against).
+
+## 2026-09-24: "Stuck on thinking" -- background speech holds the turn open
+
+**Symptom (user):** she behaves fine, then sits on "thinking" for a long
+time, then wakes up and does the task.
+
+**Evidence (journalctl + conversation_history.jsonl).** Gap between the
+user's transcribed words and her next action/turn, all sessions since
+2026-09-21 (>30s): 108.5s (23:38), 90.1s (09:00), 64.1s (23:44), 47.6s,
+36.4s. In the 23:44 session "move to workspace 5" was transcribed at
+23:44:12, repeated at 23:44:34, and executed at 23:45:16, with nothing
+logged in between. The saved transcript shows NO assistant output during
+the gaps. When she finally answered, she answered all the repeats as one
+turn (23:38: four Hebrew utterances over 90s, then one "yes, I hear you").
+So Gemini's server-side end-of-speech detection never closed the user's
+turn. The receive loop was alive (transcripts kept arriving), so this is
+not a client hang. Stray foreign-language "user" transcripts in these
+sessions ("Versailles", "vai", "Chiamatemi", "paquete", "atrás atrás",
+"mi hija") point to a non-user sound source.
+
+**Reproduced against the live API** (`scripts/probe_stuck_turn.py`, same
+VAD config: start/end LOW, 300ms prefix, 600ms silence). One spoken
+question, then a background stream, time to reply:
+
+| background after the question | reply |
+|---|---|
+| digital silence | 0.7s |
+| room noise recorded from this mic (RMS ~3700 at 60% gain, noise_suppression=0) | 0.6-1.0s |
+| background speech at 0.1x (babble) | none in 40s |
+| no frames at all (paused stream) | none in 40s |
+| paused stream + `audio_stream_end` | none in 40s |
+| babble + `audio_stream_end` | none in 40s |
+| babble with 0.8s of zeros spliced in | 2.9s (0.9s after the splice) |
+
+Steady noise is ruled out. Speech-like background sound keeps the turn
+open for as long as it lasts. `audio_stream_end` does not close it.
+Silence does. Also found: under babble the input transcript is withheld
+until the turn closes, so a transcript-only trigger would never fire.
+
+**Fix (`voice/gemini_live.py`, stuck-turn guard in `_gate`).** The guard
+arms on the user's words: a transcript, or 3+ consecutive mic frames with
+RMS >= 3500 (logged user speech is 5100+). Once they stop for 1.5s and no
+reply has started (no audio, tool call, turn_complete or interruption), it
+sends silence until the reply starts, at most 4s. It only lets through the
+user's own loud voice, the same rule as the echo gate while she speaks.
+The hold-until-reply matters: with a single 0.8s splice and louder
+background speech (0.3x), the probe closed the turn 3 times and never got
+an answer. The background talker counted as a new user turn and cut her
+reply off. In a clean room Gemini's own 600ms end-of-speech fires first,
+so the guard never engages (probe: `splices=0`). Logs: `Stuck-turn guard:
+no reply ...s after the user's last words` (with mic RMS), `Stuck-turn
+guard: reply ...s after the silence splice`, and `stuck_turn_splices=` in
+the session summary.
+
+Probe with the guard: background speech 0.1x -> 1.8s, 0.3x -> 1.7s, room
+noise -> 1.0s (no splice). Tests: `StuckTurnGuardTests`.
+
+**Not verified yet:** a real session with the real background source. Next
+time it happens, look for the `Stuck-turn guard` lines and their mic RMS.
+Not addressed: a quiet user (<3500 RMS) talking during the 1.5-4s wait is
+silenced until she replies.
+
+## 2026-09-24: Instant actions announced twice ("intolerable")
+
+After the stuck-turn fix went live the user reported: "she says what she is
+doing and that she has done it immediately". This was not caused by the
+guard. Sessions from before the restart already had it in
+conversation_history.jsonl: "Sure, switching to workspace 4 now. I've
+switched to workspace 4." Cause: the prompt's "say a brief present-tense
+line ('on it', 'switching that now') right as you call it" (desktop_task)
+and "say a few words when you call one" (BACKGROUND TOOLS) were meant for
+slow background tools. The model applied them to 0.1s BLOCKING actions and
+then also reported the result.
+
+Fix: a new INSTANT ACTIONS block in `voice/live.py` `build_session_config`
+(shared with the phone bridge). Instant actions get no before-line and no
+echo of the request; the tool call comes first, then a one- or two-word
+confirmation, or more only on failure or a question.
+
+Live A/B (real config and tools, text request, tool answered "ok"):
+
+| request | without the block | with it |
+|---|---|---|
+| workspace 5 | [call] "switched to workspace 5" (Hebrew) | same |
+| workspace 4 | "Sure, switching to workspace 4" [call] "I've switched to workspace 4." | [call] "Done." |
+| volume up | "turning the volume up now" [call] "turned the volume up" (Hebrew) | [call] "Done." |
+| open terminal | "happily opening a new terminal" [call] "opened a new terminal" (Hebrew) | [call] "Done." |
+
+## 2026-09-24: Session 00:23-00:33 -- password, "Docker", the promised notification
+
+User: 1) when asked, she should use the saved sudo password for a password
+prompt; 2) "go to the Docker folder" failed because the folder is `docker`,
+and she should look for something similar or ask; 3) she said she would
+report when the scp transfer finished, and never did.
+
+**Evidence (journalctl + conversation_history.jsonl):**
+
+1. Password. `ssh 192.168.1.253` was typed with `open_terminal` +
+   `type_text` into the user's own terminal. She then called `terminal_sudo`
+   twice. That tool only knows assistant tmux terminals, so it returned
+   `no assistant terminal named 'ben-ami-jarvis-hq'`, and she told the user
+   to type the password. The right tool, `submit_sudo_password` (types into
+   the verified focused window), was never called. Its description and the
+   base prompt only covered "a sudo prompt" in "the assistant terminal", so
+   an ssh prompt the user explicitly asked her to answer did not fit either.
+   Sudo Access is enabled (`sudo_access_enabled: true`).
+2. "Docker". `cd Docker` was typed twice; she reported success without
+   reading the output. She only ran `ls` after the user asked, then found
+   `docker`. Two related bugs came up in the same stretch:
+   - Two terminals were both titled `ben-ami@Jarvis-HQ:~`. She typed into
+     0x5592871e7730, but `read_tile_log('ben-ami@Jarvis-HQ:~')` fuzzy-matched
+     the other one ("you're not even looking at the terminal").
+   - `type_text 'ls'` ten times with no Return, which left
+     `lslslsls...: command not found` on the command line.
+3. Notification. The scp was typed into a user terminal. She said "I'll let
+   you know once the transfer finishes", but no `schedule_task` watch was
+   ever created (the tool exists: a terminal watch plus a Jev condition,
+   and the heartbeat wakes her when it fires). The conversation ended at
+   00:33:45 and nothing was watching.
+
+**Fixes:**
+- `terminal_sudo` on a non-assistant terminal now says to use `focus_window`,
+  then `read_tile_log`, then `submit_sudo_password`. The
+  `submit_sudo_password` description and the base prompt now cover the
+  user's own terminal windows and password prompts the user explicitly asks
+  her to fill (ssh/scp/su, "same password"), with a log check before and
+  after. The secret is still never shown to the model.
+- NAMES ARE APPROXIMATE (prompt): if something isn't found, list the parent
+  and look for a case-insensitive or similar match. One clear match: use it.
+  Several: ask. Always read the same window's log before claiming success.
+  For local paths, `list_files`/`read_file` "does not exist" errors now
+  include near names from the parent folder (`files._similar`: difflib plus
+  substring).
+- PROMISES NEED A WATCHER (prompt): no "I'll tell you / do it when it's
+  done" without `schedule_task` kind `watch` on that window, with the
+  follow-up in the title.
+- `agenda.create`: a user window passed as `terminal` becomes `window`, and
+  a `window` watch is pinned to the window address (`tile_logs.address_for`),
+  because ssh renamed the title mid-session.
+- `tile_logs.find_log`: when several windows tie on title it prefers the
+  focused one (the one just typed into), otherwise it refuses.
+  `list_tiles` now includes addresses, and the error says to use one.
+- `InputGuard` keyboard results: `type_text` says the text is not yet run
+  (press Return) and gives `read_tile_log window='<address>'`. A second
+  Return with nothing typed since (within 3s; `submit_sudo_password`
+  counts as a Return) is not sent.
+
+**Live check** (real prompt and tools against gemini-3.8-live, text requests,
+scripted tool results; `scratchpad/behave.py`-style harness):
+- ssh: list_windows, type `ssh 192.168.1.253`, Return, read log (by
+  address), `submit_sudo_password`, read log, "I've successfully SSH'd into
+  the remote server".
+- Docker: `ls` first, `cd docker`, read log, "I'm in the docker folder now".
+- scp: read log, then `schedule_task` watch titled "SCP of minecraft_new
+  done" with the follow-up "run the Minecraft container...".
+- Two of the first probe runs pressed Return twice after `type_text`. The
+  probe bypasses InputGuard; the new double-Return guard covers this in the
+  daemon.
+
+Tests 361/361. **Not verified in a real voice session yet.**
+
+## 2026-09-24: Phone session 01:03-01:24 -- blind in the ssh terminal, wrong machine, invented compose
+
+User: "the work with her is not continuous and she doesn't fully understand
+what she needs to do". The task: the scp finished, so bring the Minecraft
+server up on THIS machine the same way as on the server, with the server's
+docker-compose service pointing at the copied `~/minecraft_new`.
+
+**Evidence (journalctl, conversation_history.jsonl, the recovered terminal log):**
+1. After the 00:46 daemon restart, every `read_tile_log` of the user's ssh
+   terminal (0x5592871e7730) failed with "no single terminal matches". The
+   restart had run `tile_logs.sweep_stale()`, which deleted every
+   `Omarchy_AI_*.log`, including the logs of terminals still open. `script`
+   kept writing to the deleted inode (`/proc/41626/fd/6 -> ...66523f8d.log
+   (deleted)`), and `_tracked` is in-memory only. This was true after every
+   restart or update. My restarts tonight triggered it.
+2. Blind, she fell back to `describe_screen` about 40 times (flash-lite
+   summaries; 5 of them failed) and to local `list_files`/`find ~` in new
+   `terminal_task` terminals, looking for a file that was on the server. She
+   told the user she "can't access the remote server" while an ssh terminal
+   to it was open, and asked them to paste the file.
+3. Still inside ssh, she wrote an invented `~/docker/mc/docker-compose.yml`
+   (`itzg/minecraft-server`, 25565, 2G, `./data`) on the server, ran `docker
+   compose up -d` there (container `minecraft` started), copied
+   `~/minecraft_new/*` into it, restarted it, and said "the new server is set
+   up and running". The real service (`minecraft_2`, commented out; Geyser
+   and Floodgate plugins, `/home/ben-ami/minecraft_new:/data`) was in that
+   same terminal log a few lines earlier. **Left on the server: `~/docker/mc`
+   and a `minecraft` container. The user was told.**
+4. `read_tile_log('find-docker-compose')` (an assistant tmux terminal) failed:
+   `read_tile_log` knew only PTY logs.
+
+**Fixes:**
+- `tile_logs._script_logs()` finds every live `script` process recording
+  into the tile-log dir through `/proc/*/fd`, reading a deleted-but-open log
+  through `/proc/<pid>/fd/<n>`. `_live_transcripts()` maps each one to its
+  window (walking parent pids to the Hyprland client), so terminals opened
+  before a restart are readable by address again. `sweep_stale()` keeps
+  logs that are still being recorded. Verified on the real machine: all four
+  open foot terminals are listed and the ssh log reads back in full.
+- `read_tile_log` with an assistant terminal name reads it with
+  `workbench.read`.
+- `describe_screen`: when the focused window is a terminal with a readable
+  log, the result says to use `read_tile_log window='<address>'` instead of
+  screenshots.
+- Prompt blocks in `voice/live.py`:
+  - WHICH MACHINE: local tools are this computer; an ssh terminal is the
+    other host. Check the prompt; `exit` and confirm before local work; never
+    say a remote machine is unreachable before checking `list_windows`.
+  - STAY IN THE USER'S TERMINAL.
+  - COPY, DON'T INVENT: never write a file or command from screenshots.
+  - MULTI-STEP JOBS: one-line plan, carry it through, report done only on
+    proof.
+
+**Live check** (real prompt and tools on gemini-3.8-live; a simulated
+terminal in ssh on the server, holding the real compose section):
+- Before the "check list_windows" line: no tool call at all, "I can't reach
+  the remote file, please paste it" (same as the real session).
+- After, two runs: `cat ~/docker/docker-compose.yml` on the server, `exit`,
+  then a local compose identical to the real service (image, ports, OPS,
+  MEMORY, Geyser/Floodgate, `/home/ben-ami/minecraft_new:/data`), then
+  `docker compose up -d` locally.
+- Still weak:
+  - Run 1 switched to new `terminal_task` terminals after `exit` instead of
+    staying in the user's.
+  - Both runs said done without first reading `docker compose ps`.
+
+Tests 363/363. Not verified in a real voice session yet.
+

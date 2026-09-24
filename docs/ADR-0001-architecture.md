@@ -552,6 +552,11 @@ one-line command the user needs to run.
 - `wl-clipboard` 2.3.0 (`wl-copy`/`wl-paste`), `wtype` 0.4, `libnotify` 0.8.8 (`notify-send`).
   Confirmed 2026-09-22 and used by `type_text`'s multi-line paste and by
   heartbeat notifications.
+- Claude Code 2.1.280 (`claude`, logged in via claude.ai) and Codex CLI
+  0.154.0 (`codex`, logged in via ChatGPT), both from `mise` and on the
+  daemon's PATH. Confirmed 2026-09-23; used headlessly by the Task Runtime
+  (ADR-0002). `notify-send -A` action buttons (approval channel) confirmed
+  available in libnotify 0.8.8.
 
 ## Toolchain — resolved
 

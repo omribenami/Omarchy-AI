@@ -212,9 +212,13 @@ def open_terminal(args: dict) -> ActionResult:
 
 
 def read_tile_log(args: dict) -> ActionResult:
-    from . import tile_logs
+    from . import tile_logs, workbench
 
-    text = tile_logs.read_log(args.get("window"))
+    window = args.get("window")
+    if window and not str(window).startswith("0x") and workbench.exists(str(window)):
+        # An assistant terminal from terminal_task (2026-09-24: 'find-docker-compose').
+        return workbench.read(str(window))
+    text = tile_logs.read_log(window)
     available = not text.startswith(("no terminal", "more than one terminal", "failed to read log:"))
     return ActionResult(available, text)
 
@@ -710,6 +714,26 @@ def remember_preference(args: dict) -> ActionResult:
 
 
 def describe_screen(args: dict) -> ActionResult:
+    result = _describe_screen_raw(args)
+    hint = _terminal_text_hint()
+    return ActionResult(result.ok, result.message + hint) if hint else result
+
+
+def _terminal_text_hint() -> str:
+    """2026-09-24 01:16-01:20: ~40 screenshots of an ssh terminal instead of
+    its log; a vision summary drops lines, and a docker-compose was then
+    written from those summaries. When the focused window is a terminal
+    with a readable log, say so in the result she is reading."""
+    from . import tile_logs
+    focused = next((c for c in tile_logs._clients() if c.get("focusHistoryID") == 0), {})
+    address = focused.get("address")
+    if not address or focused.get("class") not in tile_logs._TERMINAL_CLASSES or not tile_logs.find_log(address):
+        return ""
+    return (f"\n[The focused window is a terminal with a readable log: for its exact text use "
+            f"read_tile_log window='{address}', not screenshots.]")
+
+
+def _describe_screen_raw(args: dict) -> ActionResult:
     from ..config import load_config
     from .vision import describe_screen as _describe_screen
 
@@ -919,10 +943,17 @@ def terminal_sudo(args: dict) -> ActionResult:
     from . import workbench
     if not load_config().sudo_access_enabled:
         return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
+    name = str(args.get("name") or "")
+    if not workbench.exists(name):
+        # 2026-09-24 00:28: called twice on the user's own terminal, failed,
+        # and she told the user to type the password themselves.
+        return ActionResult(False, f"{name!r} is not an assistant terminal from terminal_task. For a regular "
+                            "terminal window: focus_window it, read_tile_log to confirm the password prompt, "
+                            "then call submit_sudo_password.")
     password = sudo_approval.retrieve()
     if password is None:
         return ActionResult(False, "no sudo password is saved in GNOME Keyring; add it in Assistant Settings")
-    return workbench.submit_password(str(args.get("name") or ""), password)
+    return workbench.submit_password(name, password)
 
 
 def run_mission(args: dict) -> ActionResult:
@@ -2078,7 +2109,16 @@ def search_os_knowledge(args: dict) -> ActionResult:
     return search(args)
 
 
-ACTIONS.update(desktop_task=desktop_task, search_os_knowledge=search_os_knowledge)
+def _task_tool(name: str):
+    def call(args: dict) -> ActionResult:
+        from ..runtime import service
+        return getattr(service, name)(args)
+    return call
+
+
+ACTIONS.update(desktop_task=desktop_task, search_os_knowledge=search_os_knowledge,
+               start_task=_task_tool("start_task"), task_status=_task_tool("task_status"),
+               task_respond=_task_tool("task_respond"))
 
 
 def run_action(name: str, args: dict) -> ActionResult:

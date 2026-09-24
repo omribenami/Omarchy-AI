@@ -39,6 +39,7 @@ class AgendaTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.notify = patch.object(agenda, "notify").start()
+        self.address_for = patch("omarchy_ai.execution.tile_logs.address_for", return_value="0xc1a").start()
         self.addCleanup(patch.stopall)
         agenda._briefed.clear()
         self.now = 1_790_000_000.0
@@ -63,6 +64,18 @@ class AgendaTests(unittest.TestCase):
                     {"title": "x", "kind": "remind", "at": "2020-01-01T00:00"}):
             with self.assertRaises(ValueError, msg=bad):
                 agenda.create(bad, now=self.now)
+
+    def test_watch_pins_the_window_address_and_fixes_a_window_passed_as_terminal(self):
+        # 2026-09-24: the scp watch named the user's window as `terminal`, and
+        # ssh renamed that window's title mid-session.
+        self.assertEqual(self.watch()["window"], "0xc1a")
+        with patch("omarchy_ai.execution.workbench.exists", return_value=False):
+            job = agenda.create({"title": "scp done -> start the Minecraft container", "kind": "watch",
+                                 "terminal": "ben-ami@Jarvis-HQ:~", "condition": "the transfer finished"}, now=self.now)
+        self.assertEqual((job.get("window"), job.get("terminal")), ("0xc1a", None))
+        self.address_for.return_value = None
+        with self.assertRaises(ValueError):
+            self.watch()
 
     def test_watch_fires_once_with_real_evidence_line_and_finishes(self):
         job = self.watch()

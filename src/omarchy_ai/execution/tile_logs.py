@@ -188,7 +188,7 @@ def _strip_ansi(text: str) -> str:
 
 def list_tiles() -> list[str]:
     with _lock:
-        active = list(_titles.values())
+        active = [f"{address} {title}" for address, title in _titles.items()]
     return active + [label for label, _path in _live_transcripts()] + [label for label, _path in _manual_contexts()]
 
 
@@ -292,10 +292,55 @@ def _manual_contexts() -> list[tuple[str, Path]]:
     return result
 
 
+def _script_logs() -> list[tuple[int, Path]]:
+    """(script pid, readable path) for every live `script` recording into
+    TILE_LOG_DIR. A deleted-but-open log is read through /proc/<pid>/fd."""
+    found = []
+    for proc in Path("/proc").glob("[0-9]*"):
+        try:
+            if (proc / "comm").read_text().strip() != "script":
+                continue
+            for fd in (proc / "fd").iterdir():
+                target = os.readlink(fd)
+                if target.startswith(str(TILE_LOG_DIR) + "/"):
+                    found.append((int(proc.name), fd if target.endswith(" (deleted)") else Path(target)))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def _window_of(pid: int, clients: list[dict]) -> dict | None:
+    """The Hyprland client that owns this process (walks up the parents)."""
+    seen = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        client = next((c for c in clients if c.get("pid") == pid), None)
+        if client:
+            return client
+        try:
+            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+    return None
+
+
 def _live_transcripts() -> list[tuple[str, Path]]:
-    """Recover live PTY identities even after the assistant daemon restarts."""
+    """Recover live PTY identities even after the assistant daemon restarts.
+
+    Terminals opened with open_terminal before a restart used to become
+    unreadable: sweep_stale deleted their logs while `script` kept writing
+    (2026-09-24 01:03-01:20: every read of the user's ssh terminal failed,
+    she fell back to ~40 screenshots and wrote a docker-compose from them)."""
     clients = _clients()
     found = []
+    with _lock:
+        tracked = set(_tracked)
+    for pid, path in _script_logs():
+        if path.name.startswith("manual-"):
+            continue
+        client = _window_of(pid, clients)
+        if client and client.get("address") not in tracked:
+            found.append((f"{client.get('address')} {client.get('title')} [live output]", path))
     for path in TILE_LOG_DIR.glob("manual-*.log"):
         try:
             pid = int(path.name.split("-")[1])
@@ -342,16 +387,35 @@ def find_log(query: str | None) -> Path | None:
     if not query:
         return named_items[0][1] if len(named_items) == 1 else None
     needle = query.strip().lower()
-    best_path, best_score = None, 0.0
-    for title, path in named_items:
-        score = fuzz.WRatio(needle, title.lower())
-        if score > best_score:
-            best_path, best_score = path, score
+    scored = [(fuzz.WRatio(needle, title.lower()), title, path) for title, path in named_items]
+    best_score = max(score for score, _, _ in scored)
     if query.startswith("0x"):
         return None  # Never substitute another tile for an exact window ID.
-    if best_path is not None and best_score > 50:
-        return best_path
-    return None
+    if best_score <= 50:
+        return None
+    best = {path: title for score, title, path in scored if score == best_score}
+    if len(best) == 1:
+        return next(iter(best))
+    # Two terminals titled "ben-ami@Jarvis-HQ:~" (2026-09-24 00:28): the
+    # first match was the wrong one. Prefer the focused window -- the one
+    # just typed into -- else refuse and make the caller use the address.
+    focused = next((c.get("address") for c in _clients() if c.get("focusHistoryID") == 0), None)
+    chosen = [path for path, title in best.items() if focused and title.startswith(focused)]
+    return chosen[0] if len(chosen) == 1 else None
+
+
+def address_for(query: str | None) -> str | None:
+    """The window address behind a terminal query. Titles change (ssh
+    renamed 'ben-ami@Jarvis-HQ:~' to 'ben-ami@benami-HomeServer-X230: ~'
+    mid-session, 2026-09-24); the address does not."""
+    path = find_log(query)
+    if path is None:
+        return None
+    with _lock:
+        tracked = next((address for address, p in _tracked.items() if p == path), None)
+    if tracked:
+        return tracked
+    return next((label.split()[0] for label, p in _live_transcripts() if p == path and label.startswith("0x")), None)
 
 
 def read_log(query: str | None, tail_chars: int = 4000) -> str:
@@ -366,7 +430,8 @@ def read_log(query: str | None, tail_chars: int = 4000) -> str:
         if not available:
             return "no terminal transcript or terminal context is available yet"
         if query:
-            return f"no terminal matches {query!r} -- available: {', '.join(available)}"
+            return (f"no single terminal matches {query!r} (several can share a title; use the window "
+                    f"address) -- available: {', '.join(available)}")
         return f"more than one terminal is available, name one -- available: {', '.join(available)}"
     try:
         with path.open("rb") as stream:
@@ -391,7 +456,10 @@ def sweep_stale() -> None:
     """
     if not TILE_LOG_DIR.is_dir():
         return
+    recording = {path for _pid, path in _script_logs()}
     for p in TILE_LOG_DIR.glob("*"):
+        if p in recording:
+            continue  # a terminal that is still open
         if p.is_file():
             if p.name.startswith("manual-"):
                 try:

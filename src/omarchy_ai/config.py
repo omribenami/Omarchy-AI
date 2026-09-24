@@ -237,7 +237,12 @@ class Config:
         "disabled, leave the focused terminal for the user to enter it. "
         "submit_sudo_password uses the GNOME Keyring credential without "
         "revealing the password to you. Never ask for, repeat, or type a "
-        "password yourself. "
+        "password yourself. The same tool works in the user's own terminal "
+        "windows (focus it first), and when the user asks you to use their "
+        "saved or sudo password for another prompt (ssh, scp, su -- e.g. 'same "
+        "password as here'), do it: confirm the prompt in that window's log, "
+        "call submit_sudo_password, then read the log again to see if it was "
+        "accepted. Do not tell the user you cannot. "
         "If you type shell commands into a terminal: this machine runs "
         "Omarchy, an Arch-based Linux distro — package commands are "
         "'pacman -S <package>' (official repos) or 'yay -S <package>' "
@@ -318,6 +323,21 @@ class Config:
     # volume, play/pause, fullscreen) from the transcript the moment the
     # user pauses, instead of waiting for Gemini's turn (voice/jev_fast.py).
     jev_fast_path: bool = True
+
+    # Task Runtime (src/omarchy_ai/runtime/, docs/ADR-0002-task-runtime.md):
+    # multi-step tasks routed by Jev to the System agent, direct tools,
+    # Claude Code or Codex. Commands up to task_auto_approve run without
+    # asking (LOW, NORMAL or ELEVATED; HIGH always asks, BLOCKED never runs).
+    task_runtime_enabled: bool = True
+    task_auto_approve: str = "NORMAL"
+    # Worker text model (through the Gateway) for the System agent, planner,
+    # direct-tool picker and internal reviewer. A multi-step tool loop needs
+    # a stronger model than the latency-tuned omarchy_text_model; None falls
+    # back to that one.
+    task_agent_model: str | None = "anthropic/claude-sonnet-5"
+    task_max_steps: int = 12
+    task_max_minutes: int = 60
+    task_coding_agent_timeout: int = 1200
     heartbeat_enabled: bool = True
     heartbeat_seconds: int = 60
 

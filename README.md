@@ -117,6 +117,15 @@ been used for, live:
   talking, without waiting for the conversation model.
 - *"Go through the instructions in this file and execute them"* — performs
   a scripted demo step by step, narrating each step while doing it.
+- *"Find what is using port 8080"* / *"fix this bug and test it"* — takes on
+  the whole task in the background with the right helper (her own Linux
+  agent, or Claude Code / Codex for code), checks the result herself, and
+  tells you when it is verified done.
+- *"SSH to the server with the same password as here"* — types the saved
+  sudo password into the prompt in your terminal when you ask her to.
+- *"Take the Minecraft service from the server's docker-compose and bring it
+  up here"* — reads the real file in the ssh terminal, exits to this
+  machine, writes an exact copy, and starts it.
 
 ## Features
 
@@ -134,6 +143,12 @@ been used for, live:
   changing other applications' default audio devices, and its playback keeps
   a small buffer ahead of the speaker so speech does not run dry between
   audio chunks.
+- Stuck-turn guard: a TV or people talking in the background used to keep
+  Gemini from deciding you had finished speaking (answers came 40-108s
+  late). Once your words stop she sends a short silence, and replies in
+  about two seconds.
+- Quick actions are quiet: "switch to workspace 4" is done and confirmed
+  with "done", without a "switching now" before and an "I switched" after.
 - Ends a conversation on "bye"/"stop"/"that's all" (and non-English equivalents) by watching the
   model's own spoken farewell, not just an English keyword match.
 - Cross-session memory: a rolling window of recent conversation history is
@@ -296,7 +311,16 @@ been used for, live:
   overrides this.
 - sudo prompts in her terminals are answered from the Sudo Access password
   in GNOME Keyring. It goes through a stdin-fed buffer and never appears in
-  a command line.
+  a command line. In your own terminal windows she types it into a password
+  prompt (sudo, or ssh/scp when you say the password is the same) after
+  checking that the prompt is really there, and never sees it herself.
+- She keeps working in the terminal you point her at, including an ssh
+  session on another machine, and checks the prompt to know which machine
+  she is on. She reads terminals by window address, so two windows with the
+  same title are never confused, and terminals opened before a restart or
+  update stay readable.
+- Spoken names are treated as approximate: "the Docker folder" finds
+  `docker`, and when several names fit she asks.
 - Browser tasks follow the same rule. They are driven over DevTools, so they
   run without focus.
 
@@ -308,8 +332,24 @@ been used for, live:
   Jev judges when your condition has happened ("the build finished",
   "Claude is waiting for my approval"). It points to the real output line
   as evidence.
+- When she says she will tell you when something finishes, she sets up a
+  watch on it, with the next step you asked for ("then start the
+  container"). Watches on your terminal windows follow the window even when
+  ssh changes its title.
 - When a result comes in, she wakes up and tells you. If you answer, it is
   delivered. If you are away, she catches you up the next time you talk.
+
+**Whole tasks (Task Runtime)**
+- `start_task` hands a multi-step goal to a persistent Task Runtime. Jev
+  routes each step to a worker (the System agent that runs and combines
+  installed Linux tools, direct desktop tools, test and review subagents,
+  Claude Code or Codex), decides what happens next, and certifies the result
+  only from evidence the harness collected itself (commands and exit codes,
+  the git diff, tests it ran).
+- Risky steps (installs, service restarts, deletes, root) wait for your
+  approval; root-level actions need a click on the notification. Tasks
+  survive restarts and can be followed from the terminal with
+  `omarchy-ai-task`. See [ADR-0002](docs/ADR-0002-task-runtime.md).
 
 **Missions (scripted demos)**
 - `run_mission`: give her a file of steps ("introduce yourself, open the

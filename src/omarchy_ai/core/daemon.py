@@ -91,6 +91,13 @@ class OmaDaemon:
                     log.warning("Update check unavailable", exc_info=True)
                 await asyncio.sleep(updates.CACHE_SECONDS)
         update_checker = asyncio.create_task(refresh_updates())
+        try:
+            # Task Runtime events (done, needs approval, question) reach an
+            # open conversation; they always raise a desktop notification too.
+            from ..runtime import service as task_service
+            task_service.announce_to(lambda: self._session, loop)
+        except Exception:
+            log.warning("Task runtime unavailable", exc_info=True)
         async def heartbeat():
             # Scheduled tasks and watches run here, conversation or not.
             from . import agenda

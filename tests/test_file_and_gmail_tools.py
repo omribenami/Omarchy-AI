@@ -31,6 +31,27 @@ class LocalFileToolTests(unittest.TestCase):
         self.assertNotIn("not-in-results", result.message)
         self.assertEqual(run.call_count, 2)
 
+    def test_regular_window_sudo_is_pointed_at_submit_sudo_password(self):
+        with patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
+             patch("omarchy_ai.execution.workbench.exists", return_value=False):
+            result = actions.terminal_sudo({"name": "ben-ami@Jarvis-HQ:~"})
+        self.assertFalse(result.ok)
+        self.assertIn("submit_sudo_password", result.message)
+
+    def test_missing_path_suggests_near_names(self):
+        # 2026-09-24: 'Docker' asked for, the folder is 'docker'.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docker").mkdir()
+            (root / "minecraft_new").mkdir()
+            config = SimpleNamespace(file_access_roots=[str(root)])
+            with self.assertRaises(files.FileAccessError) as caught:
+                files.list_files(str(root / "Docker"), config)
+            self.assertIn("docker", str(caught.exception))
+            with self.assertRaises(files.FileAccessError) as caught:
+                files.list_files(str(root / "minecraft"), config)
+            self.assertIn("minecraft_new", str(caught.exception))
+
     def test_assistant_terminal_gets_a_unique_stable_label(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

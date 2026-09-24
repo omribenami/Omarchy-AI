@@ -28,6 +28,54 @@ class ContextTests(unittest.TestCase):
         with patch.object(tile_logs, '_live_transcripts', return_value=[]), patch.object(tile_logs, '_manual_contexts', return_value=[('context 0x12345', Path('/wrong'))]), patch.object(tile_logs, '_completed_transcripts', return_value=[]):
             self.assertIsNone(tile_logs.find_log('0x12346'))
 
+    def test_terminals_opened_before_a_restart_stay_readable(self):
+        # 2026-09-24 01:03-01:20: after a daemon restart the user's ssh
+        # terminal could not be read at all; its log was deleted at startup.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live, dead = root / 'Omarchy_AI_66523f8d.log', root / 'Omarchy_AI_dead.log'
+            live.write_text('ben-ami@server:~/docker$ ls\n')
+            dead.write_text('old')
+            clients = [{'address': '0x7730', 'pid': 41601, 'title': 'ben-ami@server: ~/docker'}]
+            with patch.object(tile_logs, 'TILE_LOG_DIR', root), \
+                 patch.object(tile_logs, 'TERMINAL_HISTORY_DIR', root / 'none'), \
+                 patch.object(tile_logs, 'TERMINAL_CONTEXT_DIR', root / 'none'), \
+                 patch.object(tile_logs, '_script_logs', return_value=[(41626, live)]), \
+                 patch.object(tile_logs, '_window_of', return_value=clients[0]), \
+                 patch.object(tile_logs, '_clients', return_value=clients), \
+                 patch.dict(tile_logs._tracked, {}, clear=True):
+                tile_logs.sweep_stale()
+                self.assertTrue(live.exists())
+                self.assertFalse(dead.exists())
+                self.assertIn('~/docker$ ls', tile_logs.read_log('0x7730'))
+
+    def test_read_tile_log_reads_an_assistant_terminal_by_name(self):
+        from omarchy_ai.execution import actions, workbench
+        from omarchy_ai.execution.actions import ActionResult
+        with patch.object(workbench, 'exists', return_value=True), \
+             patch.object(workbench, 'read', return_value=ActionResult(True, 'found ./docker-compose.yml')):
+            self.assertEqual(actions.read_tile_log({'window': 'find-docker-compose'}).message, 'found ./docker-compose.yml')
+
+    def test_same_titled_terminals_prefer_the_focused_one_or_refuse(self):
+        # 2026-09-24 00:28: two 'ben-ami@Jarvis-HQ:~' terminals; she typed into
+        # one and read the other.
+        tracked = {'0xa': Path('/a.log'), '0xb': Path('/b.log')}
+        titles = {'0xa': 'ben-ami@Jarvis-HQ:~', '0xb': 'ben-ami@Jarvis-HQ:~'}
+        common = [patch.object(tile_logs, '_live_transcripts', return_value=[]),
+                  patch.object(tile_logs, '_manual_contexts', return_value=[]),
+                  patch.dict(tile_logs._tracked, tracked, clear=True), patch.dict(tile_logs._titles, titles, clear=True)]
+        for p in common:
+            p.start()
+        try:
+            with patch.object(tile_logs, '_clients', return_value=[{'address': '0xb', 'focusHistoryID': 0}]):
+                self.assertEqual(tile_logs.find_log('ben-ami@Jarvis-HQ:~'), Path('/b.log'))
+            with patch.object(tile_logs, '_clients', return_value=[{'address': '0xc', 'focusHistoryID': 0}]):
+                self.assertIsNone(tile_logs.find_log('ben-ami@Jarvis-HQ:~'))
+                self.assertIn('0xa ben-ami@Jarvis-HQ:~', tile_logs.read_log('ben-ami@Jarvis-HQ:~'))
+        finally:
+            for p in common:
+                p.stop()
+
     def test_focused_tile_uses_live_output(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'output.log'
