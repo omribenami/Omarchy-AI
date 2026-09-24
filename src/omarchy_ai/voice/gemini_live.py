@@ -16,6 +16,7 @@ from ..execution.verified_input import InputGuard
 from . import status_icon, watchdog
 from .live import build_session_config, LiveSession
 from .echo_cancel import EchoCancellation
+from . import switchboard
 
 log = logging.getLogger("omarchy_ai.voice.gemini")
 
@@ -58,6 +59,10 @@ NON_BLOCKING_ACTIONS = {
     "myapi_list_services", "myapi_service_methods", "myapi_call",
     "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
 }
+
+# What each tool does, for the switchboard's question.
+from ..execution.tools import TOOLS as _TOOLS  # noqa: E402
+_TOOL_TEXT = {t["name"]: t["description"] for t in _TOOLS}
 
 # Output buffering for pw-play (see _play_audio). 40ms plus a lock-step
 # writer produced audible gaps/clicks on this 2-core machine under load.
@@ -110,6 +115,7 @@ class GeminiLiveSession:
             self._announcements.put_nowait(entry)
         self.proactive = bool(announcements)
         self._announced = []        # (inbox id, monotonic time said)
+        self._announcements_said = []  # their text: the "request" behind calls she makes to report them
         self.user_spoke_at = 0.0
         self._hangup = asyncio.Event()
         self._transcript = []
@@ -147,6 +153,10 @@ class GeminiLiveSession:
         self._utterance: list[str] = []
         self._utterance_checked = False
         self._jev_done = None  # (tool, args, monotonic time, message, text)
+        # Switchboard (voice/switchboard.py): the fast pass's route for the
+        # latest request, and the second pass that decides every tool call.
+        self._route_hint = None  # {"route", "p", "request", "at"}
+        self._switchboard = switchboard.Switchboard()
         self._gemini_inflight = []  # (tool, args, monotonic start) of Gemini's recent calls
         self._script_read_at = 0.0  # when read_file last returned a multi-step script
         self._generation = 0
@@ -310,9 +320,12 @@ class GeminiLiveSession:
             self._utterance_checked = True
             text = " ".join("".join(self._utterance).split())
             started = time.monotonic()
-            decision = await asyncio.to_thread(jev_fast.decide, text)
+            decision, route = await asyncio.to_thread(jev_fast.judge, text)
+            if route:
+                self._route_hint = {**route, "request": text, "at": time.monotonic()}
             if decision is None:
-                log.info("Jev fast path: no fast command in %r (%.0fms)", text[:120], (time.monotonic() - started) * 1000)
+                log.info("Jev fast path: no fast command in %r route=%s (%.0fms)", text[:120], route,
+                         (time.monotonic() - started) * 1000)
                 continue
             tool, args, evidence = decision
             # Gemini sometimes gets there first (real: 00:40:40.57 Gemini vs
@@ -380,6 +393,7 @@ class GeminiLiveSession:
                     f"[Heartbeat result, automatic] {opener}Tell the user now, briefly, in their language: {what}. "
                     "Then ask if they got it. If they do not answer, say nothing more."))]), turn_complete=True)
                 self._announced.append((entry.get("id"), time.monotonic()))
+                self._announcements_said.append(what)
                 log.info("Heartbeat result announced: session=%s id=%s title=%r", self._audit_session,
                          entry.get("id"), entry.get("title"))
                 continue
@@ -467,6 +481,37 @@ class GeminiLiveSession:
         return ActionResult(True, f"Mission completed: all {len(steps)} steps done and verified ({done}).{extra} "
                                   "Briefly tell the user it is finished. Do not redo any step yourself.")
 
+    def _switchboard_context(self) -> switchboard.Context:
+        """The user's latest words, a few earlier turns, the fast pass's
+        route for them, and the calls the model made since."""
+        groups, current = [], []
+        for entry in self._transcript:
+            if entry["role"] == "user":
+                current.append(entry["text"])
+            elif current:
+                groups.append(" ".join("".join(current).split()))
+                current = []
+        if current:
+            groups.append(" ".join("".join(current).split()))
+        request = groups[-1] if groups else ""
+        if not request and self._announcements_said:
+            request = "(no user words: the assistant is reporting a scheduled result) " + self._announcements_said[-1]
+        hint = self._route_hint
+        if hint and (time.monotonic() - hint["at"] > 120 or hint["request"] not in request):
+            hint = None
+        since = self._last_user_speech
+        calls = [(name, args) for name, args, at in self._gemini_inflight if at >= since]
+        return switchboard.Context(request, groups[-4:-1], {k: hint[k] for k in ("route", "p")} if hint else None,
+                                   calls)
+
+    async def _review(self, call) -> switchboard.Verdict:
+        ctx = self._switchboard_context()
+        ctx.description = _TOOL_TEXT.get(call.name, "")
+        verdict = await asyncio.to_thread(self._switchboard.review, call.name, dict(call.args or {}), ctx)
+        log.info("Switchboard: call=%s name=%s decision=%s%s evidence=%s (%.0fms)", call.id, call.name, verdict.action,
+                 f" -> {verdict.tool}" if verdict.action == "reroute" else "", verdict.evidence, verdict.ms)
+        return verdict
+
     async def _run_call(self, session, call) -> None:
         from google.genai import types
         log.info("Gemini action started: session=%s call=%s name=%s args=%r",
@@ -491,10 +536,30 @@ class GeminiLiveSession:
             elif call.name == "get_recent_actions":
                 result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
             else:
+                # Second pass: Jev makes the final routing decision on every
+                # call. A read-only call starts at once and is only used if
+                # Jev lets it run, so reads cost no extra latency.
+                args = dict(call.args or {})
+                review = asyncio.create_task(self._review(call))
+                early = (asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, call.name, args))
+                         if call.name in switchboard.READ_ONLY else None)
+                verdict = await review
+                name, prefix = call.name, ""
+                if verdict.action == "reroute":
+                    name, args, prefix = verdict.tool, verdict.args, verdict.message + " "
                 window = await asyncio.to_thread(LiveSession._current_window)
-                action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, call.name, call.args or {}))
+                if verdict.action in ("reject", "ask"):
+                    action = None
+                    result = ActionResult(False, verdict.message)
+                elif early is not None and name == call.name:
+                    action = early
+                else:
+                    action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, name, args))
                 try:
-                    result = await asyncio.shield(action)
+                    if action is not None:
+                        result = await asyncio.shield(action)
+                        if prefix:
+                            result = ActionResult(result.ok, prefix + result.message)
                 except asyncio.CancelledError:
                     # Cancellation cannot stop an OS action already running.
                     # Finish it before allowing the next conversation.

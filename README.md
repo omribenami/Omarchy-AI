@@ -126,61 +126,80 @@ https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 ## How it works
 
-Omarchy AI splits the work between models that are each good at one thing,
-and code that owns everything that must be exact.
+**Jev is the switchboard.** Every request goes through two passes: a fast
+one the moment you stop talking, and an accurate one before anything runs.
+The live model (Gemini) generates the payload, the concrete tool call, and
+Jev makes the final routing decision on every call.
 
 ```mermaid
 flowchart TB
     subgraph Ears["Ears (local, always on)"]
         W[openWakeWord<br/>desktop + TV mic]
     end
-    subgraph Voice["Conversation (only while you talk)"]
-        L[Gemini Live · OpenAI Live<br/>or Omarchi-ai turn-based]
+    subgraph Pass1["Pass 1: fast (Jev, ~0.4s after you stop)"]
+        F[Instant command?<br/>run + verify now]
+        RT[Route: instant · desktop · web · whole task<br/>terminal · files · info · conversation]
+    end
+    subgraph Voice["Payload (live model)"]
+        L[Gemini Live · OpenAI Live<br/>or Omarchi-ai]
         G[Echo gate + stuck-turn guard]
     end
-    subgraph Jev["Jev: typed decisions"]
-        F[Fast path<br/>simple commands in ~0.4s]
-        D[desktop_task<br/>observe → act → verify]
-        B[browser_task<br/>DOM decisions + goal check]
-        H[Heartbeat judge<br/>watch conditions]
-        S[Skill picker]
+    subgraph Pass2["Pass 2: accurate (Jev switchboard, every call, ~0.3s)"]
+        SB{Final decision}
     end
-    subgraph Runtime["Task Runtime (whole jobs)"]
-        R[Jev: route · direct · validate · certify]
-        X[Harness: state · permissions · evidence]
-        E[System agent · Claude Code · Codex<br/>test + review agents · desktop tools]
-    end
-    subgraph Hands["Execution"]
+    subgraph Exec["Executors"]
         T[~80 typed tools · Omarchy commands]
-        K[Own terminals tmux · your terminals<br/>verified input · readable logs]
-        A[Scheduled jobs · watches · reminders]
+        K[Own terminals · your terminals<br/>verified input · readable logs]
+        D[desktop_task<br/>Jev observe → act → verify]
+        B[browser_task<br/>Jev DOM decisions]
+        R[Task Runtime<br/>Jev route · direct · certify<br/>System agent · Claude Code · Codex]
+        A[Schedules · watches<br/>Jev heartbeat judge]
     end
     subgraph Surfaces
         U[Watch Dogs HUD · bar panels · phone page · TV]
     end
-    W --> L
+    W --> F & L
     G --> L
-    L -- tools --> T & K
-    L -- fast --> F
-    L --> D & B & S
-    L -- start_task --> R
-    R --> X --> E
-    E --> K
-    L -- schedule_task --> A
-    A --> H -- wakes the assistant --> L
+    F --> RT
+    RT -. hint .-> SB
+    L -- tool call --> SB
+    SB -- execute --> T & K & B
+    SB -- "reroute: desktop goal" --> D
+    SB -- "reroute: multi-step job" --> R
+    SB -- "reject / ask: back with the reason" --> L
+    L -- schedule_task --> SB
+    SB --> A
+    A -- wakes the assistant --> L
+    R --> K
     T & K --> U
 ```
 
-- **The live model talks, reasons and plans.** It is the only part that
-  generates words: OpenAI Live (`gpt-live-1`, delegating to `gpt-5`), Google
-  Gemini Live, or Omarchi-ai (Jev with Gateway speech models). Slow tools run
-  as background sub-agents (`NON_BLOCKING`), so you can always keep talking.
-- **Jev makes the checkable decisions.** [Typesafe AI's
-  Jev](https://github.com/browser-use/jev-ultrafast) is a small, typed
-  evaluation model: it answers narrow questions with probabilities ("is this
-  a simple command?", "which window?", "did the build finish?", "is this
-  task done?") instead of generating text. Uncertain answers go back to the
-  live model or to you.
+- **Pass 1, fast.** As soon as you stop talking, one Jev call reads your
+  words. A clear simple command (switch workspace, move a window, volume,
+  play/pause, fullscreen) runs at once and is verified, typically in about
+  0.4s. The same call classifies the request into a route, which pass 2
+  uses as a hint.
+- **The live model generates the payload.** It talks, reasons, plans and
+  writes the tool call: OpenAI Live (`gpt-live-1`, delegating to `gpt-5`),
+  Google Gemini Live, or Omarchi-ai. It is the only part that generates
+  words. Slow tools run in the background, so you can always keep talking.
+- **Pass 2, accurate: Jev decides every call.** Before a call runs, Jev
+  judges it against your latest words, the earlier turns, the pass-1 route
+  and the calls already made. Code then applies a fixed policy: **execute**
+  it; **send it back** with the reason when the target or values are wrong
+  ("switch to 4" called as workspace 5), so the model corrects itself;
+  **ask** you when the request is ambiguous; or **reroute** it, handing a
+  native desktop goal to the Jev desktop loop and a multi-step job to the
+  Task Runtime, with your own words as the goal. Reads start while Jev
+  decides, so they cost nothing extra; state-changing calls wait about
+  0.3s. If Jev is unreachable, calls run as before and the log says so. See
+  [ADR-0003](docs/ADR-0003-jev-switchboard.md).
+- **Jev answers typed questions, not prose.** [Typesafe AI's
+  Jev](https://github.com/browser-use/jev-ultrafast) is a small evaluation
+  model that returns probabilities over closed choices ("which route?",
+  "does this call match the request?", "did the build finish?", "is this
+  task done?"). The same model drives the desktop loop, the browser, the
+  heartbeat and the Task Runtime.
 - **Code owns time, commands and permissions.** When a job is due, what
   exactly runs, and what needs approval are decided by code, never by a
   model. Every shell command in the Task Runtime is risk-classified (LOW,
@@ -193,6 +212,14 @@ flowchart TB
 The conversation loop, tool registry, wake-word pipeline, Task Runtime,
 casting stack and desktop UI are this project's own code, not Open
 Interpreter or another agent framework.
+
+### What changed since 0.5
+
+- **Jev switchboard** ([ADR-0003](docs/ADR-0003-jev-switchboard.md)): a fast
+  first pass classifies every request and runs instant commands, and an
+  accurate second pass reviews every tool call the live model makes before
+  it runs (execute, send back, ask, or reroute to the desktop loop or the
+  Task Runtime).
 
 ### What changed in 0.5
 
@@ -222,8 +249,9 @@ src/omarchy_ai/
               memory, Jev client, agenda/heartbeat and schedules, skills,
               updates, GitHub issue reporting
   voice/      wake word, OpenAI Live (aiortc), Gemini Live (echo gate,
-              stuck-turn guard, missions), Omarchi-ai provider, Jev fast
-              path, echo cancellation, TV microphone, HUD/status IPC
+              stuck-turn guard, missions), Omarchi-ai provider, the Jev
+              switchboard (fast pass + per-call review), echo
+              cancellation, TV microphone, HUD/status IPC
   runtime/    Task Runtime: task records, Jev control, permissions, shell,
               executors (system agent, direct tools, Claude Code, Codex)
   execution/  desktop actions and tool schemas, verified input, terminal
@@ -238,6 +266,7 @@ android-receiver/  Kotlin/Compose Android TV receiver app
 quickshell/        Quickshell/QML plugins: HUD, window labels, settings, MyApi
 systemd/           omarchy-ai.service template
 docs/              ADR-0001 (architecture), ADR-0002 (Task Runtime),
+                   ADR-0003 (Jev switchboard),
                    JEV-DESKTOP, gemini-live, DEPENDENCIES, media
 scripts/           install/build/publish, probes and the original spikes
 ```
@@ -398,10 +427,12 @@ About 80 typed tools plus Omarchy's full command set:
   Live** (full duplex, desktop and phone), and **Omarchi-ai** (turn-based:
   Jev decisions, Gateway transcription and TTS, a compact model for
   wording).
-- **Jev fast path**: when you stop talking, Jev reads the utterance; simple
-  commands run at once and are verified. Negated, conditional, multi-part or
-  uncertain requests go to the live model, and the two never repeat or
-  contradict each other.
+- **Jev switchboard**: when you stop talking, Jev reads the utterance, runs
+  simple commands at once and classifies the rest; then it reviews every tool
+  call the live model makes before it runs, sending wrong calls back,
+  asking when the request is ambiguous, and rerouting desktop goals and
+  multi-step jobs to the right executor. The fast pass and the live model
+  never repeat or contradict each other's action.
 - Gemini on the desktop uses private PipeWire echo cancellation without
   touching other apps' audio devices. Its own voice leaking back can't cut
   it off (you still can, by speaking up), and a stuck-turn guard answers
@@ -754,6 +785,10 @@ Documented honestly rather than papered over:
   "no promise without a watch" were verified against the live model with
   scripted terminals, and still depend on the model following them; it can
   still call a job done before reading the final check.
+- **The switchboard covers Gemini (desktop and phone).** OpenAI Live and
+  Omarchi-ai keep their own dispatch, and mission sub-steps are judged as
+  one `run_mission` call. Each state-changing call pays about 0.3s for the
+  review; a focus → type → Enter chain pays it three times.
 - **The phone bridge** has no per-phone action history and doesn't drive the
   bar's status dot or the HUD. The stuck-turn guard is desktop-only.
 - **Casting audio** is not yet measured as rigorously as video (steady 15fps,

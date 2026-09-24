@@ -5141,3 +5141,43 @@ terminal in ssh on the server, holding the real compose section):
 
 Tests 363/363. Not verified in a real voice session yet.
 
+## 2026-09-24: Jev switchboard -- Jev makes the final routing decision on every call
+
+Product decision (the user): Jev is the decision-making switchboard for every
+incoming request. Gemini generates the payload; Jev makes the final routing
+decision. Fast response on the first pass, accurate on the second, and Jev
+reviews **every** tool call. Design and evidence: docs/ADR-0003-jev-switchboard.md.
+
+**Before:** Gemini picked and ran tools itself. Jev ran only for its own tools
+(`desktop_task`, `browser_task`, `start_task`) and the 25-command fast path
+(measured over 250 real fast-path calls: p50 420ms, p90 614ms).
+
+**Built:**
+- Pass 1: `jev_fast.judge` adds a `route` choice to the existing fast-path call
+  (no extra call) and stores it as the session's route hint.
+- Pass 2: `voice/switchboard.py`, called from `GeminiLiveSession._run_call`
+  (shared by desktop and phone), before every call. Jev answers route /
+  matches / gap; `switchboard.decide` applies code-owned thresholds and
+  reroute rules. Reads run in parallel with the review; 30s decision cache;
+  Jev unreachable means the call runs unreviewed and a warning is logged.
+- Tests: `tests/test_switchboard.py` (policy, reroute gates, cache, fall-open,
+  dispatch wiring, context). The dispatch tests in `test_gemini_live.py` stub
+  the switchboard. 377/377.
+
+**Live calibration** (real Jev over Gateway, 12 real-session cases, table in
+the ADR):
+- Run 1: 10/12. Missed the `desktop_task` reroute (0.81 < 0.9), and pass 1
+  classed "tell Claude: fix the login bug" as `whole_task` 0.95. Pass 2 still
+  correctly let the relay run.
+- Fixes: a 0.75 bar for `desktop_task` reroutes when a confident pass 1
+  agrees; route texts say that relaying dictated text is `terminal`.
+- Run 2: 11/12, median 311ms, max 361ms. A real Gateway HTTP 503 hit one
+  review mid-run and fell open as designed.
+- Remaining miss: "find what is using port 8080 and stop it" with
+  `terminal_task ss -ltnp` executes (Jev 0.88 execute) instead of rerouting to
+  `start_task`. This is the conservative direction, left as is.
+
+**Not verified yet:** a real voice session through the switchboard. Watch the
+`Switchboard:` log lines for decisions and latency, and retune the constants
+in `switchboard.py` from them.
+

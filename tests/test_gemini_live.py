@@ -9,6 +9,20 @@ from google.genai import types
 from omarchy_ai.config import Config
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.voice.gemini_live import GeminiLiveSession, build_live_config
+from omarchy_ai.voice import switchboard
+
+# Dispatch tests below are about the pipeline, not Jev: the switchboard lets
+# every call run (its own policy is tested in test_switchboard.py).
+_pass = patch.object(switchboard.Switchboard, "review",
+                     lambda self, tool, args, ctx: switchboard.Verdict("execute", tool, dict(args)))
+
+
+def setUpModule():
+    _pass.start()
+
+
+def tearDownModule():
+    _pass.stop()
 
 
 class GeminiTests(unittest.IsolatedAsyncioTestCase):
@@ -365,7 +379,7 @@ class JevFastPathTests(unittest.TestCase):
         s = self.session()
         s._utterance = ["Can you switch to ", "workspace 4?"]
         s._last_user_speech = 0.0   # long ago: the pause has passed
-        with patch("omarchy_ai.voice.jev_fast.decide", return_value=("workspace_switch", {"number": 4}, {})) as decide, \
+        with patch("omarchy_ai.voice.jev_fast.judge", return_value=(("workspace_switch", {"number": 4}, {}), {"route": "instant", "p": 0.99})) as decide, \
                 patch("omarchy_ai.voice.jev_fast.execute", return_value=ActionResult(True, "verified: now on workspace 4")) as execute:
             async def run():
                 task = asyncio.create_task(s._fast_path())
@@ -381,7 +395,7 @@ class JevFastPathTests(unittest.TestCase):
         s = self.session()
         s._utterance, s._last_user_speech = ["move this terminal to workspace 4"], 0.0
         s._gemini_inflight = [("move_window_to_workspace", {"number": 4}, time.monotonic())]
-        with patch("omarchy_ai.voice.jev_fast.decide", return_value=("move_window_to_workspace", {"number": 4}, {})), \
+        with patch("omarchy_ai.voice.jev_fast.judge", return_value=(("move_window_to_workspace", {"number": 4}, {}), None)), \
                 patch("omarchy_ai.voice.jev_fast.execute") as execute:
             async def run():
                 task = asyncio.create_task(s._fast_path())

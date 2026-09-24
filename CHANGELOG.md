@@ -19,6 +19,30 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- Every request now goes through Jev, the assistant's fast decision model,
+  twice. The moment you stop talking it runs simple commands and works out
+  what kind of request it is. Then, before any action runs, it checks that
+  the action really matches what you asked. A wrong one, like switching to
+  workspace 5 when you said 4, is caught and corrected instead of done.
+- Jobs are handed to the right helper automatically: a desktop request goes
+  to the fast desktop loop, and a job with several steps goes to the task
+  runner that checks its own work.
+
+### Under the hood
+
+- Jev switchboard (`voice/switchboard.py`, docs/ADR-0003-jev-switchboard.md):
+  pass 1 (`jev_fast.judge`) adds a route to the existing fast-path call;
+  pass 2 reviews every Gemini tool call (desktop and phone) with a
+  code-owned policy: execute, send back, ask, or reroute to `desktop_task` /
+  `start_task` with the user's own words. Read-only calls start in parallel
+  with the review; identical reviews are cached for 30s; Jev outages fall
+  open with a log line. Live calibration: 11/12 cases as intended, median
+  311ms per review.
+
 ## [0.5.0] - 2026-09-24
 
 ### Highlights
