@@ -19,7 +19,7 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-24
 
 ### Highlights
 
