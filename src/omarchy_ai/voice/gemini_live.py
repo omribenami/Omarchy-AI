@@ -225,6 +225,7 @@ class GeminiLiveSession:
                                 self._utterance, self._utterance_checked = [], False
                             self._utterance.append(transcription.text)
                             self._splice_armed = True
+                            self._input_guard.heard_user()
                 if server.interrupted or server.turn_complete:
                     self._replied()
                 if server.interrupted:
@@ -656,12 +657,15 @@ class GeminiLiveSession:
     # 5100+, room at session gain well below; one frame is just a keyboard
     # click) end or prevent the splice: a missed splice is only the old
     # behavior, a clipped sentence is worse.
-    SPLICE_AFTER_SECONDS = 1.5
+    # 1.5s split a slow explanation into fragments that were acted on
+    # (2026-09-24 22:43-22:44, the unasked `exit`; STATUS.md). 2.0s per the user.
+    SPLICE_AFTER_SECONDS = 2.0
     SPLICE_SECONDS = 4.0
     SPLICE_ABORT_RMS = 3500.0
     SPLICE_ABORT_FRAMES = 3
 
     def _replied(self) -> None:
+        self._input_guard.assistant_replied()
         if self._spliced_at:
             log.info("Stuck-turn guard: reply %.1fs after the silence splice", time.monotonic() - self._spliced_at)
             self._spliced_at = 0.0

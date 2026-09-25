@@ -393,12 +393,73 @@ def _running_program(root_pid, children) -> str | None:
     return None
 
 
+# ssh options that take a value (man ssh): the destination is the first
+# argument that is neither an option nor an option's value.
+_SSH_VALUE_FLAGS = set("BbcDEeFIiJLlmOoPpQRSWw")
+
+
+def _ssh_destination(argv: list[str]) -> str | None:
+    """user@host from an ssh command line ("ssh -p 2222 -l me box" -> me@box)."""
+    user, i = None, 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            i += 1
+            break
+        if not arg.startswith("-") or arg == "-":
+            break
+        for j, flag in enumerate(arg[1:], start=1):
+            if flag in _SSH_VALUE_FLAGS:
+                value = arg[j + 1:]
+                if not value:
+                    i += 1
+                    value = argv[i] if i < len(argv) else ""
+                if flag == "l":
+                    user = value
+                break
+        i += 1
+    if i >= len(argv) or not argv[i]:
+        return None
+    dest = argv[i]
+    if dest.startswith("ssh://"):
+        dest = dest[6:].split("/", 1)[0].rsplit(":", 1)[0]
+    return f"{user}@{dest}" if user and "@" not in dest else dest
+
+
+def _remote_session(root_pid, children) -> str | None:
+    """The ssh destination a terminal is connected to, if any.
+
+    Real bug (2026-09-24 22:42-22:44): the user's ssh terminal to the home
+    server was closed, then `docker ps` in a local terminal came back empty
+    and the assistant told the user "no containers on this server" and
+    started the Minecraft compose on THIS machine. Nothing in list_windows
+    said which machine a terminal was on; the title alone was not enough."""
+    level = list(children.get(root_pid, [])) if root_pid else []
+    for _ in range(8):
+        next_level = []
+        for pid in sorted(level):
+            try:
+                if Path(f"/proc/{pid}/comm").read_text().strip() in ("ssh", "mosh-client"):
+                    argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").rstrip("\0")
+                    return _ssh_destination(argv.split("\0")) or "unknown host"
+            except OSError:
+                continue
+            next_level.extend(children.get(pid, []))
+        if not next_level:
+            return None
+        level = next_level
+    return None
+
+
 def _with_programs(clients: list[dict]) -> list[dict]:
     children = None
     for c in clients:
         if any(k in str(c.get("class") or "").lower() for k in _WINDOW_KINDS["terminal"]):
             children = children if children is not None else _process_children()
             c["running"] = _running_program(c.get("pid"), children)
+            remote = _remote_session(c.get("pid"), children)
+            c["machine"] = (f"REMOTE {remote} (ssh): commands typed here run on that machine"
+                            if remote else f"local ({socket.gethostname()}): this computer")
     return clients
 
 
@@ -427,6 +488,7 @@ def list_windows(args: dict) -> ActionResult:
             "app": c.get("class"),
             "title": c.get("title"),
             **({"running": c["running"]} if c.get("running") else {}),
+            **({"machine": c["machine"]} if c.get("machine") else {}),
             "workspace": (c.get("workspace") or {}).get("id"),
             "fullscreen": bool(c.get("fullscreen")),
             "focused": c.get("address") == active_address,

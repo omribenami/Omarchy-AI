@@ -136,7 +136,7 @@ TOOLS: list[dict] = [
     _tool("open_editor", "Open the default text editor."),
     _tool(
         "list_files",
-        "List files and folders in the user's home directory or /tmp. Use this to find a local file before reading it. Set recursive only when needed; results are bounded.",
+        "List files and folders on THIS computer (never a remote/ssh machine) in the user's home directory or /tmp. Use this to find a local file before reading it. Set recursive only when needed; results are bounded.",
         {"type": "object", "properties": {
             "path": {"type": "string", "description": "Folder to list. Omit for the user's home directory."},
             "recursive": {"type": "boolean", "description": "Include nested entries, up to a bounded result size."},
@@ -144,7 +144,7 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "read_file",
-        "Read a local text file. By default this is limited to the user's home directory or /tmp. For a user-requested system configuration task, set system_config to read a file under /etc directly before editing it; never open a terminal editor just to inspect a file.",
+        "Read a text file on THIS computer (never a remote/ssh machine; read those through their terminal). By default this is limited to the user's home directory or /tmp. For a user-requested system configuration task, set system_config to read a file under /etc directly before editing it; never open a terminal editor just to inspect a file.",
         {"type": "object", "properties": {
             "path": {"type": "string", "description": "Text file to read."},
             "start_line": {"type": "integer", "minimum": 1, "description": "One-based line to start at; omit for the beginning."},
@@ -154,7 +154,7 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "write_file",
-        "Save text to a local file in the user's home directory or /tmp. Use only when the user asks to create or edit a file. Existing files are protected unless overwrite is explicitly true.",
+        "Save text to a file on THIS computer (never a remote/ssh machine) in the user's home directory or /tmp. Use only when the user asks to create or edit a file. Existing files are protected unless overwrite is explicitly true.",
         {"type": "object", "properties": {
             "path": {"type": "string", "description": "Destination file path."},
             "content": {"type": "string", "description": "Complete text to save."},
@@ -227,7 +227,9 @@ TOOLS: list[dict] = [
         "list_windows",
         "List every open window/tile: which app, its title, which "
         "workspace it's on, whether it's fullscreen, and which one is "
-        "currently focused. Call this whenever it's not certain which "
+        "currently focused. Terminals also show what is `running` in them "
+        "and their `machine`: REMOTE user@host (ssh) or local (this "
+        "computer) -- commands typed there run on that machine. Call this whenever it's not certain which "
         "window the user is referring to, or before an action that only "
         "affects the focused window (fullscreen, close) if the user "
         "named a specific app rather than just saying 'this'.",

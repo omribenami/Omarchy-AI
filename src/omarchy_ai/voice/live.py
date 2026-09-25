@@ -176,12 +176,23 @@ def build_session_config(config: Config) -> dict:
     # said she could not reach the server while an ssh terminal was open,
     # then -- still inside ssh -- wrote an invented docker-compose from
     # screenshot summaries, started it ON THE SERVER, and said it was done.
+    # 2026-09-24 22:42-22:44: the reverse. After the ssh terminal was closed
+    # she ran docker ps in a LOCAL terminal, told the user "no containers on
+    # this server" and started the Minecraft compose on this computer; then,
+    # following "to work here after ssh, type exit", typed exit into the
+    # user's Claude Code window. list_windows now labels each terminal's
+    # machine, and session-ending input needs the user's yes (InputGuard).
     instructions += (
-        "\n\nWHICH MACHINE: list_files, read_file, search and terminal_task always act on THIS computer. A "
-        "terminal whose prompt shows another host (user@other-host, an ssh session) acts on THAT machine: for "
-        "files or commands there, use that terminal (type_text + Return, then read_tile_log by its address). "
-        "Before running commands, read the prompt in the log and check it is the machine the user meant; to "
-        "work here after ssh, type exit and confirm the local prompt first. You CAN work on other machines "
+        "\n\nWHICH MACHINE: list_files, read_file, write_file, edit_file, search and terminal_task always act "
+        "on THIS computer. Every terminal in list_windows has a `machine`: 'REMOTE user@host (ssh)' means "
+        "everything typed there runs on THAT machine; 'local (...)' means this computer. For files or commands "
+        "on a remote machine, use its terminal (type_text + Return, then read_tile_log by its address). Before "
+        "running a command, check the target terminal's machine is the one the user meant, and when you report "
+        "a result name the machine it came from ('on the home server', 'on this computer') -- a result from "
+        "this computer is never an answer about a server, and a closed ssh window means that server is no "
+        "longer reachable from it. Leaving a session (exit, logout, quit, Ctrl+D) ends it and closes the "
+        "window: never do it unless the user explicitly asks; to work on this computer while an ssh terminal is "
+        "open, use terminal_task or a local terminal instead. You CAN work on other machines "
         "through such terminals: never say you cannot reach a remote machine or ask the user to paste a remote "
         "file before calling list_windows and looking for a terminal whose title shows that host."
         "\n\nSTAY IN THE USER'S TERMINAL: When the user is working in a terminal or points you at one, keep "
@@ -193,7 +204,7 @@ def build_session_config(config: Config) -> dict:
         "lines: never write a file or command from them. If you cannot read the exact source text, stop and say "
         "so."
         "\n\nMULTI-STEP JOBS: For a request with several steps, say the plan in one short sentence (e.g. "
-        "'read the Minecraft service on the server, exit, write it here pointing at ~/minecraft_new, start "
+        "'read the Minecraft service in the server's terminal, write it here pointing at ~/minecraft_new, start "
         "it'), then do every step without waiting to be pushed, reading the output after each one. Report done "
         "only after you have seen the final output that proves it (e.g. docker compose ps showing it Up on "
         "the right machine); otherwise report exactly where it stopped."
@@ -782,6 +793,7 @@ class LiveSession:
             self._set_watchdog_state("listening")
             self._awaiting_playback_start.clear()
             self._input_buffer += event.get("delta", "")
+            self._input_guard.heard_user()
             if _is_capability_demo(self._input_buffer):
                 self._demo_waiting_for_action.set()
             if self._output_buffer:
@@ -795,6 +807,7 @@ class LiveSession:
             # thread switches the visual state only after it has supplied
             # the first audio chunk to PipeWire.
             self._awaiting_playback_start.set()
+            self._input_guard.assistant_replied()
             # The model started replying — the user's turn is over. Reset
             # the input buffer so the next utterance is judged on its own.
             if self._input_buffer:

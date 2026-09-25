@@ -693,7 +693,7 @@ class StuckTurnGuardTests(unittest.TestCase):
         s = self.session()
         self.assertEqual(s._gate(self.frame(1), 1500.0, 101.0), [self.frame(1)])   # still within the pause
         n = round(s.SPLICE_SECONDS / .02)
-        sent = [s._gate(self.frame(i), 1500.0, 101.5 + i * .02)[0] for i in range(n + 20)]
+        sent = [s._gate(self.frame(i), 1500.0, 100 + s.SPLICE_AFTER_SECONDS + i * .02)[0] for i in range(n + 20)]
         self.assertEqual(sent[:n - 1], [bytes(640)] * (n - 1))   # silence, at most SPLICE_SECONDS
         self.assertEqual(sent[n + 1:], [self.frame(i) for i in range(n + 1, n + 20)])
         self.assertEqual(s._splices, 1)
@@ -725,7 +725,7 @@ class StuckTurnGuardTests(unittest.TestCase):
         for i in range(10):
             s._gate(self.frame(i), 8000.0, 50.0 + i * .02)
         self.assertEqual(s._gate(self.frame(1), 1500.0, 51.0), [self.frame(1)])
-        self.assertEqual(s._gate(self.frame(2), 1500.0, 51.8), [bytes(640)])
+        self.assertEqual(s._gate(self.frame(2), 1500.0, 50.18 + s.SPLICE_AFTER_SECONDS + .12), [bytes(640)])
         self.assertEqual(s._splices, 1)
 
     def test_phone_audio_uses_its_own_lower_talking_again_level(self):
