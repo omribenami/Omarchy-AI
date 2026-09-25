@@ -148,7 +148,9 @@ class GeminiLiveSession:
         self._speech_levels = deque(maxlen=200)  # rms of loud-run frames, logged for calibration
         self._last_loud_at = 0.0
         self._spliced_at = 0.0
+        self._force_close_at = 0.0
         self._splices = 0
+        self._forced_turn_closures = 0
         # Jev fast path (voice/jev_fast.py): the current utterance, whether
         # Jev has judged it, and what Jev last did (dedupe against Gemini).
         self._turn_done = asyncio.Event()  # set on every Gemini turn_complete
@@ -663,6 +665,7 @@ class GeminiLiveSession:
     SPLICE_SECONDS = 4.0
     SPLICE_ABORT_RMS = 3500.0
     SPLICE_ABORT_FRAMES = 3
+    FORCE_CLOSE_AFTER_SECONDS = 8.0
 
     def _replied(self) -> None:
         self._input_guard.assistant_replied()
@@ -671,6 +674,7 @@ class GeminiLiveSession:
             self._spliced_at = 0.0
         self._splice_armed = False
         self._splice_until = 0.0
+        self._force_close_at = 0.0
 
     def _splice(self, chunk: bytes, rms: float, now: float, speaking: bool) -> bytes | None:
         """Silence to send instead of this frame, if a stuck turn needs closing."""
@@ -680,6 +684,7 @@ class GeminiLiveSession:
             # The user talking (again): wait for them to stop first.
             self._speech_levels.append(rms)
             self._last_loud_at, self._splice_armed, self._splice_until = now, True, 0.0
+            self._force_close_at = 0.0
             return None
         if self._splice_until:
             if now < self._splice_until:
@@ -702,8 +707,29 @@ class GeminiLiveSession:
         self._splice_armed = False
         self._splice_until = now + self.SPLICE_SECONDS
         self._spliced_at = now
+        self._force_close_at = now
         self._splices += 1
         return bytes(len(chunk))
+
+    async def _stuck_turn_recovery(self, session) -> None:
+        """Force-close a turn when even the silence splice did not unblock it."""
+        from google.genai import types
+        while True:
+            await asyncio.sleep(0.1)
+            started = self._force_close_at
+            if not started or time.monotonic() - started < self.FORCE_CLOSE_AFTER_SECONDS:
+                continue
+            # A text turn_complete is the only operation observed to unstick
+            # the current Gemini Live regression after streamed silence did
+            # not. Keep the instruction neutral so the preceding audio remains
+            # the request being answered.
+            self._force_close_at = 0.0
+            await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
+                "[Turn recovery] The user finished speaking. Respond to their preceding request now."))]),
+                turn_complete=True)
+            self._forced_turn_closures += 1
+            log.warning("Stuck-turn guard: silence splice got no reply for %.1fs; forced turn closure",
+                        self.FORCE_CLOSE_AFTER_SECONDS)
 
     def _gate(self, chunk: bytes, rms: float, now: float) -> list[bytes]:
         """Chunks to send for this mic frame (silence while she speaks)."""
@@ -866,7 +892,8 @@ class GeminiLiveSession:
                 if self.on_connected:
                     self.on_connected()
                 await asyncio.to_thread(status_icon.set_live, True)
-                workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(), self._tools(session), self._hangup.wait()]
+                workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(),
+                           self._tools(session), self._stuck_turn_recovery(session), self._hangup.wait()]
                 if self.config.watchdog_enabled:
                     workers.append(self._visuals())
                 if self.config.jev_fast_path:
@@ -879,9 +906,9 @@ class GeminiLiveSession:
                     task.result()
         finally:
             log.info("Gemini session audio summary: session=%s interruptions=%d received_audio_bytes=%d submitted_audio_bytes=%d "
-                     "echo_gated_frames=%d user_barge_ins=%d stuck_turn_splices=%d",
+                     "echo_gated_frames=%d user_barge_ins=%d stuck_turn_splices=%d forced_turn_closures=%d",
                      self._audit_session, self._interruptions, self._received_audio_bytes, self._submitted_audio_bytes,
-                     self._gated_frames, self._barge_count, self._splices)
+                     self._gated_frames, self._barge_count, self._splices, self._forced_turn_closures)
             from ..execution.browser_jev import cancel_browser_tasks
             cancel_browser_tasks()
             self._hangup.set()

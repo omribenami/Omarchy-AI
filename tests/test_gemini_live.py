@@ -744,6 +744,49 @@ class StuckTurnGuardTests(unittest.TestCase):
         s._gate(self.frame(1), 1500.0, 105.0)
         self.assertEqual(s._splices, 0)
 
+    def test_user_talking_again_cancels_forced_turn_closure(self):
+        s = self.session()
+        s._gate(self.frame(1), 1500.0, 102.0)
+        self.assertTrue(s._force_close_at)
+        for i in range(s.SPLICE_ABORT_FRAMES):
+            s._gate(self.frame(i + 2), 5100.0, 102.02 + i * .02)
+        self.assertEqual(s._force_close_at, 0.0)
+
+
+class StuckTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forces_text_turn_complete_when_silence_did_not_get_a_reply(self):
+        s = GeminiLiveSession(Config())
+        s.FORCE_CLOSE_AFTER_SECONDS = 0.0
+        s._force_close_at = time.monotonic()
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        worker = asyncio.create_task(s._stuck_turn_recovery(session))
+        try:
+            for _ in range(20):
+                if session.send_client_content.await_count:
+                    break
+                await asyncio.sleep(.01)
+            session.send_client_content.assert_awaited_once()
+            self.assertTrue(session.send_client_content.call_args.kwargs["turn_complete"])
+            self.assertEqual(s._forced_turn_closures, 1)
+            self.assertEqual(s._force_close_at, 0.0)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_reply_cancels_forced_turn_closure(self):
+        s = GeminiLiveSession(Config())
+        s.FORCE_CLOSE_AFTER_SECONDS = 0.0
+        s._force_close_at = time.monotonic()
+        s._replied()
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        worker = asyncio.create_task(s._stuck_turn_recovery(session))
+        try:
+            await asyncio.sleep(.12)
+            session.send_client_content.assert_not_awaited()
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
 
 class MissionVisibilityTests(unittest.TestCase):
     def test_mission_browser_steps_are_always_shown(self):
