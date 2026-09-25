@@ -808,7 +808,8 @@ Documented honestly rather than papered over:
   one `run_mission` call. Each state-changing call pays about 0.3s for the
   review; a focus → type → Enter chain pays it three times.
 - **The phone bridge** has no per-phone action history and doesn't drive the
-  bar's status dot or the HUD. The stuck-turn guard is desktop-only.
+  bar's status dot or the HUD. Its stuck-turn guard threshold (1500) is a
+  first estimate for phone audio; tune it from the guard's log lines.
 - **Casting audio** is not yet measured as rigorously as video (steady 15fps,
   zero drops in testing).
 - **MyApi is read-only**: sending mail or creating events isn't wired up.

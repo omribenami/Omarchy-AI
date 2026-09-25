@@ -19,6 +19,19 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- Talking through your phone no longer freezes for a minute or more when
+  there is background noise. She answers within about two seconds of you
+  finishing, the same as on the computer.
+
+### Fixes
+
+- The phone bridge now sends its audio through the stuck-turn guard, with
+  its own threshold for phone audio (it used to go straight to Gemini).
+
 ## [0.6.0] - 2026-09-24
 
 ### Highlights
