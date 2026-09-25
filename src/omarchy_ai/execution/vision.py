@@ -158,6 +158,9 @@ def describe_screen(
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")[:1000]
         log.warning("vision request failed: HTTP %s %s", e.code, detail)
+        from ..core import quota
+        if quota.is_quota_error(detail, e.code):
+            quota.report("openai", f"HTTP {e.code} {detail}")
         return f"error: vision request failed (HTTP {e.code})"
     except urllib.error.URLError as e:
         log.warning("vision request failed: %s", e)

@@ -114,6 +114,9 @@ class GatewayClient:
                 return response.read()
         except urllib.error.HTTPError as error:
             detail = error.read().decode(errors="replace")[:500]
+            from ..core import quota
+            if quota.is_quota_error(detail, error.code):
+                quota.report("vercel", f"HTTP {error.code} {detail}")
             raise GatewayError(f"Gateway request failed (HTTP {error.code}): {detail}") from error
         except urllib.error.URLError as error:
             raise GatewayError(f"Gateway is unavailable: {error.reason}") from error

@@ -506,6 +506,9 @@ class _Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")
             log.error("phone bridge: session creation failed: HTTP %s %s", e.code, detail)
+            from ..core import quota
+            if quota.is_quota_error(detail, e.code):
+                quota.report("openai", f"phone: HTTP {e.code} {detail}", user_initiated=True)
             self._send_json(502, {"error": f"OpenAI session creation failed: HTTP {e.code}"})
             return
         except Exception:  # noqa: BLE001

@@ -17,7 +17,7 @@ for source in "$PROJECT_DIR"/quickshell/plugins/*; do
 done
 # The shell watches plugin files, but rescan before enabling new IDs.
 omarchy-shell shell rescanPlugins
-for id in settings watchdog window-labels myapi tv-discovery; do
+for id in settings watchdog window-labels myapi tv-discovery quota-alert; do
   omarchy plugin enable "omarchy-ai.$id"
 done
 # The MyApi widget itself stays hidden until myapi_enabled is true.

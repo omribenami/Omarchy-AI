@@ -220,6 +220,8 @@ Interpreter or another agent framework.
   accurate second pass reviews every tool call the live model makes before
   it runs (execute, send back, ask, or reroute to the desktop loop or the
   Task Runtime).
+- **Out-of-credit alerts**: red dollar signs on screen, a notification and a
+  spoken warning when OpenAI, Gemini or Vercel AI Gateway run out.
 
 ### What changed in 0.5
 
@@ -263,7 +265,8 @@ src/omarchy_ai/
   knowledge/  packaged Omarchy expert guide, capability registry, Arch notes
   cli/        omarchy-ai-settings, omarchy-ai-task, omarchy-ai-dashboard
 android-receiver/  Kotlin/Compose Android TV receiver app
-quickshell/        Quickshell/QML plugins: HUD, window labels, settings, MyApi
+quickshell/        Quickshell/QML plugins: HUD, window labels, settings, MyApi,
+                   TV picker, quota alert
 systemd/           omarchy-ai.service template
 docs/              ADR-0001 (architecture), ADR-0002 (Task Runtime),
                    ADR-0003 (Jev switchboard),
@@ -510,6 +513,21 @@ flowchart LR
   ASCII/braille visualizer, or both. One colour per state (connecting,
   listening, thinking, speaking); successful tools tint green, failures red.
   Driven by the daemon's lifecycle, not by the model.
+
+**Out-of-credit alerts**
+- When OpenAI, Gemini or Vercel AI Gateway credits, quota or token limits
+  run out, you get told instead of silence: red dollar signs pop up over
+  every screen with the provider's name, a critical notification links to
+  the billing page, and a voice says what happened. If the conversation runs
+  on a provider that still works, the assistant says it in your language;
+  when the voice provider itself is out, a pre-recorded warning in the
+  assistant's own voice plays locally (English or Hebrew, from your recent
+  conversations).
+- Background errors alert at most once per provider every 10 minutes; a
+  wake word that fails because of it is always answered. Outages and plain
+  rate limits don't trigger it. Try it with
+  `.venv/bin/omarchy-ai-settings test-quota-alert openai` (or `gemini`,
+  `vercel`).
 
 **Settings panel**
 - A bar panel for provider and keys (OpenAI, Gemini, Jev / Vercel AI
