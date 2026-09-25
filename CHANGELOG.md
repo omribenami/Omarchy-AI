@@ -26,6 +26,11 @@ Rules for every release:
 - Talking through your phone no longer freezes for a minute or more when
   there is background noise. She answers within about two seconds of you
   finishing, the same as on the computer.
+- She now knows which machine each terminal is on. A terminal connected to
+  a server over SSH is labelled with that server, and she says which machine
+  a result came from instead of mixing up the server and this computer.
+- She no longer types exit, logout or quit into a terminal on her own. If
+  it would end a session, she asks you first and waits for your answer.
 
 ### Fixes
 

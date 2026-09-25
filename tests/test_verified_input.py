@@ -11,9 +11,11 @@ class InputGuardTests(unittest.TestCase):
         self.guard = InputGuard()
         self.address = '0x123'
         self.focus_ok = True
+        self.window = {}
         def execute(name, args):
             if name == 'list_windows':
-                return ActionResult(True, json.dumps([{'address': self.address, 'app': 'foot', 'focused': True}]))
+                return ActionResult(True, json.dumps([{'address': self.address, 'app': 'foot', 'focused': True,
+                                                       **self.window}]))
             return ActionResult(self.focus_ok if name == 'focus_window' else True)
         self.execute = Mock(side_effect=execute)
 
@@ -80,3 +82,51 @@ class InputGuardTests(unittest.TestCase):
     def test_focus_verified_against_requested_address(self):
         with patch('omarchy_ai.execution.actions._hyprctl_dispatch', return_value=ActionResult(True)), patch('omarchy_ai.execution.actions._run', return_value=ActionResult(True, '{"address":"0x123"}')):
             self.assertTrue(focus_window({'target': '0x123'}).ok)
+
+    def test_exit_needs_the_users_answer_to_a_question(self):
+        # 2026-09-24 22:44: mid-sentence, `exit` + Return went into the
+        # user's Claude Code window and ended that session.
+        self.window = {'title': 'Omarchy thinking step freeze', 'running': 'claude',
+                       'machine': 'local (Jarvis-HQ): this computer'}
+        self.guard.run(self.execute, 'focus_window', {'target': self.address})
+        blocked = self.guard.run(self.execute, 'type_text', {'text': 'exit'})
+        self.assertFalse(blocked.ok)
+        self.assertIn('END the claude session', blocked.message)
+        self.guard.heard_user()           # the rest of the user's sentence
+        self.assertFalse(self.guard.run(self.execute, 'type_text', {'text': 'exit'}).ok)
+        self.guard.assistant_replied()    # she asks
+        self.guard.heard_user()           # the user answers
+        self.assertTrue(self.guard.run(self.execute, 'type_text', {'text': 'exit'}).ok)
+        self.assertEqual([c.args for c in self.execute.call_args_list if c.args[0] == 'type_text'],
+                         [('type_text', {'text': 'exit'})])
+        # Used once: the next exit asks again.
+        self.assertFalse(self.guard.run(self.execute, 'type_text', {'text': 'exit'}).ok)
+
+    def test_session_ending_input_forms(self):
+        from omarchy_ai.execution.verified_input import ends_session
+        for text in ('exit', ' EXIT ', 'logout', '/exit', '/quit', 'exit 0', 'exit()', 'quit()'):
+            self.assertTrue(ends_session('type_text', {'text': text}), text)
+        for text in ('exit the loop when done', 'echo exit', 'git commit -m exit', 'exits'):
+            self.assertFalse(ends_session('type_text', {'text': text}), text)
+        self.assertTrue(ends_session('press_key', {'key': 'd', 'modifiers': ['ctrl']}))
+        self.assertFalse(ends_session('press_key', {'key': 'c', 'modifiers': ['ctrl']}))
+
+    def test_input_results_say_which_machine_runs_it(self):
+        self.window = {'machine': 'REMOTE ben-ami@x230 (ssh): commands typed here run on that machine'}
+        focused = self.guard.run(self.execute, 'focus_window', {'target': self.address})
+        self.assertIn('NOT on this computer', focused.message)
+        self.assertIn('ben-ami@x230', self.guard.run(self.execute, 'type_text', {'text': 'docker ps'}).message)
+        self.window = {'machine': 'local (Jarvis-HQ): this computer'}
+        self.guard.run(self.execute, 'focus_window', {'target': self.address})
+        self.assertIn('not a remote server', self.guard.run(self.execute, 'type_text', {'text': 'docker ps'}).message)
+
+
+class SshDestinationTests(unittest.TestCase):
+    def test_destination_from_command_line(self):
+        from omarchy_ai.execution.actions import _ssh_destination
+        self.assertEqual(_ssh_destination(['ssh', 'ben-ami@x230']), 'ben-ami@x230')
+        self.assertEqual(_ssh_destination(['ssh', '-p', '2222', '-l', 'me', 'box']), 'me@box')
+        self.assertEqual(_ssh_destination(['ssh', '-vp22', 'host', 'uptime']), 'host')
+        self.assertEqual(_ssh_destination(['ssh', '-o', 'A=1', '-t', 'h']), 'h')
+        self.assertEqual(_ssh_destination(['ssh', 'ssh://u@h:22']), 'u@h')
+        self.assertIsNone(_ssh_destination(['ssh']))

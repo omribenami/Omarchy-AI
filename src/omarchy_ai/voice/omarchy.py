@@ -517,6 +517,7 @@ class OmarchySession:
                     continue
                 log.info("STT transcript=%r", transcript)
                 self._transcript.append({"role": "user", "text": transcript})
+                self._guard.heard_user()
                 if self._check_exit_phrase(transcript):
                     reply = "Goodbye."
                     self._transcript.append({"role": "assistant", "text": reply})
@@ -538,6 +539,7 @@ class OmarchySession:
                     reply = "The model connection failed for that turn. Please try again."
                 self._transcript.append({"role": "assistant", "text": reply})
                 await self._speak(reply)
+                self._guard.assistant_replied()
         finally:
             status_icon.set_live(False)
             if self.config.watchdog_enabled:

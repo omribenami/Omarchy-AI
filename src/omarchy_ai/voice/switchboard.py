@@ -106,7 +106,8 @@ def questions(tool: str, ctx: Context) -> dict:
             "The live model wants to make `call` for the user's latest `request` (earlier turns and the calls it "
             "already made this turn are context). Decide where this goes. Relaying or typing text the user "
             "dictated into a terminal or to a coding agent (Claude Code, Codex) is exactly what they asked: "
-            "execute it.", _options(tool, ctx)),
+            "execute it. A request that is cut off mid-sentence, or the user describing or explaining how "
+            "something works, asks for nothing: reject a call that acts on it.", _options(tool, ctx)),
         "matches": boolean(
             "Does `call` carry out what the user's latest `request` asks, or a sensible step toward it, with the "
             "right target and values (numbers, names, text)?"),

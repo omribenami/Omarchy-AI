@@ -5288,3 +5288,48 @@ recurring.
 **Not verified:** real phone speech levels. The 1500 threshold is an estimate
 to check against the next guard log line from a phone session.
 
+
+## 2026-09-24 22:42-22:44 session: wrong machine again, and an unasked `exit` into Claude Code
+
+Evidence (`journalctl --user -u omarchy-ai.service`, session 2d43cbfe…):
+
+- 22:42:40 `list_windows` showed `ben-ami@benami-HomeServer-X230: ~/docker`
+  with `running: ssh`. `docker ps` ran there correctly; then the user said
+  "close this terminal" and `close_window` closed the ssh window.
+- 22:43:02-22:43:33 "run docker ps": she focused a **local** terminal
+  (`ben-ami@Jarvis-HQ:~`), got an empty `sudo docker ps` and said "no running
+  Docker containers **on this server**". Then `list_files`/`read_file` found
+  `~/docker/docker-compose.yml` **on this computer** (written there at 19:25)
+  and she ran `cd ~/docker && sudo docker compose up -d` locally: the
+  Minecraft server was pulled and started on Jarvis-HQ, not the home server
+  (`~/docker/Minecraft` populated 22:44:26). The switchboard flagged it
+  (`route=reject p=0.59 gap=not_asked`) but under the reject bar.
+- 22:43:57-22:44:09 the user was explaining ("…to write in the terminal to
+  close…aware when using a terminal that connected to a remote…"); the
+  stuck-turn guard split it at pauses, and on the fragment she focused
+  `0x559286f97620` -- the user's **Claude Code** window on workspace 1 -- and
+  typed `exit` + Return (switchboard p=0.95, matches=0.91). Asked why, she
+  quoted our own prompt: "to work here after ssh, type exit".
+
+Fixes:
+
+- `list_windows` gives every terminal a `machine`: `REMOTE user@host (ssh)`
+  (destination parsed from the `ssh`/`mosh-client` process's argv under the
+  terminal) or `local (<hostname>)`. `focus_window`/`type_text`/`press_key`
+  results through `InputGuard` end with a WHERE IT RUNS line saying the same.
+  Confirmed against a real `ssh -l tester 10.255.255.1` child process.
+- `InputGuard` blocks session-ending input (`exit`, `logout`, `quit`,
+  `/exit`, `/quit`, `exit()`, Ctrl+D) the first time and tells the model to
+  ask the user, naming the window. The same call passes only after the
+  assistant finished a reply AND the user spoke after it (hooks in all
+  voice paths: Gemini desktop/phone, OpenAI live, Omarchy turn-based). The
+  rest of the user's own sentence arriving after the block does not count.
+- WHICH MACHINE prompt rewritten: results must name the machine; a local
+  result is never an answer about a server; never exit a session unless
+  asked (use terminal_task / a local terminal instead). list_files/read_file/
+  write_file descriptions say THIS computer only.
+- Switchboard question: a cut-off sentence or the user explaining something
+  asks for nothing.
+
+- Stuck-turn guard: `SPLICE_AFTER_SECONDS` 1.5 -> 2.0 (user's call). 1.5s split a
+  slow explanation into fragments here; a truly stuck turn now closes ~0.5s later.
