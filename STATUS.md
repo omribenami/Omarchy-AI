@@ -5333,3 +5333,33 @@ Fixes:
 
 - Stuck-turn guard: `SPLICE_AFTER_SECONDS` 1.5 -> 2.0 (user's call). 1.5s split a
   slow explanation into fragments here; a truly stuck turn now closes ~0.5s later.
+
+## 2026-09-25 08:25-08:28: phone answers once, then never again -- Gemini Live API regression
+
+Symptom (three phone sessions in 3 minutes): the first question is answered;
+after that nothing the user says is transcribed (no `Jev fast path` line,
+nothing in conversation_history.jsonl) although the stuck-turn guard sees the
+speech (`loud-run speech p50≈7000`) and splices silence. The user reconnects
+each time. Phone was on cellular (T-Mobile IPv6); the 00:44 session on home
+Wi-Fi, same code, handled a dozen turns.
+
+Same `scripts/probe_stuck_turn.py`, unchanged code, vs the 2026-09-24 table:
+
+| after the question | 2026-09-24 | 2026-09-25 08:31 |
+|---|---|---|
+| digital silence | 0.7s | 1.9s |
+| room noise | 0.6-1.0s | 13.2s |
+| background speech 0.1x + guard | 1.8s | none in 40s |
+| background speech 0.3x + guard | 1.7s | 11.7s |
+| room noise + guard | 1.3s | 15.4s |
+
+A bare session (no instructions, no tools, no guard) also answered the
+first spoken question and never transcribed the next two, with automatic
+and with manual (`activity_start`/`activity_end`) turn detection alike. A
+probe run also got `1011 Internal error encountered` from the server.
+`gemini-3.8-live` metadata is unchanged (`3.1-flash-live-03-2026`).
+Conclusion: server-side, not this repo (the guard, the 2.0s pause and the
+InputGuard hooks are all ruled out by the bare repro). A cross-model
+comparison was inconclusive (the TTS-generated follow-up questions came out
+as answers, not questions). Next: rerun the probe; if still degraded, redo
+the model comparison with proper follow-up audio before switching models.
