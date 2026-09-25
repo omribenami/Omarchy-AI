@@ -9,9 +9,11 @@ import fractions
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 
 import av
+import numpy as np
 from aiortc import AudioStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
 from google import genai
@@ -21,6 +23,14 @@ from ..core.history import append_session
 from ..voice.gemini_live import GeminiLiveSession, build_live_config
 
 log = logging.getLogger(__name__)
+
+# The stuck-turn guard's "the user is talking again" level for phone audio.
+# The desktop value (3500) was measured on the desktop mic at 35% gain; the
+# phone browser applies its own gain control and noise suppression, so the
+# same voice can arrive quieter. Lower means the guard backs off sooner
+# (never clips a quiet speaker, may splice less under loud background).
+# Calibrate from the "loud-run speech p50" in the guard's log lines.
+PHONE_SPLICE_ABORT_RMS = 1500.0
 _slots = threading.BoundedSemaphore(2)
 
 
@@ -63,6 +73,7 @@ async def _serve(config, sdp, answer, cancelled):
     # over the LAN or Tailscale, where host candidates are all that is used.
     peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     adapter = GeminiLiveSession(config)
+    adapter._splice_abort_rms = PHONE_SPLICE_ABORT_RMS
     peer.addTrack(OutputAudio(adapter))
     incoming = asyncio.Queue(maxsize=1)
     messages = asyncio.Queue(maxsize=32)
@@ -125,7 +136,15 @@ async def _serve(config, sdp, answer, cancelled):
             while True:
                 for frame in resampler.resample(await track.recv()):
                     pcm = bytes(frame.planes[0])[:frame.samples * 2]
-                    await session.send_realtime_input(audio=types.Blob(data=pcm, mime_type='audio/pcm;rate=16000'))
+                    # Same stuck-turn guard as the desktop mic (2026-09-24 21:07:50-21:09:26:
+                    # a 96s freeze on the phone, where audio used to bypass it). The phone
+                    # does its own echo cancellation, so only the guard part applies here.
+                    samples = np.frombuffer(pcm, dtype='<i2').astype(np.float32)
+                    rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+                    now = time.monotonic()
+                    adapter._mic_levels.append((now, rms, int(np.max(np.abs(samples))) if samples.size else 0))
+                    for part in adapter._gate(pcm, rms, now):
+                        await session.send_realtime_input(audio=types.Blob(data=part, mime_type='audio/pcm;rate=16000'))
         except MediaStreamError:
             adapter._hangup.set()
 

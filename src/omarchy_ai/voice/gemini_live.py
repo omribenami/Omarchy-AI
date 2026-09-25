@@ -142,8 +142,10 @@ class GeminiLiveSession:
         self._gated_frames = 0
         self._barge_count = 0
         self._splice_armed = False   # user words transcribed, no reply yet
+        self._splice_abort_rms = self.SPLICE_ABORT_RMS  # the phone bridge sets its own (phone/gemini.py)
         self._splice_until = 0.0
         self._loud_run = 0
+        self._speech_levels = deque(maxlen=200)  # rms of loud-run frames, logged for calibration
         self._last_loud_at = 0.0
         self._spliced_at = 0.0
         self._splices = 0
@@ -668,10 +670,11 @@ class GeminiLiveSession:
 
     def _splice(self, chunk: bytes, rms: float, now: float, speaking: bool) -> bytes | None:
         """Silence to send instead of this frame, if a stuck turn needs closing."""
-        loud = rms >= self.SPLICE_ABORT_RMS
+        loud = rms >= self._splice_abort_rms
         self._loud_run = self._loud_run + 1 if loud else 0
         if self._loud_run >= self.SPLICE_ABORT_FRAMES and not speaking:
             # The user talking (again): wait for them to stop first.
+            self._speech_levels.append(rms)
             self._last_loud_at, self._splice_armed, self._splice_until = now, True, 0.0
             return None
         if self._splice_until:
@@ -685,10 +688,13 @@ class GeminiLiveSession:
         if now - last_words < self.SPLICE_AFTER_SECONDS:
             return None
         levels = sorted(r for ts, r, _ in self._mic_levels if now - ts <= 1.0)
+        speech = sorted(self._speech_levels)
         log.info("Stuck-turn guard: no reply %.1fs after the user's last words; sending silence until she "
                  "replies, at most %.1fs "
-                 "(mic_rms_1s p50=%.0f max=%.0f)", now - last_words, self.SPLICE_SECONDS,
-                 levels[len(levels) // 2] if levels else 0, levels[-1] if levels else 0)
+                 "(mic_rms_1s p50=%.0f max=%.0f; loud-run speech p50=%.0f; abort_rms=%.0f)",
+                 now - last_words, self.SPLICE_SECONDS,
+                 levels[len(levels) // 2] if levels else 0, levels[-1] if levels else 0,
+                 speech[len(speech) // 2] if speech else 0, self._splice_abort_rms)
         self._splice_armed = False
         self._splice_until = now + self.SPLICE_SECONDS
         self._spliced_at = now

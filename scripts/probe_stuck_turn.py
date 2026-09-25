@@ -6,10 +6,13 @@ babble) and times the reply. With --guard every frame goes through the
 daemon's own GeminiLiveSession._gate (the stuck-turn silence splice).
 
     .venv/bin/python scripts/probe_stuck_turn.py
+    # phone-like: quieter speech, the phone bridge's guard threshold
+    PROBE_SPEECH_SCALE=1 PROBE_ABORT_RMS=1500 .venv/bin/python scripts/probe_stuck_turn.py
 
 Findings 2026-09-24 are in STATUS.md ("Stuck on thinking").
 """
 import asyncio
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -62,6 +65,7 @@ def room_noise() -> np.ndarray:
 async def trial(name, speech, background, guard):
     with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
         live = GeminiLiveSession(cfg)
+    live._splice_abort_rms = float(os.environ.get("PROBE_ABORT_RMS", live.SPLICE_ABORT_RMS))
     pos = [0]
 
     def bg():
@@ -107,9 +111,10 @@ async def trial(name, speech, background, guard):
 
 
 async def main():
-    speech = await question() * 2      # ~ the logged user speech level (RMS 5100-12000)
+    # x2 ~ the logged desktop user speech level (RMS 5100-12000)
+    speech = await question() * float(os.environ.get("PROBE_SPEECH_SCALE", 2))
     noise = room_noise()
-    babble = np.tile(speech / 2, 20)   # someone talking in the background
+    babble = np.tile(await question(), 20)   # someone talking in the background
     for name, background, guard in [
         ("silence", np.zeros(32000), False),
         ("room noise", noise, False),

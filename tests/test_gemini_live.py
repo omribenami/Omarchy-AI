@@ -728,6 +728,16 @@ class StuckTurnGuardTests(unittest.TestCase):
         self.assertEqual(s._gate(self.frame(2), 1500.0, 51.8), [bytes(640)])
         self.assertEqual(s._splices, 1)
 
+    def test_phone_audio_uses_its_own_lower_talking_again_level(self):
+        # 21:07:50-21:09:26 on the phone: a 96s freeze, the phone path had no guard.
+        from omarchy_ai.phone.gemini import PHONE_SPLICE_ABORT_RMS
+        s = self.session()
+        s._splice_abort_rms = PHONE_SPLICE_ABORT_RMS
+        s._gate(self.frame(1), 800.0, 102.0)                     # quiet phone line: splice starts
+        self.assertEqual(s._splices, 1)
+        out = [s._gate(self.frame(i), 2000.0, 102.02 + i * .02) for i in range(3)]
+        self.assertEqual(out[-1], [self.frame(2)])               # a normal phone voice ends it
+
     def test_no_splice_while_she_is_speaking(self):
         s = self.session()
         s._playback_until = 200.0

@@ -5240,3 +5240,51 @@ signals in a thread:
 **Not verified:** a real out-of-credit event through each hook (none can be
 caused on purpose without draining an account), and the Vercel error format.
 
+## 2026-09-24 21:07: 96s freeze on the phone -- the stuck-turn guard now covers the phone bridge
+
+**Evidence (journalctl, phone Gemini session over Tailscale, 100.119.66.118):**
+- The last transcript was "fale fale manager" at 21:07:50, a stray
+  foreign-language snippet (background sound).
+- Nothing at all until 21:09:26, when Gemini acted instantly and correctly:
+  focus_window, then typing the user's request verbatim.
+- The request itself was never transcribed before that. This matches the live
+  probe from the morning: under background speech, Gemini withholds even the
+  transcript until the turn closes.
+- It is the same stuck turn as in the first session. Switchboard reviews in
+  that stretch took 0.3-0.8s each, so they are not the cause.
+
+**Cause:** `phone/gemini.py` `send_audio` sent the phone's audio straight to
+`session.send_realtime_input`. The stuck-turn guard (`GeminiLiveSession._gate`)
+only ran in the desktop `_send_audio`. The README already listed "the
+stuck-turn guard is desktop-only" as a known gap.
+
+**Fix:**
+- Phone audio now goes through `adapter._gate`, with RMS/peak recorded in
+  `_mic_levels`. The echo-gate part stays inactive, because `_playback_until`
+  never moves on the phone path and the browser does its own echo
+  cancellation.
+- The "user is talking again" threshold is now per session
+  (`_splice_abort_rms`). The phone uses `PHONE_SPLICE_ABORT_RMS = 1500`
+  instead of the desktop mic's 3500, because the browser applies gain
+  control and noise suppression. Lower is the safe side: it never clips a
+  quiet speaker.
+- Guard log lines now include the loud-run speech p50 and the threshold, for
+  calibration.
+
+**Live probe** (`PROBE_SPEECH_SCALE=1 PROBE_ABORT_RMS=1500
+scripts/probe_stuck_turn.py`):
+- background speech 0.1x with no guard: no reply in 40s (reproduced)
+- with the guard: 2.0s
+- 0.3x with the guard: 2.2s
+- room noise: 0.9s without a splice, 1.3s with the guard and no splice
+
+Tests 391/391.
+
+**Also seen in this session, not changed:** one switchboard review fell open
+with "Jev choice for 'gap' is not its most probable option" (a strict check
+in `core/jev.parse`). The call ran unreviewed as designed. Watch for it
+recurring.
+
+**Not verified:** real phone speech levels. The 1500 threshold is an estimate
+to check against the next guard log line from a phone session.
+
