@@ -360,6 +360,15 @@ class GeminiLiveSession:
         return {"ok": False, "message": (f"Not executed: the Jev fast path already did {tool} {args} for the user's "
                                          f"words {text!r} ({message}). If the user wants something else, ask them.")}
 
+    def notice(self, text: str) -> bool:
+        """Say an automatic notice (e.g. core/quota.py: another provider ran
+        out) from any thread. False when no conversation loop is running."""
+        loop = getattr(self, "_loop", None)
+        if loop is None or loop.is_closed() or self._hangup.is_set():
+            return False
+        loop.call_soon_threadsafe(self._announcements.put_nowait, {"notice": text})
+        return True
+
     def announce(self, entry: dict) -> None:
         """A heartbeat result arrived while this conversation is open."""
         self._announcements.put_nowait(entry)
@@ -383,6 +392,14 @@ class GeminiLiveSession:
                 entry = await asyncio.wait_for(self._announcements.get(), 0.5)
             except asyncio.TimeoutError:
                 entry = None
+            if entry is not None and entry.get("notice"):
+                while not self._idle():
+                    await asyncio.sleep(0.2)
+                await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
+                    "[Automatic notice] Tell the user now, briefly, in their language, then carry on: "
+                    + entry["notice"]))]), turn_complete=True)
+                log.info("Automatic notice said: session=%s %r", self._audit_session, entry["notice"][:120])
+                continue
             if entry is not None:
                 while not self._idle():
                     await asyncio.sleep(0.2)
@@ -816,6 +833,7 @@ class GeminiLiveSession:
     async def run(self):
         from google import genai
         client = genai.Client(api_key=Path(self.config.gemini_api_key_path).read_text().strip())
+        self._loop = asyncio.get_running_loop()
         mic = None
         tasks = []
         try:

@@ -166,11 +166,16 @@ async def _serve(config, sdp, answer, cancelled):
             for task in done:
                 task.result()
     except Exception as error:
+        from ..core import quota
+        out_of_quota = quota.is_quota_error(str(error))
+        if out_of_quota:
+            quota.report("gemini", f"phone: {error}", user_initiated=True)
         if not answer.done():
             answer.set_exception(error)
         else:
             log.exception('Phone Gemini session failed')
-            emit({'type': 'error', 'error': {'message': 'Gemini connection ended. Please reconnect.'}})
+            emit({'type': 'error', 'error': {'message': 'Gemini quota used up.' if out_of_quota
+                                             else 'Gemini connection ended. Please reconnect.'}})
     finally:
         for task in tasks:
             task.cancel()

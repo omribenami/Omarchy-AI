@@ -12,11 +12,12 @@ into this repo so a fresh clone doesn't have to rebuild them from scratch:
 | `omarchy-ai.window-labels` | Floating name-label badges dropped over candidate windows when the assistant needs you to point at (or name) the right one. |
 | `omarchy-ai.myapi` | Separate bar-widget for the MyApi (myapiai.com) integration — connect/disconnect and live per-service usage. Hidden until "Enable" is switched on in `omarchy-ai.settings`. |
 | `omarchy-ai.tv-discovery` | Small centered, click-through-except-itself device picker shown while a cast/mirror target is being resolved — reads/writes the same `display/registry.py` device state the voice agent itself uses, live-updates while open, and can be resolved by voice or by clicking a row. |
+| `omarchy-ai.quota-alert` | Red dollar signs popping over every screen, with the provider's name, when OpenAI, Gemini or Vercel AI Gateway credits/quota run out (`src/omarchy_ai/core/quota.py`). Click-through, closes itself after ~6.5s. Try it with `.venv/bin/omarchy-ai-settings test-quota-alert openai`. |
 
 ## Installing
 
 Run `bash scripts/install-plugins.sh` from the repository root to install or update
-all five plugins (with backups) and register the MyApi bar widget. `scripts/setup.sh`
+all six plugins (with backups) and register the MyApi bar widget. `scripts/setup.sh`
 also runs this installer. The MyApi icon stays hidden until enabled in settings.
 
 For manual installation, copy each plugin folder into Omarchy's user plugin directory, then enable it:
@@ -27,6 +28,7 @@ cp -r quickshell/plugins/omarchy-ai.settings \
       quickshell/plugins/omarchy-ai.window-labels \
       quickshell/plugins/omarchy-ai.myapi \
       quickshell/plugins/omarchy-ai.tv-discovery \
+      quickshell/plugins/omarchy-ai.quota-alert \
       ~/.config/omarchy/plugins/
 
 omarchy plugin enable omarchy-ai.settings
@@ -34,6 +36,7 @@ omarchy plugin enable omarchy-ai.watchdog
 omarchy plugin enable omarchy-ai.window-labels
 omarchy plugin enable omarchy-ai.myapi
 omarchy plugin enable omarchy-ai.tv-discovery
+omarchy plugin enable omarchy-ai.quota-alert
 ```
 
 `omarchy-ai.settings` and `omarchy-ai.myapi` are `bar-widget`s — if either

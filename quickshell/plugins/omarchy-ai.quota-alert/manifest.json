@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.quota-alert",
+  "name": "Quota alert",
+  "version": "1.0.0",
+  "description": "Red dollar signs popping over every screen when the Omarchy AI assistant runs out of credits or quota on OpenAI, Gemini or Vercel AI Gateway.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "QuotaAlert.qml"
+  }
+}

@@ -825,6 +825,8 @@ class LiveSession:
                     "unrecoverable billing/quota error, hanging up: %s",
                     err.get("message"),
                 )
+                from ..core import quota
+                quota.report("openai", str(err.get("message") or code), user_initiated=True)
                 self._hangup.set()
         log.debug("data channel event: %s", message[:500])
 
@@ -919,7 +921,12 @@ class LiveSession:
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     response = json.loads(resp.read())
             except urllib.error.HTTPError as e:
-                log.error("session creation failed: HTTP %s %s", e.code, e.read().decode())
+                detail = e.read().decode(errors="replace")
+                log.error("session creation failed: HTTP %s %s", e.code, detail)
+                from ..core import quota
+                if quota.is_quota_error(detail, e.code):
+                    # The wake word just failed: this is the only answer the user gets.
+                    quota.report("openai", f"HTTP {e.code} {detail}", user_initiated=True)
                 return
 
             answer_sdp = response["transport"]["sdp"]

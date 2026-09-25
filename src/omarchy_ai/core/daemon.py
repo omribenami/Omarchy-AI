@@ -197,6 +197,11 @@ class OmaDaemon:
                 session.on_connected = lambda: setattr(self, '_state', 'active')
             else:
                 session = LiveSession(self.config, mic_source='desktop' if manual else self.wake_detector.last_source)
+            from . import quota
+            if isinstance(session, GeminiLiveSession):
+                # Another provider running out is said by this conversation;
+                # Gemini itself running out falls back to the local clip.
+                quota.speaker = lambda provider, text: provider != "gemini" and session.notice(text)
             try:
                 self._last_error = None
                 self._session = session
@@ -211,13 +216,20 @@ class OmaDaemon:
                     agenda.forget_briefed()
                 if hasattr(session, 'acknowledged_ids'):
                     agenda.mark_delivered(session.acknowledged_ids())
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
                 log.exception("live session crashed")
                 self._last_error = "Connection ended unexpectedly. Check the service log, then try again."
+                from . import quota
+                # 2026-09-19 12:04: Gemini's "1011 Resource has been exhausted"
+                # ended the conversation with no word to the user.
+                if self.config.provider == "gemini" and quota.is_quota_error(str(error)):
+                    quota.report("gemini", str(error), user_initiated=True)
+                    self._last_error = "Gemini quota used up."
                 # Keep the selected provider; never silently switch credentials.
             finally:
                 from ..execution.browser_jev import cancel_browser_tasks
                 cancel_browser_tasks()
+                quota.speaker = None
             self._session = None
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")

@@ -630,6 +630,14 @@ def cmd_myapi_dashboard(args):
         return {'error': str(error)}
 
 
+def cmd_test_quota_alert(args: argparse.Namespace) -> dict:
+    """Show and say the out-of-credit alert for one provider, for real
+    (screen, notification and voice), without anything having run out."""
+    from ..core import quota
+    quota._alert(args.provider)
+    return {"ok": True, "provider": args.provider, "language": quota.language()}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="omarchy-ai-settings")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -654,6 +662,8 @@ def main(argv: list[str] | None = None) -> int:
     p_dashboard = sub.add_parser('myapi-dashboard')
     p_dashboard.add_argument('period', choices=('24h', '7d', '30d'), default='7d', nargs='?')
     sub.add_parser('activate')
+    p_quota = sub.add_parser("test-quota-alert")
+    p_quota.add_argument("provider", choices=["openai", "gemini", "vercel"])
     p_select_cast = sub.add_parser("select-cast-target")
     p_select_cast.add_argument("address")
     sub.add_parser("refresh-cast-targets")
@@ -680,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         "select-cast-target": cmd_select_cast_target,
         "refresh-cast-targets": cmd_refresh_cast_targets,
         "restart": cmd_restart,
+        "test-quota-alert": cmd_test_quota_alert,
     }[args.command]
     result = handler(args)
     print(json.dumps(result))

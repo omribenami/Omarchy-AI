@@ -5181,3 +5181,62 @@ the ADR):
 `Switchboard:` log lines for decisions and latency, and retune the constants
 in `switchboard.py` from them.
 
+## 2026-09-24: Out-of-credit alerts -- red dollar signs, a notification, and a voice
+
+Request: signal the user when token limits are reached for Vercel, OpenAI and
+Gemini Live, with a spoken notification and red dollar signs popping up on
+screen.
+
+**Evidence that it was silent before (journalctl):**
+- OpenAI, 2026-09-14 23:28:23: the live session logged `credit_balance_exhausted`
+  and hung up. Every wake after that (23:28:28, 23:28:35, ...) failed in
+  about 0.3s with `session creation failed: HTTP 429 insufficient_quota`,
+  then "back to listening". Nothing was said or shown.
+- Gemini, 2026-09-19 12:04:56: `APIError: 1011 ... Resource has been exhausted
+  (e.g. check quota)`, then "live session crashed" mid-conversation.
+- Vercel: no credit error has happened here yet. Detection uses HTTP 402 plus
+  the credit/quota wording, not a captured sample. **Unverified against a
+  real Vercel out-of-credit response.**
+
+**Design (`core/quota.py`):** `is_quota_error(text, status)` recognizes
+credit/quota wording (and 402) but not outages or plain rate limits (tested
+against a real Gateway 503). `report(provider)` rate-limits (background: once
+per 10 minutes per provider; a failed wake: 20s debounce) and raises three
+signals in a thread:
+1. The overlay: new plugin `omarchy-ai.quota-alert` (IPC `quotaAlert show`),
+   36 red `$` popping, drifting and fading over every screen, plus a caption,
+   e.g. "$ Gemini quota used up $". Click-through, closes itself after 6.5s.
+2. A critical desktop notification with the billing link.
+3. Voice. If a Gemini conversation is open and a different provider ran out,
+   `GeminiLiveSession.notice()` has the assistant say it in the user's
+   language. Otherwise a pre-rendered clip plays with `pw-play`. The
+   out-of-credit provider can't speak about itself, and this machine has no
+   local TTS (espeak/piper absent). Clips `voice/alerts/quota-<provider>-
+   <en|he>.ogg` (7-10s, about 60KB each) are rendered in Gemini's default voice
+   by `scripts/make_quota_clips.py`. Every clip was checked by Gateway STT
+   and matches its text; the Hebrew is gender-neutral. The language comes
+   from the recent conversation history (Hebrew vs Latin letters).
+
+**Hooks:**
+- Vercel: `GatewayClient._request`, which every Gateway call goes through
+  (Jev, Omarchi-ai, vision, runtime).
+- OpenAI: `live.py` error events and session creation (the wake case),
+  `vision.py`, and the phone bridge offer relay.
+- Gemini: the daemon's crash handler and `phone/gemini.py`, whose page now
+  says "Gemini quota used up".
+
+**Verified live on this machine:**
+- The plugin was installed (copied, rescanned, enabled) and answers IPC.
+- Screenshots show the dollar-sign burst and caption over the desktop, both
+  from a direct IPC call and from the full end-to-end
+  `omarchy-ai-settings test-quota-alert gemini` (overlay + notification +
+  clip; the command took 11s, mostly the clip).
+- `pw-play` plays the Ogg clips (a full 7.3s at zero volume, exit 0).
+- Tests: `tests/test_quota.py` (12): real error strings, outages that must not
+  alert, the signal order, the speaker-vs-clip choice, rate limits, language,
+  every shipped clip present, the Gateway hook alerting on 402 and not on
+  503, and a notice queued thread-safely on the conversation loop. 390/390.
+
+**Not verified:** a real out-of-credit event through each hook (none can be
+caused on purpose without draining an account), and the Vercel error format.
+

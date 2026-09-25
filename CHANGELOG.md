@@ -31,6 +31,10 @@ Rules for every release:
 - Jobs are handed to the right helper automatically: a desktop request goes
   to the fast desktop loop, and a job with several steps goes to the task
   runner that checks its own work.
+- When OpenAI, Gemini or Vercel runs out of credit, you find out right away.
+  Red dollar signs pop up on the screen, a notification links to the
+  billing page, and you hear a warning. Before, the assistant just went
+  quiet, and the wake word stopped working with no explanation.
 
 ### Under the hood
 
@@ -42,6 +46,11 @@ Rules for every release:
   with the review; identical reviews are cached for 30s; Jev outages fall
   open with a log line. Live calibration: 11/12 cases as intended, median
   311ms per review.
+- Quota alerts (`core/quota.py`, plugin `omarchy-ai.quota-alert`, clips in
+  `voice/alerts/` made by `scripts/make_quota_clips.py`): detected in the
+  Gateway client, OpenAI Live (error events and session creation), OpenAI
+  vision, the phone bridge (OpenAI and Gemini) and the daemon's Gemini crash
+  handler. `omarchy-ai-settings test-quota-alert <provider>` shows it.
 
 ## [0.5.0] - 2026-09-24
 
