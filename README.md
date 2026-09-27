@@ -44,7 +44,7 @@ you when it is verified. It is not a chatbot bolted onto a terminal.
 
 <div align="center">
 
-<video src="docs/media/desktop-demo.mp4" controls width="420"></video>
+https://github.com/user-attachments/assets/49467e18-0e00-4db6-ba63-bbaf9927b218
 
 </div>
 
@@ -103,7 +103,7 @@ Say the wake word, then talk normally. Real requests from daily use:
 
 <div align="center">
 
-<video src="docs/media/desktop-demo.mp4" controls width="420"></video>
+https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
 
 </div>
 
