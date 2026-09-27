@@ -45,6 +45,29 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: one task per job; she can replace a README video herself
+
+The README video job ran as four parallel escalations plus one waiting to
+push a 28 MB omarchy.mp4 into the repo root. Three fixes, verified live on
+that job (task 20260927-104953-5fd079):
+- `runtime/service.py` start_task (every escalation goes through it) asks
+  Jev whether an open voice task is already doing the job; if so it is
+  steered with the new request (`runtime.steer`) instead of duplicated.
+  Live check: "the readme video is still the old one" -> joined 104953;
+  "why does my bluetooth keep disconnecting" -> new task.
+  task_respond(guidance=...) corrects a task that is going the wrong way.
+- `execution/github_upload.py` / tool `github_upload_attachment`: pastes the
+  file into a never-submitted issue comment box in her signed-in browser
+  (CDP DOM.setFileInputFiles on an injected input + a synthetic paste; the
+  form's own chooser never reached CDP interception, and a JS click cannot
+  open a chooser) and returns the user-attachments URL. 28.6 MB video
+  uploaded fine; GitHub's markdown API renders the URL as <video>.
+- After an approval the worker restarted the step from scratch (uploaded
+  again, wrote a different, no-op command, asked again). SystemAgent now runs
+  the approved command first, exactly (`_replay_approved`).
+Result 11:57: 83df10c pushed by the task; rendered README plays the new
+demo (ea736181) plus both gallery videos.
+
 ### 2026-09-27: she signs in with a provider button herself
 
 Asked to press "Continue with Google" on GitHub (00:44 and 10:24), she handed
