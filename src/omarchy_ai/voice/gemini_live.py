@@ -591,14 +591,16 @@ class GeminiLiveSession:
         log.info("Escalating to the Task Runtime: session=%s goal=%r", self._audit_session, goal[:600])
         result = await asyncio.to_thread(run_action, "start_task", {"goal": goal})
         try:
-            task_id = json.loads(result.message).get("task_id") if result.ok else None
+            started = json.loads(result.message) if result.ok else {}
         except ValueError:
-            task_id = None
+            started = {}
+        task_id = started.get("task_id")
         if not task_id:
             log.warning("Escalation did not start a task: session=%s %s", self._audit_session, result.message[:300])
             return
-        log.info("Escalated: session=%s task=%s", self._audit_session, task_id)
-        self._announcements.put_nowait({"notice": escalation.notice(task_id)})
+        log.info("Escalated: session=%s task=%s%s", self._audit_session, task_id,
+                 " (added to the task already doing this job)" if started.get("existing") else "")
+        self._announcements.put_nowait({"notice": escalation.notice(task_id, bool(started.get("existing")))})
 
     def _switchboard_context(self) -> switchboard.Context:
         """The user's latest words, a few earlier turns, the fast pass's

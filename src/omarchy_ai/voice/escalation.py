@@ -136,7 +136,12 @@ def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reaso
     return goal[:3900]
 
 
-def notice(task_id: str) -> str:
+def notice(task_id: str, existing: bool = False) -> str:
+    if existing:
+        # 2026-09-27: each failure streak started one more task for the same job.
+        return (f"Background task {task_id} is already working on this; what just failed was added to it instead of "
+                "starting another. Say that in one sentence, with what it is doing now if you know (task_status). "
+                "Do not retry it yourself.")
     return (f"This kept failing, so I handed it to a background task that can dig deeper (task {task_id}). "
             "Say that in one sentence. Do not retry it yourself; its result, and any approval or question it "
             "needs, will be announced.")

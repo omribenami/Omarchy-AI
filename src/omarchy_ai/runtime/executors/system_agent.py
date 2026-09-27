@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sys
 import time
 
 from .. import discovery
@@ -41,6 +42,10 @@ The machine runs Omarchy: Arch Linux (pacman for repo packages, yay for AUR -- n
 (systemctl --user, journalctl --user), NetworkManager (nmcli), BlueZ (bluetoothctl, rfkill), and many omarchy-*
 helper scripts (omarchy-launch-*, omarchy-cmd-*, omarchy-restart-*, `omarchy` itself). Prefer these existing tools and
 scripts over writing custom code. Compose tools: observe, run, parse, pick the next tool, compare, change, verify.
+GitHub: `gh` is signed in. A video or image in a README must be a GitHub attachment URL
+(https://github.com/user-attachments/assets/...), never a file in the repo: GitHub strips <video src> and ![](x.mp4)
+that point into the repo. Upload with `@PYTHON@ -m omarchy_ai.execution.github_upload <file> <owner/repo>` (prints
+the URL), put the URL on its own line in place of the old attachment line, commit and push.
 
 You work ONE step at a time. Reply with exactly one JSON object:
 {"thought": "<one short sentence>", "action": "<action>", ...fields}
@@ -71,7 +76,7 @@ Rules:
 - Finish with needs_code_change when the root cause is a bug in source code that should be fixed in a repository
   (say which repository/file and why); a coding agent will take over.
 - Finish as soon as the assignment is answered. Be concrete: name the commands that proved each finding.
-"""
+""".replace("@PYTHON@", sys.executable)  # the daemon venv, where omarchy_ai is importable
 
 ROLE_NOTES = {
     WORK: "Carry out the assignment and verify the result.",

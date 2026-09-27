@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from omarchy_ai.core.jev import Jev
@@ -567,6 +568,8 @@ class ReviewRegressionTests(RuntimeHarness):
         started = {}
 
         class FakeRuntime:
+            store = SimpleNamespace(list=lambda n: [])  # no open task doing this job
+
             def start(self, goal, workspace, source):
                 started.update(goal=goal, workspace=workspace, source=source)
                 return Task(id="v", goal=goal, workspace=workspace)

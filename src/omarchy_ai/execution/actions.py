@@ -192,6 +192,11 @@ def _screen_locked() -> bool | None:
     return r.message.strip() == "true" if r.ok else None
 
 
+def github_upload_attachment(args: dict) -> ActionResult:
+    from . import github_upload
+    return github_upload.upload(str(args.get("path") or ""), str(args.get("repo") or ""))
+
+
 def unlock_screen(args: dict) -> ActionResult:
     """Refused here: only the paired phone may unlock (the user's decision,
     2026-09-27), through unlock_screen_for_paired_phone. Anyone near the room
@@ -2252,6 +2257,7 @@ ACTIONS = {
     "screenshot": screenshot,
     "lock_screen": lock_screen,
     "unlock_screen": unlock_screen,
+    "github_upload_attachment": github_upload_attachment,
     "open_terminal": open_terminal,
     "read_tile_log": read_tile_log,
     "open_browser": open_browser,

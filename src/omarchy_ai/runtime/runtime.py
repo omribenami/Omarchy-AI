@@ -183,6 +183,28 @@ class TaskRuntime:
         self._launch(task, background)
         return {"ok": True, "message": f"resumed {task.id}", "task_id": task.id}
 
+    def steer(self, task_id: str, text: str) -> dict:
+        """New direction from the user for a task that keeps running: its next
+        step sees it with the user's answers (and Jev with its notes). Used
+        instead of starting a duplicate task for the same job, and when the
+        assistant corrects a task that is going the wrong way."""
+        text = str(text or "").strip()[:2000]
+        if not text:
+            return {"ok": False, "message": "no guidance given"}
+        task = self.store.load(task_id)
+        if task is None:
+            return {"ok": False, "message": "no such task"}
+        if task.status in TERMINAL:
+            return {"ok": False, "message": f"task {task.id} already {task.status}"}
+
+        def mark(t):
+            t.answers.append(f"User update: {text}")
+            t.add_note(f"User update: {text}")
+            if t.next_dispatch:
+                t.next_dispatch.setdefault("context", {})["user_update"] = text
+        self.store.update(task.id, mark)
+        return {"ok": True, "message": f"task {task.id} will follow the update from its next step"}
+
     def cancel(self, task_id: str | None) -> dict:
         """Works across processes: the file is marked cancelled under the store
         lock; a process driving the task adopts that on its next save and stops
