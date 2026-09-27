@@ -85,6 +85,7 @@ class Task:
     change_marker: str = ""                                  # fingerprint of the workspace diff
     change_step: int = 0                                     # step that last changed the workspace
     cert_rejections: int = 0
+    model_tier: int = 0                                      # worker-model escalation step (runtime/models.py)
     owner: dict | None = None                                # {"pid", "start"} of the process driving it now
     budget: dict = field(default_factory=lambda: {"max_steps": 12, "max_seconds": 3600})
 
@@ -156,9 +157,14 @@ class Task:
     def summary(self) -> dict:
         """What the user (or the live model) needs, no internals."""
         last = self.steps[-1] if self.steps else None
+        models = {}
+        for s in self.steps:
+            if s.get("model"):
+                models[s["executor"]] = s["model"]
         return {"id": self.id, "goal": self.goal, "status": self.status, "phase": self.phase,
-                "steps": len(self.steps), "last_step": ({k: last[k] for k in ("executor", "role", "outcome", "claim")}
+                "steps": len(self.steps), "last_step": ({k: last.get(k) for k in ("executor", "model", "role", "outcome", "claim")}
                                                         if last else None),
+                "models": models, "decisions_by": "Jev (TypeSafe evaluation model): routing and certification",
                 "pending_approval": self.pending_approval, "question": self.question,
                 "certification": self.certification, "result": self.result,
                 "files_modified": self.files_modified[-20:], "errors": self.errors[-3:]}

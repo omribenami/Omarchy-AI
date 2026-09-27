@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 import urllib.error
 from pathlib import Path
@@ -34,8 +35,9 @@ class IssuesTests(unittest.TestCase):
 
     def test_no_token_configured_does_not_attempt_a_request(self):
         self.assertFalse(issues.has_token())
-        with patch.object(issues.urllib.request, "urlopen") as urlopen:
-            ok, message = issues.file_issue("title", "body")
+        with patch.object(issues.urllib.request, "urlopen") as urlopen, \
+                patch.object(issues.shutil, "which", return_value=None):
+            ok, message = issues.file_issue("title", "body", use_gh=True)
         urlopen.assert_not_called()
         self.assertFalse(ok)
         self.assertIn("no GitHub", message)
@@ -68,6 +70,49 @@ class IssuesTests(unittest.TestCase):
             ok, message = issues.file_issue("title", "body")
         self.assertFalse(ok)
         self.assertIn("could not reach GitHub", message)
+
+    def test_token_filing_targets_the_requested_repo(self):
+        self.token_path.write_text("ghp_ok\n")
+        with patch.object(issues.urllib.request, "urlopen",
+                          return_value=_Response({"html_url": "https://github.com/omacom/omarchy/issues/1"})) as urlopen:
+            ok, _ = issues.file_issue("t", "b", "omarchy")
+        self.assertTrue(ok)
+        self.assertIn("/repos/omacom/omarchy/issues", urlopen.call_args.args[0].full_url)
+
+    def test_repo_names_resolve_or_are_refused(self):
+        self.assertEqual(issues.resolve_repo(""), issues.REPOSITORY)
+        self.assertEqual(issues.resolve_repo("Omarchy"), "omacom/omarchy")
+        self.assertEqual(issues.resolve_repo("https://github.com/foo/bar"), "foo/bar")
+        self.assertIsNone(issues.resolve_repo("not a repo"))
+        with patch.object(issues.subprocess, "run") as run:
+            ok, message = issues.file_issue("t", "b", "not a repo", use_gh=True)
+        run.assert_not_called()
+        self.assertFalse(ok)
+
+    def test_automatic_reports_never_fall_back_to_gh(self):
+        with patch.object(issues.subprocess, "run") as run:
+            ok, message = issues.file_issue("t", "b")
+        run.assert_not_called()
+        self.assertFalse(ok)
+
+    def test_requested_issue_uses_logged_in_gh_without_a_token(self):
+        created = subprocess.CompletedProcess([], 0, "https://github.com/omacom/omarchy/issues/77\n", "")
+        with patch.object(issues.shutil, "which", return_value="/usr/bin/gh"), \
+                patch.object(issues.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0), created]) as run:
+            ok, message = issues.file_issue("Wi-Fi freeze", "iwlwifi trace", "omarchy", use_gh=True)
+        self.assertTrue(ok)
+        self.assertEqual(message, "https://github.com/omacom/omarchy/issues/77")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:5], ["gh", "issue", "create", "-R", "omacom/omarchy"])
+        self.assertEqual(run.call_args.kwargs["input"], "iwlwifi trace")
+
+    def test_gh_failure_is_reported_not_raised(self):
+        failed = subprocess.CompletedProcess([], 1, "", "GraphQL: Could not resolve to a Repository\n")
+        with patch.object(issues.shutil, "which", return_value="/usr/bin/gh"), \
+                patch.object(issues.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0), failed]):
+            ok, message = issues.file_issue("t", "b", "foo/bar", use_gh=True)
+        self.assertFalse(ok)
+        self.assertIn("Could not resolve", message)
 
 
 class ReportIssueActionTests(unittest.TestCase):

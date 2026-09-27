@@ -38,6 +38,7 @@ READ_ONLY = frozenset({
     "load_skill", "list_skills", "check_assistant_updates", "get_update_status", "list_bar_icons",
     "list_files", "read_file", "read_tile_log", "list_windows", "list_commands", "get_recent_actions",
     "describe_screen", "terminal_read", "battery_status", "list_cast_targets", "list_reminders",
+    "inspect_browser",
 })
 
 # Code-owned reroutes: tool -> executors it may be handed to, and why.

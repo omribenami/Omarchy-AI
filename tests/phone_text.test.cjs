@@ -237,3 +237,33 @@ test('mirror chrome auto-hides on a timer but never out from under an open chat'
   await p.click('mirrorText');
   assert.equal(fire, null);
 });
+test('text mode answers only in text: Enable audio and amplification never unmute her', async () => {
+  const p = page();
+  await p.click('modeBtn'); await p.send('Hello');
+  const audio = p.element('remoteAudio');
+  audio.srcObject = {}; audio.play = async () => {};
+  await p.click('speakerBtn');
+  assert.equal(audio.muted, true);
+  assert.match(p.element('speakerStatus').textContent, /Text mode/);
+  const gain = {name: 'gain', gain: {value: 0}, connect() {}, disconnect() {}};
+  const node = {connect() {}, disconnect() {}};
+  p.sandbox.testContext = {state: 'running', destination: {}, createMediaStreamSource: () => node, createGain: () => gain,
+    createDynamicsCompressor: () => ({...node, threshold: {}, knee: {}, ratio: {}, attack: {}, release: {}})};
+  vm.runInContext('audioEnabled = true; audioCtx = testContext; setupPhoneAmplification({})', p.sandbox);
+  assert.equal(gain.gain.value, 0);
+  assert.equal(audio.muted, true);
+  await p.click('modeBtn');  // back to voice: she is heard again
+  assert.equal(gain.gain.value, 4);
+});
+test('mirror Text on a live voice call switches to text: mic off, replies silent', async () => {
+  const p = page();
+  await vm.runInContext('start()', p.sandbox);
+  assert.equal(p.stats().micRequests, 1);
+  vm.runInContext('setMirror(true)', p.sandbox);
+  await p.click('mirrorText');
+  assert.equal(vm.runInContext('mode', p.sandbox), 'text');
+  assert.equal(p.stats().stopped, 1);
+  assert.equal(p.element('remoteAudio').muted, true);
+  await p.send('What is on screen?');
+  assert.equal(p.sent.at(-2).item.content[0].text, 'What is on screen?');
+});

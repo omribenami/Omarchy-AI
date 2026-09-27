@@ -309,8 +309,18 @@ class Sender:
         # screencopy/DMA-BUF-negotiated video stream the portal used to
         # own, so it doesn't go through the wedged code path at all and
         # doesn't need replacing.
+        # A sink's monitor is captured by targeting the SINK with
+        # stream.capture.sink=true. The Pulse-style "<sink>.monitor" name is
+        # not a PipeWire node: pipewiresrc silently fell back to the default
+        # source, so the TV got the laptop MICROPHONE instead of system audio
+        # and never heard the assistant (pw-link, 2026-09-27 00:30).
+        # node.latency: without it pipewiresrc drove the whole graph at a
+        # 256-sample (5.3ms) quantum; on this loaded 2-core machine every
+        # node xrun'd thousands of times (pw-top, 2026-09-27 00:57).
+        sink = a.audio_source.removesuffix(".monitor")
         audio = (
-            f"pipewiresrc target-object={a.audio_source} do-timestamp=true ! "
+            f'pipewiresrc target-object={sink} stream-properties="props,stream.capture.sink=true,node.latency=1024/48000" '
+            "do-timestamp=true ! "
             "audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! "
             "queue max-size-buffers=50 leaky=downstream ! voice_mix. "
             'appsrc name=phonevoice is-live=true format=time do-timestamp=true '
@@ -337,6 +347,7 @@ class Sender:
         bus.add_signal_watch()
         bus.connect("message::error", self._on_bus_error)
         bus.connect("message::warning", self._on_bus_warning)
+        bus.connect("message::latency", self._on_latency)
 
         if self.args.probe_buffers:
             self._install_debug_probes()
@@ -382,10 +393,15 @@ class Sender:
         log.info("receiving TV return-audio stream")
         # Only audio is sent by the TV. Decode into a private PCM handoff;
         # never play the microphone back through the TV's own speakers.
+        # Added while the pipeline is PLAYING: the appsink must not be async
+        # (an async sink makes the running pipeline wait on its preroll), and
+        # the receive jitterbuffer changes latency (see _on_latency). The TV
+        # stopped receiving ALL media the moment this branch appeared
+        # (2026-09-27 00:15:11: projector wlan rx ~3 KB/s, EglRenderer 0 fps).
         branch = Gst.parse_bin_from_description(
             "queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! "
             "audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved ! "
-            "appsink name=tvmic emit-signals=true sync=false max-buffers=5 drop=true", True)
+            "appsink name=tvmic emit-signals=true sync=false async=false max-buffers=5 drop=true", True)
         sink = branch.get_by_name("tvmic")
         sink.connect("new-sample", self._on_mic_sample)
         self.pipeline.add(branch)
@@ -410,6 +426,10 @@ class Sender:
             for offset in range(0, len(data), 8192):
                 tv_mic.forward(self.mic_socket, data[offset:offset + 8192])
         return Gst.FlowReturn.OK
+
+    def _on_latency(self, _bus, _message):
+        log.info("pipeline latency changed; recalculating")
+        self.pipeline.recalculate_latency()
 
     def _on_bus_error(self, _bus, message):
         err, debug = message.parse_error()

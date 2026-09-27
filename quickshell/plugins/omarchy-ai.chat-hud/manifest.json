@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.chat-hud",
+  "name": "Assistant text chat HUD",
+  "version": "1.0.0",
+  "description": "Watch Dogs-style HUD for a typed (silent) conversation with Omarchy AI.",
+  "kinds": ["panel"],
+  "keepLoaded": true,
+  "entryPoints": {"panel": "ChatHud.qml"}
+}

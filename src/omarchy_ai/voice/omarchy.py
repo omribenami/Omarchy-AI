@@ -500,6 +500,8 @@ class OmarchySession:
         status_icon.set_live(True)
         if self.config.watchdog_enabled:
             watchdog.start(self.config.watchdog_display_mode)
+        from ..display import assistant_huds
+        assistant_huds.open_automatic(self.config)
         watchdog.state("listening")
         if self.on_connected:
             self.on_connected()

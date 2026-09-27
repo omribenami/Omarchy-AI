@@ -98,6 +98,9 @@ class RuntimeHarness(unittest.TestCase):
         patcher = patch("omarchy_ai.runtime.runtime._config", side_effect=lambda name, default: default)
         patcher.start()
         self.addCleanup(patcher.stop)
+        hud = patch.object(TaskRuntime, "_refresh_task_hud")
+        hud.start()
+        self.addCleanup(hud.stop)
 
     def tearDown(self):
         self.tmp.cleanup()

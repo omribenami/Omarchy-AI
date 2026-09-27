@@ -22,10 +22,13 @@ hl.unbind("SUPER + GRAVE")
 hl.unbind("SUPER + SHIFT + GRAVE")
 o.bind("SUPER + GRAVE", "Activate Omarchy AI", "@ACTIVATE_CMD@ activate")
 o.bind("SUPER + SHIFT + GRAVE", "Activate Omarchy AI", "@ACTIVATE_CMD@ activate")
+-- Same key plus Ctrl: a typed (silent) conversation in the chat HUD.
+hl.unbind("SUPER + CTRL + GRAVE")
+o.bind("SUPER + CTRL + GRAVE", "Omarchy AI text chat", "@ACTIVATE_CMD@ chat-toggle")
 -- <<< Omarchy AI assistant toggle <<<
 EOF
 sed -i "s|@ACTIVATE_CMD@|${ACTIVATE_SHELL//&/\\&}|g" "$temporary"
 mv "$temporary" "$BINDINGS_FILE"
 trap - EXIT
 
-echo "==> Installed SUPER + grave to activate Omarchy AI"
+echo "==> Installed SUPER + grave (voice) and SUPER + CTRL + grave (text chat) for Omarchy AI"

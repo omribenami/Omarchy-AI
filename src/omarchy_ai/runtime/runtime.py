@@ -33,6 +33,7 @@ from .control import ControlPlane
 from .executors import Executor, default_executors
 from .executors.base import (BLOCKED, DIAGNOSE, DONE, FAILED as R_FAILED, IMPLEMENT, NEEDS_APPROVAL,
                              NEEDS_CODE_CHANGE, NEEDS_USER, REVIEW, TEST, WORK, Assignment, Report)
+from . import llm
 from .llm import WorkerModel, WorkerModelError
 from .permissions import Assessment, Risk, Scope, classify, decide, split_commands
 from .task import (ACTIVE, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, TERMINAL, UNVERIFIED,
@@ -82,6 +83,14 @@ class TaskRuntime:
         self._availability: tuple[float, dict] | None = None
         self._mark_interrupted()
 
+    @staticmethod
+    def _refresh_task_hud() -> None:
+        try:
+            from ..display import assistant_huds
+            assistant_huds.refresh_tasks()
+        except Exception:  # cosmetic display must never affect task execution
+            log.debug("task runtime: could not refresh task HUD", exc_info=True)
+
     # ------------------------------------------------------------------ API
     def start(self, goal: str, workspace: str | None = None, *, source: str = "cli", background: bool = True,
               auto_approve: str | None = None, max_steps: int | None = None) -> Task:
@@ -96,6 +105,7 @@ class TaskRuntime:
         task.budget["max_steps"] = int(max_steps or _config("task_max_steps", 12))
         task.budget["max_seconds"] = int(_config("task_max_minutes", 60)) * 60
         self.store.save(task)
+        self._refresh_task_hud()
         self._launch(task, background)
         return task
 
@@ -153,6 +163,7 @@ class TaskRuntime:
                 task.next_dispatch.setdefault("context", {})["user_answer"] = answer[:2000]
             task.question = None
         self.store.save(task)
+        self._refresh_task_hud()
         if task.status == CANCELLED:
             return {"ok": False, "message": f"task {task.id} was cancelled"}
         self._launch(task, background)
@@ -193,6 +204,7 @@ class TaskRuntime:
                 t.pending_approval = None
                 t.next_dispatch = None
         self.store.update(task.id, mark)
+        self._refresh_task_hud()
         return {"ok": True, "message": f"cancelled {task.id}"}
 
     def status(self, task_id: str | None = None) -> dict | None:
@@ -248,6 +260,7 @@ class TaskRuntime:
             thread.start()
 
     def _emit(self, task: Task, event: str) -> None:
+        self._refresh_task_hud()
         for listener in list(self.listeners):
             try:
                 listener(task, event)
@@ -412,6 +425,8 @@ class TaskRuntime:
             self._checkpoint(task)
         step = task.add_step(name, dispatch["instructions"], dispatch["role"])
         step["directive"] = dispatch.get("directive")
+        tier = llm.TIER.set(task.model_tier)  # this task's escalation step, for every worker call below
+        step["model"] = _model_of(executor)
         self.store.save(task)
         assignment = Assignment(task_id=task.id, role=dispatch["role"], goal=task.goal,
                                 instructions=dispatch["instructions"], workspace=task.workspace,
@@ -423,12 +438,20 @@ class TaskRuntime:
         except Exception as exc:  # noqa: BLE001
             log.exception("executor %s crashed", name)
             report = Report(R_FAILED, claim=f"{name} crashed: {type(exc).__name__}: {exc}")
+        finally:
+            llm.TIER.reset(tier)
         outcome = {DONE: "done", NEEDS_APPROVAL: "waiting_approval", NEEDS_USER: "waiting_user",
                    NEEDS_CODE_CHANGE: "done", BLOCKED: "blocked"}.get(report.status, "failed")
         task.finish_step(step, outcome, report.claim)
         step["report_status"] = report.status
         step["findings"] = [f[:400] for f in report.findings][:10]
         step["meta"] = {k: v for k, v in report.meta.items() if k != "history"}
+        if getattr(getattr(executor, "model", None), "last_used", None):
+            step["model"] = executor.model.last_used  # the backend that really answered last
+        if report.meta.get("models"):  # what the external agent actually used
+            step["model"] = ", ".join(report.meta["models"])
+        if outcome in ("failed", "blocked") and _escalates(executor):
+            self._escalate(task, step)
         if report.claim:
             task.add_evidence("claim", report.claim, source="executor", step=step["n"])
         self._observe_workspace(task, step["n"])
@@ -644,6 +667,11 @@ class TaskRuntime:
         task.budget["cert_rejected_at"] = time.time()
         task.certification = {"status": "rejected", "p": p, "gap": gap.value if gap else None, "at": time.time()}
         task.add_note(f"Jev did not certify (p={p:.2f}); missing: {gap.value if gap else 'unknown'}")
+        # A confident but wrong "done" never fails a step: the rejection is
+        # the signal that the worker model was not up to it.
+        last = next((s for s in reversed(task.steps) if s["executor"] in self.executors), None)
+        if last and _escalates(self.executors[last["executor"]]):
+            self._escalate(task, last)
         if task.cert_rejections >= MAX_CERT_REJECTIONS:
             self._finish(task, UNVERIFIED, f"The work was done but could not be verified: "
                                            f"{gap.value if gap else 'evidence was insufficient'}.")
@@ -797,7 +825,25 @@ class TaskRuntime:
                      + ("The last results look complete but were not certified." if verified
                         else f"Unfinished: {task.certification.get('gate') or 'more work was needed'}."))
 
+    def _escalate(self, task: Task, step: dict) -> None:
+        """A cheaper worker model failed a step: the rest of this task runs
+        one step up the qualified ladder (runtime/models.py)."""
+        from . import models
+        steps = models.ladder()
+        if task.model_tier + 1 < len(steps):
+            task.model_tier += 1
+            task.add_note(f"Step {step['n']} fell short on {step.get('model')}; the next steps use the stronger worker "
+                          f"model {steps[task.model_tier]}.")
+
     def _finish(self, task: Task, status: str, message: str) -> None:
+        if status in (CERTIFIED, UNVERIFIED, FAILED):
+            try:
+                from . import models
+                used = {s["model"] for s in task.steps if s.get("model") and s.get("executor") not in CODING}
+                if used and any(m in models.ladder() or m in models._load().get("exams", {}) for m in used):
+                    models.record_outcome(used, status == CERTIFIED)
+            except Exception:  # noqa: BLE001 -- bookkeeping must never fail a task
+                log.debug("could not record worker model outcome", exc_info=True)
         task.status = status
         task.phase = "done"
         task.result = message[:1500]
@@ -1002,6 +1048,29 @@ def masked_exit_code(command: str) -> bool:
     return bool(re.search(r"\|\|\s*(?:true|:|echo|printf|exit\s+0)\b", command))
 
 
+def _model_of(executor: Executor) -> str:
+    """The model behind an executor, so "which model is doing this?" has a
+    real answer (real gap 2026-09-26: asked mid-task, she could not say)."""
+    worker = getattr(executor, "model", None)
+    try:
+        name = worker if isinstance(worker, str) else getattr(worker, "model", None)
+    except Exception:  # noqa: BLE001 -- the gateway config may be unreadable
+        name = None
+    if name:
+        return str(name)
+    return {"CLAUDE_CODE": "Claude Code (its default model)", "CODEX": "Codex (its default model)",
+            "DIRECT_TOOL": "desktop tools (Jev)"}.get(executor.name, "unknown")
+
+
+def _escalates(executor: Executor) -> bool:
+    """Only workers on the auto-chosen model move up the ladder."""
+    worker = getattr(executor, "model", None)
+    try:
+        return bool(getattr(worker, "auto", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _config(name: str, default):
     try:
         from ..config import load_config
@@ -1060,4 +1129,3 @@ def _approval_prompt(runtime: TaskRuntime, task_id: str, fingerprint: str, title
         return
     if choice in ("approve", "deny"):
         runtime.respond(task_id, approve=choice == "approve", channel="notification")
-

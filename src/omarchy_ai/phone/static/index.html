@@ -326,7 +326,17 @@ function toggleMirrorChat(open) {
   mirrorText.setAttribute('aria-expanded', String(open));
   armHide();
 }
-mirrorText.addEventListener('click', () => toggleMirrorChat(mirrorChat.hidden));
+mirrorText.addEventListener('click', async () => {
+  const opening = mirrorChat.hidden;
+  toggleMirrorChat(opening);
+  // The mirror's Text is the same choice as the dock's: mic off, answers on
+  // screen only. It used to open a chat on a live voice call, so typed
+  // questions were answered aloud. Listen switches back to voice.
+  if (opening && mode !== 'text') {
+    if (live) await switchInputMode();
+    else { mode = 'text'; modeBtn.textContent = 'Voice'; modeBtn.setAttribute('aria-pressed', 'true'); syncPhonePlayback(); }
+  }
+});
 document.getElementById('mirrorChatClose').addEventListener('click', () => toggleMirrorChat(false));
 const mirrorVideo = document.getElementById('mirrorVideo');
 const zoomLabel = document.getElementById('zoomLabel');
@@ -512,7 +522,9 @@ for (const container of [document.querySelector('.controls'), document.getElemen
   boostButtons.push(button);
 }
 function syncPhonePlayback() {
-  const audible = audioEnabled && !castActive;
+  // Text mode answers on screen only: nothing unmutes her while it is on
+  // (2026-09-26: "she answers in voice... I want her to answer only in text").
+  const audible = audioEnabled && !castActive && mode !== 'text';
   const amplified = !!playbackGain && audioCtx?.state === 'running' && boost > 1;
   if (playbackGain) playbackGain.gain.value = audible && amplified ? boost : 0;
   remoteAudio.muted = !audible || amplified;
@@ -986,6 +998,10 @@ async function selectSpeaker(ask = true) {
   if (ask) {
     if (!remoteAudio.srcObject) {
       status.textContent = 'Start listening first, then tap Enable audio.';
+      return;
+    }
+    if (mode === 'text') {
+      status.textContent = 'Text mode: replies are shown, not spoken. Switch to Voice to hear her.';
       return;
     }
     // Call play directly inside the tap handler, before awaiting permissions.

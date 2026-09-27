@@ -80,6 +80,8 @@ _END_MARKER = "session ended, back to listening"
 SERVICE = "omarchy-ai.service"
 
 WATCHDOG_DISPLAY_MODES = ("feed", "visualizer", "both")
+TEXT_CHAT_MODES = ("keybinding", "always")
+TEXT_CHAT_KEY = "SUPER + CTRL + `"
 
 # This project's own accent, used everywhere else already (Watch Dogs
 # overlay, phone bridge page, status dots) — reused here so the pairing QR
@@ -96,6 +98,9 @@ SETTABLE = (
     "watchdog_enabled",
     "sudo_access_enabled",
     "watchdog_display_mode",
+    "tasks_hud_on_call",
+    "routines_hud_on_call",
+    "text_chat_mode",
     "voice",
     "phone_bridge_enabled",
     "myapi_enabled",
@@ -146,6 +151,8 @@ def _snapshot() -> dict:
         "defaults": default_fields,
         "wake_models": _wake_models(),
         "watchdog_display_modes": list(WATCHDOG_DISPLAY_MODES),
+        "text_chat_modes": list(TEXT_CHAT_MODES),
+        "text_chat_key": TEXT_CHAT_KEY,
         "voice_options": voice_options,
         "config_path": str(USER_CONFIG_PATH),
         "api_key": _api_key_state(),
@@ -210,14 +217,19 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
             raise ValidationError("wake_threshold must be between 0 and 1")
         return f
 
-    if key == "watchdog_enabled":
+    if key in {"watchdog_enabled", "tasks_hud_on_call", "routines_hud_on_call"}:
         if not isinstance(value, bool):
-            raise ValidationError("watchdog_enabled must be a boolean")
+            raise ValidationError(f"{key} must be a boolean")
         return value
 
     if key == "sudo_access_enabled":
         if not isinstance(value, bool):
             raise ValidationError("sudo_access_enabled must be a boolean")
+        return value
+
+    if key == "text_chat_mode":
+        if value not in TEXT_CHAT_MODES:
+            raise ValidationError(f"text_chat_mode must be one of {TEXT_CHAT_MODES}")
         return value
 
     if key == "watchdog_display_mode":
@@ -495,6 +507,8 @@ def cmd_set(args: argparse.Namespace) -> dict:
         if data:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=True)
 
+    if args.key == "text_chat_mode":  # applies at once, no restart
+        _chat_hud("setPinned", "true" if value == "always" else "false")
     return _snapshot()
 
 
@@ -595,6 +609,39 @@ def cmd_pair_phone(_args: argparse.Namespace) -> dict:
     }
 
 
+def _chat_hud(method: str, *args: str) -> None:
+    subprocess.run(["omarchy-shell", "-q", "assistantChat", method, *args],
+                   capture_output=True, text=True, timeout=5, check=False)
+
+
+def cmd_chat_toggle(_args: argparse.Namespace) -> dict:
+    """SUPER+CTRL+` (install-keybinding.sh): show/focus or hide the chat HUD."""
+    _chat_hud("toggle")
+    return {"ok": True}
+
+
+def cmd_chat_send(_args: argparse.Namespace) -> dict:
+    # The text comes in an environment variable, like the MyApi code: a
+    # message starting with "-" must never be parsed as an option.
+    text = os.environ.get("OMARCHY_AI_CHAT_TEXT", "")
+    result = control.request("chat-send " + json.dumps({"text": text}))
+    if result.get("state") == "offline":
+        return {"ok": False, "error": "The assistant is not running. Start it from the settings panel."}
+    return result
+
+
+def cmd_chat_close(_args: argparse.Namespace) -> dict:
+    return control.request("chat-close")
+
+
+def cmd_chat_clear(_args: argparse.Namespace) -> dict:
+    return control.request("chat-clear")
+
+
+def cmd_chat_state(_args: argparse.Namespace) -> dict:
+    return control.request("chat-state")
+
+
 def cmd_revoke_phones(_args: argparse.Namespace) -> dict:
     from ..phone.server import revoke_all_sessions
 
@@ -662,6 +709,8 @@ def main(argv: list[str] | None = None) -> int:
     p_dashboard = sub.add_parser('myapi-dashboard')
     p_dashboard.add_argument('period', choices=('24h', '7d', '30d'), default='7d', nargs='?')
     sub.add_parser('activate')
+    for name in ("chat-toggle", "chat-send", "chat-close", "chat-clear", "chat-state"):
+        sub.add_parser(name)
     p_quota = sub.add_parser("test-quota-alert")
     p_quota.add_argument("provider", choices=["openai", "gemini", "vercel"])
     p_select_cast = sub.add_parser("select-cast-target")
@@ -687,6 +736,11 @@ def main(argv: list[str] | None = None) -> int:
         "forget-sudo": cmd_forget_sudo,
         "myapi-dashboard": cmd_myapi_dashboard,
         "activate": cmd_activate,
+        "chat-toggle": cmd_chat_toggle,
+        "chat-send": cmd_chat_send,
+        "chat-close": cmd_chat_close,
+        "chat-clear": cmd_chat_clear,
+        "chat-state": cmd_chat_state,
         "select-cast-target": cmd_select_cast_target,
         "refresh-cast-targets": cmd_refresh_cast_targets,
         "restart": cmd_restart,

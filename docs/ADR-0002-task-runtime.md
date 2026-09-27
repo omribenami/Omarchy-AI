@@ -129,10 +129,48 @@ BLOCKED.
 - The daemon forwards task events to an open conversation through
   `session.announce` (from runtime threads via `loop.call_soon_threadsafe`);
   every event also raises a desktop notification.
-- CLI `omarchy-ai-task run|list|show|approve|deny|answer|resume|cancel|executors|classify`.
+- CLI `omarchy-ai-task run|list|show|approve|deny|answer|resume|cancel|executors|classify|models`.
 - Config: `task_runtime_enabled`, `task_auto_approve`, `task_agent_model`
-  (default `anthropic/claude-sonnet-5` via the Gateway), `task_max_steps`,
-  `task_max_minutes`, `task_coding_agent_timeout`.
+  (default `auto`, see "Worker model choice" below; a model id pins one),
+  `task_max_steps`, `task_max_minutes`, `task_coding_agent_timeout`.
+
+### Worker model choice (2026-09-26)
+
+The original default pinned `anthropic/claude-sonnet-5`. It stops working the
+day the Gateway retires that id, and every task paid its price whether it
+needed it or not. `runtime/models.py` now chooses automatically:
+
+- Candidates come from the Gateway's live catalog (`GET /v1/models`): language
+  models tagged `tool-use` + `structured-output`, supporting
+  `response_format`, with 128k+ context, `no_training: all` (the worker reads
+  the user's logs and files), priced, and released within two years.
+- Capability is measured, because the catalog has no quality data. There is a
+  5-probe exam on the System agent's real prompt and brief format, graded by
+  code (plan, first command, conclusion from real output, an injected
+  `curl | bash` inside a log, bitrate arithmetic). A model gets up to 3 steps
+  per probe and must pass the exam twice.
+- Ladder: the cheapest model that passes, then the cheapest that passes at
+  5x that price or more, then 25x or more. A task escalates one step when a
+  worker step fails or blocks, or when Jev refuses certification. The Gateway
+  saying a model is unavailable drops it immediately.
+- The catalog is checked daily. The ladder is re-chosen when the catalog
+  changes, or weekly. Exam results are reused for 30 days (versioned). A
+  model whose real tasks mostly end uncertified (6+ tasks, under 34%
+  certified) is demoted for 30 days.
+
+Backends (same day, user: "use claude code, codex; only if they are not an option use the API"):
+`task_worker_backends` = `[claude, codex, api]`. Claude Code and Codex think for the internal workers
+as tool-less CLIs: `claude -p --tools "" --safe-mode`, with `sonnet` escalating to `opus`. Codex runs
+`codex exec --json --sandbox read-only` in an empty directory, and any reply that follows its own
+command or file change is discarded. Every proposed command still goes through the harness permission
+checks. Letting Claude Code or Codex run whole system tasks themselves would have bypassed those
+checks, so that was rejected. Both CLIs passed the worker exam (claude avg 5.7s/step, codex 9.0s). A
+backend that is missing, logged out, failing or out of quota (then skipped for 1h) falls through to the
+next one. The auto-chosen API ladder below is the last resort.
+
+First real pass, 2026-09-26 (31 exams, most failing): `alibaba/qwen3.7-flash`
+($0.05/M blended) -> `spacexai/grok-4.1-fast-reasoning` ($0.26/M) ->
+`google/gemini-3.8-flash` ($1.35/M), against Sonnet 5's $3.60/M.
 
 ## MiniMax Code: what was reused, adapted, or done differently
 

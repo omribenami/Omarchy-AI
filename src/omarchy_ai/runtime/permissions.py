@@ -56,6 +56,9 @@ class Risk(IntEnum):
 class Assessment:
     risk: Risk
     reasons: list[str] = field(default_factory=list)
+    # Asks the user whatever task_auto_approve says (installing a tool the
+    # assistant wrote itself: the user wanted every one approved).
+    always_ask: bool = False
 
     def raise_to(self, risk: Risk, reason: str) -> None:
         if risk > self.risk:
@@ -68,9 +71,10 @@ class Assessment:
             self.raise_to(other.risk, reason)
         if other.risk > self.risk:
             self.risk = other.risk
+        self.always_ask = self.always_ask or other.always_ask
 
     def as_dict(self) -> dict:
-        return {"risk": self.risk.name, "reasons": self.reasons[:6]}
+        return {"risk": self.risk.name, "reasons": self.reasons[:6], **({"always_ask": True} if self.always_ask else {})}
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +116,10 @@ _CREDENTIAL = [
      "reads a stored secret"),
     (re.compile(r"(?:\$\{?|printenv\s+)\w*(?:API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE_?KEY)\b", re.I),
      "reads a credential environment variable"),
+    # A CLI's stored login token: with it a curl POST (NORMAL) could do what
+    # `gh issue create` (ELEVATED, asks) does without asking.
+    (re.compile(r"\b(?:gh|glab)\s+auth\s+token\b|\bgcloud\s+auth\s+print-\w*token\b", re.I),
+     "reads a stored login token"),
 ]
 # Remote code execution idioms (curl | bash): MiniMax demoted these from hard
 # block to a bypass-immune ask so real installers (rustup, nvm) still work.
@@ -381,6 +389,24 @@ _CONFIG_DIRS = (_HOME / ".config", _HOME / ".local/share/applications", _HOME / 
                 _HOME / ".profile", _HOME / ".bash_profile", _HOME / ".ssh", _HOME / ".gnupg", _HOME / ".local/bin")
 
 
+# Installed assistant tools (execution/user_tools.py): changed only through
+# `omarchy_ai.cli.tools install`, which always asks the user.
+_TOOLS_DIR = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "omarchy-ai" / "tools"
+_TOOLS_CLI = re.compile(r"(?:\bomarchy_ai\.cli\.tools|\bomarchy-ai-tool)\s+(\w+)(?:\s+([\w./~-]+))?")
+
+
+def _tool_cli_risk(command: str, result: "Assessment") -> None:
+    for verb, target in _TOOLS_CLI.findall(command):
+        if verb == "install":
+            from ..execution import user_tools
+            result.raise_to(Risk.ELEVATED, user_tools.approval_summary(target))
+            result.always_ask = True
+        elif verb == "remove":
+            result.raise_to(Risk.ELEVATED, f"removes the assistant tool {target}")
+        elif verb == "run":
+            result.raise_to(Risk.NORMAL, f"runs the approved assistant tool {target}")
+
+
 def write_risk(path: Path, scope: Scope, *, delete: bool = False, recursive: bool = False) -> tuple[Risk, str]:
     """Risk of creating/modifying (or deleting) `path`."""
     text = str(path)
@@ -393,6 +419,8 @@ def write_risk(path: Path, scope: Scope, *, delete: bool = False, recursive: boo
         return Risk.LOW if not delete else Risk.NORMAL, ""
     if (_HOME / ".ssh") in path.parents or (_HOME / ".gnupg") in path.parents:
         return Risk.HIGH, f"{verb} security material under {text}"
+    if path == _TOOLS_DIR or _TOOLS_DIR in path.parents:
+        return Risk.HIGH, f"{verb} an installed assistant tool directly ({text}); use the tools CLI"
     if text.startswith(_SYSTEM_DIRS):
         return Risk.HIGH, f"{verb} system path {text}"
     # Configuration before the workspace check: a workspace containing it
@@ -441,6 +469,7 @@ def classify(command: str, cwd: str | Path | None = None, scope: Scope | None = 
             result.raise_to(Risk.HIGH, why)
     if _REMOTE_EXEC.search(command):
         result.raise_to(Risk.HIGH, "pipes a download into an interpreter")
+    _tool_cli_risk(command, result)
     for inner in _substitutions(command):
         result.merge(classify(inner, cwd, scope))
     if re.search(r"<\(|>\(", command):
@@ -531,6 +560,9 @@ def _classify_one(sub: str, cwd: Path, scope: Scope) -> Assessment:
             result.raise_to(Risk.NORMAL, "downloads a file")
         if any(a in ("-X", "--request", "-d", "--data", "-F", "--form", "-T", "--upload-file") for a in args):
             result.raise_to(Risk.NORMAL, "sends data to a server")
+            if any(re.match(r"(?i)authorization:|private-token:|x-api-key:", a) for a in args) \
+                    or any(a in ("-u", "--user", "--oauth2-bearer") for a in args):
+                result.raise_to(Risk.ELEVATED, "sends data to a server as the user (authenticated)")
     elif word in ("pip", "pip3", "npm", "pnpm", "yarn", "bun", "cargo", "go", "gem", "uv"):
         verb = args[0] if args else ""
         glob = any(a in ("-g", "--global", "--user", "--break-system-packages") for a in args)
@@ -737,7 +769,7 @@ def decide(kind: str, subject: str, assessment: Assessment, *, auto_approve: Ris
     fp = fingerprint(kind, subject)
     if assessment.risk is Risk.BLOCKED:
         return Decision("deny", assessment, fp)
-    if assessment.risk <= min(auto_approve, MAX_AUTO_APPROVE):
+    if assessment.risk <= min(auto_approve, MAX_AUTO_APPROVE) and not assessment.always_ask:
         return Decision("allow", assessment, fp)
     if fp in grants:
         return Decision("allow", assessment, fp)

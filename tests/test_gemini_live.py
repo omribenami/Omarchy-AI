@@ -49,7 +49,8 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         # talking (measured up to 11.2s for myapi_call while she sat frozen).
         from omarchy_ai.voice.gemini_live import NON_BLOCKING_ACTIONS
         for slow in ('describe_screen', 'start_casting', 'list_commands', 'check_assistant_updates'):
-            self.assertEqual(by_name[slow], 'NON_BLOCKING', slow)
+            # With the tool picker the catalog ones are reached through use_tool.
+            self.assertEqual(by_name.get(slow, by_name.get('use_tool')), 'NON_BLOCKING', slow)
         # Fast chained steps still wait: the next call depends on the result.
         for chained in ('focus_window', 'type_text', 'press_key', 'list_windows'):
             self.assertEqual(by_name[chained], 'BLOCKING', chained)
@@ -795,3 +796,42 @@ class MissionVisibilityTests(unittest.TestCase):
         with patch.object(missions, "run_action", return_value=ActionResult(True, "ok")) as run:
             missions.run_step({"action": "browser_task", "say": "", "args": {"url": "https://www.google.com", "goal": "x"}})
         self.assertEqual(run.call_args.args[1]["show"], "yes")
+
+
+class TvMicrophoneTests(unittest.TestCase):
+    """While casting, the TV receiver's microphone replaces the desktop one (2026-09-27)."""
+
+    def session(self):
+        from unittest.mock import patch
+        from omarchy_ai.config import Config
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.EchoCancellation"):
+            return GeminiLiveSession(Config())
+
+    def sent(self, s, tv_chunk):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        desktop = b"\x01\x00" * 320
+        reads = iter([desktop, b""])
+        mic = SimpleNamespace(stdout=SimpleNamespace(read=AsyncMock(side_effect=lambda n: next(reads))))
+        s._tv_mic = SimpleNamespace(read=lambda n: tv_chunk) if tv_chunk is not ... else None
+        got = []
+        s._gate = lambda chunk, rms, now: [chunk]
+        session = SimpleNamespace(send_realtime_input=AsyncMock(side_effect=lambda audio: got.append(audio.data)))
+        with self.assertRaises(RuntimeError):
+            asyncio.run(s._send_audio(session, mic))
+        return got, desktop
+
+    def test_tv_audio_replaces_the_desktop_mic(self):
+        s = self.session()
+        tv = b"\x07\x00" * 320
+        got, _ = self.sent(s, tv)
+        self.assertEqual(got, [tv])
+        self.assertEqual(s._tv_frames, 1)
+
+    def test_desktop_mic_when_the_tv_is_silent_or_absent(self):
+        for tv in (None, ...):
+            s = self.session()
+            got, desktop = self.sent(s, tv)
+            self.assertEqual(got, [desktop])

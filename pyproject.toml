@@ -37,6 +37,8 @@ omarchy-ai = "omarchy_ai:main"
 omarchy-ai-settings = "omarchy_ai.cli.settings:main"
 # Task Runtime CLI -- see src/omarchy_ai/cli/task.py.
 omarchy-ai-task = "omarchy_ai.cli.task:main"
+# Tools the assistant writes for herself -- see src/omarchy_ai/cli/tools.py.
+omarchy-ai-tool = "omarchy_ai.cli.tools:main"
 # Live terminal dashboard for the MyApi integration — see
 # src/omarchy_ai/cli/dashboard.py's module docstring.
 omarchy-ai-dashboard = "omarchy_ai.cli.dashboard:main"

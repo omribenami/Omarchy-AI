@@ -184,6 +184,8 @@ class ClaudeCode(ExternalCodingAgent):
             except ValueError:
                 return output.strip()[-6000:], {}
         meta = {k: data.get(k) for k in ("session_id", "num_turns", "total_cost_usd", "duration_ms", "is_error", "subtype")}
+        if isinstance(data.get("modelUsage"), dict) and data["modelUsage"]:
+            meta["models"] = list(data["modelUsage"])
         return str(data.get("result") or "")[-8000:], meta
 
 

@@ -28,11 +28,15 @@ class BarTests(unittest.TestCase):
         from omarchy_ai.voice.gemini_live import build_live_config
         from omarchy_ai.config import Config
         from google.genai import types
-        config = types.LiveConnectConfig(**build_live_config(Config()))
-        for name in ('list_bar_icons', 'open_bar_panel', 'close_bar_panel'):
-            self.assertIn(name, ACTIONS)
-            self.assertIn(name, [t['name'] for t in TOOLS])
-            self.assertIn(name, [t.name for t in config.tools[0].function_declarations])
+        from omarchy_ai.execution import catalog
+        for picker in (False, True):
+            config = types.LiveConnectConfig(**build_live_config(Config(tool_picker=picker)))
+            declared = [t.name for t in config.tools[0].function_declarations]
+            for name in ('list_bar_icons', 'open_bar_panel', 'close_bar_panel'):
+                self.assertIn(name, ACTIONS)
+                self.assertIn(name, [t['name'] for t in TOOLS])
+                # With the tool picker on, the catalog (use_tool) reaches it.
+                self.assertIn(name, declared if not picker else catalog.catalog())
 
     def test_connected_myapi_has_unique_tools_for_both_providers(self):
         from omarchy_ai.config import Config
@@ -40,7 +44,7 @@ class BarTests(unittest.TestCase):
         from omarchy_ai.voice.gemini_live import build_live_config
         for enabled in (False, True):
             with self.subTest(myapi_enabled=enabled), patch('omarchy_ai.voice.live.myapi.is_connected', return_value=True):
-                config = Config(myapi_enabled=enabled)
+                config = Config(myapi_enabled=enabled, tool_picker=False)
                 names = [t['name'] for t in build_session_config(config)['delegation']['responses']['tools']]
                 self.assertEqual(len(names), len(set(names)))
                 gemini_names = [t['name'] for t in build_live_config(config)['tools'][0]['function_declarations']]

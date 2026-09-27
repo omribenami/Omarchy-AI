@@ -88,6 +88,36 @@ ROLE_NOTES = {
 }
 
 
+ACTIONS = ("run", "find_tools", "help", "launch", "desktop", "screen", "finish")
+
+
+def normalize_step(step: dict) -> dict:
+    """Accept the two nested shapes real models send for one action.
+
+    Worker-model exam, 2026-09-26: gpt-5-mini-fast, nova-lite and
+    ministral-8b answered {"action": {"run": {"commands": [...]}}}, and
+    gemini-2.5-flash-lite / gpt-4.1-nano {"action": {"commands": [...]}}.
+    The prompt's "run: {...}" list reads that way; before this, each such
+    step came back as "unknown action" and cost the task a step."""
+    if not isinstance(step, dict):
+        return {}
+    action = step.get("action")
+    if isinstance(action, dict):
+        step = {k: v for k, v in step.items() if k != "action"}
+        if len(action) == 1 and next(iter(action)) in ACTIONS and isinstance(next(iter(action.values())), dict):
+            name, fields = next(iter(action.items()))
+            return {**step, **fields, "action": name}
+        if "commands" in action or "command" in action:
+            return {**step, **action, "action": "run"}
+        if "status" in action and "summary" in action:
+            return {**step, **action, "action": "finish"}
+        return {**step, "action": ""}
+    if isinstance(action, str) and isinstance(step.get(action.strip().lower()), dict):
+        name = action.strip().lower()
+        return {**{k: v for k, v in step.items() if k != name}, **step[name], "action": name}
+    return step
+
+
 def _fp(*parts) -> str:
     return hashlib.sha1("\x1f".join(str(p) for p in parts).encode()).hexdigest()[:12]
 
@@ -136,6 +166,7 @@ class SystemAgent(Executor):
                 if model_failures >= 2:
                     return Report(FAILED, claim=f"worker model failed: {exc}", findings=self._findings(history))
                 continue
+            step = normalize_step(step)
             action = str(step.get("action") or "").strip().lower()
             thought = str(step.get("thought") or "")[:300]
             if action == "finish":

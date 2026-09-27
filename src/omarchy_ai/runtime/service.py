@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import threading
+import time
 
 from ..execution.actions import ActionResult
 
@@ -68,17 +69,47 @@ def task_respond(args: dict) -> ActionResult:
     return ActionResult(result["ok"], result["message"])
 
 
+# Outcomes the user must hear even if they hung up before the task ended.
+_OUTCOMES = {"certified": "finished and verified", "unverified": "finished, but the result could not be verified",
+             "failed": "failed", "interrupted": "was cut off by a restart before it finished",
+             "waiting_approval": "is paused, waiting for your approval", "waiting_user": "is paused with a question for you"}
+
+
+def _remember(task, event):
+    """Queue a spoken-task outcome for the user's next conversation (heard
+    now if one is open). CLI tasks are watched in their own terminal."""
+    if task.source == "cli" or event not in _OUTCOMES:
+        return None
+    from ..core import agenda
+    detail = {"waiting_approval": f"needs approval: {json.dumps(task.pending_approval)}",
+              "waiting_user": f"question: {task.question}"}.get(event, task.result)
+    return agenda.task_result(task.id, task.goal, event,
+                              f"Task {task.id} {_OUTCOMES[event]}. {detail or ''}".strip())
+
+
 def announce_to(session_getter, loop) -> None:
-    """Forward task events to an open voice conversation (daemon hook).
+    """Forward task events to an open voice conversation (daemon hook), and
+    keep the ones the user must hear until a conversation delivers them.
     Task events fire on runtime threads; the session's announcement queue
     belongs to the daemon's event loop, so hand over with call_soon_threadsafe."""
+    from ..core import agenda
+
     def listener(task, event):
+        entry = _remember(task, event)
+        if entry is None:
+            detail = {"waiting_approval": f"needs approval: {json.dumps(task.pending_approval)}",
+                      "waiting_user": f"has a question: {task.question}"}.get(event, task.result)
+            entry = {"id": f"task-{task.id}-{event}-{len(task.steps)}", "title": f"Task {event.replace('_', ' ')}",
+                     "detail": f"Task {task.id} ({task.goal[:120]}) {detail}"}
+        agenda.announce_to_calls(entry)  # a phone call hears it now too
         session = session_getter()
         if session is None or not hasattr(session, "announce"):
-            return
-        detail = {"waiting_approval": f"needs approval: {json.dumps(task.pending_approval)}",
-                  "waiting_user": f"has a question: {task.question}"}.get(event, task.result)
-        entry = {"id": f"task-{task.id}-{event}-{len(task.steps)}", "title": f"Task {event.replace('_', ' ')}",
-                 "detail": f"Task {task.id} ({task.goal[:120]}) {detail}"}
+            return  # stays in the agenda inbox: the next conversation's prompt carries it
         loop.call_soon_threadsafe(session.announce, entry)
-    get_runtime().listeners.append(listener)
+    runtime = get_runtime()
+    runtime.listeners.append(listener)
+    # Tasks a restart cut off never emit an event (the runtime marks them
+    # interrupted before anyone listens): queue those once as well.
+    for task in runtime.store.list(20):
+        if task.status == "interrupted" and time.time() - task.updated_at < 86400:
+            _remember(task, "interrupted")

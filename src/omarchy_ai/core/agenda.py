@@ -90,6 +90,15 @@ def _update(job_id: str, **changes) -> dict | None:
     return None
 
 
+def _refresh_routines_hud() -> None:
+    """Push agenda changes into an already-open HUD without opening it."""
+    try:
+        from ..display import assistant_huds
+        assistant_huds.refresh_routines()
+    except Exception:  # cosmetic display must never affect scheduled work
+        log.debug("agenda: could not refresh routines HUD", exc_info=True)
+
+
 def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> None:
     entry = {"id": uuid.uuid4().hex[:10], "job_id": job["id"], "title": job["title"], "kind": job["kind"],
              "outcome": outcome, "detail": detail[:1500], "urgent": urgent, "at": time.time(),
@@ -117,6 +126,60 @@ def _inbox_read() -> list[dict]:
         except ValueError:
             continue
     return entries
+
+
+def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | None:
+    """Keep a background task's outcome until the user hears it. Real gap
+    (2026-09-26 21:43): the user hung up while a voice task was running; it
+    finished at 21:47 and its result went nowhere but a desktop popup.
+
+    No listeners fire: the user asked to be told the next time they talk,
+    not to be woken. A newer event for the same task replaces an unheard
+    older one (a question that was since answered is no longer news), and
+    the same outcome is never queued twice. Returns None for a duplicate."""
+    job_id = f"task-{task_id}"
+    with _lock:
+        entries = _inbox_read()
+        if any(e.get("job_id") == job_id and e.get("outcome") == outcome and e.get("detail") == detail[:1500]
+               for e in entries):
+            return None
+        stale = [e["id"] for e in entries if e.get("job_id") == job_id and not e.get("delivered")]
+        entry = {"id": uuid.uuid4().hex[:10], "job_id": job_id, "task_id": task_id, "title": goal[:160],
+                 "kind": "task", "outcome": outcome, "detail": detail[:1500], "urgent": False, "at": time.time(),
+                 "delivered": False}
+        INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with INBOX_PATH.open("a") as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    mark_delivered(stale)
+    return dict(entry)
+
+
+# Conversations running on their own event loop (phone calls, one thread
+# each): the daemon only tracks its desktop session, so results reach a call
+# through here. session -> that call's loop.
+_calls: dict = {}
+
+
+def attach_call(session, loop) -> None:
+    with _lock:
+        _calls[session] = loop
+
+
+def detach_call(session) -> None:
+    with _lock:
+        _calls.pop(session, None)
+
+
+def announce_to_calls(entry: dict) -> bool:
+    """Hand a result to every open phone call. True if one will say it."""
+    with _lock:
+        calls = list(_calls.items())
+    heard = False
+    for session, loop in calls:
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(session.announce, dict(entry))
+            heard = True
+    return heard
 
 
 # Called with every new result (the daemon wakes the assistant to say it).
@@ -259,12 +322,16 @@ def create(args: dict, now: float | None = None) -> dict:
             raise ValueError(f"Already {MAX_ACTIVE} active tasks; cancel some first")
         jobs.append(job)
         _save(jobs)
+    _refresh_routines_hud()
     log.info("agenda: created %s kind=%s next=%s", job["id"], kind, schedule.describe(job["next_run"]))
     return job
 
 
 def cancel(job_id: str) -> dict | None:
-    return _update(job_id, status="cancelled", next_run=None)
+    job = _update(job_id, status="cancelled", next_run=None)
+    if job:
+        _refresh_routines_hud()
+    return job
 
 
 def summary(job: dict) -> dict:
@@ -384,6 +451,7 @@ def _finish(job: dict, now: float, result: str, *, done: bool = False, **extra) 
         if changes["next_run"] is None:
             changes["status"] = "done"
     _update(job["id"], **changes)
+    _refresh_routines_hud()
 
 
 def _run_remind(job, now, jev):

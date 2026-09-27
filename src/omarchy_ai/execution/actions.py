@@ -241,10 +241,60 @@ def browser_task(args: dict) -> ActionResult:
     """Run jev-ultrafast with Gateway-backed Jev decisions and one Gateway key."""
     try:
         from .browser_jev import run_browser_task
-        return run_browser_task(args, load_config())
+        result = run_browser_task(args, load_config())
     except Exception as exc:
         log.exception("browser task failed before execution")
         return ActionResult(False, f"browser task unavailable; no browser action executed: {exc}")
+    try:
+        # The idle about:blank tab it started with kept sitting in front of the
+        # task's tab whenever the browser was shown (2026-09-26).
+        from .browser_control import tidy_blank_tabs
+        tidy_blank_tabs()
+    except Exception:  # noqa: BLE001 -- cosmetic
+        log.debug("could not close blank browser tabs", exc_info=True)
+    if not result.ok and ("left open" in result.message or "NOT verified" in result.message):
+        # Say why, from the tab itself (2026-09-26: signed out of GitHub, and
+        # all she could report was "stopped repeated interaction").
+        stuck = re.search(r"(?:interaction with|same control \()([^).]+)", result.message)
+        from .browser_inspect import explain_stop
+        why = explain_stop(stuck.group(1).strip() if stuck else None)
+        if why:
+            result = ActionResult(False, result.message + why)
+    return result
+
+
+def inspect_browser(args: dict) -> ActionResult:
+    """Read-only: what the assistant browser's task tab shows, and any cause
+    the page itself reveals for a stopped task. Never clicks or navigates."""
+    from .browser_inspect import inspect
+    try:
+        state = inspect()
+    except Exception as exc:  # noqa: BLE001
+        return ActionResult(False, f"assistant browser not reachable: {exc}")
+    return ActionResult(not state.get("error"), json.dumps(state, ensure_ascii=False)[:6000])
+
+
+def show_browser(args: dict) -> ActionResult:
+    """Bring the assistant's own browser to the user's screen with the task's
+    tab in front -- not the idle about:blank tab it used to show (2026-09-26)."""
+    try:
+        from .browser_jev import _ensure_dedicated_browser
+        from . import browser_control
+        _ensure_dedicated_browser()
+        pages = browser_control.tabs()
+        tab = browser_control._task_tab(pages)
+        if tab is None:
+            return ActionResult(False, "the assistant browser has no open page")
+        browser_control._front(tab)
+        browser_control.tidy_blank_tabs()
+        return ActionResult(True, f"assistant browser is on the user's screen; {browser_control._state(tab)}")
+    except Exception as exc:  # noqa: BLE001
+        return ActionResult(False, f"could not show the assistant browser: {exc}")
+
+
+def browser_control(args: dict) -> ActionResult:
+    from .browser_control import browser_control as control
+    return control(args)
 
 
 def open_files(args: dict) -> ActionResult:
@@ -540,6 +590,30 @@ def list_scheduled_tasks(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(agenda.list_jobs(bool(args.get("include_finished"))), ensure_ascii=False))
 
 
+def show_tasks_hud(args: dict) -> ActionResult:
+    from ..display import assistant_huds
+    assistant_huds.show_tasks()
+    return ActionResult(True, f"Task HUD opened with {len(assistant_huds.task_items())} current tasks")
+
+
+def hide_tasks_hud(args: dict) -> ActionResult:
+    from ..display import assistant_huds
+    assistant_huds.hide_tasks()
+    return ActionResult(True, "Task HUD closed")
+
+
+def show_routines_hud(args: dict) -> ActionResult:
+    from ..display import assistant_huds
+    assistant_huds.show_routines()
+    return ActionResult(True, f"Routines HUD opened with {len(assistant_huds.routine_items())} active routines")
+
+
+def hide_routines_hud(args: dict) -> ActionResult:
+    from ..display import assistant_huds
+    assistant_huds.hide_routines()
+    return ActionResult(True, "Routines HUD closed")
+
+
 def cancel_scheduled_task(args: dict) -> ActionResult:
     from ..core import agenda
     job = agenda.cancel(str(args.get("id") or ""))
@@ -614,7 +688,7 @@ def report_issue(args: dict) -> ActionResult:
     description = str(args.get("description") or "").strip()
     if not title or not description:
         return ActionResult(False, "title and description are both required")
-    ok, result = issues.file_issue(title, description)
+    ok, result = issues.file_issue(title, description, args.get("repo"), use_gh=True)
     if not ok:
         return ActionResult(False, f"Issue NOT filed: {result}")
     return ActionResult(True, f"Filed: {result}")
@@ -2083,6 +2157,10 @@ ACTIONS = {
     "get_release_notes": get_release_notes,
     "schedule_task": schedule_task,
     "list_scheduled_tasks": list_scheduled_tasks,
+    "show_tasks_hud": show_tasks_hud,
+    "hide_tasks_hud": hide_tasks_hud,
+    "show_routines_hud": show_routines_hud,
+    "hide_routines_hud": hide_routines_hud,
     "cancel_scheduled_task": cancel_scheduled_task,
     "run_scheduled_task_now": run_scheduled_task_now,
     "find_skill": find_skill,
@@ -2108,6 +2186,9 @@ ACTIONS = {
     "read_tile_log": read_tile_log,
     "open_browser": open_browser,
     "browser_task": browser_task,
+    "inspect_browser": inspect_browser,
+    "show_browser": show_browser,
+    "browser_control": browser_control,
     "open_files": open_files,
     "open_editor": open_editor,
     "list_files": list_files,
@@ -2186,6 +2267,9 @@ ACTIONS.update(desktop_task=desktop_task, search_os_knowledge=search_os_knowledg
 def run_action(name: str, args: dict) -> ActionResult:
     fn = ACTIONS.get(name)
     if fn is None:
+        from . import user_tools
+        if user_tools.exists(name):
+            return user_tools.run(name, args)
         log.error("no such action: %s", name)
         return ActionResult(False, f"unknown action '{name}'")
     try:

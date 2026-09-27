@@ -39,6 +39,7 @@ class AgendaTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.notify = patch.object(agenda, "notify").start()
+        self.hud_refresh = patch.object(agenda, "_refresh_routines_hud").start()
         self.address_for = patch("omarchy_ai.execution.tile_logs.address_for", return_value="0xc1a").start()
         self.addCleanup(patch.stopall)
         agenda._briefed.clear()
@@ -144,6 +145,7 @@ class AgendaTests(unittest.TestCase):
         self.assertEqual(item["outcome"], "due")
         self.assertIn("Summarize my open GitHub PRs", item["detail"])
         self.assertEqual(agenda._load()[0]["status"], "done")
+        self.assertEqual(self.hud_refresh.call_count, 2, "create and finish must both refresh an open HUD")
 
     def test_briefing_is_read_only_until_the_session_confirms(self):
         agenda._inbox_add({"id": "t-1", "title": "x", "kind": "remind"}, "reminded", "d")

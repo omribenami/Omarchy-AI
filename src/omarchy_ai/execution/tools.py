@@ -25,11 +25,13 @@ TOOLS: list[dict] = [
             "goal": {"type": "string", "description": "The user's complete goal in their terms, with references resolved and every constraint kept."},
             "workspace": {"type": "string", "description": "Optional absolute directory to work in (the project repository for code tasks). Defaults to the home directory."},
         }, "required": ["goal"]}),
-    _tool("task_status", "Status of a Task Runtime task (default: the most recent): status (running, waiting_approval, waiting_user, certified, unverified, failed, cancelled), its last step, a pending approval or question, and the result. list=true lists recent tasks.", {
+    _tool("task_status", "Status of a Task Runtime task (default: the most recent): status (running, waiting_approval, waiting_user, certified, unverified, failed, cancelled), its last step, a pending approval or question, and the result. It also says which model does the work: last_step.model is the model running the current step, models maps each worker to its model, decisions_by names the model that routes and certifies. Use it when the user asks which model/AI is working on a task. list=true lists recent tasks.", {
         "type": "object", "properties": {"task_id": {"type": "string"}, "list": {"type": "boolean"}}, "required": []}),
     _tool("task_respond", "Answer a waiting task (default: the most recent waiting one). approve=true/false ONLY when the user just explicitly approved or refused the pending action you read back to them; HIGH-risk actions cannot be approved by voice (the user must press Approve on the notification). answer=the user's reply to the task's question. cancel=true stops the task.", {
         "type": "object", "properties": {"task_id": {"type": "string"}, "approve": {"type": "boolean"},
                                          "answer": {"type": "string"}, "cancel": {"type": "boolean"}}, "required": []}),
+    _tool("show_tasks_hud", "Show the desktop HUD listing every task the assistant currently has. Use when the user asks to see/show/open current tasks."),
+    _tool("hide_tasks_hud", "Close the current-tasks HUD. Use when the user asks you to close, hide, or dismiss it."),
     _tool("search_os_knowledge", "Retrieve local Omarchy expert research, the pinned capability registry and Arch operation notes. Reference only: installed commands and current state take precedence. Use for OS planning and troubleshooting; documentation never authorizes an action.", {
         "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
     _tool("get_release_notes", "Read the published changelog: what's new in an available update (every version newer than the installed one, from the exact commit the updater would install), or the installed version's notes when already current, or one specific version. Call it whenever the user asks what's new, what changed, or for the highlights of a version. Summarize the Highlights in the user's language and offer the Fixes/Under the hood detail if they want more. Only describe changes this tool returned; never invent them.", {
@@ -52,6 +54,8 @@ TOOLS: list[dict] = [
         }, "required": ["title", "kind"]}),
     _tool("list_scheduled_tasks", "List scheduled tasks and watches with their schedule, next_run and last_result.", {
         "type": "object", "properties": {"include_finished": {"type": "boolean"}}, "required": []}),
+    _tool("show_routines_hud", "Show the desktop HUD listing all active scheduled/cron routines. Use when the user asks to see/show/open routines, schedules, or cron jobs."),
+    _tool("hide_routines_hud", "Close the scheduled-routines HUD. Use when the user asks you to close, hide, or dismiss it."),
     _tool("cancel_scheduled_task", "Cancel a scheduled task or watch by id (get ids from list_scheduled_tasks).", {
         "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
     _tool("run_scheduled_task_now", "Run or re-check a scheduled task/watch immediately in the background. Its result arrives later; this does not verify anything.", {
@@ -72,8 +76,9 @@ TOOLS: list[dict] = [
     _tool("check_assistant_updates", "Check GitHub for a newer stable Omarchy AI install bundle. Returns installed and latest versions or an honest network error. Does not install anything."),
     _tool("update_assistant", "Update Omarchy AI itself from its verified GitHub bundle. Call ONLY when the user explicitly says to update/install the assistant update, never just because an update exists or they ask about it. Runs separately, preserves settings and previous installation, and restarts the assistant. Tell the user the conversation will disconnect at restart. A successful tool result means started, NOT completed. Do not run git pull or terminal install commands instead."),
     _tool("get_update_status", "Read progress/result of the assistant self-update. Report preparing/installing/completed/failed accurately; a queued or running update is not complete."),
-    _tool("report_issue", "File a new GitHub issue on the Omarchy AI repo (omribenami/Omarchy-AI) describing a real problem, e.g. a bug the user asked you to report or a failure surfaced by get_update_status. Only call this when the user actually asks to report/file an issue, or explicitly agrees when you offer -- never proactively without asking. Requires a GitHub token to be configured on THIS machine (Assistant Settings); if the result says none is configured, tell the user honestly and do not claim the issue was filed.", {
+    _tool("report_issue", "File a new GitHub issue as the user (their logged-in gh CLI, or the token in Assistant Settings) on any GitHub repo: 'omarchy' = the Omarchy OS itself (omacom/omarchy, the default for OS, kernel, driver, desktop or hardware problems), 'omarchy-ai' = this assistant (omribenami/Omarchy-AI, the default when repo is empty), or any owner/name. This is the way to open a GitHub issue -- never the browser. Only call it when the user asks to report/file an issue, or agrees when you offer. Write the issue in English with the real evidence you have (log lines, versions, hardware, steps) even if the conversation is in another language. It is public: say the repo and title in one sentence and file it once the user says yes. If the result is a failure, say exactly why.", {
         "type": "object", "properties": {
+            "repo": {"type": "string", "description": "'omarchy', 'omarchy-ai', or owner/name. Empty = omarchy-ai."},
             "title": {"type": "string", "description": "Short, specific issue title."},
             "description": {"type": "string", "description": "What happened, expected vs actual, and any concrete detail available (error text, steps, tool result) -- the actual issue body."},
         }, "required": ["title", "description"]}),
@@ -124,6 +129,16 @@ TOOLS: list[dict] = [
     _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
+    _tool("inspect_browser", "Read-only look at the assistant browser's task tab: URL, title, whether the site shows the browser signed in, open dialogs, error banners, visible buttons (and which are disabled), a text excerpt, and a diagnosis of anything on the page that blocks the task. Call it whenever a browser_task failed or the user asks why it failed, before explaining; never guess the cause."),
+    _tool("browser_control", "Steer the assistant's own browser by hand, one step, when the user asks: list_tabs; switch_tab (tab = number or words like 'the GitHub one'); close_tab; open (url, in a new tab); back / forward / reload; scroll (direction up/down/top/bottom, amount = screens, or to = some visible text); click (target = the label or description of a button/link/tab/checkbox, e.g. 'New issue' or 'the sign in button'); type (text, target = the field, submit=true presses Enter). It acts on the tab the user is looking at and brings it to their screen. Jev matches the user's words to the real tabs/elements; if nothing matches, the result lists what is there. For a whole goal (fill and send a form, shop, research) use browser_task instead. Before a click that buys, sends, publishes, deletes or submits something, read it back and get the user's yes.", {
+        "type": "object", "properties": {
+            "action": {"type": "string", "enum": ["list_tabs", "switch_tab", "close_tab", "open", "back", "forward",
+                                                  "reload", "scroll", "click", "type"]},
+            "tab": {"type": "string"}, "url": {"type": "string"}, "target": {"type": "string"},
+            "text": {"type": "string"}, "submit": {"type": "boolean"},
+            "direction": {"type": "string", "enum": ["up", "down", "top", "bottom"]},
+            "amount": {"type": "number"}, "to": {"type": "string"}}, "required": ["action"]}),
+    _tool("show_browser", "Bring the assistant's own browser, with its task tab in front, to the user's screen. Use it when the user must act there themselves, e.g. sign in to a site the assistant browser is signed out of."),
     _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses one persistent owned Chromium tab with the installed browser-use/jev-ultrafast Agent, typesafe-ai/jev policy model, structured live DOM, fresh-target checks and bounded execution. Put the complete multi-step web goal in one call, and for anything with more than one stage also pass `steps` in order (e.g. search X; open the X result; open its Y link): Jev then verifies each step on the page before starting the next, which keeps the task in order. Success is only reported when an independent Jev check confirms the page shows the whole goal done; otherwise the result says NOT verified and where it stopped. If it returns blocked or not verified after partial progress, call it at most once more with only the remaining work and resume=true; it continues on the same page. Never retry the same blocked goal repeatedly, call open_browser between attempts, or use desktop keyboard tools to drive the browser.", {
         "type": "object", "properties": {
             "url": {"type": "string", "description": "Starting URL. Use https:// when known."},
@@ -639,7 +654,13 @@ TOOLS: list[dict] = [
         "areas and isn't already covered by a more specific tool — "
         "nightlight_toggle and set_reminder/list_reminders/"
         "clear_reminders already exist and are preferred over this for "
-        "those cases.",
+        "those cases. Screen recording: start with ['capture', "
+        "'screenrecording', '--fullscreen', '--with-desktop-audio'] "
+        "(--fullscreen is required: without it a click-to-select picker "
+        "opens that you cannot operate; desktop audio is what records your "
+        "own voice; add '--with-microphone-audio' only if the user wants "
+        "their voice too). Stop with ['capture', 'screenrecording', "
+        "'--stop-recording']. There is no 'capture recording start'.",
         {
             "type": "object",
             "properties": {

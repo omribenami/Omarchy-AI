@@ -837,6 +837,61 @@ Panel {
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
           }
+
+          Toggle {
+            id: tasksHudToggle
+            width: parent.width
+            label: "Open task HUD on call"
+            description: "Show every task the assistant currently has when you call her."
+            foreground: root.fg
+            checked: root.fields.tasks_hud_on_call !== undefined ? !!root.fields.tasks_hud_on_call : false
+            onClicked: root.setField("tasks_hud_on_call", tasksHudToggle.checked ? "false" : "true")
+          }
+
+          Toggle {
+            id: routinesHudToggle
+            width: parent.width
+            label: "Open routines HUD on call"
+            description: "Show active scheduled and cron routines when you call her."
+            foreground: root.fg
+            checked: root.fields.routines_hud_on_call !== undefined ? !!root.fields.routines_hud_on_call : false
+            onClicked: root.setField("routines_hud_on_call", routinesHudToggle.checked ? "false" : "true")
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: "Text chat"
+            color: Qt.darker(root.fg, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          ButtonGroup {
+            width: parent.width
+            foreground: root.fg
+            background: Color.background
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            value: root.fields.text_chat_mode || "keybinding"
+            options: [
+              { value: "keybinding", label: "On key" },
+              { value: "always", label: "Always on screen" }
+            ]
+            onChanged: function(v) { root.setField("text_chat_mode", JSON.stringify(v), "Text chat updated") }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: "Type to the assistant instead of talking. " + (root.snapshot.text_chat_key || "SUPER + CTRL + `")
+                  + " opens it (the voice key plus Ctrl); Esc closes it. Always on screen keeps it in the corner."
+            color: Qt.darker(root.fg, 1.5)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
         }
 
         PanelSeparator { foreground: root.fg; visible: root.section === "appearance" }

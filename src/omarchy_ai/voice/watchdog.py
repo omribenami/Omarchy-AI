@@ -30,6 +30,13 @@ import time
 
 log = logging.getLogger("omarchy_ai.voice.watchdog")
 _last_level_sent = 0.0
+_last_level_value = None
+# Each event spawns `omarchy-shell` (bash) + `qs ipc`: measured ~0.085s CPU per
+# call (2026-09-27). At the old 10/s for the whole session that was ~85% of a
+# core on this 2-core machine -- with casting, PipeWire xrun'd thousands of
+# times and her voice crackled both ways. So: at most 4 levels/s, and a zero
+# (silence) only once instead of every tick.
+LEVEL_INTERVAL = 0.25
 
 _TIMEOUT = 5
 
@@ -137,13 +144,16 @@ def level(value: float) -> None:
     output capture, so a slow/hung `omarchy-shell` process can never stall
     the audio queue feeding pw-play.
     """
-    global _last_level_sent
+    global _last_level_sent, _last_level_value
     now = time.monotonic()
-    # Keep a bounded IPC rate while still sampling often enough to track
-    # syllables. Popen is fire-and-forget, so this does not block playback.
-    if value and now - _last_level_sent < 0.05:
+    # Bounded IPC rate (see LEVEL_INTERVAL). Popen is fire-and-forget, so this
+    # does not block playback.
+    if not value and _last_level_value == 0:
+        return
+    if value and now - _last_level_sent < LEVEL_INTERVAL:
         return
     _last_level_sent = now
+    _last_level_value = 0 if not value else value
     payload = json.dumps({"kind": "level", "level": round(float(value), 3)})
     try:
         subprocess.Popen(

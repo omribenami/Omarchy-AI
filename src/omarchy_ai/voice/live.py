@@ -34,6 +34,7 @@ from ..core.memory import load_preferences
 from ..execution.actions import run_action
 from ..execution.verified_input import InputGuard
 from ..execution.tools import MYAPI_TOOLS, TOOLS
+from ..display import assistant_huds
 from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
 
@@ -231,6 +232,35 @@ def build_session_config(config: Config) -> dict:
         "steps yourself with other tools. While it runs you will get narration prompts: speak them, briefly. If it "
         "stops at a step, tell the user exactly why and ask; never substitute another device or improvise."
     )
+    # 2026-09-26 23:05-23:41: asked to file the iwlwifi freeze on Omarchy's
+    # GitHub, she said "I can't, no access" four times while gh was logged
+    # in, answered "no way to predict it" without looking, and acted on
+    # misheard Hebrew ("CL sign in" -> cia.gov, "disgregato" -> closed the
+    # browser, a German goodbye). The user wants her all-knowing and
+    # all-capable: exhaust the routes before saying no, and check a garbled
+    # request before acting on it.
+    instructions += (
+        "\n\nALL-KNOWING, ALL-CAPABLE: The user relies on you to know and to get things done. Never answer "
+        "'I can't', 'no access', 'no way' or 'I don't know' before you have actually tried the routes you have. "
+        "For facts, news, versions, docs, fixes, workarounds or anything beyond your memory, look it up -- "
+        "search_os_knowledge for Omarchy/Arch, browser_task (a web search) or start_task for research -- then "
+        "answer with specifics. For anything a command can do -- GitHub "
+        "(the user's gh CLI is logged in: issues, PRs, repos), git, curl, pacman/yay, logs, systemctl, files -- "
+        "run it with terminal_task and read the result. For investigation, diagnosis or a job of several steps, "
+        "start_task. When one route fails, say in a few words what failed and try the next one yourself; do not "
+        "hand the job back to the user or ask them to do it by hand while another route remains. When the user "
+        "asks whether a problem can be predicted, prevented or fixed, do not stop at 'no': look up known "
+        "mitigations (driver or module options, updates, workarounds, alternatives) and offer the concrete ones. "
+        "Still ask before anything public or destructive (filing an issue, sending a message, deleting, "
+        "closing the user's windows), and never claim success a tool result did not show."
+        "\n\nMISHEARD SPEECH: The user speaks Hebrew and English. What you receive is speech recognition and "
+        "it sometimes turns Hebrew into random words in other languages ('Saddam', 'electrician', 'Ja, vielen "
+        "herzlichen Dank', 'el Corte Inglés'). If what you heard does not fit the conversation, or is in a "
+        "language the user was not speaking, treat it as misheard: do not act on it (no navigating, closing, "
+        "sending or typing), do not switch language, and briefly ask in the conversation's language what they "
+        "meant -- or, if it is plainly a continuation of the current job, carry on with that job. A misheard "
+        "word never replaces a target the user already named (a site, repo, window or file)."
+    )
     # Heartbeat/cron and skills (core/agenda.py, core/skills.py). Jev makes
     # the typed background decisions; this model supplies the words.
     from datetime import datetime
@@ -247,14 +277,44 @@ def build_session_config(config: Config) -> dict:
         "next_run. Use list_scheduled_tasks / cancel_scheduled_task to manage them. Current "
         "local time: " + datetime.now().strftime("%A %Y-%m-%d %H:%M") + "."
     )
+    voice_model = {"gemini": getattr(config, "gemini_model", None)}.get(config.provider) or getattr(config, "live_model", None)
+    worker = getattr(config, "task_agent_model", None)
+    if not worker or worker == "auto":
+        from ..runtime import models as worker_models
+        order = {"claude": "Claude Code (sonnet, escalating to opus)", "codex": "Codex",
+                 "api": "the Gateway API: " + worker_models.describe()}
+        worker = ", falling back to ".join(order[b] for b in getattr(config, "task_worker_backends", ["api"])
+                                           if b in order) or order["api"]
+    instructions += (
+        "\n\nWHO RUNS WHAT (answer truthfully when asked which model or AI is doing something): "
+        f"this conversation is {config.provider} model {voice_model or 'unknown'}; background tasks "
+        f"(start_task) plan and run on {worker} unless a step is handed to Claude Code or Codex; Jev "
+        "(TypeSafe's evaluation model) routes steps, decides and certifies. For a specific task, task_status "
+        "reports the exact model of each step."
+    )
     pending = agenda.briefing()
-    if pending:
+    scheduled = [e for e in pending if e.get("kind") != "task"]
+    tasks = [e for e in pending if e.get("kind") == "task"]
+    if scheduled:
         instructions += (
             "\n\nRESULTS FROM SCHEDULED TASKS since the last conversation (verified by the "
             "heartbeat; mention them briefly in your first reply, urgent ones first; an item "
             "with outcome 'due' is a task you should now offer to carry out):\n"
             + "\n".join(f"- [{e['outcome']}{', urgent' if e.get('urgent') else ''}] {e['title']}: {e['detail'][:400]}"
-                        for e in pending)
+                        for e in scheduled)
+        )
+    if tasks:
+        # Real gap 2026-09-26: the user hung up mid-task expecting to hear
+        # about it next time; the result was only a desktop popup.
+        instructions += (
+            "\n\nBACKGROUND TASKS the user started earlier that changed while no conversation "
+            "was open. These are real Task Runtime records, not archived conversation. In your "
+            "first reply, tell the user in one sentence what happened to each (finished, failed, "
+            "or waiting for them), then ask whether they want a summary. If they say yes, call "
+            "task_status with that task_id and summarize its result; for one waiting on them, "
+            "read back the question or the approval it needs:\n"
+            + "\n".join(f"- task_id={e.get('task_id')} [{e['outcome']}] {e['title']}: {e['detail'][:400]}"
+                        for e in tasks)
         )
     roster = skills.index_text()
     instructions += (
@@ -304,6 +364,19 @@ def build_session_config(config: Config) -> dict:
         "mechanism has been started; one log read or saved preference is not monitoring."
     )
 
+    # Real gap 2026-09-26 22:57: a browser task failed; asked "try to
+    # understand why you failed", she called no tool and only talked.
+    instructions += (
+        "\n\nWHEN SOMETHING FAILS: Find the cause with evidence before you explain it; never guess, and never "
+        "answer 'why did it fail' with an apology alone. A failed tool result often already says the likely "
+        "cause: read it and say it plainly. For a web task, call inspect_browser (it reads the task tab "
+        "without touching it). If the site needs the user (signed out, CAPTCHA), say so and offer show_browser "
+        "so they can sign in, or a way that is already signed in (e.g. the GitHub CLI `gh` for GitHub). If the "
+        "cause is still unclear, or it needs logs, commands or several checks, hand the investigation to "
+        "start_task with the exact failure message and what you already found. Then tell the user the cause, "
+        "the evidence, and the fix you propose; do not retry the same failing approach unchanged."
+    )
+
     notice = updates.wake_notice()
     if notice:
         instructions += (
@@ -330,6 +403,8 @@ def build_session_config(config: Config) -> dict:
         "no GitHub token configured on this machine) -- say that honestly. Only call "
         "report_issue yourself if the user explicitly asks to report/file an issue "
         "(for this or anything else) and no automatic one already exists for it. "
+        "report_issue reaches ANY GitHub repo as the user: the Omarchy OS repo is "
+        "repo='omarchy' (omacom/omarchy), and 'not the AI, the OS' means exactly that one. "
         "Never say you can, will, or did file a GitHub issue unless report_issue (or "
         "the automatic update-failure report above) actually returned success -- that "
         "is a real external action with a real result, not something to promise."
@@ -951,7 +1026,8 @@ class LiveSession:
             status_icon.set_live(True)
             if self._watchdog_on:
                 watchdog.start(self.config.watchdog_display_mode)
-                self._watchdog_state = None  # fresh session, no state sent yet
+            await asyncio.to_thread(assistant_huds.open_automatic, self.config)
+            self._watchdog_state = None  # fresh session, no state sent yet
             self._set_watchdog_state("listening")
 
             try:

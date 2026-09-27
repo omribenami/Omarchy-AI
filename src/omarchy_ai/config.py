@@ -323,6 +323,10 @@ class Config:
     # volume, play/pause, fullscreen) from the transcript the moment the
     # user pauses, instead of waiting for Gemini's turn (voice/jev_fast.py).
     jev_fast_path: bool = True
+    # Jev picks tools (execution/catalog.py): the live model is declared its
+    # ~20 most used tools plus use_tool; Jev chooses from the rest. False
+    # declares all tools directly again.
+    tool_picker: bool = True
 
     # Task Runtime (src/omarchy_ai/runtime/, docs/ADR-0002-task-runtime.md):
     # multi-step tasks routed by Jev to the System agent, direct tools,
@@ -331,10 +335,16 @@ class Config:
     task_runtime_enabled: bool = True
     task_auto_approve: str = "NORMAL"
     # Worker text model (through the Gateway) for the System agent, planner,
-    # direct-tool picker and internal reviewer. A multi-step tool loop needs
-    # a stronger model than the latency-tuned omarchy_text_model; None falls
-    # back to that one.
-    task_agent_model: str | None = "anthropic/claude-sonnet-5"
+    # direct-tool picker and internal reviewer. "auto" (runtime/models.py):
+    # the cheapest Gateway model that passes the worker exam, re-chosen as
+    # the catalog changes, escalating per task when a step fails. A model id
+    # pins that model instead (no escalation, and it breaks if retired).
+    task_agent_model: str | None = "auto"
+    # Who thinks for the internal workers (runtime/llm.py), in order: Claude
+    # Code, then Codex (both tool-less; every command still goes through the
+    # harness), then the Gateway API ladder above. A missing, logged-out or
+    # out-of-quota backend is skipped for that call.
+    task_worker_backends: list = field(default_factory=lambda: ["claude", "codex", "api"])
     task_max_steps: int = 12
     task_max_minutes: int = 60
     task_coding_agent_timeout: int = 1200
@@ -356,6 +366,17 @@ class Config:
     # the settings panel, sent to the plugin as part of watchdog.start()'s
     # payload each session.
     watchdog_display_mode: str = "visualizer"
+    # Optional read-only HUDs matching the watchdog visual language. They
+    # may always be opened/closed by assistant tools; these flags only
+    # control whether they also open when a voice conversation starts.
+    tasks_hud_on_call: bool = False
+    routines_hud_on_call: bool = False
+    # Typed conversation HUD (voice/text_chat.py, omarchy-ai.chat-hud):
+    # "keybinding" shows it on SUPER+CTRL+` (the voice key plus Ctrl) and
+    # hides it on Escape; "always" keeps it on screen. The Gemini session
+    # behind it closes after text_chat_idle_minutes without activity.
+    text_chat_mode: str = "keybinding"
+    text_chat_idle_minutes: int = 10
 
     # Phone bridge (src/omarchy_ai/phone/server.py) — a local HTTP server
     # letting a phone on the same LAN open a live conversation from a

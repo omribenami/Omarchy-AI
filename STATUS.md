@@ -5363,3 +5363,355 @@ InputGuard hooks are all ruled out by the bare repro). A cross-model
 comparison was inconclusive (the TTS-generated follow-up questions came out
 as answers, not questions). Next: rerun the probe; if still degraded, redo
 the model comparison with proper follow-up audio before switching models.
+
+## 2026-09-26 21:34-21:47: phone task outlived the call, its result went nowhere; "which model?" unanswerable
+
+Session c3227574 (phone bridge): `start_task` "investigate the two recent
+system freezes" -> task `20260926-213407-5ea715`. The user asked which model
+was running it and got no answer, then hung up at 21:43. The task kept
+running in the daemon (SYSTEM_AGENT/TEST_AGENT steps up to 21:47) and ended
+`unverified`. That was correct. But `runtime/service.py:announce_to` dropped every
+task event when no conversation was open (`if session is None: return`), so
+only the desktop popup was left. It also only ever looked at the daemon's
+own session, never the phone bridge's.
+
+Fix:
+- `agenda.task_result()` queues voice-task outcomes (certified / unverified /
+  failed / waiting_approval / waiting_user, plus tasks a restart marked
+  interrupted) in the agenda inbox. It fires no wake listeners, so she tells
+  the user the next time they talk and doesn't call them. A newer event
+  replaces an unheard older one, and duplicates are dropped.
+- The next conversation's prompt (desktop and phone, shared
+  `build_session_config`) gets a BACKGROUND TASKS section with task ids. She
+  says what happened and asks whether the user wants a summary (`task_status`).
+  An announcement during an open conversation asks the same.
+  Delivery uses the existing briefed/acknowledged logic.
+- Each task step records `model` (the worker's gateway model, or Claude Code's
+  `modelUsage`). `task_status` returns `last_step.model`, `models` and
+  `decisions_by` (Jev). The prompt gains a WHO RUNS WHAT line built from config.
+- Tests: `tests/test_task_followup.py`. The one suite failure
+  (`test_submit_sudo_password_never_returns_the_secret`, 3 != 2) also fails
+  on a clean HEAD checkout, so it is unrelated.
+- Phone calls, mid-call: each call runs `asyncio.run(_serve)` on its own
+  thread, and the daemon never saw it. Calls now register with
+  `agenda.attach_call(adapter, loop)`. Task events and heartbeat results
+  reach them with `agenda.announce_to_calls` (`call_soon_threadsafe` on the
+  call's loop), and the bridge runs `adapter._announcer`. What the user answered on the call
+  is marked delivered when it ends. While the user is on a call, the
+  daemon does not also wake the desktop assistant. `_idle()` now also waits for
+  queued audio, because the phone path never sets `_playback_until` and she
+  could otherwise start an announcement over her own reply.
+- `task_agent_model` = `anthropic/claude-sonnet-5` was deliberate (config
+  comment, ADR-0002): the tool loop needs a stronger model than the
+  latency-tuned `omarchy_text_model`. Left as is. Risk noted: there is no
+  fallback, so if the Gateway retires that id, every task step fails with
+  `WorkerModelError`.
+
+## 2026-09-26: silent text chat (desktop HUD + phone), and an auto-chosen task worker model
+
+**Text chat.** The phone page already had a Text mode (no mic, audio muted;
+`tests/phone_text.test.cjs`). The desktop now has one too:
+
+- `voice/text_chat.py` runs the same Gemini Live session as a voice call:
+  tools, context, and task and heartbeat announcements (it registers with
+  `agenda.attach_call`). Typed turns go in with `send_client_content`. The
+  reply is Gemini's output transcription, and the audio is drained and
+  dropped. Probe against `gemini-3.8-live`: typed turns answer with text in
+  0.55-0.69s, and follow-ups keep context. `response_modalities: ["TEXT"]`
+  is refused ("1007 ... (TEXT) is not supported by the model"), so this is the
+  only way.
+- The daemon's control socket takes `chat-send {json}` / `chat-close` /
+  `chat-clear` / `chat-state`. Its limit went 1 KB -> 64 KB, and
+  `control.request` now reads to the newline. The session closes after
+  `text_chat_idle_minutes` (10) without activity; the next line reconnects.
+- HUD plugin `omarchy-ai.chat-hud` (`ChatHud.qml`) uses the task and routine
+  HUDs' look. It is a view only: lines go out through `omarchy-ai-settings
+  chat-send` (the text in an env var, so "-rf" is never an option), and the
+  daemon pushes the whole state back with `setState`. Keyboard handling
+  copies Omarchy's KeyboardPanel: Exclusive for 150 ms on open, then
+  OnDemand; no keyboard at all while inactive (a click takes it back).
+  Verified rendering in the live shell with a grim screenshot.
+- Setting `text_chat_mode`: `keybinding` (default) or `always`. The key is
+  `SUPER + CTRL + grave` (the voice key plus Ctrl). `hyprctl binds -j` showed
+  it unused (SUPER+CTRL+T and SUPER+ALT+/ are taken). Installed via
+  `scripts/install-keybinding.sh`, confirmed bound (modmask 68).
+
+**Worker model.** See ADR-0002 "Worker model choice". Real exam findings:
+
+- Many models send `{"action": {"run": {...}}}` or `{"action": {"commands":
+  [...]}}` (gpt-5-mini-fast, nova-lite, ministral-8b, gemini-2.5-flash-lite,
+  gpt-4.1-nano). The System agent used to treat that as "unknown action" and
+  lose a step. `normalize_step` now accepts it, and the exam grades through
+  the same function.
+- One-shot grading failed careful models: claude-opus-5 confirmed the PID with
+  `ps` first, and gemini-3-flash computed the bitrate with python first. The
+  exam now allows 3 steps with realistic follow-up output.
+- The same model can pass once and fail once (qwen3.7-flash: `-crf 23`, then
+  a valid `-b:v`), so a pass must repeat.
+- A confident wrong "done" never fails a step, so a refused certification
+  escalates as well.
+
+Tests: `tests/test_text_chat.py`, `tests/test_worker_models.py`.
+`omarchy-ai-task models [--requalify]` shows or re-runs the choice.
+
+**Phone text mode still spoke (user, same day: "she answers in voice... I want the option she will answer
+only in text").** Text mode only muted audio when a call started. Two paths played her voice anyway: the
+mirror view's **Text** button opened a chat on a live *voice* call (mic on, replies spoken), and **Enable
+audio** unmuted her in Text mode. Now `syncPhonePlayback` is silent whenever `mode === 'text'`, whatever
+else is set. Enable audio says to switch to Voice, and mirror Text switches the call to Text mode (Listen
+switches back). The first typed message of a call also sends `TEXT_NOTE` as context (`turn_complete=False`;
+probed: no reply of its own). Two new tests in `tests/phone_text.test.cjs` fail on the old page and pass now.
+
+## 2026-09-26 22:56: "open an issue on Omarchy's GitHub" failed -- the assistant's browser is not signed in to GitHub
+
+Phone session 78721cf2. The user asked, in Hebrew (transcribed "שיעור ... באתר של בגיט של עומרצ'י", meaning
+issue / on Git / Omarchy the OS), for an upstream issue about the iwlwifi freeze. `browser_task` ran in the
+dedicated Chromium (CDP :9229). First it typed the repo URL into GitHub's *search box* (two BLOCKED
+recoveries). It then reached `github.com/omacom/omarchy/issues`, the correct repo (`basecamp/omarchy`
+301-redirects there), clicked **New issue** three times, and the repeat guard stopped it ("Stopped repeated
+interaction with New issue").
+
+Evidence from the retained tab, over CDP: `meta[name=user-login]` is empty and a visible "Sign in" link is
+present, so that browser profile is signed out of GitHub. A manual `click()` on the New issue button while
+signed out changed nothing (same URL, no dialog), so the agent saw no change and kept clicking. Nothing
+reported "you need to sign in"; the user only heard a generic failure.
+
+Also seen: Jev's switchboard scored the request `reject p=0.74 gap=not_asked`, probably because of the garbled
+transcript. It was executed anyway, correctly. `gh` on this machine is signed in as omribenami (repo scope),
+so a signed-in route to file the issue exists without the browser.
+
+**Fixes (same day; user: "she couldn't even debug the reason it happened... I need her smarter").** When
+asked "try to understand why you failed" (22:57:48) she called no tool. Three changes:
+- `execution/browser_inspect.py` reads the task tab read-only over CDP (sign-in state, dialogs, alerts,
+  disabled controls, text excerpt) and `diagnose()` states only causes shown on the page. A failed
+  `browser_task` result now ends with the cause. Run live against the retained tab it said: "not
+  signed in to github.com ... 'New issue' ... will not work until the user signs in ... (show_browser)".
+- New tools `inspect_browser` (read-only, in the switchboard's READ_ONLY) and `show_browser`.
+- A WHEN SOMETHING FAILS prompt rule: find the cause with evidence (the result, inspect_browser, or
+  start_task for deeper work), offer a working route (sign in, or `gh` for GitHub), and never answer
+  "why" with an apology alone.
+- The task workers now think with Claude Code, then Codex, then the API (ADR-0002). Real calls:
+  claude-code:sonnet 3.4s; with Claude marked out of quota the same call went to codex (6.6s).
+Tests: `tests/test_worker_backends.py`.
+
+## 2026-09-26 23:04: "show me the GitHub tab" -- she showed about:blank and said she couldn't switch
+
+Log: `list_windows` returned "about:blank - Chromium"; `describe_screen` saw two tabs ("about:blank",
+"Issues · omacom/omarc…"); `focus_window` focused Chromium; then she had no tool to change tabs. Cause
+of the annoyance itself: the dedicated browser starts with about:blank, and browser tasks work in a
+background tab on purpose, so nothing ever brought the task tab forward or closed the blank one.
+
+- `execution/browser_control.py` / tool `browser_control`: list_tabs, switch_tab, close_tab, open, back,
+  forward, reload, scroll (up/down/top/bottom/amount, or to visible text), click, type (+ submit). Code
+  collects the real tabs and visible elements; Jev chooses among them only when the words are not an
+  exact or unique match (p >= 0.5, else the result lists what is there). Clicks and keys are CDP `Input.*`
+  events. After a click it waits up to 3s for the URL or title to change (GitHub is a single-page app)
+  and says "NO visible change" if nothing happened.
+- The front tab can't be read over CDP: every tab reports `visibilityState` "visible" in this browser, and
+  `/json/list` listed GitHub first while about:blank was in front. So the tool uses the Hyprland window
+  title ("<front tab> - Chromium"), which stays right after the user clicks a tab too.
+- The window moves to the user's workspace *before* the tab is activated (the 2026-09-22 focus-pull bug).
+- `tidy_blank_tabs()` runs after every browser_task and on switch/show. `show_browser` now fronts the
+  task tab.
+- Live test on the real browser: "the github one" -> switched (Jev p=1.00, blank tab closed); scroll
+  33%/98%/0%; scroll to "Labels"; click "pull requests" -> /pulls; back; "the button to make a new issue"
+  -> New issue (Jev p=1.00); "flux capacitor" -> refused (p=0.18) with the visible controls listed. Bugs
+  found and fixed on the way: smooth-scroll sites reported the old position (now `behavior: 'instant'`),
+  scroll-to matched text inside a `<script>` (now visible text only), and titles lagged a navigation (now
+  read from the page once loaded and stable).
+Tests: `tests/test_browser_control.py`.
+
+## 2026-09-26 23:05-23:41: still no Omarchy issue filed; "all knowing, all capable"
+
+Four sessions (`conversation_history.jsonl`, journal). The user asked twice more to file the iwlwifi freeze
+upstream, saying "the OS, not the AI". What happened:
+- 23:19 `report_issue` (Omarchy-AI only) was rejected by the switchboard (`reject p=0.84 gap=not_asked`) against
+  the garbled Hebrew transcript. At 23:36 it ran and failed: "no GitHub issue token configured". Then
+  `browser_task` went to **omribenami/Omarchy-AI**, the repo the user had said not to use. `gh` was logged in
+  the whole time.
+- Misheard Hebrew was acted on: "CL sign in" -> `browser_task` to cia.gov; "el Corte Inglés Torrecárdenas"
+  -> elcorteingles.es; "disgregato" -> closed the browser; "Ja, vielen herzlichen Dank" -> a German goodbye.
+- "Can we catch it before it happens?" -> "No." The logs do show a precursor (`Command REPLY_RXON failed: FW
+  Error ... Device error - reprobe!`), but it comes in the same second as the crash (`iwl_trans_reprobe_wk` ->
+  `iwl_pcie_tx_free` -> `kernel BUG at mm/slub.c:631`). So no early warning, but mitigations exist and she
+  offered none. Card: Centrino Advanced-N 6205 (iwldvm). The wired 82579LM (e1000e) is also available.
+
+Changes:
+- `core/issues.py`: `file_issue(..., repo, use_gh)`. Repo aliases: 'omarchy' -> omacom/omarchy (basecamp/omarchy
+  redirects there), 'omarchy-ai' -> this repo, or any owner/name. `report_issue` takes `repo` and, without a
+  token, files through the user's logged-in `gh`. The automatic self-update reports keep the old opt-in
+  contract (token only, `use_gh=False`). **Lesson:** my first version fell back to `gh` for every caller.
+  The test suite then filed four real junk issues (omribenami/Omarchy-AI #4-#7, closed "not planned"). The
+  tests now mock `subprocess`/`shutil.which` for every gh path.
+- Prompt (`voice/live.py`): ALL-KNOWING, ALL-CAPABLE (before saying can't/don't know, try search_os_knowledge,
+  browser_task, terminal_task (any CLI, including gh) and start_task; offer mitigations instead of stopping
+  at "no"; still ask before anything public or destructive) and MISHEARD SPEECH (a transcript that doesn't fit
+  the conversation or its language is treated as misheard: no action, no language switch, ask).
+- Tried and reverted: built-in Gemini `{"google_search": {}}`. With it, `live.connect` fails every time with
+  "1011 You exceeded your current quota". The same config without it connects (probed three times).
+- Tried and reverted: a switchboard hint telling Jev to judge noisy transcripts against earlier turns. Replaying
+  the real calls through live Jev changed nothing: the legitimate report_issue was still rejected (0.82/0.14)
+  and `close_window` on "disgregato" still executed. Jev takes the text literally. The real fix is upstream of
+  it: better Hebrew recognition, or not gating on a transcript that looks like noise. Still open.
+
+## 2026-09-27: escalation, Jev as the tool picker, tools she writes herself, TV mic while casting
+
+The user: "we got her so many tools and the ability to use sub agents... I want her to do exactly what [Claude
+Code] did so easily". Journals 2026-09-24..26: ~800 live tool calls from 89 declared tools (50k characters of
+schema on every connect); about 20 tools made over 95% of the calls, and `start_task` was called **once**.
+
+**1. Code-owned escalation (`voice/escalation.py`).** Within 180s: two real tool failures, or one plus her
+saying she can't (EN/HE), or one plus the user asking why -> the session calls `start_task` itself with a brief
+(the user's last turns, marked as possibly misrecognized; what was tried; what she said) and she says it was
+handed over. Once per incident, 120s cooldown, and not if she delegated herself. Replay on the real 3-day
+journal: counting every ok=False fired 23 times in 50 sessions, almost all on guard messages she corrects
+herself ("Input NOT sent: focus is unverified", "does not exist / similar names", "name one", switchboard
+rejections). With those excluded: 6, including both Omarchy-issue incidents. Hooked into `_run_call` and
+`turn_complete`, so desktop, phone and text chat all get it.
+
+**Permissions found on the way:** `gh auth token` was LOW and `curl -d` with an Authorization header was NORMAL
+(auto-approved), a route around `gh issue create` (ELEVATED, asks). Now HIGH and ELEVATED.
+
+**2. Jev picks the tool (`execution/catalog.py`, `tool_picker=True`).** Gemini is declared 21 core tools plus
+`use_tool` (18.9k chars of schema instead of 55.5k). `use_tool(request)` = one Jev choice over the catalog
+(<=255 options). A pick with no required args runs at once, and without a second switchboard pass (it would ask
+Jev the same question). Otherwise the parameters go back to her. A known `name`+`args` skips Jev and is
+reviewed as the inner tool. Compact signatures (`set_reminder(minutes*, message)`) are in the prompt so she can
+fill args in one call. Live Jev eval: **22/22 correct** (English and Hebrew; "tell me a joke" -> none), median
+353ms, max 753ms. Live Gemini probe: she used use_tool correctly (reminder, cast, the Omarchy issue aimed at
+omacom/omarchy, Hebrew reminder) and kept list_windows direct. `tool_picker=False` restores the old surface.
+
+**3. Tools she writes, with approval (`execution/user_tools.py`, `cli/tools.py`).** A folder with `tool.json`,
+`run` and `test`. `propose` validates and tests it. `install` is **always_ask** in the permission layer (a new
+Assessment flag; asks whatever task_auto_approve says). It stays ELEVATED so the user can approve by voice. It
+pins a SHA-256 of every file in `tools/approvals.json`; a changed tool is neither offered nor run. Direct writes
+under `tools/` are HIGH. Approval resumes the paused task (existing runtime behavior), which then uses the tool
+to finish the original request. The catalog is read on every call, so the voice assistant can use it in the
+same conversation: **no restart needed** for a new tool. The escalation brief tells workers how to package one.
+Limit: this is a same-user boundary. Claude Code workers' own Bash is not classified by our layer (their
+allowlist includes `.venv/bin/python *`), so this gates the normal flow and mistakes, not a worker deliberately
+going around it.
+
+**4. TV microphone while casting.** Found: `GeminiLiveSession` always recorded the desktop mic; the TV-mic path
+existed only in the OpenAI LiveSession, fed by whichever mic heard the wake word. Now, while the receiver
+streams TV audio, it replaces the desktop mic (the desktop mic still paces 20ms chunks) and falls back 0.35s
+after it stops. Verified over a real socket: 48k tone -> 16k at the expected RMS, then None. Open: her voice
+plays on the TV while casting and the PipeWire echo canceller does not cover the TV mic. The gate still mutes
+it while she speaks, but its barge-in threshold (6000 RMS) was tuned on the desktop mic. Each session now logs
+`Gemini TV microphone: tv_frames rms_p50/p90/max` to calibrate from.
+
+Still open: Google Search grounding (1011 quota). The later plain-config probes also hit 1011 after ~7 quick
+connects, so recheck with spaced attempts before concluding it is search-specific.
+
+## 2026-09-27 00:24: over the TV mic she "won't answer" -- the cast was sending the laptop MICROPHONE to the TV
+
+After the restart, "Omachy" through the TV mic woke her (score 0.82, microphone=tv) and the Gemini session
+used the TV mic: she heard "Omachi" and replied three times. `/proc/<pw-play>/io` showed rchar=319814 (~6.7s at
+24 kHz s16), so she was speaking. `pw-link -l` showed the cast sender (`spike_cast_sender.py`, pid 59796)
+linked to `alsa_input...capture_FL/FR`: `pipewiresrc target-object=<sink>.monitor` names no PipeWire node
+(that is the Pulse name) and silently fell back to the default source, the laptop mic. So the TV has been
+playing the laptop mic, not system audio, which also made a mic-to-TV-speaker-to-TV-mic loop possible.
+
+Fix: target the sink with `stream-properties="props,stream.capture.sink=true"` (the `.monitor` suffix is
+stripped, so `--audio-source` keeps working). Verified through `Gst.parse_launch` with the exact string: linked
+to `analog-stereo:monitor_FL` and `monitor_FR`. Takes effect when casting is restarted.
+
+Note for later: the TV app plays through WebRTC's JavaAudioDeviceModule defaults (voice-communication usage),
+and its header comment ("no capture path") predates the TV mic. If her voice on the TV is quiet or ducked
+while the TV mic is on, look there next.
+
+## 2026-09-27 00:15: the projector's picture froze when the TV mic was plugged in (why no visualizer on the TV)
+
+The overlay did open for the 00:24 wake (layer `omarchy-ai-watchdog` on LVDS-1; grim shows its faint 28%-opacity
+listening glyphs), but `adb exec-out screencap` of the HY300 at 00:32 showed the bar clock at **00:15**.
+Projector logcat (its clock is 1h behind): at 23:15:10 `UsbHostManager: Added device ... C-Media USB PnP Sound
+Device`, then the receiver app's `external microphone: usbInput=true, enabled=true` and `startRecording`
+(VOICE_COMMUNICATION). EglRenderer went from 60 frames/4s (15 fps, last at 23:15:06) to `Frames received: 0`
+ever since. Sender: `TV microphone enabled` 00:15:10, `receiving TV return-audio stream` 00:15:11, and its
+capture counters stayed normal (they count screen grabs, not packets sent). Projector wlan0 rx measured
+~9 KB over 3s including adb, so **no video and no audio reach it**, while TV mic audio keeps arriving at the
+laptop. Outbound media stalled when `_on_remote_pad` added its branch to the PLAYING pipeline.
+
+Fix applied, **unverified** until casting restarts: `appsink async=false` on the dynamically added branch, and
+`message::latency` -> `pipeline.recalculate_latency()` (the sender had no latency handling). Verify: restart
+casting with the USB mic attached and check the projector's EglRenderer fps and wlan0 rx after "receiving TV
+return-audio stream". Also: the listening-state visualizer is 28% opacity, too faint to notice on a projector.
+
+**Verified live 2026-09-27 00:40-00:42** (cast restarted with the USB mic attached). The first restart (00:39)
+timed out: the TV app connected to signaling at :27.4, before the sender registered at :29.37, and no offer
+was made. I blamed the new latency handler from that one sample and tried to remove it, but the edit didn't
+apply, and the next restart connected with the handler in place. So it was the same intermittent start
+failure as 22:51, still open (TV app launched before the sender). Second restart: offer, "TV microphone
+enabled", first decoded frame 00:40:55.156, return-audio branch 00:40:55.163. The projector then held
+**60/60 frames per 4s, 15.0 fps** for over a minute (it went to 0 at this point before). wlan0 rx
+0.31-0.39 Mbit/s, adb screencap clock live (00:42). The sender's only capture links are now
+`analog-stereo:monitor_FL/FR` (was `alsa_input capture_FL/FR`). Not yet heard by the user: her voice on
+the TV through the TV app's voice-communication playback.
+
+## 2026-09-27 00:44-01:10: over the cast she sounded "robotic/choppy, distorted/crackly" and barely heard the user
+
+Evidence. The source was clean: 18.5s of the speaker monitor (what the cast sends) had peak 22498, no
+clipping, energy up to 12 kHz. The TV plays at 48k mono, usage 2 (VOICE_COMMUNICATION), MODE_NORMAL, with
+no underruns logged. The laptop was starved: load 5.7-8.3 on 2 cores/4 threads, and PipeWire xruns in 10s
+were alsa_input +171, cast capture +107, pw-play +1879 (cumulative 16-31k). Two causes:
+1. `_visuals` called `watchdog.level()` every 100ms for the whole session (zeros bypassed the throttle).
+   Each call spawns `omarchy-shell` + `qs ipc`, measured at 0.082-0.090s CPU per call, so ~85% of a core
+   continuously (top showed omarchy-shell at 87% and qs at 18%). This also hits plain laptop sessions.
+   Now: levels at most every 0.25s and a zero only once. Simulated: 5s silence 1 spawn (was 50), 5s
+   speech 17 (was 50). The real fix is a persistent channel to the QML instead of a process per event.
+2. The cast sender's pipewiresrc drove the graph at a 256-sample quantum (5.3ms), the only node without
+   node.latency. Now `node.latency=1024/48000`.
+After restarting both (01:08): the mic driver runs at quantum 512 (was 256); idle 10s gave +0 xruns
+everywhere; CPU 35% busy, load falling to 2.7; the projector holds 15 fps. A 7s test tone through the
+speakers: alsa_output quantum 1024, xruns +0 on the speakers, pw-play and cast capture.
+
+Input side: that session's transcripts were badly garbled ("No martes las le", "discreet et terminal",
+"csomagolt ki" for Hebrew), and the echo gate muted 1001 frames (~20s). TV-mic speech runs rms p90 ~3400,
+max ~11000, but barge-in needs >= 6000 sustained over 5 frames (BARGE_FLOOR_RMS, tuned on the laptop mic), so
+the user effectively cannot interrupt her over the TV mic. Next: a per-source barge-in floor from the logged
+`Gemini TV microphone` levels, then re-check transcript quality with the CPU fixed.
+
+## 2026-09-27 01:13-01:25: "check" after the audio fixes -- Hebrew fixed; a false escalation started a screen recording
+
+- **Hebrew recognition over the TV mic is fixed**: "לא, לא ביקשתי שום דבר. שאלתי אם את שומעת אותי", "רציתי
+  להגיד לך אמרת שאת לא יכולה לבדוק את הקלנדר שלי...", "כרגע בואי נתחיל בזה שתסגרי את הדפדפן" came through
+  clean, where 00:53-00:55 gave "No martes las le", "Asciugati", "csomagolt ki". Only the first words after
+  waking were still garbled ("chiamati").
+- **False escalation (my bug).** At 01:14:45 a desktop_task `{"status": "handoff"}` plus the "Not executed:
+  you just read a multi-step script, use run_mission" guard counted as 2 failures. The user's live commercial
+  went to task 20260927-011445-42f3f5, and the notice ("do not retry it yourself") stopped her, so the
+  commercial never ran. The task ran read-only checks and a failing `hyprctl dispatch kill` (exit 7). At
+  01:18:08 a `gpu-screen-recorder -f 60 -fallback-cpu-encoding` started inside omarchy-ai.service's cgroup,
+  with no voice tool call in that window, so it was the task mid-step (its evidence is written only after a
+  command returns). Cancelling the task at 01:23 did **not** stop it: it ran at 85% CPU (load 7.2) until I sent
+  SIGINT at 01:25. The file is kept (394s, 18.5 MB). Fixes: every "Not executed:" and a handoff are excluded
+  (regression test from this exact sequence). Replay over 53 sessions: 6 escalations, the same real ones,
+  tonight's gone.
+  Open: task cancel must also stop processes the task started (process group, or a cgroup per task).
+- The session's xruns (speakers +5.3k, cast capture +6.0k, mic +7.0k) came mostly from that 85%-CPU recorder,
+  so they are not a fair test of the audio fixes. Re-measure in a clean session.
+- Echo gate: 3778 gated frames (~75s), about her total speaking time (received 3.39 MB at 24 kHz ~ 70s), so
+  that is the half-duplex design, not a bug. The TV-mic speech level while she was silent
+  (`loud-run speech p50`) was 5.5-6.3k, borderline for BARGE_FLOOR_RMS=6000; one barge-in succeeded.
+
+## 2026-09-27 01:30-01:40: her voice cracked whenever a screen recording ran -- no realtime audio, no hardware encoder
+
+Two machine-level causes, both older than this work:
+- **PipeWire had no realtime priority.** rtkit was not installed (`mod.rt: RTKit error: ...ServiceUnknown`,
+  `ulimit -r` 0), so every data-loop thread ran SCHED_OTHER and any CPU-heavy job starved the audio. The
+  user installed `rtkit`. After stopping omarchy-ai, restarting pipewire/pipewire-pulse/wireplumber and
+  starting omarchy-ai again (01:37), the data-loops of pipewire, pipewire-pulse and wireplumber run
+  **SCHED_RR**.
+- **No working VA-API on this Ivy Bridge HD 4000** (i5-3320M): only `iHD` was installed, which is Broadwell+.
+  So gpu-screen-recorder silently used `-fallback-cpu-encoding` (85% CPU). The user installed
+  `libva-intel-driver` (i965) and `libva-utils`; vainfo shows H264 ConstrainedBaseline/Main/High EncSlice.
+  Test, 10s at 60 fps with `-a default_output` and a tone: **recorder 14% of one core** (was ~85%),
+  **PipeWire xruns +1**, file is h264 + opus, and the tone in it is continuous for 7s (rms p10/p50/p90
+  3455/3479/3526), **0 dropouts, 0 clicks**. libva tries iHD first, fails, then uses i965; harmless.
+- Her screen recording tool call was wrong: `['capture','recording','start']` does not exist, a plain
+  `capture screenrecording` opens slurp (a picker she cannot operate) and records no audio.
+  run_omarchy_command's description now gives `['capture','screenrecording','--fullscreen',
+  '--with-desktop-audio']` and `--stop-recording`.
+- The cast could not be restarted afterwards: the HY300 left the network (no ping, ARP INCOMPLETE); it
+  probably went to standby when the old cast stopped. Still to do: move the cast encoder (openh264enc,
+  software, ~55% CPU) to VA-API as well.

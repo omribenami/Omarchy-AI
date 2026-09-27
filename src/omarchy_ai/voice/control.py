@@ -16,7 +16,13 @@ def request(command):
             client.settimeout(1)
             client.connect(str(socket_path()))
             client.sendall((command + '\n').encode())
-            return json.loads(client.recv(4096))
+            data = b''
+            while not data.endswith(b'\n'):  # a chat state is larger than one recv
+                chunk = client.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            return json.loads(data)
     except (OSError, ValueError):
         return {'state': 'offline', 'error': 'Assistant unavailable. Start or restart the assistant.'}
 
@@ -40,6 +46,6 @@ async def serve(callback):
 
     path = socket_path()
     path.unlink(missing_ok=True)
-    server = await asyncio.start_unix_server(handle, path=str(path), limit=1024)
+    server = await asyncio.start_unix_server(handle, path=str(path), limit=65536)  # typed chat lines
     path.chmod(0o600)
     return server

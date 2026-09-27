@@ -149,8 +149,18 @@ async def _serve(config, sdp, answer, cancelled):
             adapter._hangup.set()
 
     async def send_text(session):
+        told = False
         while True:
             text = await messages.get()
+            if not told:
+                # Only Text mode types, and it plays no audio: tell her once
+                # so replies are written to be read (turn_complete=False adds
+                # context without a reply of its own; probed 2026-09-26).
+                from ..voice.text_chat import TEXT_NOTE
+                await session.send_client_content(
+                    turns={'role': 'user', 'parts': [{'text': '[Context, not a request]' + TEXT_NOTE}]},
+                    turn_complete=False)
+                told = True
             adapter._transcript.append({'role': 'user', 'text': text})
             adapter._input_guard.heard_user()
             emit({'type': 'response.event', 'event': {'type': 'response.created'}})
@@ -172,6 +182,10 @@ async def _serve(config, sdp, answer, cancelled):
         async with client.aio.live.connect(model=config.gemini_model, config=build_live_config(config)) as session:
             from ..core import agenda
             agenda.mark_briefed()  # this prompt carried the heartbeat's pending results
+            # Task results and heartbeat results arriving mid-call are said
+            # here (2026-09-26: a task ended while the user was on the phone
+            # and they heard nothing).
+            agenda.attach_call(adapter, asyncio.get_running_loop())
             await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
             await peer.setLocalDescription(await peer.createAnswer())
             if cancelled.is_set():
@@ -180,7 +194,7 @@ async def _serve(config, sdp, answer, cancelled):
             log.info('Phone Gemini WebRTC bridge ready: %s', config.gemini_model)
             tasks = [asyncio.create_task(coro) for coro in (
                 send_audio(session), send_text(session), adapter._receive(session),
-                adapter._tools(session), watch_offer(), adapter._hangup.wait(),
+                adapter._tools(session), adapter._announcer(session), watch_offer(), adapter._hangup.wait(),
                 *([adapter._fast_path()] if config.jev_fast_path else []))]
             done, _ = await asyncio.wait(tasks, timeout=config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -197,6 +211,9 @@ async def _serve(config, sdp, answer, cancelled):
             emit({'type': 'error', 'error': {'message': 'Gemini quota used up.' if out_of_quota
                                              else 'Gemini connection ended. Please reconnect.'}})
     finally:
+        from ..core import agenda
+        agenda.detach_call(adapter)
+        agenda.mark_delivered(adapter.acknowledged_ids())  # heard and answered on this call
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

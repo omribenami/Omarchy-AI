@@ -87,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     answer.add_argument("id", nargs="?")
     answer.add_argument("text")
     sub.add_parser("executors")
+    models_p = sub.add_parser("models", help="the auto-chosen worker models and their exam results")
+    models_p.add_argument("--requalify", action="store_true", help="fetch the catalog and re-run the choice now")
     classify = sub.add_parser("classify", help="show the risk the harness assigns to a command")
     classify.add_argument("command")
     classify.add_argument("-C", "--workspace", default=None)
@@ -101,6 +103,18 @@ def main(argv: list[str] | None = None) -> int:
 
     import logging
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    if args.cmd == "models":
+        from ..runtime import models
+        if args.requalify:
+            logging.getLogger("omarchy_ai.runtime.models").setLevel(logging.INFO)
+            state = models.qualify()
+        else:
+            state = models._load()
+        print(json.dumps({"ladder": state.get("ladder", []), "describe": models.describe(),
+                          "exams": {k: v for k, v in state.get("exams", {}).items()},
+                          "outcomes": state.get("outcomes", {}), "demoted": state.get("demoted", {}),
+                          "unavailable": state.get("unavailable", [])}, indent=1))
+        return 0
     from ..runtime.runtime import TaskRuntime
     runtime = TaskRuntime()
 

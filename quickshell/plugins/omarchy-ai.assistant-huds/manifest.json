@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-ai.assistant-huds",
+  "name": "Assistant task and routine HUDs",
+  "version": "1.0.0",
+  "description": "Watch Dogs-style HUDs for current assistant tasks and scheduled routines.",
+  "kinds": ["panel"],
+  "keepLoaded": true,
+  "entryPoints": {"panel": "AssistantHuds.qml"}
+}

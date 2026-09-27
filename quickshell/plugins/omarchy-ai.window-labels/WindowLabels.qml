@@ -12,9 +12,8 @@ import qs.Ui
 // assistant's "which window do you mean?" moment: several windows are
 // plausible matches, so instead of describing them in speech it drops a
 // small chip on each one's actual on-screen rectangle so the user can just
-// look and answer. Unlike the OSD there is no auto-hide timer — the caller
-// (the assistant) owns the lifecycle explicitly: show while asking, hide
-// once it has an answer.
+// look and answer. The caller can still hide them as soon as it has an
+// answer; a 20-second safety timeout prevents abandoned labels lingering.
 Item {
   id: root
 
@@ -58,11 +57,21 @@ Item {
     // Nothing parsed is the same as being asked to hide — don't leave a
     // blank layer-shell surface armed for no reason.
     opened = next.length > 0
+    if (opened) hideTimer.restart()
+    else hideTimer.stop()
   }
 
   function close() {
+    hideTimer.stop()
     opened = false
     labels = []
+  }
+
+  Timer {
+    id: hideTimer
+    interval: 20000
+    repeat: false
+    onTriggered: root.close()
   }
 
   IpcHandler {

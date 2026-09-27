@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import faulthandler
+import json
 import logging
 import signal
 import threading
@@ -47,6 +48,9 @@ class OmaDaemon:
         self._session = None
 
     def panel_command(self, command):
+        name, _, argument = command.partition(' ')
+        if name in ('chat-send', 'chat-close', 'chat-clear', 'chat-state'):
+            return self._chat_command(name, argument)
         if command == 'activate':
             if self._state != 'listening':
                 return {'state': self._state, 'error': 'A conversation is already starting or active.'}
@@ -58,6 +62,25 @@ class OmaDaemon:
         config = getattr(self, 'config', None)
         return {'state': self._state, 'provider': getattr(config, 'provider', None),
                 'error_detail': getattr(self, '_last_error', None)}
+
+    def _chat_command(self, name, argument):
+        """Typed conversation from the chat HUD (voice/text_chat.py). Runs on
+        the daemon's loop, like every control-socket command."""
+        if getattr(self, '_text_chat', None) is None:
+            from ..voice.text_chat import TextChat
+            self._text_chat = TextChat(self.config)
+        chat = self._text_chat
+        if name == 'chat-send':
+            try:
+                text = json.loads(argument).get('text', '')
+            except (ValueError, AttributeError):
+                return {'ok': False, 'error': 'bad chat message'}
+            return chat.send(text)
+        if name == 'chat-close':
+            return chat.close()
+        if name == 'chat-clear':
+            return chat.clear()
+        return chat.state()
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -101,7 +124,12 @@ class OmaDaemon:
         async def heartbeat():
             # Scheduled tasks and watches run here, conversation or not.
             from . import agenda
+            from ..runtime import models as worker_models
             while True:
+                # Daily Gateway catalog check; re-qualifies the task worker
+                # model in its own thread when the catalog changed.
+                if getattr(self.config, "task_agent_model", "auto") in (None, "auto"):
+                    worker_models.ensure_fresh()
                 try:
                     await asyncio.to_thread(agenda.tick)
                 except Exception:
@@ -149,10 +177,14 @@ class OmaDaemon:
         """Jev's heartbeat produced a result: tell the user now. Real gap
         (2026-09-23): "let me know when Claude is done", then "bye"; the
         watch fired at 01:03 and only a desktop popup appeared."""
+        from . import agenda
+        on_call = agenda.announce_to_calls(entry)  # the user is on the phone: say it there
         session = self._session
         if session is not None and hasattr(session, 'announce'):  # starting or active
             session.announce(entry)
             return
+        if on_call:
+            return  # unacknowledged, it stays in the inbox for the next conversation
         self._pending_announcements.append(entry)
         if self._state == 'listening' and self.config.provider == "gemini":
             log.info("heartbeat result %s: waking the assistant to report it", entry.get("id"))
