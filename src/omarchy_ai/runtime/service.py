@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import threading
 import time
 
@@ -48,6 +49,34 @@ def start_task(args: dict) -> ActionResult:
     }))
 
 
+def _git(workspace: str, *argv: str) -> str:
+    try:
+        out = subprocess.run(["git", "-C", workspace, *argv], capture_output=True, text=True, timeout=5,
+                             check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def change_preview(workspace: str, limit: int = 3000) -> dict | None:
+    """What approving would publish or keep: the workspace's unpushed commits
+    and uncommitted changes, so she can explain the change when asked. Real
+    case (2026-09-27): a task waited to `git push` a README edit that swapped
+    the demo video for a tag GitHub strips; the approval showed only the
+    command, so nobody could see what was being pushed."""
+    if not workspace or _git(workspace, "rev-parse", "--is-inside-work-tree") != "true":
+        return None
+    upstream = _git(workspace, "rev-parse", "--abbrev-ref", "@{u}")
+    base = upstream or "HEAD"
+    preview = {
+        "unpushed_commits": _git(workspace, "log", "--oneline", f"{upstream}..HEAD") if upstream else "",
+        "uncommitted": _git(workspace, "status", "--short"),
+        "stat": _git(workspace, "diff", "--stat", base),
+        "diff": _git(workspace, "diff", base)[:limit],
+    }
+    return {k: v for k, v in preview.items() if v} or None
+
+
 def task_status(args: dict) -> ActionResult:
     runtime = get_runtime()
     if args.get("list"):
@@ -55,6 +84,9 @@ def task_status(args: dict) -> ActionResult:
     summary = runtime.status(args.get("task_id") or None)
     if summary is None:
         return ActionResult(False, "No task found.")
+    if summary.get("pending_approval"):
+        task = runtime.store.load(summary["id"])
+        summary["change_preview"] = change_preview(task.workspace if task else "")
     return ActionResult(True, json.dumps(summary, ensure_ascii=False))
 
 
@@ -87,15 +119,26 @@ def _remember(task, event):
                               f"Task {task.id} {_OUTCOMES[event]}. {detail or ''}".strip())
 
 
-def announce_to(session_getter, loop) -> None:
+# Events that wake the assistant to say them now, even with no conversation
+# open: the task is stuck until the user answers (the user's request,
+# 2026-09-27, after a push approval sat unnoticed).
+WAKE_EVENTS = frozenset({"waiting_approval"})
+
+
+def announce_to(session_getter, loop, wake=None) -> None:
     """Forward task events to an open voice conversation (daemon hook), and
     keep the ones the user must hear until a conversation delivers them.
     Task events fire on runtime threads; the session's announcement queue
-    belongs to the daemon's event loop, so hand over with call_soon_threadsafe."""
+    belongs to the daemon's event loop, so hand over with call_soon_threadsafe.
+    `wake(entry)` (the daemon's _on_agenda_result) says a WAKE_EVENTS entry
+    now: in the open conversation or phone call, else by starting one."""
     from ..core import agenda
 
     def listener(task, event):
         entry = _remember(task, event)
+        if entry is not None and wake is not None and event in WAKE_EVENTS:
+            loop.call_soon_threadsafe(wake, entry)
+            return
         if entry is None:
             detail = {"waiting_approval": f"needs approval: {json.dumps(task.pending_approval)}",
                       "waiting_user": f"has a question: {task.question}"}.get(event, task.result)

@@ -47,6 +47,20 @@ def task_items() -> list[dict]:
     return items
 
 
+def approval_items() -> list[dict]:
+    """Tasks paused for the user's approval: the floating envelope's rows."""
+    from ..runtime.task import WAITING_APPROVAL, TaskStore
+
+    items = []
+    for task in TaskStore().list(50):
+        request = task.pending_approval or {}
+        if task.status != WAITING_APPROVAL or not request:
+            continue
+        items.append({"id": task.id, "title": task.goal, "subject": request.get("subject", ""),
+                      "risk": request.get("risk", ""), "reasons": "; ".join(request.get("reasons", []))})
+    return items
+
+
 def routine_items() -> list[dict]:
     from ..core.agenda import list_jobs
 
@@ -60,8 +74,10 @@ def show_tasks() -> None:
 
 
 def refresh_tasks() -> None:
-    """Replace task rows without opening a HUD the user already closed."""
+    """Replace task rows without opening a HUD the user already closed, and
+    show or clear the approval envelope (it is visible while any is waiting)."""
     _ipc_async("updateTasks", {"items": task_items()})
+    _ipc_async("updateApprovals", {"items": approval_items()})
 
 
 def show_routines() -> None:

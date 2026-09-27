@@ -45,6 +45,23 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: approvals are announced at once and float as an envelope
+
+A push approval sat unnoticed; so did three older ones (00:44, 08:17, 08:19)
+all day: approval events reached only an already-open conversation. Now
+`runtime/service.py` WAKE_EVENTS (waiting_approval) go through the daemon's
+`_on_agenda_result`, which starts a conversation (or uses the open one or a
+phone call) to say it; her prompt says which task, what it wants, the risk,
+and asks approve/deny. `task_status` adds `change_preview` (unpushed
+commits, uncommitted files, diff) so she can explain the change when asked.
+The HUD plugin draws a neon envelope top right while any approval waits;
+clicking it opens an APPROVAL NEEDED card whose buttons go through
+`omarchy-ai-settings approval-respond` -> control socket `approval
+approve|deny <id>` -> runtime.respond(channel="hud") in the daemon (a real
+click, like the notification's buttons). The plugin is keepLoaded, which
+Omarchy never hot-reloads: it needs `omarchy restart shell`, which Omarchy
+refuses while the session is locked.
+
 ### 2026-09-27: unlock from the paired phone (and lock != unlock)
 
 Asked from the phone to unlock, she ran lock_screen twice (09:05:08,

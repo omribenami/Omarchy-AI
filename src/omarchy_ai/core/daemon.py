@@ -52,6 +52,8 @@ class OmaDaemon:
         name, _, argument = command.partition(' ')
         if name in ('chat-send', 'chat-close', 'chat-clear', 'chat-state'):
             return self._chat_command(name, argument)
+        if name == 'approval':
+            return self._approval_command(argument)
         if command == 'activate':
             if self._state != 'listening':
                 return {'state': self._state, 'error': 'A conversation is already starting or active.'}
@@ -63,6 +65,17 @@ class OmaDaemon:
         config = getattr(self, 'config', None)
         return {'state': self._state, 'provider': getattr(config, 'provider', None),
                 'error_detail': getattr(self, '_last_error', None)}
+
+    def _approval_command(self, argument):
+        """`approval approve|deny <task id>` from the envelope HUD's buttons: a
+        real click, like the desktop notification's (channel "hud"), so even
+        HIGH risk may be approved here -- unlike by voice."""
+        decision, _, task_id = argument.partition(' ')
+        if decision not in ('approve', 'deny') or not task_id.strip():
+            return {'ok': False, 'error': 'usage: approval approve|deny <task id>'}
+        from ..runtime import service as task_service
+        result = task_service.get_runtime().respond(task_id.strip(), approve=decision == 'approve', channel='hud')
+        return {'ok': result['ok'], 'message': result['message']}
 
     def _chat_command(self, name, argument):
         """Typed conversation from the chat HUD (voice/text_chat.py). Runs on
@@ -119,7 +132,10 @@ class OmaDaemon:
             # Task Runtime events (done, needs approval, question) reach an
             # open conversation; they always raise a desktop notification too.
             from ..runtime import service as task_service
-            task_service.announce_to(lambda: self._session, loop)
+            # An approval wakes her to say it now (_on_agenda_result).
+            task_service.announce_to(lambda: self._session, loop, wake=self._on_agenda_result)
+            from ..display import assistant_huds
+            assistant_huds.refresh_tasks()  # the envelope, for approvals already waiting
         except Exception:
             log.warning("Task runtime unavailable", exc_info=True)
         async def heartbeat():

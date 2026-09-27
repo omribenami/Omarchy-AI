@@ -438,6 +438,24 @@ class GeminiLiveSession:
                     + entry["notice"]))]), turn_complete=True)
                 log.info("Automatic notice said: session=%s %r", self._audit_session, entry["notice"][:120])
                 continue
+            if entry is not None and entry.get("outcome") == "waiting_approval":
+                while not self._idle():
+                    await asyncio.sleep(0.2)
+                opener = ("You started this conversation yourself because a background task needs the user's "
+                          "approval. " if self.proactive and not self._announced else "")
+                await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
+                    f"[Approval needed, automatic] {opener}A background task is paused until the user approves or "
+                    f"denies: {entry.get('title')}: {entry.get('detail', '')[:700]}. Tell the user now, briefly, in "
+                    "their language: which task, what exactly it wants to do, and why that needs approval (the "
+                    "risk). Ask: approve or deny? If they ask what it changes or want details, call task_status "
+                    f"with task_id {entry.get('task_id')} and explain its change_preview (commits, files, the "
+                    "actual diff) and files_modified in plain words; never guess the change. On their answer call "
+                    f"task_respond with task_id {entry.get('task_id')} and approve true or false. It is also "
+                    "waiting in the envelope at the top right of the screen."))]), turn_complete=True)
+                self._announced.append((entry.get("id"), time.monotonic()))
+                self._announcements_said.append(f"approval needed: {entry.get('title')}")
+                log.info("Approval announced: session=%s task=%s", self._audit_session, entry.get("task_id"))
+                continue
             if entry is not None:
                 while not self._idle():
                     await asyncio.sleep(0.2)

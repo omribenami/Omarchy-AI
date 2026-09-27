@@ -630,6 +630,20 @@ def cmd_chat_send(_args: argparse.Namespace) -> dict:
     return result
 
 
+def cmd_approval_respond(args: argparse.Namespace) -> dict:
+    """The envelope HUD's Approve/Deny buttons: the daemon resumes its task."""
+    result = control.request(f"approval {args.decision} {args.task_id}")
+    if result.get("state") == "offline":
+        return {"ok": False, "error": "The assistant is not running."}
+    return result
+
+
+def cmd_approvals(_args: argparse.Namespace) -> dict:
+    """The envelope's rows when the shell (re)loads it."""
+    from ..display import assistant_huds
+    return {"ok": True, "items": assistant_huds.approval_items()}
+
+
 def cmd_chat_close(_args: argparse.Namespace) -> dict:
     return control.request("chat-close")
 
@@ -711,6 +725,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser('activate')
     for name in ("chat-toggle", "chat-send", "chat-close", "chat-clear", "chat-state"):
         sub.add_parser(name)
+    p_approval = sub.add_parser("approval-respond")
+    p_approval.add_argument("decision", choices=["approve", "deny"])
+    p_approval.add_argument("task_id")
+    sub.add_parser("approvals")
     p_quota = sub.add_parser("test-quota-alert")
     p_quota.add_argument("provider", choices=["openai", "gemini", "vercel"])
     p_select_cast = sub.add_parser("select-cast-target")
@@ -741,6 +759,8 @@ def main(argv: list[str] | None = None) -> int:
         "chat-close": cmd_chat_close,
         "chat-clear": cmd_chat_clear,
         "chat-state": cmd_chat_state,
+        "approval-respond": cmd_approval_respond,
+        "approvals": cmd_approvals,
         "select-cast-target": cmd_select_cast_target,
         "refresh-cast-targets": cmd_refresh_cast_targets,
         "restart": cmd_restart,

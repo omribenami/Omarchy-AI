@@ -34,10 +34,12 @@ class AssistantHudsTest(unittest.TestCase):
         ipc.assert_called_once_with("showTasks", {"items": [{"id": "one"}]})
 
     @patch.object(assistant_huds, "_ipc_async")
+    @patch.object(assistant_huds, "approval_items", return_value=[])
     @patch.object(assistant_huds, "task_items", return_value=[])
-    def test_refresh_tasks_updates_without_opening(self, items, ipc):
+    def test_refresh_tasks_updates_without_opening(self, items, approvals, ipc):
         assistant_huds.refresh_tasks()
-        ipc.assert_called_once_with("updateTasks", {"items": []})
+        self.assertEqual([c.args for c in ipc.call_args_list],
+                         [("updateTasks", {"items": []}), ("updateApprovals", {"items": []})])
 
     @patch.object(assistant_huds, "show_routines")
     @patch.object(assistant_huds, "show_tasks")

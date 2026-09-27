@@ -11,8 +11,17 @@ Item {
   property bool routinesOpen: false
   property var tasks: []
   property var routines: []
+  // Tasks paused for the user's approval (assistant_huds.approval_items):
+  // the floating envelope shows while any is waiting.
+  property var approvals: []
+  property bool approvalsOpen: false
+  property string approvalError: ""
+  property var answering: ({})
+  readonly property string py: "@OMARCHY_AI_SETTINGS@"
   readonly property color green: "#39ff88"
   readonly property color cyan: "#39e6ff"
+  readonly property color magenta: "#ff4fd8"
+  readonly property color red: "#ff4f6d"
   readonly property color surface: Color.background
   readonly property color ink: Color.foreground
   readonly property color faint: Util.alpha(Color.foreground, 0.58)
@@ -43,8 +52,190 @@ Item {
       root.routines = root.readItems(payloadJson); return "ok"
     }
     function hideRoutines(): string { root.routinesOpen = false; return "ok" }
-    function hideAll(): string { root.tasksOpen = false; root.routinesOpen = false; return "ok" }
+    function updateApprovals(payloadJson: string): string {
+      root.setApprovals(root.readItems(payloadJson)); return "ok"
+    }
+    function showApprovals(): string { root.approvalsOpen = root.approvals.length > 0; return "ok" }
+    function hideAll(): string { root.tasksOpen = false; root.routinesOpen = false; root.approvalsOpen = false; return "ok" }
     function ping(): string { return "ok" }
+  }
+
+  function setApprovals(items) {
+    root.approvals = items
+    if (items.length === 0) root.approvalsOpen = false
+    root.approvalError = ""
+  }
+
+  // Approve/Deny go to the daemon (settings CLI -> control socket), which
+  // resumes the task in its own process. A click here is a real human
+  // approval, like the desktop notification's buttons.
+  function respond(taskId, decision) {
+    var busy = Object.assign({}, root.answering); busy[taskId] = true; root.answering = busy
+    root.run(["approval-respond", decision, taskId], function(result) {
+      var done = Object.assign({}, root.answering); delete done[taskId]; root.answering = done
+      if (!result || result.ok === false) root.approvalError = (result && (result.error || result.message)) || "No answer from the assistant"
+    })
+  }
+
+  property var _queue: []
+  function run(args, cb) {
+    root._queue.push({ argv: [root.py].concat(args), cb: cb })
+    root._next()
+  }
+  function _next() {
+    if (helper.running || root._queue.length === 0) return
+    var job = root._queue.shift()
+    helper._cb = job.cb
+    helper.command = job.argv
+    helper.running = true
+  }
+  Process {
+    id: helper
+    property var _cb: null
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var result = null
+        try { result = text.trim() ? JSON.parse(text) : null } catch (e) { result = { ok: false, error: "bad helper output" } }
+        var cb = helper._cb
+        helper._cb = null
+        if (cb) cb(result)
+      }
+    }
+    onRunningChanged: if (!running) Qt.callLater(root._next)
+  }
+  // Approvals already waiting when the shell (re)loads this plugin.
+  Component.onCompleted: run(["approvals"], function(result) {
+    if (result && Array.isArray(result.items)) root.setApprovals(result.items)
+  })
+
+  // A neon envelope drawn on a canvas: faint "ghost" fill, glowing strokes.
+  component Envelope: Item {
+    id: env
+    property color accent: root.magenta
+    property bool hot: false
+    implicitWidth: Style.space(58); implicitHeight: Style.space(42)
+    onHotChanged: art.requestPaint()
+    Canvas {
+      id: art
+      anchors.fill: parent
+      onPaint: {
+        var ctx = getContext("2d")
+        var w = width, h = height, m = 7
+        ctx.reset()
+        ctx.lineJoin = "round"; ctx.lineCap = "round"
+        ctx.shadowColor = env.accent; ctx.shadowBlur = env.hot ? 18 : 11
+        ctx.fillStyle = Qt.rgba(env.accent.r, env.accent.g, env.accent.b, env.hot ? 0.16 : 0.08)
+        ctx.strokeStyle = env.accent
+        ctx.lineWidth = 1.6
+        ctx.beginPath(); ctx.rect(m, m, w - 2 * m, h - 2 * m); ctx.fill(); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(m, m); ctx.lineTo(w / 2, h * 0.58); ctx.lineTo(w - m, m); ctx.stroke()
+        ctx.globalAlpha = 0.45
+        ctx.beginPath(); ctx.moveTo(m, h - m); ctx.lineTo(w * 0.4, h * 0.5)
+        ctx.moveTo(w - m, h - m); ctx.lineTo(w * 0.6, h * 0.5); ctx.stroke()
+      }
+    }
+  }
+
+  component ApprovalCard: BorderSurface {
+    id: acard
+    readonly property color accent: root.magenta
+    width: Style.space(430)
+    height: Math.min(Style.space(520), aheader.height + alist.contentHeight + Style.space(52) + (errorText.visible ? errorText.height : 0))
+    color: Util.alpha(root.surface, 0.94)
+    radius: Style.cornerRadius
+    borderSpec: Border.flat(Util.alpha(acard.accent, 0.5), 1)
+
+    Rectangle {
+      width: parent.width; height: 1; color: acard.accent; opacity: 0.35
+      SequentialAnimation on y {
+        running: acard.visible; loops: Animation.Infinite
+        NumberAnimation { from: 0; to: acard.height; duration: 3600; easing.type: Easing.Linear }
+      }
+    }
+    Item {
+      id: aheader
+      anchors { left: parent.left; right: parent.right; top: parent.top; margins: Style.space(14) }
+      height: Style.space(30)
+      Rectangle {
+        width: Style.space(7); height: width; radius: width / 2; color: acard.accent
+        anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+        SequentialAnimation on opacity {
+          running: acard.visible; loops: Animation.Infinite
+          NumberAnimation { from: 1; to: 0.35; duration: 500 }
+          NumberAnimation { from: 0.35; to: 1; duration: 500 }
+        }
+      }
+      Text {
+        anchors.left: parent.left; anchors.leftMargin: Style.space(16); anchors.verticalCenter: parent.verticalCenter
+        text: "APPROVAL NEEDED"; color: acard.accent; font.family: Style.font.family
+        font.pixelSize: Style.font.title; font.bold: true
+      }
+      Text {
+        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+        text: "×"; color: acloseMouse.containsMouse ? acard.accent : root.faint
+        font.family: Style.font.family; font.pixelSize: Style.font.title
+        MouseArea { id: acloseMouse; anchors.fill: parent; anchors.margins: -Style.space(8); hoverEnabled: true; onClicked: root.approvalsOpen = false }
+      }
+    }
+    Rectangle {
+      anchors { left: parent.left; right: parent.right; top: aheader.bottom; leftMargin: Style.space(14); rightMargin: Style.space(14) }
+      height: 1; color: Util.alpha(acard.accent, 0.3)
+    }
+    ListView {
+      id: alist
+      anchors { left: parent.left; right: parent.right; top: aheader.bottom; bottom: errorText.top; margins: Style.space(14); topMargin: Style.space(18) }
+      model: root.approvals
+      spacing: Style.space(14); clip: true; boundsBehavior: Flickable.StopAtBounds
+      delegate: Column {
+        id: row
+        required property var modelData
+        readonly property bool busy: !!root.answering[modelData.id]
+        width: alist.width; spacing: Style.space(4)
+        Text {
+          width: parent.width; text: "> " + String(modelData.title || modelData.id)
+          color: root.ink; font.family: Style.font.family; font.pixelSize: Style.font.body
+          elide: Text.ElideRight; maximumLineCount: 1
+        }
+        Text {
+          width: parent.width; text: "[" + String(modelData.risk || "APPROVAL").toUpperCase() + "] " + String(modelData.subject || "")
+          color: acard.accent; font.family: Style.font.family; font.pixelSize: Style.font.caption
+          wrapMode: Text.WrapAnywhere; maximumLineCount: 3; elide: Text.ElideRight
+        }
+        Text {
+          width: parent.width; visible: !!modelData.reasons; text: String(modelData.reasons || "")
+          color: root.faint; font.family: Style.font.family; font.pixelSize: Style.font.caption
+          elide: Text.ElideRight; maximumLineCount: 1
+        }
+        Row {
+          spacing: Style.space(10); topPadding: Style.space(4)
+          Repeater {
+            model: [{ label: "APPROVE", decision: "approve", color: root.green }, { label: "DENY", decision: "deny", color: root.red }]
+            delegate: Rectangle {
+              required property var modelData
+              width: Style.space(96); height: Style.space(30); radius: 6
+              color: Util.alpha(modelData.color, bmouse.containsMouse ? 0.22 : 0.08)
+              border.color: Util.alpha(modelData.color, 0.8); border.width: 1
+              opacity: row.busy ? 0.4 : 1
+              Text {
+                anchors.centerIn: parent; text: row.busy ? "…" : modelData.label; color: modelData.color
+                font.family: Style.font.family; font.pixelSize: Style.font.caption; font.bold: true
+              }
+              MouseArea {
+                id: bmouse; anchors.fill: parent; hoverEnabled: true; enabled: !row.busy
+                onClicked: root.respond(row.modelData.id, parent.modelData.decision)
+              }
+            }
+          }
+        }
+      }
+    }
+    Text {
+      id: errorText
+      anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: Style.space(14) }
+      visible: root.approvalError !== ""; text: root.approvalError; color: root.red
+      font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
+    }
   }
 
   component HudCard: BorderSurface {
@@ -133,7 +324,7 @@ Item {
       id: panel
       required property var modelData
       screen: modelData
-      visible: root.tasksOpen || root.routinesOpen
+      visible: root.tasksOpen || root.routinesOpen || root.approvalsOpen
       anchors { top: true; bottom: true; left: true; right: true }
       color: "transparent"
       WlrLayershell.namespace: "omarchy-ai-assistant-huds"
@@ -145,8 +336,11 @@ Item {
       Column {
         id: cards
         anchors.right: parent.right; anchors.top: parent.top
-        anchors.rightMargin: Style.space(20); anchors.topMargin: Style.space(80)
+        anchors.rightMargin: Style.space(20)
+        // Below the envelope while one is floating there.
+        anchors.topMargin: Style.space(80) + (root.approvals.length > 0 ? Style.space(58) : 0)
         spacing: Style.space(14)
+        ApprovalCard { visible: root.approvalsOpen }
         HudCard {
           visible: root.tasksOpen; heading: "CURRENT TASKS"; accent: root.green
           emptyText: "NO CURRENT TASKS"; entries: root.tasks
@@ -156,6 +350,55 @@ Item {
           visible: root.routinesOpen; heading: "ROUTINES / CRON"; accent: root.cyan
           emptyText: "NO ACTIVE ROUTINES"; entries: root.routines
           onCloseRequested: root.routinesOpen = false
+        }
+      }
+    }
+  }
+
+  Variants {
+    model: Quickshell.screens
+    PanelWindow {
+      required property var modelData
+      screen: modelData
+      visible: root.approvals.length > 0
+      anchors { top: true; right: true }
+      margins { top: Style.space(72); right: Style.space(20) }
+      implicitWidth: Style.space(84); implicitHeight: Style.space(64)
+      color: "transparent"
+      WlrLayershell.namespace: "omarchy-ai-approval-envelope"
+      WlrLayershell.layer: WlrLayer.Overlay
+      WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+      exclusionMode: ExclusionMode.Ignore
+
+      Item {
+        id: floater
+        width: envelope.width; height: envelope.height
+        anchors.horizontalCenter: parent.horizontalCenter
+        // Drifts up and down, and breathes, like the rest of the HUD.
+        SequentialAnimation on y {
+          running: parent.visible; loops: Animation.Infinite
+          NumberAnimation { from: Style.space(10); to: Style.space(4); duration: 1400; easing.type: Easing.InOutSine }
+          NumberAnimation { from: Style.space(4); to: Style.space(10); duration: 1400; easing.type: Easing.InOutSine }
+        }
+        SequentialAnimation on opacity {
+          running: parent.visible; loops: Animation.Infinite
+          NumberAnimation { from: 1; to: 0.62; duration: 1100; easing.type: Easing.InOutSine }
+          NumberAnimation { from: 0.62; to: 1; duration: 1100; easing.type: Easing.InOutSine }
+        }
+        Envelope { id: envelope; hot: envMouse.containsMouse || root.approvalsOpen }
+        Rectangle {
+          visible: root.approvals.length > 1
+          width: Style.space(18); height: width; radius: width / 2
+          anchors { right: envelope.right; top: envelope.top; rightMargin: -Style.space(4); topMargin: -Style.space(4) }
+          color: Util.alpha(root.surface, 0.9); border.color: root.magenta; border.width: 1
+          Text {
+            anchors.centerIn: parent; text: String(root.approvals.length); color: root.magenta
+            font.family: Style.font.family; font.pixelSize: Style.font.caption; font.bold: true
+          }
+        }
+        MouseArea {
+          id: envMouse; anchors.fill: envelope; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+          onClicked: root.approvalsOpen = !root.approvalsOpen
         }
       }
     }
