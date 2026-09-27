@@ -44,7 +44,7 @@ you when it is verified. It is not a chatbot bolted onto a terminal.
 
 <div align="center">
 
-https://github.com/user-attachments/assets/49467e18-0e00-4db6-ba63-bbaf9927b218
+![Omarchy AI desktop demo](docs/media/desktop-demo.mp4)
 
 </div>
 
