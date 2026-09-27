@@ -103,7 +103,7 @@ Say the wake word, then talk normally. Real requests from daily use:
 
 <div align="center">
 
-https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f
+<video src="docs/media/desktop-demo.mp4" controls width="420"></video>
 
 </div>
 
