@@ -19,6 +19,46 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.7.0] - 2026-09-27
+
+### Highlights
+
+- When something keeps failing, she no longer gives up. She hands the job
+  to a background worker that can dig deeper, and tells you it did.
+- She can file GitHub issues on any repository, including Omarchy itself,
+  using your GitHub login. She reads the title back and asks before posting.
+- She can now write her own tools. Nothing is added without your approval,
+  and once you approve one she can use it straight away.
+- She picks the right tool much faster. Her less common tools are chosen for
+  her in a fraction of a second instead of her searching through them all.
+- While your screen is mirrored to a TV, she listens through the TV's
+  microphone, and her voice plays on the TV.
+- Her voice no longer crackles when the computer is busy, for example while
+  recording the screen or casting.
+- You can chat with her by typing, on the desktop and on your phone, without
+  her speaking out loud.
+- She tells you about background tasks that finished while you were away,
+  and can say which model is doing the work.
+
+### Fixes
+
+- Mirroring to a TV no longer freezes the picture when a microphone is
+  plugged into the TV.
+- The TV now gets the computer's sound instead of its microphone.
+- The on-screen visualizer no longer uses most of a processor core.
+- Screen recordings she starts are full screen and include her voice.
+- She checks what she heard before acting when speech recognition garbles
+  Hebrew into another language.
+- She can switch, open and close browser tabs, and explains why a browser
+  task failed, for example when a site is not signed in.
+
+### Under the hood
+
+- Background workers use Claude Code, then Codex, then the Gateway API, and
+  the worker model is chosen automatically by a qualification exam.
+- Installing a tool she wrote, reading a stored login token, and uploading
+  data with your credentials now always ask first.
+
 ## [0.6.1] - 2026-09-25
 
 ### Highlights
