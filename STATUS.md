@@ -45,6 +45,20 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: she signs in with a provider button herself
+
+Asked to press "Continue with Google" on GitHub (00:44 and 10:24), she handed
+it back to the user. Cause: `browser_inspect.diagnose` told her actions "will
+not work until the user signs in", and her goal said "the sign in button", so
+Jev clicked GitHub's password-form "Sign in" and chose BLOCKED. Now the
+diagnosis names the provider button to click and says never to type a
+password/2FA (show_browser for those), and her prompt has a SIGNING IN rule
+to name the exact button. Verified 10:28: browser_task "Click 'Continue with
+Google'" -> 1 action, verified, now on accounts.google.com's account chooser.
+Also: an approval whose task is no longer waiting is no longer announced
+(10:23 announced a task cancelled minutes before), and the approval card no
+longer clips its last row.
+
 ### 2026-09-27: approvals are announced at once and float as an envelope
 
 A push approval sat unnoticed; so did three older ones (00:44, 08:17, 08:19)

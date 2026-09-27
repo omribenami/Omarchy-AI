@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import urllib.request
 from urllib.parse import urlparse
 
@@ -96,11 +97,20 @@ def diagnose(state: dict, stuck_on: str | None = None) -> list[str]:
     signed_out = (not state.get("signed_in_user") and bool(state.get("sign_in_prompts"))) or state.get("password_field")
     if signed_out:
         what = f"'{stuck_on}' and anything else that needs an account" if stuck_on else "actions that need an account"
+        prompts = state.get("sign_in_prompts") or []
+        providers = [p for p in prompts if re.search(r"\b(google|apple|microsoft|github|facebook)\b", p, re.I)]
+        # 2026-09-27 10:24: asked to sign in to GitHub, she read "until the
+        # user signs in" as "only the user may", and handed it back.
+        if providers:
+            fix = (f"If the user asked you to sign in, do it: browser_task with the goal \"Click '{providers[0]}' "
+                   "and choose the user's account\" (an account the provider already offers). Never type a "
+                   "password or 2FA code: if one is asked, call show_browser and ask the user to type it there.")
+        else:
+            fix = ("Signing in here needs the user's password: call show_browser and ask the user to sign in "
+                   "there (never type a password yourself), or do the job another way that is already signed in.")
         causes.append(f"The assistant's browser is not signed in to {host} (the page shows "
-                      f"{', '.join(repr(p) for p in state.get('sign_in_prompts', [])[:2]) or 'a password field'}). "
-                      f"{what[0].upper() + what[1:]} will not work until the user signs in to {host} in the "
-                      "assistant browser (show_browser brings it up), or the job is done another way that is "
-                      "already signed in.")
+                      f"{', '.join(repr(p) for p in prompts[:2]) or 'a password field'}). "
+                      f"{what[0].upper() + what[1:]} will not work until it is signed in. {fix}")
     if state.get("captcha"):
         causes.append("The page is showing a CAPTCHA / verification challenge that needs a human.")
     for dialog in state.get("dialogs") or []:

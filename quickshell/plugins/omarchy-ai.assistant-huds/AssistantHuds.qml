@@ -141,7 +141,8 @@ Item {
     id: acard
     readonly property color accent: root.magenta
     width: Style.space(430)
-    height: Math.min(Style.space(520), aheader.height + alist.contentHeight + Style.space(52) + (errorText.visible ? errorText.height : 0))
+    // header + divider gap + rows + bottom margin (+ the error line when shown)
+    height: Math.min(Style.space(520), aheader.height + alist.contentHeight + Style.space(64) + errorText.height)
     color: Util.alpha(root.surface, 0.94)
     radius: Style.cornerRadius
     borderSpec: Border.flat(Util.alpha(acard.accent, 0.5), 1)
@@ -233,7 +234,8 @@ Item {
     Text {
       id: errorText
       anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: Style.space(14) }
-      visible: root.approvalError !== ""; text: root.approvalError; color: root.red
+      visible: root.approvalError !== ""; height: visible ? implicitHeight : 0
+      text: root.approvalError; color: root.red
       font.family: Style.font.family; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
     }
   }

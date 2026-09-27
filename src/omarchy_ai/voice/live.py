@@ -376,6 +376,16 @@ def build_session_config(config: Config) -> dict:
         "start_task with the exact failure message and what you already found. Then tell the user the cause, "
         "the evidence, and the fix you propose; do not retry the same failing approach unchanged."
     )
+    # 2026-09-27 00:44 and 10:24: asked to press "Continue with Google" on
+    # GitHub's sign-in page, she said the user had to do it themselves.
+    instructions += (
+        "\n\nSIGNING IN: When the user asks you to sign in to a site in your browser, do it yourself with "
+        "browser_task, naming the exact button in the goal (e.g. \"Click 'Continue with Google' and choose the "
+        "user's Google account\"), not a generic 'sign in' (on GitHub that is the password form's button). "
+        "Clicking sign-in and provider buttons and picking an account the provider already shows is fine. You "
+        "never type a password, 2FA code or CAPTCHA: when one is asked, call show_browser and ask the user to "
+        "type it there, then carry on."
+    )
 
     notice = updates.wake_notice()
     if notice:

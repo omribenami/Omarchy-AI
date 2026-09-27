@@ -438,6 +438,13 @@ class GeminiLiveSession:
                     + entry["notice"]))]), turn_complete=True)
                 log.info("Automatic notice said: session=%s %r", self._audit_session, entry["notice"][:120])
                 continue
+            if entry is not None and entry.get("outcome") == "waiting_approval" and not self._still_waiting(entry):
+                # 2026-09-27 10:23: a task cancelled minutes before was still
+                # announced from the inbox as needing approval.
+                from ..core import agenda
+                agenda.mark_delivered([entry["id"]])
+                log.info("Approval no longer pending, not announced: task=%s", entry.get("task_id"))
+                continue
             if entry is not None and entry.get("outcome") == "waiting_approval":
                 while not self._idle():
                     await asyncio.sleep(0.2)
@@ -622,6 +629,15 @@ class GeminiLiveSession:
         log.info("Catalog: call=%s request=%r -> %s %s", call.id, (call.args or {}).get("request", "")[:120],
                  pick.tool if pick.run else "offer", pick.evidence)
         return pick
+
+    @staticmethod
+    def _still_waiting(entry: dict) -> bool:
+        try:
+            from ..runtime.task import WAITING_APPROVAL, TaskStore
+            task = TaskStore().load(str(entry.get("task_id") or ""))
+        except Exception:  # noqa: BLE001 -- when unsure, say it
+            return True
+        return task is None or task.status == WAITING_APPROVAL
 
     def _run_tool(self, name: str, args: dict) -> ActionResult:
         """run_action, except unlock_screen from the paired phone (the only

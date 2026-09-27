@@ -122,6 +122,16 @@ class BrowserDiagnosisTests(unittest.TestCase):
         self.assertIn("'New issue'", cause)
         self.assertIn("show_browser", cause)
 
+    def test_a_provider_button_means_she_signs_in_herself(self):
+        # 2026-09-27 10:24: "until the user signs in" made her hand it back.
+        from omarchy_ai.execution.browser_inspect import diagnose
+        state = dict(self.SIGNED_OUT_GITHUB, url="https://github.com/login",
+                     sign_in_prompts=["Continue with Google", "Continue with Apple"])
+        [cause] = diagnose(state)
+        self.assertIn("Click 'Continue with Google'", cause)
+        self.assertIn("Never type a password", cause)
+        self.assertNotIn("until the user signs in", cause)
+
     def test_signed_in_page_with_disabled_control_and_error(self):
         from omarchy_ai.execution.browser_inspect import diagnose
         state = dict(self.SIGNED_OUT_GITHUB, signed_in_user="omribenami", sign_in_prompts=[],
