@@ -143,6 +143,7 @@ class TaskRuntime:
                 task.add_note(f"User approved {request.get('kind')}: {request.get('subject')}")
                 if task.next_dispatch:
                     task.next_dispatch.setdefault("context", {})["user_approved"] = request.get("subject")
+                    task.next_dispatch["context"]["user_approved_kind"] = request.get("kind")
                 if paused:
                     paused["outcome"] = "paused"
             else:

@@ -157,6 +157,9 @@ class SystemAgent(Executor):
         warnings: list[str] = []
         model_failures = 0
         started = time.time()
+        replayed = self._replay_approved(assignment, ctx, history)
+        if replayed is not None:
+            return replayed
         for n in range(self.max_actions):
             if ctx.cancel_requested:
                 return Report(FAILED, claim="cancelled", findings=self._findings(history))
@@ -238,6 +241,25 @@ class SystemAgent(Executor):
             history.append(entry)
         return Report(BLOCKED, claim="used every step of this assignment without finishing",
                       findings=self._findings(history), meta={"history": self._compact(history)})
+
+    def _replay_approved(self, assignment: Assignment, ctx: WorkContext, history: list[dict]) -> Report | None:
+        """Run the command the user just approved, exactly, before anything
+        else. Real case 2026-09-27 11:44: resumed with only "user_approved" in
+        its context, the model redid the step from scratch -- uploaded the
+        video again (a new URL), wrote a different command that no longer
+        matched the README, and asked for approval a second time."""
+        context = assignment.context or {}
+        command = context.get("user_approved")
+        if not command or context.get("user_approved_kind") != "command":
+            return None
+        result = ctx.run_command(str(command), assignment.workspace, 600)
+        history.append({"n": 0, "action": "run", "result": [result],
+                        "thought": ("The user approved this exact command and the runtime has now run it. Do not "
+                                    "redo earlier work; check its result and continue from here.")})
+        if result.get("decision") == "ask":  # the grant did not match: never loop on it
+            return Report(NEEDS_APPROVAL, claim=f"needs approval to run: {command}", approval=result.get("request"),
+                          findings=self._findings(history), meta={"history": self._compact(history)})
+        return None
 
     # ------------------------------------------------------------------
     def _brief(self, assignment: Assignment, history: list[dict], warnings: list[str], remaining: int) -> dict:

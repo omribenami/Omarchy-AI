@@ -115,3 +115,40 @@ class GithubUploadInputTests(RuntimeHarness):
     def test_it_is_a_catalog_tool(self):
         from omarchy_ai.execution import catalog
         self.assertIn("github_upload_attachment", catalog.catalog())
+
+
+class ApprovedCommandReplayTests(RuntimeHarness):
+    """2026-09-27 11:44: after approval the worker redid the step (a second
+    upload, a new command) instead of running what the user approved."""
+
+    def test_the_approved_command_runs_first_and_exactly(self):
+        from omarchy_ai.runtime.executors.base import Assignment
+        from omarchy_ai.runtime.executors.system_agent import SystemAgent
+        ran = []
+
+        class Ctx:
+            cancel_requested = False
+
+            def run_command(self, command, cwd, timeout):
+                ran.append(command)
+                return {"decision": "allow", "exit_code": 0, "output": "pushed"}
+
+        class Model:
+            model = "fake"
+
+            def complete(self, system, brief, timeout=0):
+                self.brief = brief
+                return {"action": "finish", "status": "done", "summary": "pushed"}
+        model = Model()
+        a = Assignment(task_id="t", role="work", goal="replace the video", instructions="", workspace=str(self.ws),
+                       context={"user_approved": "git push origin main", "user_approved_kind": "command"})
+        report = SystemAgent(model=model).run(a, Ctx())
+        self.assertEqual(ran, ["git push origin main"])
+        self.assertIn("approved this exact command", json.dumps(model.brief))
+        self.assertEqual(report.status, "done")
+
+    def test_a_non_command_approval_is_not_replayed(self):
+        from omarchy_ai.runtime.executors.system_agent import SystemAgent
+        from types import SimpleNamespace
+        a = SimpleNamespace(context={"user_approved": "spotify", "user_approved_kind": "launch"}, workspace="/")
+        self.assertIsNone(SystemAgent(model=SimpleNamespace(model="x"))._replay_approved(a, None, []))
