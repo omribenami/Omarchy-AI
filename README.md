@@ -342,8 +342,9 @@ request, or automatically when the assistant keeps failing at something.
   to say which task, what exactly it wants to run and why that needs
   approval. Ask what it changes and it reads you the pending diff, commits
   and files. Answer by voice, with the desktop notification's buttons, from
-  the floating envelope HUD, or with `omarchy-ai-task approve`. An approved
-  command runs exactly as approved.
+  the floating envelope HUD, from your paired phone with an approval PIN, or
+  with `omarchy-ai-task approve`. An approved command runs exactly as
+  approved.
 - **One job, one task.** Asking again, or another failure streak, joins the
   task already doing that job instead of starting a second one; it tells
   you what it is doing and can correct it with new guidance or cancel it.

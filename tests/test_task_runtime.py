@@ -298,6 +298,21 @@ class TaskRuntimeTests(RuntimeHarness):
         self.assertIn("not by voice", result["message"])
         self.assertEqual(self.store.load(task.id).status, "waiting_approval")
 
+    def test_phone_pin_channel_can_approve_high_risk(self):
+        # The phone's approval card checks the PIN before calling respond
+        # (phone/server.py); the runtime restricts only the voice channel.
+        def work(a, ctx):
+            r = ctx.run_command("sudo true", a.workspace, 10)
+            if "request" not in r:
+                return Report(DONE, claim="ran as root")
+            return Report(NEEDS_APPROVAL, claim="need root", approval=r["request"])
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], ScriptedJev())
+        task = runtime.start("root thing", str(self.ws), background=False)
+        fingerprint = self.store.load(task.id).pending_approval["fingerprint"]
+        result = runtime.respond(task.id, approve=True, channel="phone", background=False)
+        self.assertTrue(result["ok"], result)
+        self.assertIn(fingerprint, self.store.load(task.id).grants)
+
     def test_blocked_command_is_refused_and_recorded(self):
         def work(a, ctx):
             r = ctx.run_command("rm -rf ~", a.workspace, 10)

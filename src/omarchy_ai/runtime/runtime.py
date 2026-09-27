@@ -135,8 +135,8 @@ class TaskRuntime:
             if approve and channel == "voice" and Risk.parse(request.get("risk"), Risk.HIGH) >= Risk.HIGH:
                 return {"ok": False, "message": (
                     f"'{request.get('subject')}' is HIGH risk ({', '.join(request.get('reasons', []))}). It can only "
-                    "be approved with the desktop notification's Approve button or `omarchy-ai-task approve "
-                    f"{task.id}` -- not by voice.")}
+                    "be approved with the desktop notification's Approve button, the paired phone's approval "
+                    f"card (with the approval PIN), or `omarchy-ai-task approve {task.id}` -- not by voice.")}
             paused = next((s for s in task.steps if s["n"] == request.get("step")), None)
             if approve:
                 task.grants.append(request.get("fingerprint", ""))
@@ -1127,6 +1127,8 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
     if event == "waiting_approval" and task.pending_approval:
         req = task.pending_approval
         body = f"{task.goal[:120]}\n\n{req.get('risk')}: {req.get('subject', '')[:300]}\n{'; '.join(req.get('reasons', []))}"
+        if _approval_pin_set():
+            body += "\n\nOr approve it from your paired phone with the approval PIN."
         threading.Thread(target=_approval_prompt, args=(runtime, task.id, req.get("fingerprint"), title, body),
                          daemon=True).start()
         return
@@ -1138,9 +1140,18 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
         pass
 
 
+def _approval_pin_set() -> bool:
+    try:
+        from ..execution import approval_pin
+        return approval_pin.is_set()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _approval_prompt(runtime: TaskRuntime, task_id: str, fingerprint: str, title: str, body: str) -> None:
-    """A real human click on the desktop notification is the approval channel
-    the model cannot fake (a voice approval is relayed by the live model)."""
+    """A real human click on the desktop notification is an approval channel
+    the model cannot fake (a voice approval is relayed by the live model);
+    the paired phone's PIN-checked card (phone/server.py) is the other."""
     try:
         proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical", "-A", "approve=Approve",
                                "-A", "deny=Deny", title, body], capture_output=True, text=True, timeout=3600)

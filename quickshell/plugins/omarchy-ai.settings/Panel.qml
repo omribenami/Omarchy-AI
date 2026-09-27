@@ -253,6 +253,40 @@ Panel {
     })
   }
 
+  function setApprovalPin(pin) {
+    if (!pin || pin.length < 4) {
+      root.statusTone = "error"
+      root.statusMessage = "The approval PIN needs at least 4 characters"
+      return
+    }
+    root._enqueue([root.py, "set-approval-pin"], function(result) {
+      if (result && result.error) {
+        root.statusTone = "error"
+        root.statusMessage = result.error
+      } else if (result) {
+        root.snapshot = result
+        root.statusTone = "ok"
+        root.statusMessage = "Approval PIN saved — paired phones can now approve tasks"
+      } else {
+        root.statusTone = "error"
+        root.statusMessage = "Could not save the approval PIN"
+      }
+    }, { "OMARCHY_AI_APPROVAL_PIN": pin })
+  }
+
+  function forgetApprovalPin() {
+    root._enqueue([root.py, "forget-approval-pin"], function(result) {
+      if (result && result.error) {
+        root.statusTone = "error"
+        root.statusMessage = result.error
+      } else {
+        root.snapshot = result || ({})
+        root.statusTone = "ok"
+        root.statusMessage = "Approval PIN removed — phones can no longer approve tasks"
+      }
+    })
+  }
+
   property bool pairing: false
   property string qrImageBase64: ""
   property string qrUrl: ""
@@ -410,7 +444,7 @@ Panel {
       anchors.fill: parent
       // PanelKeyCatcher handles keys before its children. Password fields
       // must own Ctrl+V (and all regular editing keys) once focused.
-      blocked: apiKeyFieldTop.activeFocus || gatewayKeyField.activeFocus || sudoPasswordField.activeFocus
+      blocked: apiKeyFieldTop.activeFocus || gatewayKeyField.activeFocus || sudoPasswordField.activeFocus || approvalPinField.activeFocus
       onCloseRequested: root.close()
       Column {
         id: column
@@ -772,6 +806,52 @@ Panel {
               anchors.horizontalCenter: parent.horizontalCenter
               onClicked: root.qrImageBase64 = ""
             }
+          }
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: (root.snapshot.approval_pin && root.snapshot.approval_pin.set)
+              ? "Approval PIN is set. A paired phone can approve waiting tasks by entering it (5 wrong tries lock it for 15 min)."
+              : "Set an approval PIN to approve waiting tasks from a paired phone. Not your login password; stored only as a hash."
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            color: Qt.darker(root.fg, 1.4)
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: approvalPinField
+              width: parent.width - saveApprovalPinButton.width - Style.space(8)
+              password: true
+              placeholderText: (root.snapshot.approval_pin && root.snapshot.approval_pin.set) ? "New approval PIN" : "Approval PIN"
+              foreground: root.fg
+              font.family: root.bar.fontFamily
+              onAccepted: { root.setApprovalPin(text); text = "" }
+            }
+
+            Button {
+              id: saveApprovalPinButton
+              text: "Save PIN"
+              bordered: true
+              foreground: root.fg
+              fontFamily: root.bar.fontFamily
+              onClicked: { root.setApprovalPin(approvalPinField.text); approvalPinField.text = "" }
+            }
+          }
+
+          Button {
+            width: parent.width
+            visible: !!(root.snapshot.approval_pin && root.snapshot.approval_pin.set)
+            text: "Remove approval PIN"
+            bordered: true
+            foreground: "#ff6b6b"
+            fontFamily: root.bar.fontFamily
+            onClicked: root.forgetApprovalPin()
           }
         }
         PanelSeparator { foreground: root.fg; visible: root.section === "connections" }

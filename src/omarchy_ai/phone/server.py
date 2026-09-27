@@ -43,7 +43,7 @@ from pathlib import Path
 from ..config import CONFIG_DIR, Config
 from . import cast_audio, presence
 from ..execution.actions import run_action, unlock_screen_for_paired_phone
-from ..execution import vision
+from ..execution import approval_pin, vision
 from ..voice.live import build_session_config
 
 log = logging.getLogger("omarchy_ai.phone.server")
@@ -245,6 +245,50 @@ def _relay_offer(config: Config, offer_sdp: str) -> str:
     return response["transport"]["sdp"]
 
 
+def pending_approvals() -> dict:
+    """Tasks waiting for approval, for the phone's approval card. Only what
+    a human needs to decide: the request, its risk and reasons, and for a
+    push/commit the change it would publish (runtime/service.py's
+    change_preview, the same one the voice assistant explains from)."""
+    from ..runtime.service import change_preview, get_runtime
+    from ..runtime.task import WAITING_APPROVAL
+    items = []
+    for task in get_runtime().store.list(20):
+        request = task.pending_approval
+        if task.status != WAITING_APPROVAL or not request:
+            continue
+        items.append({"task_id": task.id, "goal": task.goal[:600], "fingerprint": request.get("fingerprint"),
+                      "kind": request.get("kind"), "subject": str(request.get("subject", ""))[:2000],
+                      "risk": request.get("risk"), "reasons": request.get("reasons", []),
+                      "preview": change_preview(task.workspace)})
+    return {"approvals": items, "pin": approval_pin.status()}
+
+
+def respond_approval(data: dict) -> tuple[int, dict]:
+    """Approve (PIN required) or deny (no PIN: refusing can't do harm) the
+    exact request the phone showed. A paired phone plus a PIN the model
+    never sees is a human check like the desktop notification's button, so
+    it may approve HIGH risk too; BLOCKED never reaches approval at all."""
+    from ..runtime.service import get_runtime
+    from ..runtime.task import WAITING_APPROVAL
+    task_id, fingerprint, approve = data.get("task_id"), data.get("fingerprint"), data.get("approve")
+    if not isinstance(task_id, str) or not task_id or not isinstance(approve, bool):
+        return 400, {"ok": False, "message": "expected {task_id, fingerprint, approve, pin}"}
+    runtime = get_runtime()
+    task = runtime.store.load(task_id)
+    if (not task or task.status != WAITING_APPROVAL
+            or (task.pending_approval or {}).get("fingerprint") != fingerprint):
+        return 409, {"ok": False, "message": "that request is no longer waiting (already answered or changed)"}
+    if approve:
+        ok, reason = approval_pin.verify(data.get("pin") or "")
+        if not ok:
+            log.warning("phone bridge: approval of task %s refused: %s", task_id, reason)
+            return 403, {"ok": False, "message": reason}
+    log.info("phone bridge: task %s %s from the phone", task_id, "approved" if approve else "denied")
+    result = runtime.respond(task_id, approve=approve, channel="phone")
+    return (200 if result.get("ok") else 409), {"ok": bool(result.get("ok")), "message": result.get("message", "")}
+
+
 class _Handler(BaseHTTPRequestHandler):
     config: Config  # set on the class by serve_forever() below
     protocol_version = "HTTP/1.1"
@@ -324,6 +368,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(403, {"error": "not paired"})
                 return
             self._send_json(200, {"available": cast_audio.available()})
+            return
+
+        if path == "/api/approvals":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            self._send_json(200, pending_approvals())
             return
 
         if path == "/mirror/status":
@@ -485,6 +536,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(403, {"error": "not paired"})
                 return
             self._handle_offer()
+            return
+        if path == "/api/approvals/respond":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                data = self._read_json_body()
+            except (json.JSONDecodeError, ValueError):
+                self._send_json(400, {"ok": False, "message": "invalid JSON"})
+                return
+            self._send_json(*respond_approval(data if isinstance(data, dict) else {}))
             return
         if path == "/api/tool":
             if not self._is_paired():

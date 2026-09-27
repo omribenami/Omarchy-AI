@@ -19,6 +19,21 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- You can approve a waiting task from your paired phone. The phone page shows
+  what the task wants to do and why it needs approval; type your approval PIN
+  and tap Approve, or tap Deny. Set the PIN in Assistant Settings under Phone
+  Bridge. It is not your login password.
+
+### Under the hood
+
+- The PIN is stored only as a salted hash. Five wrong tries lock phone
+  approvals for 15 minutes. An approval only applies to the exact request
+  the phone showed.
+
 ## [0.8.0] - 2026-09-27
 
 ### Highlights

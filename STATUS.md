@@ -45,6 +45,36 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: approve waiting tasks from the paired phone with a PIN
+
+Tasks sat stuck on in-PC approvals (the notification button / envelope HUD)
+while the user was away from the desk. The paired phone page now floats an
+approval card over both the voice and mirror views (polls `GET
+/api/approvals` every 3 s) showing the goal, the exact request, its risk and
+reasons, and for pushes the pending diff (`service.change_preview`).
+Approve needs the **approval PIN**; Deny needs none (refusing can't do harm).
+- The user chose a dedicated PIN over the login password: wrong guesses on
+  the phone must never count toward faillock and lock the account, and the
+  page never sees the real password. `execution/approval_pin.py` keeps only
+  a salted scrypt hash (0600); 5 wrong PINs lock phone approvals for 15 min,
+  the counter is in the same file so a daemon restart doesn't reset it. Set
+  in Assistant Settings > Phone Bridge (`omarchy-ai-settings
+  set-approval-pin`, PIN via env like configure-sudo).
+- The user chose "all risk levels": paired cookie + PIN is a human check
+  like the notification click, so `respond(channel="phone")` may approve
+  HIGH; only the voice channel is still refused HIGH. BLOCKED never reaches
+  approval.
+- `POST /api/approvals/respond` carries the fingerprint the phone showed;
+  a task now waiting on a different request gets 409, never the approval.
+- Verified with the real handler on a spare port (isolated config dir, a
+  real waiting HIGH `sudo pacman -Syu` task): no cookie -> 403 on both
+  endpoints; wrong PIN -> 403 "4 tries left", runtime untouched; stale
+  fingerprint -> 409; right PIN -> 200, fingerprint in `grants`; replay ->
+  409. Live daemon not restarted for this (voice session running); the phone
+  card appears after the next `omarchy-ai.service` restart.
+- Later: fingerprint approval from the planned mobile app can call the same
+  `respond_approval` path with a device-bound credential instead of the PIN.
+
 ### 2026-09-27: one task per job; she can replace a README video herself
 
 The README video job ran as four parallel escalations plus one waiting to

@@ -192,6 +192,38 @@ body[data-mirror-controls="hidden"] #mirrorHint { opacity:1; }
 body[data-mirror="on"][data-mirror-controls="hidden"] #speakerStatus { display:none; }
 /* Clear of the mic beacon, which owns the top-right corner. */
 body[data-mirror="on"] #speakerStatus { left:auto; right:36px; max-width:min(320px, 80vw); }
+/* ── Task approval card ── */
+/* Above both the voice HUD and the mirror: a task that needs approval is
+   stuck until someone answers, whichever view the phone is on. */
+#approval { position:fixed; left:10px; right:10px; top:max(10px, env(safe-area-inset-top)); z-index:30;
+            display:flex; flex-direction:column; gap:8px; max-height:calc(100dvh - 20px); overflow:auto; padding:12px;
+            border:1px solid var(--amber); border-radius:var(--radius-lg); background:rgba(13,17,23,.97);
+            box-shadow:0 8px 40px rgba(0,0,0,.6); font-family:var(--font-mono); }
+#approval[hidden] { display:none; }
+#approval[data-risk="HIGH"] { border-color:var(--red); }
+.apHead { display:flex; align-items:center; justify-content:space-between; gap:8px;
+          font-size:10.5px; letter-spacing:.14em; color:var(--amber); }
+#approval[data-risk="HIGH"] .apHead { color:var(--red); }
+#apMore { color:var(--ink-3); }
+#apGoal { margin:0; font-family:var(--font-sans); font-size:13px; line-height:1.4; color:var(--ink-2);
+          display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+#apSubject { margin:0; padding:8px; max-height:22dvh; overflow:auto; white-space:pre-wrap; word-break:break-word;
+             border:1px solid var(--line); border-radius:var(--radius-md); background:var(--bg-sunk);
+             font-size:12px; color:var(--ink); }
+#apReasons { margin:0; font-size:11.5px; color:var(--ink-3); }
+#apReasons:empty { display:none; }
+#apPreview summary { font-size:11.5px; color:var(--accent); cursor:pointer; }
+#apPreview pre { margin:6px 0 0; max-height:26dvh; overflow:auto; white-space:pre-wrap; word-break:break-word;
+                 font-size:11px; color:var(--ink-2); }
+#apForm { display:flex; flex-wrap:wrap; gap:8px; }
+#apPin { flex:1 1 100%; min-height:var(--tap-min); padding:0 12px; border:1px solid var(--line); border-radius:8px;
+         background:var(--bg-sunk); color:var(--ink); font:16px var(--font-mono); }
+#apApprove, #apDeny { flex:1; min-height:var(--tap-min); border-radius:8px; font-size:13px; letter-spacing:.06em; }
+#apApprove { border:1px solid var(--green); background:rgba(63,185,80,.15); color:var(--green); }
+#apDeny { border:1px solid var(--line); background:#0a1219; color:var(--ink-2); }
+#apForm button:disabled { opacity:.5; cursor:default; }
+#apMsg { margin:0; font-size:12px; color:var(--red); }
+#apMsg:empty { display:none; }
 </style>
 </head>
 <body data-state="idle" data-hud="off" data-mirror="off" data-mirror-controls="visible">
@@ -261,6 +293,20 @@ body[data-mirror="on"] #speakerStatus { left:auto; right:36px; max-width:min(320
   </section>
 
   <p id="speakerStatus" role="status"></p>
+  <section id="approval" hidden role="alertdialog" aria-labelledby="apTitle" aria-describedby="apSubject">
+    <div class="apHead"><span id="apTitle">TASK NEEDS APPROVAL</span><span id="apMore"></span></div>
+    <p id="apGoal"></p>
+    <pre id="apSubject"></pre>
+    <p id="apReasons"></p>
+    <details id="apPreview" hidden><summary>What this would publish</summary><pre></pre></details>
+    <form id="apForm" autocomplete="off">
+      <input id="apPin" type="password" aria-label="Approval PIN" placeholder="Approval PIN" maxlength="128"
+             autocomplete="off" enterkeyhint="done">
+      <button id="apApprove" type="submit">Approve</button>
+      <button id="apDeny" type="button">Deny</button>
+    </form>
+    <p id="apMsg" role="alert"></p>
+  </section>
   <audio id="remoteAudio" autoplay playsinline></audio>
 
 <script>
@@ -1213,6 +1259,67 @@ window.addEventListener('pagehide', hangup);
 
 setMirrorZoom(1);
 renderHud();
+// ── Task approvals ──
+// A task waiting for approval is stuck until someone answers. The server
+// shows only paired phones this card, and approving needs the approval PIN
+// (set in Assistant Settings; never the login password). The fingerprint
+// pins the answer to the exact request shown, not a newer one.
+const approvalEl = document.getElementById('approval');
+const apPin = document.getElementById('apPin');
+const apMsg = document.getElementById('apMsg');
+let shownApproval = null, approvalBusy = false;
+function renderApproval(data) {
+  const list = (data && data.approvals) || [];
+  const item = list[0] || null;
+  if (!item) { approvalEl.hidden = true; shownApproval = null; return; }
+  const same = shownApproval && shownApproval.task_id === item.task_id && shownApproval.fingerprint === item.fingerprint;
+  shownApproval = item;
+  approvalEl.hidden = false;
+  approvalEl.dataset.risk = item.risk || '';
+  document.getElementById('apTitle').textContent = `${item.risk || ''} · ${item.kind || 'request'} needs approval`.toUpperCase();
+  document.getElementById('apMore').textContent = list.length > 1 ? `+${list.length - 1} more` : '';
+  document.getElementById('apGoal').textContent = item.goal || '';
+  document.getElementById('apSubject').textContent = item.subject || '';
+  document.getElementById('apReasons').textContent = (item.reasons || []).join('; ');
+  const preview = document.getElementById('apPreview');
+  const p = item.preview;
+  preview.hidden = !p;
+  if (p) preview.querySelector('pre').textContent =
+    [p.unpushed_commits, p.uncommitted, p.stat, p.diff].filter(Boolean).join('\n\n');
+  const pinSet = data.pin && data.pin.set;
+  apPin.disabled = !pinSet;
+  apPin.placeholder = pinSet ? 'Approval PIN' : 'No approval PIN set — Assistant Settings > Phone Bridge';
+  document.getElementById('apApprove').disabled = approvalBusy || !pinSet;
+  document.getElementById('apDeny').disabled = approvalBusy;
+  if (!same) { apPin.value = ''; apMsg.textContent = ''; }
+}
+async function refreshApprovals() {
+  if (approvalBusy) return;
+  try {
+    const res = await fetch('/api/approvals');
+    if (res.ok) renderApproval(await res.json());
+  } catch {}
+}
+async function answerApproval(approve) {
+  if (!shownApproval || approvalBusy) return;
+  if (approve && !apPin.value) { apMsg.textContent = 'Enter the approval PIN'; apPin.focus(); return; }
+  approvalBusy = true;
+  document.getElementById('apApprove').disabled = document.getElementById('apDeny').disabled = true;
+  apMsg.textContent = '';
+  try {
+    const res = await fetch('/api/approvals/respond', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({task_id: shownApproval.task_id, fingerprint: shownApproval.fingerprint,
+                            approve, pin: approve ? apPin.value : ''})});
+    const out = await res.json();
+    if (!out.ok) { apMsg.textContent = out.message || 'Failed'; if (approve) apPin.select(); }
+    else { apPin.value = ''; apPin.blur(); shownApproval = null; approvalEl.hidden = true; }
+  } catch (err) { apMsg.textContent = 'Failed: ' + err.message; }
+  finally { approvalBusy = false; refreshApprovals(); }
+}
+document.getElementById('apForm').addEventListener('submit', (e) => { e.preventDefault(); answerApproval(true); });
+document.getElementById('apDeny').addEventListener('click', () => answerApproval(false));
+setInterval(refreshApprovals, 3000);
+refreshApprovals();
 </script>
 </body>
 </html>

@@ -24,6 +24,10 @@ Commands:
   myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
   configure-sudo             -> save persistent Sudo Access in GNOME Keyring
   forget-sudo                -> delete saved Sudo Access from GNOME Keyring
+  set-approval-pin           -> save the phone approval PIN (env
+                                 OMARCHY_AI_APPROVAL_PIN) as a scrypt hash
+                                 (see execution/approval_pin.py)
+  forget-approval-pin        -> delete it (phone approvals stop working)
   set-github-issue-token     -> save a personal GitHub token (env
                                  GITHUB_ISSUE_TOKEN) used to file issues on
                                  this project's repo (see core/issues.py)
@@ -144,7 +148,7 @@ def _snapshot() -> dict:
     if cfg.voice not in voice_options:
         voice_options.append(cfg.voice)
     from ..phone.server import paired_count
-    from ..execution import sudo_approval
+    from ..execution import approval_pin, sudo_approval
 
     return {
         "fields": fields,
@@ -163,6 +167,7 @@ def _snapshot() -> dict:
         "myapi": _myapi_state(),
         "assistant": control.request('status'),
         "sudo_approval": sudo_approval.status(),
+        "approval_pin": approval_pin.status(),
     }
 
 
@@ -338,6 +343,27 @@ def cmd_forget_sudo(_args: argparse.Namespace) -> dict:
     from ..execution import sudo_approval
     try:
         sudo_approval.clear()
+    except OSError as error:
+        return {"error": str(error)}
+    return _snapshot()
+
+
+def cmd_set_approval_pin(_args: argparse.Namespace) -> dict:
+    """Like configure-sudo: the PIN arrives in the environment, never argv/stdout."""
+    from ..execution import approval_pin
+
+    try:
+        approval_pin.store(os.environ.get("OMARCHY_AI_APPROVAL_PIN", ""))
+    except (OSError, ValueError) as error:
+        return {"error": str(error)}
+    return _snapshot()
+
+
+def cmd_forget_approval_pin(_args: argparse.Namespace) -> dict:
+    from ..execution import approval_pin
+
+    try:
+        approval_pin.clear()
     except OSError as error:
         return {"error": str(error)}
     return _snapshot()
@@ -720,6 +746,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("myapi-usage")
     sub.add_parser("configure-sudo")
     sub.add_parser("forget-sudo")
+    sub.add_parser("set-approval-pin")
+    sub.add_parser("forget-approval-pin")
     p_dashboard = sub.add_parser('myapi-dashboard')
     p_dashboard.add_argument('period', choices=('24h', '7d', '30d'), default='7d', nargs='?')
     sub.add_parser('activate')
@@ -752,6 +780,8 @@ def main(argv: list[str] | None = None) -> int:
         "myapi-usage": cmd_myapi_usage,
         "configure-sudo": cmd_configure_sudo,
         "forget-sudo": cmd_forget_sudo,
+        "set-approval-pin": cmd_set_approval_pin,
+        "forget-approval-pin": cmd_forget_approval_pin,
         "myapi-dashboard": cmd_myapi_dashboard,
         "activate": cmd_activate,
         "chat-toggle": cmd_chat_toggle,
