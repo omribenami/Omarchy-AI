@@ -156,7 +156,7 @@ body[data-mirror-controls="hidden"] #mirrorControls { opacity:0; transform:trans
 #zoomOut, #zoomIn { flex:0 0 auto; width:var(--tap-min); height:var(--tap-min); border:1px solid var(--line);
                     border-radius:8px; background:#0a1219; color:var(--ink); font-size:18px; }
 #zoomLabel { min-width:52px; text-align:center; font-family:var(--font-mono); font-size:12px; color:var(--ink-2); }
-#zoomFit { height:var(--tap-min); padding:0 12px; border:1px solid var(--line); border-radius:8px;
+#zoomFit, #unlockBtn { height:var(--tap-min); padding:0 12px; border:1px solid var(--line); border-radius:8px;
            background:#0a1219; color:var(--ink-2); font-size:12px; }
 #mirrorListen { flex:1.4; min-height:48px; border:1px solid var(--state); border-radius:8px;
                 background:var(--state-fill); color:var(--state); font-size:12px; letter-spacing:.06em; }
@@ -242,6 +242,7 @@ body[data-mirror="on"] #speakerStatus { left:auto; right:36px; max-width:min(320
         <div id="zoomLabel">100%</div>
         <button id="zoomIn" type="button" aria-label="Zoom in" title="Zoom in">+</button>
         <button id="zoomFit" type="button" aria-label="Fit entire screen" title="Fit entire screen">Fit</button>
+        <button id="unlockBtn" type="button" aria-label="Unlock the computer" title="Unlock the computer">Unlock</button>
       </div>
       <div class="chromeRow">
         <button id="mirrorListen" type="button">Start listening</button>
@@ -451,6 +452,17 @@ window.addEventListener('click', () => enterFullscreen(), {once:true});
 for (const id of ['mirrorFullscreen', 'talkFullscreen']) {
   document.getElementById(id).addEventListener('click', () => enterFullscreen(true));
 }
+document.getElementById('unlockBtn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/tool', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                          body: JSON.stringify({name: 'unlock_screen', arguments: {}})});
+    const out = await res.json();
+    if (!out.ok) setError(out.message || 'Unlock failed');
+  } catch (err) { setError('Unlock failed: ' + err.message); }
+  finally { btn.disabled = false; }
+});
 document.getElementById('mirrorBtn').addEventListener('click', async () => {
   if (mirrorOn) {
     await fetch('/mirror/stop', {method:'POST'});

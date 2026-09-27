@@ -154,6 +154,7 @@ class GeminiLiveSession:
         self._running_blocking = 0
         self._running_background = 0
         self._last_user_speech = 0.0
+        self.from_paired_phone = False  # set by phone/gemini.py; gates unlock_screen
         self._offers_turn, self._offers = 0.0, 0  # use_tool offers in this user turn (_offer_result)
         self._awaiting_since = 0.0  # 0: no reply pending
         self._playback_until = 0.0  # monotonic time the queued speech finishes
@@ -604,6 +605,14 @@ class GeminiLiveSession:
                  pick.tool if pick.run else "offer", pick.evidence)
         return pick
 
+    def _run_tool(self, name: str, args: dict) -> ActionResult:
+        """run_action, except unlock_screen from the paired phone (the only
+        place it may run; run_action itself refuses it)."""
+        if name == "unlock_screen" and self.from_paired_phone:
+            from ..execution.actions import unlock_screen_for_paired_phone
+            return unlock_screen_for_paired_phone()
+        return run_action(name, args)
+
     MAX_OFFERS = 2  # per user turn: request -> parameters -> the real call needs at most two
 
     def _offer_result(self, pick: catalog.Resolution) -> ActionResult:
@@ -683,7 +692,7 @@ class GeminiLiveSession:
                 elif early is not None and name == tool:
                     action = early
                 else:
-                    action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, name, args))
+                    action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, self._run_tool, name, args))
                 try:
                     if action is not None:
                         result = await asyncio.shield(action)

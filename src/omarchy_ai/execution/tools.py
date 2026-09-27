@@ -126,7 +126,10 @@ TOOLS: list[dict] = [
         },
     ),
     _tool("screenshot", "Take a fullscreen screenshot and save it."),
-    _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking."),
+    _tool("lock_screen", "Lock the screen. Reversible (unlock with the password), safe to run without asking. "
+          "Never for a request to UNLOCK: that is unlock_screen."),
+    _tool("unlock_screen", "Unlock the locked screen: types the user's saved password into the lock screen and "
+          "verifies it is gone. Works only when the user talks from their paired phone app."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
     _tool("inspect_browser", "Read-only look at the assistant browser's task tab: URL, title, whether the site shows the browser signed in, open dialogs, error banners, visible buttons (and which are disabled), a text excerpt, and a diagnosis of anything on the page that blocks the task. Call it whenever a browser_task failed or the user asks why it failed, before explaining; never guess the cause."),

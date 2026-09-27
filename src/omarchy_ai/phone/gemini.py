@@ -74,6 +74,7 @@ async def _serve(config, sdp, answer, cancelled):
     peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     adapter = GeminiLiveSession(config)
     adapter._splice_abort_rms = PHONE_SPLICE_ABORT_RMS
+    adapter.from_paired_phone = True  # only started for a paired session (/api/live/offer)
     peer.addTrack(OutputAudio(adapter))
     incoming = asyncio.Queue(maxsize=1)
     messages = asyncio.Queue(maxsize=32)

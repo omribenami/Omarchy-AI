@@ -45,6 +45,20 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: unlock from the paired phone (and lock != unlock)
+
+Asked from the phone to unlock, she ran lock_screen twice (09:05:08,
+09:06:07): there was no unlock tool, and Jev picked the nearest one (p=0.98).
+Omarchy's lock IPC (`/usr/share/omarchy/shell/plugins/lock/Service.qml`) has
+only lock/isLocked/status/preview; unlocking means typing the password (PAM).
+New `unlock_screen`: types the saved Sudo Access password via `wtype -`
+(stdin, never argv), then verifies `omarchy-shell lock isLocked` is false.
+The user chose "paired phone only": run_action refuses it; only the phone's
+Gemini session (`from_paired_phone`) and the paired `/api/tool` (the phone
+mirror's new Unlock button) reach `unlock_screen_for_paired_phone`. The room
+microphone cannot unlock. Verified live 09:10: paired POST -> "unlocked and
+verified" (isLocked true -> false); no cookie -> 403 not paired.
+
 ### 2026-09-27: blank phone mirror after closing the lid
 
 The lid does not suspend (logind ignores it; Hyprland runs the clamshell

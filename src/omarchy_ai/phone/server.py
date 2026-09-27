@@ -42,7 +42,7 @@ from pathlib import Path
 
 from ..config import CONFIG_DIR, Config
 from . import cast_audio, presence
-from ..execution.actions import run_action
+from ..execution.actions import run_action, unlock_screen_for_paired_phone
 from ..execution import vision
 from ..voice.live import build_session_config
 
@@ -536,7 +536,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "message": "[]"})
             return
         try:
-            result = run_action(name, args)
+            # Paired phone only (checked before _handle_tool): the one caller
+            # allowed to unlock; run_action refuses it for everyone else.
+            result = unlock_screen_for_paired_phone() if name == "unlock_screen" else run_action(name, args)
         except Exception:  # noqa: BLE001
             log.exception("phone bridge: tool call %s failed", name)
             self._send_json(200, {"ok": False, "message": f"{name} failed unexpectedly"})

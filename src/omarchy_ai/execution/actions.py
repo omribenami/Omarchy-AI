@@ -187,6 +187,55 @@ def lock_screen(args: dict) -> ActionResult:
     return _run(["omarchy-system-lock"])
 
 
+def _screen_locked() -> bool | None:
+    r = _run(["omarchy-shell", "lock", "isLocked"])
+    return r.message.strip() == "true" if r.ok else None
+
+
+def unlock_screen(args: dict) -> ActionResult:
+    """Refused here: only the paired phone may unlock (the user's decision,
+    2026-09-27), through unlock_screen_for_paired_phone. Anyone near the room
+    microphone could otherwise unlock the computer by talking."""
+    return ActionResult(False, "Not run: unlocking works only from the user's paired phone (talking in the phone "
+                               "app, or its Unlock button); the room microphone cannot unlock this computer. "
+                               "Tell the user that.")
+
+
+def unlock_screen_for_paired_phone() -> ActionResult:
+    """Type the saved Sudo Access password into Omarchy's lock screen. Its
+    IPC has lock/isLocked/status/preview and no unlock: PAM checks the typed
+    password. 2026-09-27 09:05-09:06: asked from the phone to unlock, the
+    catalog's nearest tool was lock_screen, and she locked it again twice."""
+    locked = _screen_locked()
+    if locked is False:
+        return ActionResult(True, "the screen is not locked")
+    if shutil.which("wtype") is None:
+        return ActionResult(False, "wtype is not installed")
+    if not load_config().sudo_access_enabled:
+        return ActionResult(False, "unlocking needs the saved password: turn on Sudo Access in Assistant Settings")
+    password = sudo_approval.retrieve()
+    if password is None:
+        return ActionResult(False, "no password is saved in GNOME Keyring; add it in Assistant Settings > Sudo Access")
+    environment = _desktop_env()
+    try:
+        # Wake the panel (the lock powers it off), then type. The password
+        # goes on stdin (`wtype -`), never on a command line.
+        _hyprctl_dispatch('hl.dsp.dpms({ action = "enable" })', ["dpms", "on"])
+        typed = subprocess.run(["wtype", "-"], input=password, capture_output=True, text=True,
+                               timeout=_TIMEOUT, env=environment)
+        entered = subprocess.run(["wtype", "-k", "return"], capture_output=True, text=True,
+                                 timeout=_TIMEOUT, env=environment)
+    except (OSError, subprocess.TimeoutExpired):
+        return ActionResult(False, "couldn't type into the lock screen")
+    if typed.returncode or entered.returncode:
+        return ActionResult(False, "couldn't type into the lock screen")
+    for _ in range(20):
+        time.sleep(0.25)
+        if _screen_locked() is False:
+            return ActionResult(True, "unlocked and verified: the lock screen is gone")
+    return ActionResult(False, "typed the saved password but the screen is still locked (wrong saved password?)")
+
+
 def open_terminal(args: dict) -> ActionResult:
     # Wraps the launch so this terminal's output gets tracked in a
     # per-tile log (see tile_logs.py) — read_tile_log can then answer
@@ -2202,6 +2251,7 @@ ACTIONS = {
     "brightness_set": brightness_set,
     "screenshot": screenshot,
     "lock_screen": lock_screen,
+    "unlock_screen": unlock_screen,
     "open_terminal": open_terminal,
     "read_tile_log": read_tile_log,
     "open_browser": open_browser,
