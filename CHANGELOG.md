@@ -19,6 +19,51 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- When a background task needs your approval, the assistant tells you right
+  away, even if no conversation is open, and explains what the change is and
+  why it needs approval. Ask what it changes and it shows you the actual
+  diff.
+- A waiting approval also floats as an envelope at the top right of the
+  screen. Click it to approve or deny.
+- One job, one task: asking again about something already being worked on
+  adds to that task instead of starting another, and the assistant tells
+  you how it is going. It can also correct a task that goes the wrong way.
+- Videos in a GitHub README can now be replaced by the assistant itself: it
+  uploads the file through its signed-in browser and puts the new link in
+  place of the old one.
+- From your paired phone you can unlock the computer, by asking or with the
+  new Unlock button. The room microphone can never unlock it.
+- While a phone is connected, the computer does not lock or turn off the
+  screen, so the phone mirror keeps working with the lid closed.
+- Asked to sign in to a website with Google or another provider, the
+  assistant clicks the button itself. Passwords and codes are left to you.
+
+### Fixes
+
+- Repeated tool calls that returned the same request for missing details no
+  longer loop dozens of times; missing details are filled in from what you
+  asked.
+- Terminal output is read in full after the command finishes, and idle
+  terminals are reused instead of opening a new window for every command.
+- Asking to unlock the screen no longer locks it again.
+- After you approve a command, the task runs exactly that command instead
+  of redoing its work and asking again.
+- A finished task is no longer reported as failed because of a wrongly
+  worded check.
+- Project documents such as the README are no longer mistaken for scripts
+  to perform step by step.
+
+### Under the hood
+
+- Stale approvals for cancelled tasks are no longer announced.
+- Background workers are told how to prove a README video plays and how to
+  word their checks.
+- A test fails on any README video that is not a GitHub attachment link.
+
 ## [0.7.0] - 2026-09-27
 
 ### Highlights
