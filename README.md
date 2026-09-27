@@ -26,21 +26,30 @@
 
 **Omarchy AI** is a self-hosted, voice-driven **agentic assistant** for
 [Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. You say what
-you want done. It plans the work, does it with real tools on your machine
-(and on machines you're connected to), checks the result itself, and tells
-you when it is verified. It is not a chatbot bolted onto a terminal.
+you want done, from the desk, from your phone or from the TV across the
+room. It plans the work, does it with real tools on your machine (and on
+machines you're connected to), checks the result itself, and tells you when
+it is verified. It is not a chatbot bolted onto a terminal.
 
+- **It operates the whole machine.** Desktop, windows and workspaces, its
+  own terminals and yours, a real browser, files, system administration,
+  and code through Claude Code or Codex, with about 90 typed tools and all
+  of Omarchy's ~230 commands behind one voice.
 - **Whole jobs, not single commands.** "Find what's using port 8080", "why
-  does my Bluetooth keep disconnecting?", "fix this bug and test it". It
-  works in the background, hands code to Claude Code or Codex when that
-  fits, and certifies the result from evidence, not from its own claims.
+  does my Bluetooth keep disconnecting?", "fix this bug and test it". A
+  background Task Runtime plans the job, routes each step to the right
+  worker, and certifies the result from evidence, not from its own claims.
+- **Doesn't give up quietly.** When something keeps failing it hands the job
+  to a background worker that digs deeper, and tells you it did.
 - **Works alongside you.** Its commands run in its own terminals, so it
   never takes your keyboard, and you can keep talking while it works.
 - **Keeps its promises.** "Tell me when the build finishes" sets up a real
   watch. When it fires, the assistant wakes up, tells you, and does the next
   step you asked for.
-- **Asks before anything risky.** Installs, service restarts, deletes
-  and root need your OK; root needs a click, not just a spoken yes.
+- **Asks before anything risky, and tells you it's waiting.** Installs,
+  pushes, service restarts, deletes and root need your OK. A waiting
+  approval is announced out loud and floats as an envelope on screen with
+  Approve / Deny; root needs a click, not just a spoken yes.
 
 <div align="center">
 
@@ -52,48 +61,79 @@ https://github.com/user-attachments/assets/ea736181-9cf3-423a-b7d5-91a895fe6589
 
 ## What it does
 
-Say the wake word, then talk normally. Real requests from daily use:
+Say the wake word ("omachy"), press **Super + `**, or type with
+**Super + Ctrl + `**, then talk normally. Real requests from daily use:
 
-**Whole jobs, done and verified**
-- *"Find what is using port 8080"* / *"why does my Bluetooth keep
-  disconnecting?"* / *"fix this bug and test it"* — the Task Runtime plans
-  acceptance criteria, routes each step to the right worker (its Linux
-  agent, Claude Code, Codex, a test or review agent), and reports **verified
-  done** only when the harness's own evidence proves it.
-- *"Install htop, and let me know when it's done"* — runs it in its own
-  terminal, answers the sudo prompt from your keyring, and tells you when it
-  finishes, even if you already said goodbye.
-- *"Go through the instructions in this file and execute them"* — performs a
-  scripted demo step by step, narrating each step while it runs.
+**Diagnose and fix, verified**
+- *"The nginx service keeps failing to start. Find out why from the journal
+  and fix it."* / *"Find what is holding port 8080."* / *"Bluetooth
+  headphones keep disconnecting; investigate."* — the Task Runtime plans
+  acceptance criteria, investigates read-only first, asks before changing
+  anything, and reports **verified done** only when the harness's own
+  evidence proves it.
+- *"Install and configure `restic`, then verify a test backup restores."* —
+  installs through `pacman`/`yay` in its own terminal, answers the sudo
+  prompt from your keyring, and checks the result instead of assuming it.
+- *"Convert this recording to H.265 under 20 MB."* / *"Set up a systemd timer
+  that backs up ~/Projects every night."* — the System agent combines the
+  tools installed here, reading their local `--help` for the exact version.
 
-**Your terminals and coding agents**
-- *"In the focused terminal, tell Claude: …"* — relays your prompt to Claude
-  Code, Codex or aider word for word, URLs, markdown and multi-line text
-  included, then checks it arrived.
-- *"SSH to the server with the same password as here"* — types your saved
-  password into the prompt when you ask, without ever seeing it.
-- *"Go to the Docker folder"* — finds `docker` when you said "Docker", and
-  asks when several names fit.
+**Code and repositories**
+- *"Run this project's tests and fix the failing one."* — hands the change to
+  Claude Code or Codex, has a different agent review it, re-runs the tests
+  itself, and keeps a git checkpoint to roll back to.
+- *"Open an issue on the Omarchy repository about the Wi-Fi driver freezing
+  the system."* — drafts it, reads the title back, and files it with your
+  GitHub login after you agree. Pushes and other public actions always wait
+  for approval.
+- *"In the focused terminal, tell Claude: …"* — relays a prompt to Claude
+  Code, Codex or aider word for word, multi-line text included, and checks
+  it arrived.
+
+**Long-running work**
+- *"Watch the kernel build and tell me when it finishes; if it succeeds,
+  install it."* — a real watch judged by Jev from the terminal's output,
+  with the next step attached. It reports back even after the conversation
+  ended.
+- *"Check free disk space every morning at 8 and warn me if the root
+  partition drops below 15%."* — a recurring background command with an
+  alert condition, running whether or not a conversation is open.
+
+**Terminals and remote machines**
+- *"SSH to the staging server and check which containers are unhealthy."* —
+  works on that machine through the terminal, labels which machine each
+  result came from, and never closes a session on its own.
 - *"What did that build end up doing?"* — reads the terminal's real text,
   not a screenshot.
 
-**Around the house**
-- *"Cast this to the living room TV"* — mirrors screen and audio to a paired
-  Android TV or projector, picks the right TV, and walks you through pairing
-  a new one.
-- From your phone: talk to Omarchy AI from a paired phone anywhere on your
-  LAN or tailnet, and watch the PC's screen live on the phone or send it to
-  the TV. The computer runs the server for both.
-- *"Check my email for the invoice and save the attachment"* — reads Gmail
-  (and 200+ other services) through MyApi instead of screen-scraping.
+**The web**
+- *"Fill in the conference registration form: name, company, and the
+  workshop track."* / *"Search the Arch Wiki for PipeWire echo cancellation
+  and open the page."* — a dedicated, signed-in Chromium driven by a
+  DOM-level agent, verified by an independent check of the final page; it
+  asks for anything missing rather than inventing personal details.
+- *"Sign in to GitHub with Google."* — clicks the provider button and picks
+  the offered account; passwords and 2FA codes are always left to you.
+- *"Why did that fail?"* — reads the page (signed out, disabled button,
+  error banner) and names the cause.
+
+**Meeting rooms, phones and TVs**
+- *"Cast my screen to the meeting-room TV."* — mirrors screen and audio to a
+  paired Android TV or projector, and guides pairing a new one. While
+  casting, the TV's microphone can carry the conversation.
+- From a paired phone on your LAN or tailnet: talk or type to the assistant,
+  watch the desktop live, unlock the screen, or send the output to the TV.
+- *"Find the signed contract in my email and save the attachment."* — reads
+  Gmail and 200+ other services through MyApi instead of screen-scraping.
 
 **Instant desktop control**
-- *"Move this terminal to workspace 4"*, *"volume up"*, *"fullscreen the
+- *"Move this terminal to workspace 4"*, *"mute the mic"*, *"fullscreen the
   terminal, not the browser"* — Jev handles simple commands the moment you
   stop talking (about 0.4s), verifies them, and the reply is just "done".
-- *"Switch to the catppuccin theme"*, *"remind me in 20 minutes to check the
-  oven"* — straight through Omarchy's own ~230 commands and its real
-  reminder popups.
+- *"Start a full-screen recording with system audio"*, *"switch to the
+  Tokyo Night theme"*, *"remind me at 15:00 to review the deploy"* —
+  straight through Omarchy's own ~230 commands and its reminder popups.
+- *"Show my current tasks and scheduled routines."* — on-screen HUDs.
 
 ---
 
@@ -148,7 +188,7 @@ flowchart TB
         SB{Final decision}
     end
     subgraph Exec["Executors"]
-        T[~80 typed tools · Omarchy commands]
+        T[~90 typed tools · Jev tool catalog<br/>Omarchy commands · your own tools]
         K[Own terminals · your terminals<br/>verified input · readable logs]
         D[desktop_task<br/>Jev observe → act → verify]
         B[browser_task<br/>Jev DOM decisions]
@@ -213,35 +253,8 @@ The conversation loop, tool registry, wake-word pipeline, Task Runtime,
 casting stack and desktop UI are this project's own code, not Open
 Interpreter or another agent framework.
 
-### What changed since 0.5
-
-- **Jev switchboard** ([ADR-0003](docs/ADR-0003-jev-switchboard.md)): a fast
-  first pass classifies every request and runs instant commands, and an
-  accurate second pass reviews every tool call the live model makes before
-  it runs (execute, send back, ask, or reroute to the desktop loop or the
-  Task Runtime).
-- **Out-of-credit alerts**: red dollar signs on screen, a notification and a
-  spoken warning when OpenAI, Gemini or Vercel AI Gateway run out.
-
-### What changed in 0.5
-
-- **Task Runtime** ([ADR-0002](docs/ADR-0002-task-runtime.md)): a persistent
-  control plane (Jev) and execution plane (harness) for multi-step work, with
-  executors for the System agent, Claude Code, Codex, test and review agents,
-  permission levels, approvals, rollback checkpoints and an
-  `omarchy-ai-task` CLI.
-- **Always talkable**: slow tools (screen, casting, MyApi, command search,
-  updates) run in the background instead of freezing the conversation.
-- **Stuck-turn guard**: background speech used to keep Gemini's
-  end-of-speech detection open for 40-108s. Reproduced against the live API
-  (`scripts/probe_stuck_turn.py`); a short silence after your last words now
-  gets a reply in about two seconds.
-- **Terminals you can rely on**: logs survive daemon restarts and updates,
-  windows are read by address (never a same-titled neighbour), watches pin
-  the window even when ssh renames it, and typed text is not submitted twice.
-- **Behaviour rules** learned from real sessions: quiet instant actions,
-  approximate names, "which machine am I on", copy real config instead of
-  inventing it, and no promise without a watch.
+Release-by-release changes are in [`CHANGELOG.md`](CHANGELOG.md); the
+assistant reads it aloud when you ask "what's new?".
 
 ### Source layout
 
@@ -259,14 +272,18 @@ src/omarchy_ai/
   execution/  desktop actions and tool schemas, verified input, terminal
               logs, assistant terminals (workbench), co-pilot operator, Jev
               desktop and browser workers, files, vision, OS knowledge
-  display/    mDNS discovery, device registry, casting session, signaling
-  phone/      HTTPS phone bridge, Gemini phone bridge, audio to TV
+  display/    mDNS discovery, device registry, casting session, signaling,
+              TV picker and task/routine/approval HUD IPC
+  phone/      HTTPS phone bridge, Gemini phone bridge, audio to TV,
+              phone presence (keep awake while a phone is connected)
   myapi/      MyApi client, usage log and dashboard
   knowledge/  packaged Omarchy expert guide, capability registry, Arch notes
-  cli/        omarchy-ai-settings, omarchy-ai-task, omarchy-ai-dashboard
+  cli/        omarchy-ai-settings, omarchy-ai-task, omarchy-ai-dashboard,
+              omarchy-ai-tool (tools the assistant writes for itself)
 android-receiver/  Kotlin/Compose Android TV receiver app
-quickshell/        Quickshell/QML plugins: HUD, window labels, settings, MyApi,
-                   TV picker, quota alert
+quickshell/        Quickshell/QML plugins: watchdog HUD, task/routine HUDs and
+                   approval envelope, text chat, window labels, settings,
+                   MyApi, TV picker, quota alert
 systemd/           omarchy-ai.service template
 docs/              ADR-0001 (architecture), ADR-0002 (Task Runtime),
                    ADR-0003 (Jev switchboard),
@@ -288,174 +305,208 @@ full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
 
 ---
 
-## Features
+## Capabilities in depth
 
-### Agentic work
+### 1. Whole jobs: the Task Runtime
 
-**Whole tasks (Task Runtime)**
-- `start_task` hands a multi-step goal to a persistent runtime. A worker
-  model writes the objective and acceptance criteria; Jev routes each step
-  to an executor, then directs what happens next (continue, retry, change
-  executor, spawn a subagent, run tests, request review, roll back, ask you,
-  fail or certify).
-- Executors: the **System agent** (runs and combines installed Linux tools,
-  reads local `--help`/man pages for the installed version, launches apps,
-  uses the desktop loop and vision), **direct desktop tools**, **test** and
-  **review** agents, **Claude Code** and **Codex** (detected and used only
-  when installed and logged in). Reviews go to an agent that did not write
-  the change.
-- Certification needs harness evidence: fresh command output after the last
-  change, validated tests run after it, no failed test or review. Jev never
-  sees a raw transcript, and executor claims are marked untrusted.
-- Permission levels: LOW and NORMAL run; ELEVATED (installs, config,
-  service restarts) waits for your OK; HIGH (root, credential access,
-  deleting significant data) needs a click on the notification; BLOCKED
-  (disk erase, `rm -rf ~`, reverse shells) is refused. Code changes get a git
-  checkpoint so they can be rolled back.
-- Tasks are saved after every change, survive restarts, and are announced
-  when they finish, need approval or have a question. Follow them with
-  `omarchy-ai-task`.
+Anything that needs investigation, several tools or a code change goes to a
+persistent background runtime ([ADR-0002](docs/ADR-0002-task-runtime.md)),
+started by `start_task`, by the Jev switchboard rerouting a multi-step
+request, or automatically when the assistant keeps failing at something.
 
-**Co-pilot mode**
-- Installs, commands and long jobs run in its own tmux terminals
-  (`terminal_task`), never in your windows or under your keyboard focus.
-- While you're away its work is on your screen; while you're working it
-  carries on in the background and hands it over when you stop for about 30
-  seconds. "Show me" or "in the background" overrides this.
-- Browser tasks run over DevTools, so they don't need focus either.
+- **Plans, then routes.** A worker model writes the objective and acceptance
+  criteria; Jev routes each step to an executor and then decides what
+  happens next: continue, retry, change executor, spawn a subagent, run
+  tests, request review, roll back, ask you, fail or certify.
+- **Executors.** The **System agent** runs and combines the Linux tools
+  installed here: it searches your PATH and man-page index for a tool that
+  fits, reads `--help`/`man` for the exact installed version instead of
+  guessing flags, launches apps, uses the desktop loop and vision. **Direct
+  tools** handle simple desktop goals without an agent loop. **Claude Code**
+  and **Codex** take code changes (used only when installed and logged in);
+  **test** and **review** agents verify, and a review always goes to an
+  agent that did not write the change.
+- **Worker models that pick themselves.** Workers run on Claude Code first,
+  then Codex, then the Gateway API. The API worker model is chosen from the
+  live Gateway catalog by a qualification exam, so it keeps working as
+  models are retired and doesn't pay for a big model a task doesn't need.
+- **Certified from evidence.** Done means fresh command output after the
+  last change, validated tests run after it, and no failed test or review.
+  Executor claims are marked untrusted; Jev never sees a raw transcript.
+- **Permissions.** Every command is risk-classified before it runs: LOW and
+  NORMAL run; ELEVATED (installs, config, pushes, service restarts) waits
+  for your OK; HIGH (root, credential access, deleting significant data)
+  needs a real click; BLOCKED (disk erase, `rm -rf ~`, reverse shells) is
+  refused. Code changes get a git checkpoint so they can be rolled back.
+- **Approvals you can't miss.** A task waiting for you wakes the assistant
+  to say which task, what exactly it wants to run and why that needs
+  approval. Ask what it changes and it reads you the pending diff, commits
+  and files. Answer by voice, with the desktop notification's buttons, from
+  the floating envelope HUD, or with `omarchy-ai-task approve`. An approved
+  command runs exactly as approved.
+- **One job, one task.** Asking again, or another failure streak, joins the
+  task already doing that job instead of starting a second one; it tells
+  you what it is doing and can correct it with new guidance or cancel it.
+- **Persistent.** Tasks are saved after every change, survive restarts, and
+  are announced when they finish, need approval or have a question, even if
+  you hung up. Ask "which model is working on it?" any time. Follow them from
+  a terminal with `omarchy-ai-task`.
 
-**Promises, schedules and the heartbeat**
-- `schedule_task`: one-off or recurring reminders (times, intervals, cron),
-  watches, scheduled desktop goals and background commands. They keep
-  running between conversations.
-- Watches follow one of your terminals, one of hers, a file or a command.
-  Jev judges when your condition is true ("the build finished", "Claude is
-  waiting for my approval") and points to the real output line as evidence.
-- A promise to tell you when something finishes is backed by a real watch,
-  with the next step you asked for ("then start the container"). When it
-  fires the assistant wakes up and tells you; if you're away, it catches you
-  up next time.
+### 2. Working alongside you: terminals, machines and coding agents
 
-**Skills that improve over time**
-- A procedure that worked is saved as a named skill (`SKILL.md` under
-  `~/.config/omarchy-ai/skills/`) and rewritten when it turns out wrong. Jev
-  picks the matching skill with a two-stage check and suggests nothing when
-  none fits.
+- **Its own terminals.** Installs, commands and long jobs run in the
+  assistant's own tmux terminals (`terminal_task`), never in your windows
+  or under your keyboard focus. It reuses an idle one instead of opening a
+  window per command, waits for a command to finish before reading its
+  output, and answers sudo prompts from GNOME Keyring through a stdin-fed
+  buffer (never in a command line).
+- **Co-pilot mode.** While you're away its work is on your screen; while
+  you're working it carries on in the background and hands it over when you
+  stop for about 30 seconds. "Show me" or "in the background" overrides it.
+- **Your terminals, understood.** Terminals it opens are recorded with
+  `script(1)`, and every interactive Bash/Zsh terminal writes a compact
+  command, cwd and exit-status log, so it reads what really happened in a
+  terminal you opened yourself. Windows are addressed by address, never a
+  same-titled neighbour, and logs survive restarts and updates.
+- **Verified input.** `type_text`/`press_key` only go to a window whose
+  focus was just verified; the result says "sent", not "worked", and the
+  output is read back. Multi-line text is pasted as one block.
+- **Other machines.** In an ssh session it works on that machine through its
+  terminal, labels each terminal with the machine it is on, and never types
+  `exit`/`logout` on its own.
+- **Coding-agent relay.** Prompts for Claude Code, Codex, aider and other
+  terminal agents are delivered verbatim, submitted, and checked; a watch
+  can tell you when the agent is waiting for your approval.
+- **Files.** `list_files`, `read_file`, `write_file` and exact-replacement
+  `edit_file` in your home directory and `/tmp` (more with
+  `file_access_roots`); "the Docker folder" finds `docker`; config is copied
+  from the real text, never invented from a screenshot.
+- Arch-aware: `pacman`/`yay`, never `apt`/`dnf`/`brew`.
 
-**Missions (scripted demos)**
-- `run_mission`: give it a file of steps and it performs them in order,
-  narrating each step while its action runs, keeping to the workspace the
-  script names, verifying each step, and stopping to ask instead of
-  improvising when something is missing.
+### 3. The web: a real, signed-in browser
 
-### Terminals, machines and coding agents
+- **Jev browser agent.** `browser_task` drives the assistant's own dedicated
+  Chromium over DevTools with
+  [`browser-use/jev-ultrafast`](https://github.com/browser-use/jev-ultrafast):
+  every DOM decision is a `typesafe-ai/jev` call with screenshots off, and
+  success is reported only after an independent Jev check confirms the page
+  shows the goal done. It runs without your focus, stops at 20 actions or 45
+  seconds, and caps a control clicked over and over.
+- **By hand, too.** `browser_control` lists, switches, opens and closes
+  tabs, goes back/forward, scrolls to text and clicks or types one step at a
+  time; `show_browser` brings it to your screen.
+- **Explains failures.** `inspect_browser` reads the task tab without
+  touching it (signed in or not, dialogs, error banners, disabled buttons)
+  and names the likely cause.
+- **Signs in with you.** It clicks "Continue with Google"-style provider
+  buttons and picks an account the provider already offers; passwords, 2FA
+  codes and CAPTCHAs are always left to you in its browser.
+- **GitHub.** `report_issue` files issues on any repository (Omarchy itself,
+  this assistant, or any other) with your GitHub login, reading the title
+  back first. `github_upload_attachment` uploads a video or image through
+  the signed-in browser and returns a `user-attachments` URL, the only kind
+  of video a GitHub README will play.
 
-- **Readable terminals**: terminals it opens are recorded with `script(1)`;
-  every interactive Bash/Zsh terminal also writes a compact command, cwd and
-  exit-status log, so it understands terminals you opened yourself.
-  Terminals are read by window address, and logs stay readable across daemon
-  restarts and updates.
-- **Verified input**: `type_text`/`press_key` only go to a window whose
-  focus was just verified; results say the input was sent, not that it
-  worked, and the output is read back. Multi-line text is pasted as one
-  block; a second Enter with nothing typed in between is not sent.
-- **Other machines**: in an ssh session it works on that machine through
-  its terminal, checks the prompt to know where it is, and exits before
-  local work.
-- **Passwords**: sudo prompts in its terminals are answered from the Sudo
-  Access password in GNOME Keyring through a stdin-fed buffer (never in a
-  command line). In your windows it types it into a sudo, or on request
-  ssh/scp, prompt after checking the prompt is there. The model never sees
-  the password.
-- **Coding-agent relay**: prompts for Claude Code, Codex, aider and other
-  terminal agents are delivered verbatim, submitted, and checked.
-- **Approximate names**: "the Docker folder" finds `docker`; missing paths
-  come back with near names; several matches mean it asks.
-- **Copy, don't invent**: to mirror a setup it copies the real text and
-  changes only what must change; screenshots are never used to write files.
-- Arch-aware shell guidance: `pacman`/`yay`, never `apt`/`dnf`/`brew`.
+### 4. The desktop
 
-### Web
+About 90 typed tools plus Omarchy's full command set:
 
-**Jev browser**
-- Web tasks run in one dedicated Chromium tab driven by
-  [`browser-use/jev-ultrafast`](https://github.com/browser-use/jev-ultrafast)
-  with screenshots off; each DOM decision is a `typesafe-ai/jev` call.
-  Success is reported only after an independent Jev check confirms the page
-  shows the goal done; otherwise it says where it stopped.
-- The live model breaks requests into literal steps with plain search terms
-  ("eggs", not "a pack of eggs") and asks when something is missing, like
-  which store.
-- New tabs are folded back into the one tab, clicks land on the element
-  itself, a dropped browser connection heals, and a control clicked over and
-  over is capped. Runs stop at 20 actions or 45 seconds.
-
-### Desktop control
-
-About 80 typed tools plus Omarchy's full command set:
 - Volume/mute, mic mute, brightness, night light, Bluetooth, battery, media
-  playback, screenshots, screen lock.
+  playback, screenshots, screen recording, lock (and unlock from a paired
+  phone).
 - Workspaces, window listing/focus/fullscreen/close, and
   `move_window_to_workspace` in one verified step. Targeting is
   workspace-aware ("the terminal" is the one on your current workspace), and
   terminals can be named by what runs in them ("the Claude terminal").
+  Floating name-label badges appear over candidate windows when it isn't
+  sure which one you mean.
 - `desktop_task`: a Jev observe → act → verify loop for native goals
-  (workspaces, focus, volume, brightness, themes, bar panels), with
-  `search_os_knowledge` over the packaged Omarchy guide and Arch notes. See
-  [research and measured limits](docs/JEV-DESKTOP.md).
+  (workspaces, focus, volume, brightness, themes, bar panels), backed by
+  `search_os_knowledge` over the packaged Omarchy expert guide, capability
+  registry and Arch notes. See [research and measured limits](docs/JEV-DESKTOP.md).
 - `list_commands`/`execute_command` reach all ~230 Omarchy keybinding
-  commands; Jev ranks them by meaning in any language, with fuzzy matching
-  as the fallback.
-- `run_omarchy_command` runs a scoped allowlist of the `omarchy` CLI; package
-  installs, updates, reboots and destructive commands are refused.
-- Reminders through Omarchy's own popups (`set_reminder` and friends; "at
-  3pm" is converted into minutes).
-- Launchers for terminal, browser, files and editor.
-- Local files: `list_files`, `read_file`, `write_file`, and exact-replacement
-  edits in your home directory and `/tmp` (add more with `file_access_roots`
-  in `~/.config/omarchy-ai/config.yaml`). New files by default; overwriting
-  only when you ask.
-- Floating name-label badges over candidate windows when it isn't sure
-  which one you mean.
-- `describe_screen`: a screenshot and a vision call, only as a fallback;
-  on a terminal it is pointed to the terminal's text instead.
+  commands, ranked by meaning in any language; `run_omarchy_command` runs a
+  scoped allowlist of the `omarchy` CLI (themes, toggles, bar, capture,
+  reminders) and refuses package installs, updates and reboots.
+- The top bar: `list_bar_icons`/`open_bar_panel` open the real panel by its
+  plugin ID.
+- Reminders through Omarchy's own popups; launchers for terminal, browser,
+  files and editor.
+- `describe_screen`: a screenshot and a vision call, only as a fallback; on a
+  terminal it is pointed to the terminal's text instead.
 
-### Voice and conversation
+### 5. Background work: schedules, watches and promises
 
-- Local wake word (`openWakeWord`), listening continuously and connecting to
-  a provider only when triggered: no connection, and no per-second billing,
-  outside a conversation. Load any number of custom models from
-  `~/.config/omarchy-ai/wake_models/*.onnx`; "omachy", "omri" and "roni" ship.
-- Three providers: **OpenAI Live** (`gpt-live-1` over WebRTC), **Gemini
-  Live** (full duplex, desktop and phone), and **Omarchi-ai** (turn-based:
-  Jev decisions, Gateway transcription and TTS, a compact model for
-  wording).
-- **Jev switchboard**: when you stop talking, Jev reads the utterance, runs
-  simple commands at once and classifies the rest; then it reviews every tool
-  call the live model makes before it runs, sending wrong calls back,
-  asking when the request is ambiguous, and rerouting desktop goals and
-  multi-step jobs to the right executor. The fast pass and the live model
-  never repeat or contradict each other's action.
-- Gemini on the desktop uses private PipeWire echo cancellation without
-  touching other apps' audio devices. Its own voice leaking back can't cut
-  it off (you still can, by speaking up), and a stuck-turn guard answers
-  within about two seconds even with a TV on.
-- Quick actions are quiet: done, then "done". No "switching now" and "I
-  switched" around a 0.1-second action.
-- Ends on "bye"/"that's all" in any language by watching its own spoken
-  farewell.
-- Memory: recent conversations are folded into the next session, and
+- `schedule_task`: one-off or recurring reminders (times, intervals, cron),
+  watches, scheduled desktop goals, background commands, and "assistant"
+  jobs that need the assistant's reasoning later. They run on a heartbeat between
+  conversations.
+- **Watches** follow one of your terminals, one of the assistant's, a file or a
+  command. Jev judges when your condition is true ("the build finished",
+  "Claude is waiting for my approval", "tests failed") and quotes the real
+  output line as evidence.
+- **Promises are kept.** "Tell me when it's done, then start the container"
+  is backed by a real watch with the next step attached. When it fires the
+  assistant wakes up and tells you; if you're away, it catches you up next
+  time. `show_routines_hud` lists everything scheduled.
+- **Missions.** `run_mission` performs a scripted file of steps in order,
+  narrating each step while its action runs, keeping to the workspace the
+  script names, verifying each step, and stopping to ask instead of
+  improvising.
+
+### 6. It extends itself
+
+- **A tool catalog it can grow.** The live model is given about 20 core
+  tools plus `use_tool`; the rest (and anything added later) live in a
+  catalog where Jev picks the right one in a fraction of a second, and any
+  missing arguments are filled from your words.
+- **Tools it writes for itself.** When a background task solves something
+  with a procedure the assistant had no tool for, it packages it as a tool
+  (a folder with `tool.json`, `run` and `test`, checked and staged with
+  `omarchy-ai-tool`). Nothing is installed without your approval; approval
+  pins every file's hash, and the new tool is usable in the same
+  conversation.
+- **Skills.** A procedure that worked is saved as a named skill (`SKILL.md`
+  under `~/.config/omarchy-ai/skills/`) and rewritten when it turns out
+  wrong; Jev suggests the matching skill, or none.
+- **Memory.** Recent conversations are folded into the next session, and
   standing preferences ("always type terminal commands in English") are
-  saved with `remember_preference`.
+  kept with `remember_preference`.
 
-### Phone, mirroring and TV: the server on your computer
+### 7. Voice and conversation
+
+- **Wake word, keybinding or text.** A local wake word (`openWakeWord`)
+  listens continuously and connects to a provider only when triggered: no
+  connection and no per-second billing outside a conversation. "omachy",
+  "omri" and "roni" ship; add your own `.onnx` models. **Super + `** starts
+  a voice conversation, **Super + Ctrl + `** a typed one in the chat HUD
+  (it answers in text, silently).
+- **Three providers.** **Gemini Live** (full duplex, desktop and phone),
+  **OpenAI Live** (`gpt-live-1` over WebRTC, delegating to `gpt-5`), and
+  **Omarchi-ai** (turn-based: Jev decisions, Gateway transcription and TTS).
+- **Jev switchboard** ([ADR-0003](docs/ADR-0003-jev-switchboard.md)): simple
+  commands run the moment you stop talking; every tool call the live model
+  makes is reviewed first, sent back with the reason when it's wrong, asked
+  about when the request is ambiguous, and rerouted to the desktop loop or
+  the Task Runtime when that's the right executor.
+- **Natural talking.** Private PipeWire echo cancellation, so its own voice
+  can't cut it off (you still can); a stuck-turn guard answers within about
+  two seconds even with a TV on; slow tools run in the background so you can
+  always keep talking; quick actions just say "done"; it ends on "bye" in
+  any language. It double-checks what it heard when speech recognition
+  garbles Hebrew into another language.
+- **Escalation.** When something keeps failing, or it tells you it can't,
+  the job goes to the Task Runtime with your words and everything that
+  failed, instead of being dropped.
+
+### 8. Phone, mirroring and TV: the server on your computer
 
 Omarchy AI runs its own small servers on the computer, so a phone or a TV
 never needs a cloud relay or your API keys.
 
 ```mermaid
 flowchart LR
-    P[Phone browser<br/>paired page] -- "HTTPS :8766<br/>voice · tools · screen" --> S[Phone bridge server<br/>on the computer]
+    P[Phone browser<br/>paired page] -- "HTTPS :8766<br/>voice · text · tools · screen" --> S[Phone bridge server<br/>on the computer]
     S -- OpenAI: SDP relay + tool calls --> O[OpenAI Live]
     S -- Gemini: audio bridged server-side --> GL[Gemini Live]
     S -- desktop actions --> D[Desktop tools]
@@ -465,93 +516,82 @@ flowchart LR
 ```
 
 **Phone bridge server** (HTTPS, port 8766, LAN and Tailscale)
-- **Talking through the phone.** The phone opens a page served by the
-  computer. With OpenAI, the server relays the phone's WebRTC offer to the
-  Live API with the key it holds, and runs the model's tool calls on the
-  desktop; the phone talks to OpenAI directly for audio. With Gemini, the
-  server bridges the phone's WebRTC audio to Gemini Live itself (up to two
-  phones at once), so no key or tool authority ever reaches the phone.
-- **Mirroring the screen to the phone.** Start **Mirror** on the page and the
-  server streams live screenshots of the desktop over the same authenticated
-  HTTPS connection, edge to edge, while you keep talking. Stop it from the
-  page.
-- **Sending the voice to the TV.** While the desktop is cast to a TV,
-  **Audio: phone → TV** sends the assistant's speech into the cast sender's
-  audio track over a private local socket; **Audio: TV** returns it to the
-  phone. It falls back to the phone when mirroring ends or an upload fails.
+- **Talk or type from the phone.** The phone opens a page served by the
+  computer. With OpenAI, the server relays the phone's WebRTC offer with the
+  key it holds and runs the model's tool calls on the desktop. With Gemini,
+  it bridges the phone's audio to Gemini Live itself (up to two phones at
+  once), so no key or tool authority ever reaches the phone. **Text** mode
+  types instead of talking.
+- **Mirror the screen to the phone.** **Mirror** streams the live desktop
+  over the same authenticated connection, edge to edge, while you keep
+  talking. While a phone is connected the computer won't idle-lock or blank
+  its screen, and a locked screen can be unlocked from the paired phone only
+  (by voice there, or the **Unlock** button) with the saved password; the
+  room microphone can't unlock it.
+- **Send the voice to the TV.** While casting, **Audio: phone → TV** sends
+  the assistant's speech into the cast's audio; it falls back to the phone
+  when mirroring ends.
 - **Pairing is the access gate.** A QR code from the settings panel carries
-  a single-use 5-minute token; the phone gets a signed session cookie, and
-  every page, stream and API call without it gets a 403. Pairings can be
-  revoked all at once.
-- **Certificates.** Self-signed, so mobile browsers allow the microphone.
-  With Tailscale connected, new pairing QRs use the tailnet address and the
-  certificate covers the LAN IP, tailnet IP and DNS name.
+  a single-use 5-minute token; every page, stream and API call without the
+  resulting session cookie gets a 403. Pairings can be revoked all at once.
+  Self-signed certificates cover the LAN IP and, with Tailscale, the tailnet
+  address and name.
 - The page is a full-screen state field readable across the room (red: it
-  can't hear you), with **Text** mode for typing instead of talking.
+  can't hear you).
 
 **TV / projector mirroring**
-- `omarchy-ai-cast.service` captures the screen directly with
-  `wlr-screencopy`, encodes `openh264enc` video and Opus system audio, and
-  sends them over WebRTC to the TV. A signaling relay
-  (`omarchy-ai-signaling.service`, WebSocket port 8765) introduces the two
-  and buffers the offer until the TV app is ready. Casting runs
-  independently of conversations and assistant restarts, with bounded
-  retries (`journalctl --user -u omarchy-ai-cast.service -u
-  omarchy-ai-signaling.service -f`).
-- mDNS discovery of Android TVs (`_androidtvremote2._tcp`), a live
-  device-picker overlay you can answer by voice or click, and guided ADB
-  pairing for a TV never set up before.
+- `omarchy-ai-cast.service` captures the screen with `wlr-screencopy`,
+  encodes `openh264enc` video and Opus system audio, and sends them over
+  WebRTC; a signaling relay (`omarchy-ai-signaling.service`, port 8765)
+  introduces the two. Casting runs independently of conversations and
+  restarts, with bounded retries.
+- mDNS discovery of Android TVs, a "which TV?" picker you answer by voice or
+  click, and guided ADB pairing and receiver install
+  (`install_receiver_on_tv`) for a TV never set up before.
 - A Kotlin/Compose receiver app (`android-receiver/`) that auto-connects and
   shows the Omarchy wallpaper while idle.
-- A USB or headset microphone on the TV can wake the assistant and carry the
-  conversation; desktop and TV wake detection run independently.
+- **Talk to the TV.** While casting, a USB or headset microphone on the TV
+  can wake the assistant and carry the conversation, and its voice plays on
+  the TV.
 
-### Surfaces and integrations
+### 9. On screen
 
-**"Watch Dogs" HUD overlay**
-- A Quickshell overlay with a live feed of tool calls, a reactive
-  ASCII/braille visualizer, or both. One colour per state (connecting,
-  listening, thinking, speaking); successful tools tint green, failures red.
-  Driven by the daemon's lifecycle, not by the model.
+- **Watchdog HUD.** A live feed of tool calls with a reactive
+  ASCII/braille visualizer, one colour per state (connecting, listening,
+  thinking, speaking); successes tint green, failures red. Driven by the
+  daemon's lifecycle, not by the model.
+- **Task and routine HUDs** list current tasks and scheduled routines.
+- **Approval envelope.** Whenever a task waits for your approval, an
+  envelope floats at the top right; click it for the command, its risk and
+  Approve / Deny.
+- **Chat HUD** for typed conversations; **window labels** for "which
+  window?"; the **TV picker** while casting.
+- **Out-of-credit alerts.** When OpenAI, Gemini or Vercel AI Gateway runs out
+  of credit or quota: red dollar signs over every screen, a notification
+  linking to billing, and a spoken warning (a pre-recorded clip in its own
+  voice when the voice provider itself is out). Try it with
+  `.venv/bin/omarchy-ai-settings test-quota-alert openai`.
+- **Settings panel** in the bar for provider and keys (OpenAI, Gemini, Jev /
+  Vercel AI Gateway), wake word and sensitivity, voice, HUD mode, Sudo
+  Access, phone pairing and MyApi, with a live-status dot. It refuses to
+  restart the assistant mid-conversation.
 
-**Out-of-credit alerts**
-- When OpenAI, Gemini or Vercel AI Gateway credits, quota or token limits
-  run out, you get told instead of silence: red dollar signs pop up over
-  every screen with the provider's name, a critical notification links to
-  the billing page, and a voice says what happened. If the conversation runs
-  on a provider that still works, the assistant says it in your language;
-  when the voice provider itself is out, a pre-recorded warning in the
-  assistant's own voice plays locally (English or Hebrew, from your recent
-  conversations).
-- Background errors alert at most once per provider every 10 minutes; a
-  wake word that fails because of it is always answered. Outages and plain
-  rate limits don't trigger it. Try it with
-  `.venv/bin/omarchy-ai-settings test-quota-alert openai` (or `gemini`,
-  `vercel`).
+### 10. Your services, updates and issues
 
-**Settings panel**
-- A bar panel for provider and keys (OpenAI, Gemini, Jev / Vercel AI
-  Gateway), wake word and sensitivity, voice, HUD mode, Sudo Access, phone
-  pairing and MyApi. It refuses to restart the assistant mid-conversation.
-  The bar icon carries a live-status dot.
-
-**Connect other services (MyApi)**
-- One code from your [MyApi](https://www.myapiai.com) dashboard connects
-  Gmail, Calendar, Drive, Notion, Slack and 200+ services, with no OAuth
-  redirect and no token shown. It prefers a real API call over a browser and
-  a screenshot, read-only for now. Gmail attachments have a dedicated
-  search-and-download flow into `~/Downloads/Omarchy_AI/`.
-- A MyApi bar panel and `omarchy-ai-dashboard` show live per-service usage.
-  Requires a MyApi Pro/Heavy/Enterprise plan.
-
-**Updates, release notes and issues**
-- `check_assistant_updates` / `update_assistant` install checksum-verified
-  GitHub Release bundles in a separate service, keeping the previous install
-  to roll back to. It mentions a new version on wake, offers to go through
-  the highlights (`get_release_notes` reads them from `CHANGELOG.md`), and
-  only installs when you ask.
-- A failed update, or *"file an issue about this"*, can open a GitHub issue
-  when a token is configured.
+- **MyApi.** One code from your [MyApi](https://www.myapiai.com) dashboard
+  connects Gmail, Calendar, Drive, Notion, Slack and 200+ services, with no
+  OAuth redirect and no token shown. It prefers a real API call over a
+  browser and a screenshot (read-only for now). Gmail attachments have a
+  dedicated search-and-download flow into `~/Downloads/Omarchy_AI/`. A bar
+  panel and `omarchy-ai-dashboard` show live per-service usage. Requires a
+  MyApi Pro/Heavy/Enterprise plan.
+- **Updates.** `check_assistant_updates` / `update_assistant` install
+  checksum-verified GitHub Release bundles in a separate service, keeping
+  the previous install to roll back to. It mentions a new version on wake,
+  reads you the highlights (`get_release_notes`), and only installs when you
+  ask.
+- **Issues.** A failed update, or *"file an issue about this"*, opens a
+  GitHub issue with your login or a configured token.
 
 ---
 
@@ -812,6 +852,13 @@ Documented honestly rather than papered over:
   first estimate for phone audio; tune it from the guard's log lines.
 - **Casting audio** is not yet measured as rigorously as video (steady 15fps,
   zero drops in testing).
+- **Two tools lean on GitHub's and Omarchy's current UI.** The GitHub upload
+  pastes the file into a never-submitted issue comment box in the signed-in
+  browser, so a GitHub page redesign can break it; unlocking types the Sudo
+  Access password into Omarchy's lock screen, so it needs Sudo Access
+  enabled and the saved password to be your login password.
+- **"One job, one task" is a Jev judgement.** If Jev is unreachable or
+  unsure, a new task starts rather than risk merging two different jobs.
 - **MyApi is read-only**: sending mail or creating events isn't wired up.
   Disconnecting in the panel only stops this machine; remove the device in
   your MyApi dashboard to fully revoke access.
