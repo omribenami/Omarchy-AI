@@ -152,3 +152,15 @@ class ApprovedCommandReplayTests(RuntimeHarness):
         from types import SimpleNamespace
         a = SimpleNamespace(context={"user_approved": "spotify", "user_approved_kind": "launch"}, workspace="/")
         self.assertIsNone(SystemAgent(model=SimpleNamespace(model="x"))._replay_approved(a, None, []))
+
+
+class WorkerVerificationRuleTests(RuntimeHarness):
+    """2026-09-27 12:00: a done README change was certified as failed: the
+    worker's `grep OLD || echo 'old still there'` said the opposite of the
+    truth, and nothing proved the new video plays."""
+
+    def test_the_worker_is_told_how_to_word_checks_and_prove_a_video_plays(self):
+        from omarchy_ai.runtime.executors.system_agent import SYSTEM_PROMPT
+        self.assertIn("prints only when the check FAILS", SYSTEM_PROMPT)
+        self.assertIn("application/vnd.github.html", SYSTEM_PROMPT)
+        self.assertIn("does not prove it", SYSTEM_PROMPT)
