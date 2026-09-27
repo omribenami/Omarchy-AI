@@ -39,8 +39,18 @@ def slug(name: str) -> str:
     return value
 
 
+# Requested name -> the terminal it runs in (terminal_task reuses an idle one).
+aliases: dict[str, str] = {}
+
+
+def resolve(name: str) -> str:
+    """The terminal a name refers to, following reuse aliases."""
+    value = slug(name)
+    return aliases.get(value, value)
+
+
 def _session(name: str) -> str:
-    return PREFIX + slug(name)
+    return PREFIX + resolve(name)
 
 
 def exists(name: str) -> bool:
@@ -61,6 +71,7 @@ def start(name: str) -> ActionResult:
     made = _tmux("new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", str(Path.home()))
     if made.returncode:
         return ActionResult(False, f"could not start terminal: {made.stderr.strip()}")
+    _fixed_size(session)
     # A recognisable window title in the viewer: "Omarchy AI · <name>".
     _tmux("set-option", "-t", session, "set-titles", "on")
     _tmux("set-option", "-t", session, "set-titles-string", f"Omarchy AI · {slug(name)}")
@@ -84,12 +95,64 @@ def send(name: str, text: str, enter: bool = True) -> ActionResult:
     return ActionResult(True, f"typed into assistant terminal {slug(name)!r}")
 
 
-def read(name: str, lines: int = 120) -> ActionResult:
+def _fixed_size(session: str) -> None:
+    """Keep the session 200x50 whatever its viewer window is. Journal
+    2026-09-27 08:18-08:20: ten viewer windows tiled on one workspace shrank
+    their sessions to 1x1 and 1x26 (tmux follows the attached client), so git
+    output was wrapped one character per line and terminal_read returned
+    'und.', 'main', '~ ❯~ ❯': she never saw what her commands printed. A
+    smaller viewer now pans over the fixed window instead."""
+    _tmux("set-option", "-w", "-t", session, "window-size", "manual")
+    _tmux("resize-window", "-t", session, "-x", "200", "-y", "50")
+
+
+READ_WAIT_SECONDS = 8.0
+
+
+def _capture(session: str, lines: int):
+    out = _tmux("capture-pane", "-p", "-J", "-t", session, "-S", f"-{int(lines)}")
+    return out.returncode, "\n".join(l.rstrip() for l in out.stdout.splitlines()).strip()
+
+
+def _children(pid: int) -> list[int]:
+    try:
+        return [int(c) for c in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
+    except (OSError, ValueError):
+        return []
+
+
+def _busy(session: str) -> bool:
+    """A command is running: the pane's shell has a child process. The pane
+    process may be a `script` wrapper around the shell (it is on this
+    machine), so step through it. #{pane_current_command} is no use here: an
+    idle pane reports 'tmux'."""
+    out = _tmux("display-message", "-p", "-t", session, "#{pane_pid}")
+    try:
+        pid = int(out.stdout.strip())
+        if Path(f"/proc/{pid}/comm").read_text().strip() == "script":
+            pid = _children(pid)[0]
+    except (ValueError, OSError, IndexError):
+        return False
+    return bool(_children(pid))
+
+
+def read(name: str, lines: int = 120, settle: bool = False) -> ActionResult:
+    """The pane's text; with `settle`, after the running command has returned
+    to the shell (up to READ_WAIT_SECONDS). The live model reads straight
+    after terminal_task (0-1s in every journal read), before git, find or
+    grep have printed anything."""
     if not exists(name):
         return ActionResult(False, f"no assistant terminal named {slug(name)!r}")
-    out = _tmux("capture-pane", "-p", "-J", "-t", _session(name), "-S", f"-{int(lines)}")
-    text = "\n".join(l.rstrip() for l in out.stdout.splitlines()).strip()
-    return ActionResult(out.returncode == 0, text[-6000:] or "(no output yet)")
+    session = _session(name)
+    _fixed_size(session)
+    deadline = time.monotonic() + (READ_WAIT_SECONDS if settle else 0)
+    time.sleep(0.3 if settle else 0)  # a command sent just now may not have started yet
+    while _busy(session) and time.monotonic() < deadline:
+        time.sleep(0.25)
+    code, text = _capture(session, max(int(lines), 40))
+    if settle and _busy(session):
+        text += "\n[still running: read again later for the rest]"
+    return ActionResult(code == 0, text[-6000:] or "(no output yet)")
 
 
 def submit_password(name: str, password: str) -> ActionResult:
@@ -109,8 +172,26 @@ def submit_password(name: str, password: str) -> ActionResult:
 def stop(name: str) -> ActionResult:
     if not exists(name):
         return ActionResult(True, "already closed")
+    actual = resolve(name)
     _tmux("kill-session", "-t", _session(name))
-    return ActionResult(True, f"closed assistant terminal {slug(name)!r}")
+    for alias in [a for a, target in aliases.items() if target == actual or a == actual]:
+        del aliases[alias]
+    return ActionResult(True, f"closed assistant terminal {actual!r}")
+
+
+def idle_terminal() -> str | None:
+    """The most recently used assistant terminal with no command running.
+    Journal 2026-09-27: one terminal per command (check-git-remote, git-log,
+    git-pull-fix, git-push, ... ten by 08:20), all tiled on the user's
+    screen and never closed."""
+    out = _tmux("list-sessions", "-F", "#{session_activity} #{session_name}")
+    if out.returncode:
+        return None
+    rows = sorted((line.split(" ", 1) for line in out.stdout.splitlines() if " " in line), reverse=True)
+    for _, session in rows:
+        if session.startswith(PREFIX) and not _busy(session):
+            return session[len(PREFIX):]
+    return None
 
 
 def _clients():

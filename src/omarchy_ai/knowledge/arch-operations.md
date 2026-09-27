@@ -39,3 +39,16 @@ launcher opened Claude rather than the assistant settings panel. Discover bar
 plugin IDs; never substitute a similarly named launcher. Focus must be verified
 before input. Command success does not establish visual rendering, app acceptance,
 work progress or completion. Old terminal text is not fresh evidence.
+
+## Videos in a GitHub README
+
+A video that plays in a GitHub README is a GitHub attachment, not a repo file:
+a bare `https://github.com/user-attachments/assets/<id>` line (its player title
+is the uploaded filename, e.g. omarchy.mp4, which is why searching the repo for
+that name finds nothing). A repo path does not play, neither
+`![](docs/media/x.mp4)` nor `<video src="docs/media/x.mp4">` (both tried
+2026-09-27; they broke the omarchy-ai README demo). To replace the video:
+edit README.md on github.com, drag the new mp4 into the editor (GitHub uploads
+it and inserts a new user-attachments URL), put that URL in place of the old
+line, and commit. git and the gh CLI cannot create the attachment; this needs a
+browser signed in to GitHub, or the user.

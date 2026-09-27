@@ -321,7 +321,7 @@ def read_file(args: dict) -> ActionResult:
             args.get("path"), load_config(), args.get("start_line", 1), args.get("max_chars", 4_000),
             system_config=bool(args.get("system_config")),
         )
-        if result and _looks_like_script(result):
+        if result and _looks_like_script(result, str(args.get("path") or "")):
             result += _SCRIPT_HINT
         return ActionResult(True, result or "(empty file)")
     except (local_files.FileAccessError, ValueError) as exc:
@@ -337,11 +337,21 @@ _SCRIPT_HINT = ("\n\n[assistant note] This file is a multi-step script. If the u
                 "workspace rule); do not perform the steps yourself one by one.")
 
 
-def _looks_like_script(text: str) -> bool:
+# Journal 2026-09-27 08:18-08:20: README.md (a page of "- " bullets) was
+# marked a script, and the run_mission guard then blocked her grep and
+# git diff twice in the middle of an ordinary README edit.
+_NOT_SCRIPTS = re.compile(r"(^|/)(readme|changelog|license|contributing|status|adr-[^/]*)(\.[a-z]+)?$|"
+                          r"\.(py|js|ts|sh|json|toml|ya?ml|lua|conf|ini|html|css)$", re.I)
+
+
+def _looks_like_script(text: str, path: str = "") -> bool:
+    if _NOT_SCRIPTS.search(path.strip()):
+        return False
     lines = [l.strip().lower() for l in text.splitlines() if l.strip()]
-    numbered = sum(1 for l in lines if re.match(r"^(\d+[.)]|step \d+|- )", l))
+    numbered = sum(1 for l in lines if re.match(r"^(\d+[.)]|step \d+)", l))
+    bullets = sum(1 for l in lines if l.startswith("- "))
     cues = sum(w in text.lower() for w in ("narrat", "demonstrat", "step", "then ", "finally", "workspace"))
-    return numbered >= 3 or (numbered >= 2 and cues >= 2)
+    return (numbered >= 3 and cues >= 1) or (numbered + bullets >= 3 and "narrat" in text.lower())
 
 
 def write_file(args: dict) -> ActionResult:
@@ -1022,9 +1032,15 @@ def terminal_task(args: dict) -> ActionResult:
     if not command:
         return ActionResult(False, "command is required")
     try:
-        name = workbench.slug(args.get("name") or command.split()[0])
+        name = workbench.resolve(args.get("name") or command.split()[0])
     except ValueError as exc:
         return ActionResult(False, str(exc))
+    if not workbench.exists(name) or workbench._busy(workbench._session(name)):
+        # Reuse an idle terminal instead of opening one more window.
+        idle = workbench.idle_terminal()
+        if idle and idle != name:
+            workbench.aliases[workbench.slug(args.get("name") or command.split()[0])] = idle
+            name = idle
     started = workbench.start(name)
     if not started.ok:
         return started
@@ -1049,7 +1065,7 @@ def terminal_task(args: dict) -> ActionResult:
 
 def terminal_read(args: dict) -> ActionResult:
     from . import workbench
-    return workbench.read(str(args.get("name") or ""), int(args.get("lines") or 120))
+    return workbench.read(str(args.get("name") or ""), int(args.get("lines") or 120), settle=True)
 
 
 def terminal_type(args: dict) -> ActionResult:
@@ -1071,8 +1087,12 @@ def terminal_hide(args: dict) -> ActionResult:
 
 def terminal_close(args: dict) -> ActionResult:
     from . import workbench
-    workbench.pending_handover.discard(str(args.get("name") or ""))
-    return workbench.stop(str(args.get("name") or ""))
+    name = str(args.get("name") or "")
+    try:
+        workbench.pending_handover.discard(workbench.resolve(name))
+    except ValueError:
+        pass
+    return workbench.stop(name)
 
 
 def terminal_sudo(args: dict) -> ActionResult:

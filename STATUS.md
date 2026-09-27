@@ -45,6 +45,39 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27 journal: easy tasks failing on the tool layer, not the model
+
+`journalctl --user -u omarchy-ai.service --since today` (16 sessions, ~290
+tool calls). Four causes, all ours:
+
+- **use_tool offer loop (113 wasted calls).** `use_tool(name=X, request=...)`
+  without `args` got X's schema back every time; Gemini re-sent the same call
+  ~60 times in 50s for "stop screen recording" (01:33:34-01:34:23), 18 times
+  for write_file (02:03:54-02:04:12). Offers were ok=True, so escalation never
+  fired. Fix (`catalog.py`): missing args are filled from `request` by the
+  Gateway text model (`fill_args`, ~1s, verified live: stop recording ->
+  `capture screenrecording --stop-recording`), never for file bodies
+  (`content`/`new_text`...); stray top-level params and a name inside `args`
+  are normalized; filled calls still go through the switchboard. In
+  `gemini_live.py` a third offer in one user turn is a failure (-> escalation).
+- **Assistant terminals were 1 column wide.** Ten viewer windows tiled on one
+  workspace shrank their tmux sessions to 1x1 / 1x26, so git output wrapped
+  one char per line and terminal_read returned `'und.'`, `'main'`. She never
+  saw her git output and reported success anyway. Fix (`workbench.py`):
+  sessions are fixed at 200x50 (`window-size manual`); terminal_read waits
+  until the shell has no child process (the pane runs `script` -> bash; an
+  idle pane's `#{pane_current_command}` says 'tmux', so it is useless) up to
+  8s; terminal_task reuses the most recent idle terminal instead of opening a
+  new one per command (the requested name becomes an alias).
+- **README.md flagged as a "multi-step script"** (3+ `- ` bullets), so the
+  run_mission guard blocked her grep/git diff. Fix: repo docs/code by path are
+  never scripts; bullets alone no longer count.
+- **README demo video.** The playable video was a GitHub user-attachment
+  (player title omarchy.mp4), not a repo file; she searched the repo for it,
+  then replaced it with `![](docs/media/desktop-demo.mp4)` (d63aa89) and
+  `<video src=...>` (126285e), neither of which GitHub plays. Documented in
+  `knowledge/arch-operations.md`; replacing it needs a browser upload.
+
 ### A real architectural bug found and fixed: blocking the event loop
 
 `_check_function_call` executed `run_action(...)` synchronously inline —

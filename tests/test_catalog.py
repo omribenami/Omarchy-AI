@@ -54,6 +54,50 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(r.picked)
         self.assertEqual(jev.calls, [])
 
+    def test_a_parameter_beside_name_is_moved_into_args(self):
+        # Journal 2026-09-27 01:33: {"name": "list_commands", "query": "screen recording"}.
+        r = catalog.resolve({"name": "list_commands", "query": "screen recording"}, jev=PickJev("none"))
+        self.assertTrue(r.run)
+        self.assertEqual(r.args, {"query": "screen recording"})
+
+    def test_a_name_inside_args_is_found(self):
+        r = catalog.resolve({"args": {"name": "run_omarchy_command", "args": ["toggle", "nightlight"]}},
+                            jev=PickJev("none"))
+        self.assertTrue(r.run)
+        self.assertEqual((r.tool, r.args), ("run_omarchy_command", {"args": ["toggle", "nightlight"]}))
+
+    def test_known_name_without_args_is_filled_from_the_request(self):
+        # Journal 2026-09-27 01:33: ~60 identical offers for "stop screen recording".
+        asked = []
+        def fill(tool, request, heard):
+            asked.append((tool["name"], request, heard))
+            return {"args": ["capture", "screenrecording", "--stop-recording"]}
+        r = catalog.resolve({"name": "run_omarchy_command", "request": "stop screen recording"},
+                            "stop the recording", jev=PickJev("none"), fill=fill)
+        self.assertTrue(r.run)
+        self.assertEqual(r.args, {"args": ["capture", "screenrecording", "--stop-recording"]})
+        self.assertFalse(r.picked)  # the switchboard still reviews filled arguments
+        self.assertEqual(asked, [("run_omarchy_command", "stop screen recording", "stop the recording")])
+
+    def test_a_confident_pick_is_filled_too(self):
+        r = catalog.resolve({"request": "close the disable-wifi terminal"}, jev=PickJev("terminal_close"),
+                            fill=lambda tool, request, heard: {"name": "disable-wifi"})
+        self.assertTrue(r.run)
+        self.assertEqual((r.tool, r.args), ("terminal_close", {"name": "disable-wifi"}))
+
+    def test_file_content_is_never_invented_from_the_request(self):
+        r = catalog.resolve({"name": "write_file", "request": "add all the things I said to the file"},
+                            jev=PickJev("none"), fill=lambda *a: self.fail("content must not be filled"))
+        self.assertFalse(r.run)
+        self.assertIn("missing", r.message)
+
+    def test_an_incomplete_or_failed_fill_falls_back_to_the_offer(self):
+        for fill in (lambda *a: {}, lambda *a: (_ for _ in ()).throw(TimeoutError("slow"))):
+            r = catalog.resolve({"name": "run_omarchy_command", "request": "stop recording"},
+                                jev=PickJev("none"), fill=fill)
+            self.assertFalse(r.run)
+            self.assertIn("run_omarchy_command", r.message)
+
     def test_known_name_with_bad_args_gets_the_schema_back(self):
         r = catalog.resolve({"name": "set_reminder", "args": {"when": "soon"}}, jev=PickJev("none"))
         self.assertFalse(r.run)
@@ -147,6 +191,17 @@ class UseToolDispatchTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertIn("set_reminder", response["message"])
         self.assertEqual(s._escalator._failures, [])
+
+    def test_repeated_offers_become_a_failure(self):
+        # Journal 2026-09-27: every offer was ok=True, so ~60 in a row never escalated.
+        s = self.session(lambda *a: self.fail("no review for an offer"))
+        offer = catalog.Resolution(False, message='{"tools": [{"name": "run_omarchy_command"}]}')
+        oks = [self.dispatch(s, {"name": "run_omarchy_command", "request": "stop"}, offer)[1]["ok"]
+               for _ in range(4)]
+        self.assertEqual(oks, [True, True, False, False])
+        self.assertGreater(s._escalator._last_escalation, 0)  # two failures: handed to the Task Runtime
+        s._last_user_speech += 1  # the user speaks: a new turn starts counting again
+        self.assertTrue(self.dispatch(s, {"request": "remind me"}, offer)[1]["ok"])
 
 
 if __name__ == "__main__":

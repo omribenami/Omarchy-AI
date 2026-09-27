@@ -119,6 +119,65 @@ def _offer(tools: list[dict], lead: str) -> str:
                       ensure_ascii=False)
 
 
+# Parameters that hold a body of text the user composes (a file's content, an
+# edit): never filled from a one-line `request`, or a vague "add that to the
+# file" would overwrite the file with an invented body.
+_NO_FILL = frozenset({"content", "old_text", "new_text", "body", "text"})
+
+_FILL_SYSTEM = (
+    "Fill the arguments of one tool call. Input: the tool (name, description, JSON-schema parameters), `request` "
+    "(what the voice assistant asked for) and `user_said` (speech recognition, possibly garbled). Return a JSON "
+    "object {\"call_arguments\": {...}} holding the tool's parameters, exactly as its schema and description say (follow the "
+    "description's own examples for the exact values). Use only what the request, the user's words and the "
+    "description support; leave out any parameter you would have to guess."
+)
+
+
+def fill_args(tool: dict, request: str, heard: str, complete_json) -> dict:
+    """The tool's arguments from the request, by the Gateway text model."""
+    answer = complete_json(_FILL_SYSTEM, {
+        "tool": {"name": tool["name"], "description": tool["description"], "parameters": tool.get("parameters") or {}},
+        "request": request[:600], "user_said": heard[-300:]})
+    # Not "args": run_omarchy_command's own parameter is called args.
+    args = answer.get("call_arguments")
+    return args if isinstance(args, dict) else {}
+
+
+def _normalize(args: dict, tools: dict[str, dict]) -> tuple[str, dict]:
+    """(name, args) from the shapes the live model actually sends.
+
+    Journal 2026-09-27: {"name": "list_commands", "query": "screen recording"}
+    (the tool's parameter beside `name`, not in `args`) and {"args": {"name":
+    "run_omarchy_command", "args": [...]}} (the name inside `args`)."""
+    name = str(args.get("name") or "").strip()
+    given = dict(args["args"]) if isinstance(args.get("args"), dict) else {}
+    if not name and str(given.get("name") or "") in tools:
+        name = given.pop("name")
+    props = ((tools.get(name) or {}).get("parameters") or {}).get("properties") or {}
+    for key, value in args.items():
+        if key not in ("name", "args", "request") and key in props:
+            given.setdefault(key, value)
+    return name, given
+
+
+def _complete(tool: dict, given: dict, request: str, heard: str, fill) -> dict | None:
+    """`given` plus arguments filled from the request, when that makes a valid
+    call. Journal 2026-09-27 01:33: use_tool(name=run_omarchy_command,
+    request="stop screen recording") with no args got the schema back ~60
+    times in 50s; the model never moved the request into args."""
+    schema = tool.get("parameters") or {}
+    missing = [k for k in schema.get("required") or [] if k not in given]
+    if not fill or not missing or not (request or heard) or _NO_FILL & set(missing):
+        return None
+    try:
+        filled = fill(tool, request, heard)
+    except Exception as exc:  # the offer below still works without it
+        log.warning("Catalog argument fill failed for %s: %s", tool["name"], str(exc)[:160])
+        return None
+    args = {**filled, **given}
+    return None if _problems(tool, args) else args
+
+
 def _keyword_rank(request: str, tools: dict[str, dict]) -> list[dict]:
     words = {w for w in re.findall(r"[a-z]{3,}", request.lower())}
     def score(t):
@@ -127,17 +186,22 @@ def _keyword_rank(request: str, tools: dict[str, dict]) -> list[dict]:
     return sorted(tools.values(), key=score, reverse=True)
 
 
-def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None) -> Resolution:
-    """What a use_tool call means: a tool to run now, or what to tell the model."""
+def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fill=None) -> Resolution:
+    """What a use_tool call means: a tool to run now, or what to tell the model.
+
+    `fill(tool, request, heard) -> dict` fills missing arguments from the
+    request (fill_args with the Gateway model); a filled call is not `picked`,
+    so the switchboard still reviews it."""
     tools = catalog(myapi_on)
-    name = str(args.get("name") or "").strip()
-    given = args.get("args") if isinstance(args.get("args"), dict) else {}
+    name, given = _normalize(args, tools)
     request = str(args.get("request") or "").strip()
     if name in CORE:
         return Resolution(False, message=f"{name} is one of your own tools: call it directly, not through use_tool.")
     if name in tools:
         tool = tools[name]
         problems = _problems(tool, given)
+        if problems and (filled := _complete(tool, given, request, heard, fill)) is not None:
+            return Resolution(True, name, filled, evidence={"by": "name", "filled": True})
         if problems:
             return Resolution(False, message=_offer([tool], f"{name}: {'; '.join(problems)}."))
         return Resolution(True, name, given, evidence={"by": "name"})
@@ -173,4 +237,6 @@ def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None) ->
     tool = tools[answer["choice"]]
     if not _problems(tool, given):
         return Resolution(True, tool["name"], given, picked=True, evidence=evidence)
+    if (filled := _complete(tool, given, request, heard, fill)) is not None:
+        return Resolution(True, tool["name"], filled, evidence={**evidence, "filled": True})
     return Resolution(False, message=_offer([tool], f"Jev picked {tool['name']}."), evidence=evidence)

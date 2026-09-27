@@ -20,6 +20,14 @@ class LocalFileToolTests(unittest.TestCase):
             self.assertEqual(sudo_approval.retrieve(), "not-in-results")
         self.assertEqual(run.call_count, 2)
 
+    def test_readme_is_not_a_script_but_a_narrated_demo_is(self):
+        # Journal 2026-09-27 08:18: README.md was marked a script and grep was blocked.
+        readme = "## Install\n- one\n- two\n- three\nThen switch workspace.\n1. a\n2. b\n3. c step\n"
+        self.assertFalse(actions._looks_like_script(readme, "~/Git/omarchy-ai/README.md"))
+        self.assertFalse(actions._looks_like_script("- a\n- b\n- c\n", "notes.md"))
+        demo = "In workspace 5 only:\nAll narration in parallel.\n1. Intro\n2. Terminal\n3. Browser\n"
+        self.assertTrue(actions._looks_like_script(demo, "/home/u/commercial_prompt.md"))
+
     def test_submit_sudo_password_never_returns_the_secret(self):
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
         with patch.object(actions.sudo_approval, "retrieve", return_value="not-in-results"), \

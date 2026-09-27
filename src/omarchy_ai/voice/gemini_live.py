@@ -154,6 +154,7 @@ class GeminiLiveSession:
         self._running_blocking = 0
         self._running_background = 0
         self._last_user_speech = 0.0
+        self._offers_turn, self._offers = 0.0, 0  # use_tool offers in this user turn (_offer_result)
         self._awaiting_since = 0.0  # 0: no reply pending
         self._playback_until = 0.0  # monotonic time the queued speech finishes
         self._echo_levels = deque(maxlen=150)   # mic RMS while she speaks (~3s)
@@ -591,11 +592,34 @@ class GeminiLiveSession:
     async def _pick(self, call) -> catalog.Resolution:
         """use_tool: Jev picks the catalog tool (execution/catalog.py)."""
         groups, _ = self._user_turns()
+
+        def fill(tool, request, heard):
+            from .omarchy import GatewayClient
+            return catalog.fill_args(tool, request, heard,
+                                     lambda system, user: GatewayClient(self.config).complete_json(system, user,
+                                                                                                    timeout=8))
         pick = await asyncio.to_thread(catalog.resolve, dict(call.args or {}), groups[-1] if groups else "",
-                                       myapi_on=self.config.myapi_enabled and myapi.is_connected())
+                                       myapi_on=self.config.myapi_enabled and myapi.is_connected(), fill=fill)
         log.info("Catalog: call=%s request=%r -> %s %s", call.id, (call.args or {}).get("request", "")[:120],
                  pick.tool if pick.run else "offer", pick.evidence)
         return pick
+
+    MAX_OFFERS = 2  # per user turn: request -> parameters -> the real call needs at most two
+
+    def _offer_result(self, pick: catalog.Resolution) -> ActionResult:
+        """An offer of parameters or candidates is a lookup, not a failure --
+        until it repeats. Journal 2026-09-27 01:33-01:34 and 02:03-02:04: the
+        model re-sent use_tool without args ~60 and 18 times in a row, every
+        offer ok=True, so escalation never saw a failure."""
+        if self._offers_turn != self._last_user_speech:
+            self._offers_turn, self._offers = self._last_user_speech, 0
+        self._offers += 1
+        if self._offers <= self.MAX_OFFERS:
+            return ActionResult(True, pick.message)
+        return ActionResult(False, "Not run: use_tool has returned parameters again and again without a complete "
+                                   "call. Stop calling use_tool for this. Either call it once exactly as "
+                                   "use_tool(name=..., args={...}) with every required parameter inside `args`, "
+                                   "or tell the user in one short sentence what you still need.")
 
     async def _review(self, call, name: str, args: dict) -> switchboard.Verdict:
         ctx = self._switchboard_context()
@@ -630,8 +654,7 @@ class GeminiLiveSession:
             elif call.name == "get_recent_actions":
                 result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
             elif call.name == "use_tool" and not (pick := await self._pick(call)).run:
-                # An offer of parameters or candidates: a lookup, not a failure.
-                result = ActionResult(True, pick.message)
+                result = self._offer_result(pick)
             else:
                 tool, args = call.name, dict(call.args or {})
                 if call.name == "use_tool":

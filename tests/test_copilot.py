@@ -51,6 +51,7 @@ class TerminalTaskTests(unittest.TestCase):
         workbench.pending_handover.clear()
         with patch.object(operator, "user_active", return_value=active), \
                 patch.object(workbench, "start", return_value=ActionResult(True, "started")), \
+                patch.object(workbench, "idle_terminal", return_value=None), \
                 patch.object(workbench, "show", return_value=ActionResult(True, "on screen")) as shown, \
                 patch.object(workbench, "send", return_value=ActionResult(True, "typed")) as sent:
             result = actions.terminal_task({"command": "yay -S claude-code", "name": "install", "show": show})
@@ -67,6 +68,21 @@ class TerminalTaskTests(unittest.TestCase):
         shown.assert_not_called()
         self.assertIn("install", workbench.pending_handover)
         self.assertIn("background", result.message)
+
+    def test_an_idle_terminal_is_reused_instead_of_opening_another(self):
+        # Journal 2026-09-27: ten terminals, one per git command, never closed.
+        workbench.aliases.clear()
+        with patch.object(operator, "user_active", return_value=False), \
+                patch.object(workbench, "exists", side_effect=lambda n: workbench.resolve(n) == "git-log"), \
+                patch.object(workbench, "idle_terminal", return_value="git-log"), \
+                patch.object(workbench, "start", return_value=ActionResult(True, "already running")), \
+                patch.object(workbench, "show", return_value=ActionResult(True, "on screen")), \
+                patch.object(workbench, "send", return_value=ActionResult(True, "typed")) as sent:
+            result = actions.terminal_task({"command": "git push", "name": "git-push"})
+        sent.assert_called_once_with("git-log", "git push")
+        self.assertIn("'git-log'", result.message)
+        self.assertEqual(workbench.resolve("git-push"), "git-log")  # terminal_read('git-push') still works
+        workbench.aliases.clear()
 
     def test_explicit_background_is_never_handed_over(self):
         self.run_task(active=True, show="no")
