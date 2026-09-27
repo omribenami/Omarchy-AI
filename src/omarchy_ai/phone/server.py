@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ..config import CONFIG_DIR, Config
-from . import cast_audio
+from . import cast_audio, presence
 from ..execution.actions import run_action
 from ..execution import vision
 from ..voice.live import build_session_config
@@ -308,6 +308,7 @@ class _Handler(BaseHTTPRequestHandler):
             log.info("phone bridge: GET %s from %s -- session id present but not in paired_sessions.json (%d paired)",
                       self.path, self.address_string(), len(sessions))
             return False
+        presence.seen()
         return True
 
     def do_GET(self) -> None:  # noqa: N802 — stdlib method name
@@ -585,6 +586,7 @@ def start(config: Config) -> ThreadingHTTPServer | None:
         server.tls_context = ctx
         scheme = "https"
 
+    presence.start()
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="phone-bridge")
     thread.start()
     ip = _primary_lan_ip() or "0.0.0.0"

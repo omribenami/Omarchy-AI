@@ -45,6 +45,20 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: blank phone mirror after closing the lid
+
+The lid does not suspend (logind ignores it; Hyprland runs the clamshell
+script, which keeps a lone internal panel on). But the idle timer locked the
+screen at 08:50:07 and the panel was powered off (LVDS-1 dpmsStatus 0); grim
+then hangs (5s timeout reproduced) and the mirror loop (`phone/server.py`
+/mirror/stream) got no frames. Fix: `phone/presence.py` treats a paired
+request within 20s as "phone connected" (the page polls /api/audio/status
+every 2s) and holds Omarchy's own Stay Awake toggle plus DPMS on while one is;
+it releases only a hold it made (marker in ~/.local/state/omarchy-ai/), also
+after a crash. Verified live 09:00: curl polling with a paired cookie turned
+Stay Awake on and the panel on (dpms 0 -> 1, lid closed); 25s after the last
+poll Stay Awake was off again. It does not unlock an already locked screen.
+
 ### 2026-09-27 journal: easy tasks failing on the tool layer, not the model
 
 `journalctl --user -u omarchy-ai.service --since today` (16 sessions, ~290

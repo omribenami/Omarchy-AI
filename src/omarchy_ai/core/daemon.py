@@ -14,6 +14,7 @@ import threading
 from ..config import Config, ensure_dirs, load_config
 from ..execution import tile_logs
 from . import updates
+from ..phone import presence as phone_presence
 from ..phone import server as phone_server
 from ..voice import feedback, control
 from ..voice.live import LiveSession
@@ -272,6 +273,7 @@ class OmaDaemon:
         self._listen_stop.set()
         if self._phone_server is not None:
             self._phone_server.shutdown()
+            phone_presence.stop()
 
 
 def main() -> None:
