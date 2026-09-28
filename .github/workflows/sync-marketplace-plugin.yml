@@ -1,4 +1,8 @@
-# Sync the Omarchy AI settings bar widget to its one-plugin marketplace listing.
+# Sync the Omarchy AI marketplace listing (plugin id omarchy-ai.settings).
+#
+# The public listing is the front door for the full assistant. The listing
+# repository still contains one Quattro plugin: the settings bar widget.
+# `omarchy plugin add` does not install the daemon.
 #
 # Listing repository: omribenami/omarchy-ai-settings (see
 # scripts/marketplace-plugin/listing.env). The job copies
