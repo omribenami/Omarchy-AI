@@ -61,6 +61,17 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   and feed it; any success closes it. Voice Jev timeouts 3 s -> 1.5 s, no
   retry: 7 days of live calls had p90 0.6 s, switchboard max 0.91 s, and 2
   of 589 fast-path calls took 1.5-3.5 s.
+- Not the whole story: after the breaker (confirmed opening at 08:50:38,
+  Jev skipped in 1-2 ms) a phone call still went unheard at 08:52: three
+  stuck-turn splices, no reply, no transcripts. Phone calls never ran
+  `_stuck_turn_recovery` (the forced text turn_complete). Last 3 days, split
+  by abort_rms: phone 62 splices, 22 never answered, 0 forced; desktop 102,
+  15 rescued by forced closure. Now started on phone calls too. (The echo
+  gate is not a factor on the phone: `_playback_until` is only set by the
+  desktop player.)
+- Still open: some short Hebrew utterances are transcribed as Italian or
+  Spanish fragments ("scommettiti", "Chiamati.", "suceder"), phone speech
+  level p50 ~3000 at 08:51 vs 6000-10000 at other times.
 - Pre-existing, unrelated failure on main:
   `test_submit_sudo_password_never_returns_the_secret`.
 

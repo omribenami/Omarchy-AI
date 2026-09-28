@@ -197,6 +197,10 @@ async def _serve(config, sdp, answer, cancelled):
             tasks = [asyncio.create_task(coro) for coro in (
                 send_audio(session), send_text(session), adapter._receive(session),
                 adapter._tools(session), adapter._announcer(session), watch_offer(), adapter._hangup.wait(),
+                # 2026-09-28 08:52: three splices, no reply, the user unheard. Over
+                # 3 days 22 of 62 phone splices were never answered (desktop:
+                # 15 rescued by this forced closure, which the phone lacked).
+                adapter._stuck_turn_recovery(session),
                 *([adapter._fast_path()] if config.jev_fast_path else []))]
             done, _ = await asyncio.wait(tasks, timeout=config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
