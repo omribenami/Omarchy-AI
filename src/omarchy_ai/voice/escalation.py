@@ -49,7 +49,7 @@ IGNORED_TOOLS = frozenset({
 # commercial never ran. Every "Not executed:" is a guard, and a handoff is the
 # job coming back to her on purpose.
 _NOT_A_FAILURE = re.compile(
-    r"^Not executed:|judged the request .* ambiguous|^Not run: Jev checked|^Input NOT sent"
+    r"^Not executed:|judged the request .* ambiguous|^Not run: Jev checked|^Not run: the screen is locked|^Input NOT sent"
     r'|name one|does not exist|similar names|"status": "handoff"', re.S)
 
 GIVE_UP_P = 0.8

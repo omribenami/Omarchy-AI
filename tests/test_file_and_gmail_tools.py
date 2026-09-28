@@ -33,11 +33,13 @@ class LocalFileToolTests(unittest.TestCase):
         with patch.object(actions.sudo_approval, "retrieve", return_value="not-in-results"), \
              patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
              patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
+             patch.object(actions, "_screen_locked", return_value=False), \
              patch.object(actions.subprocess, "run", return_value=completed) as run:
             result = actions.submit_sudo_password({})
         self.assertTrue(result.ok)
         self.assertNotIn("not-in-results", result.message)
-        self.assertEqual(run.call_count, 2)
+        # The password, then Return (_desktop_env also asks hyprctl for the session).
+        self.assertEqual([c.args[0][0] for c in run.call_args_list if c.args[0][0] == "wtype"], ["wtype", "wtype"])
 
     def test_regular_window_sudo_is_pointed_at_submit_sudo_password(self):
         with patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \

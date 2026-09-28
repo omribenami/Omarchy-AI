@@ -77,5 +77,52 @@ class UnlockRoutingTests(unittest.TestCase):
         self.assertIn("UNLOCK", tools["lock_screen"]["description"])
 
 
+class LockedScreenKeyboardTests(unittest.TestCase):
+    """The user, 2026-09-28: while the screen was locked, everything she typed
+    went into the lock screen's password field."""
+
+    def attempt(self, locked, name, args):
+        runs = []
+
+        def run(argv, **kwargs):
+            runs.append(argv)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(actions, "_screen_locked", return_value=locked), \
+                patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
+                patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
+                patch.object(actions.sudo_approval, "retrieve", return_value="pw"), \
+                patch.object(actions.subprocess, "run", side_effect=run):
+            return getattr(actions, name)(args), [argv for argv in runs if argv[0] in ("wtype", "wl-copy")]
+
+    def test_nothing_is_typed_while_locked(self):
+        for name, args in [("type_text", {"text": "ssh me@host"}), ("type_text", {"text": "one\ntwo"}),
+                           ("press_key", {"key": "Return"}), ("submit_sudo_password", {})]:
+            result, typed = self.attempt(True, name, args)
+            self.assertFalse(result.ok, name)
+            self.assertIn("screen is locked", result.message)
+            self.assertEqual(typed, [], name)
+
+    def test_unlocked_or_unknown_types_as_before(self):
+        for locked in (False, None):
+            result, typed = self.attempt(locked, "press_key", {"key": "Return"})
+            self.assertTrue(result.ok)
+            self.assertEqual(typed, [["wtype", "-k", "Return"]])
+
+    def test_lock_state_falls_back_to_the_compositor(self):
+        codes = {0: True, 1: False, 2: None}
+        for code, expected in codes.items():
+            with patch.object(actions, "_run", return_value=ActionResult(False, "no IPC")), \
+                    patch.object(actions, "_desktop_env", return_value={}), \
+                    patch.object(actions.subprocess, "run", return_value=SimpleNamespace(returncode=code)):
+                self.assertIs(actions._screen_locked(), expected, code)
+
+    def test_a_locked_screen_is_not_a_failure_to_escalate(self):
+        from omarchy_ai.voice.escalation import Escalator
+        e = Escalator(lambda reply, latest: (False, False))
+        for at in (1.0, 2.0):
+            e.observe_call("type_text", {}, False, actions.SCREEN_LOCKED, at)
+        self.assertFalse(e.pending(3.0))
+
+
 if __name__ == "__main__":
     unittest.main()

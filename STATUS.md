@@ -45,6 +45,24 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-28: no typing into a locked screen
+
+- The user: "she needs to make sure the screen is unlocked, otherwise
+  everything she does ends up in the password field". Every keystroke goes
+  through type_text (and its paste path), press_key and submit_sudo_password
+  in execution/actions.py (desktop_task, missions and the fast path call
+  these); each now refuses when `_screen_locked()` says locked, with a
+  message telling her to ask the user to unlock (from the paired phone).
+  Failed attempts matter here: pam_faillock on this machine is deny=10,
+  unlock_time=120. The check costs ~55 ms (`omarchy-shell lock isLocked`);
+  when the shell's IPC fails it asks the compositor
+  (`omarchy-hyprland-session-locked`, exit 0 locked / 1 unlocked / 2
+  unknown); unknown still types, as before. A lock refusal is not a failure
+  for escalation. Not yet seen with a real locked screen.
+- test_submit_sudo_password_never_returns_the_secret had failed all day:
+  `_desktop_env()` now also runs `hyprctl instances`, so its exact count of
+  subprocess calls was stale. It now checks the two wtype calls.
+
 ### 2026-09-28: "she can't hear me" was the Gateway, not the mic
 
 - Phone session 08:34-08:38: speech was transcribed every time, but the

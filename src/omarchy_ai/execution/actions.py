@@ -189,7 +189,34 @@ def lock_screen(args: dict) -> ActionResult:
 
 def _screen_locked() -> bool | None:
     r = _run(["omarchy-shell", "lock", "isLocked"])
-    return r.message.strip() == "true" if r.ok else None
+    if r.ok and r.message.strip() in ("true", "false"):
+        return r.message.strip() == "true"
+    # The shell's IPC is down; the compositor still knows (exit 0 locked,
+    # 1 unlocked, 2 undetermined).
+    try:
+        code = subprocess.run(["omarchy-hyprland-session-locked"], capture_output=True, timeout=2,
+                              env=_desktop_env()).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return {0: True, 1: False}.get(code)
+
+
+# The user, 2026-09-28: "she needs to make sure the screen is unlocked,
+# otherwise everything she does ends up in the password field". Keystrokes on
+# a locked screen go to the lock screen's password field, and failed
+# attempts lock the account (pam_faillock here: 10 failures, 2 minutes).
+SCREEN_LOCKED = ("Not run: the screen is locked. Anything typed now would go into the lock screen's password field, "
+                 "and failed attempts can lock the account. Tell the user the screen is locked and ask them to unlock "
+                 "it (from their paired phone: say unlock, or press its Unlock button), then do it again.")
+
+
+def _keyboard_blocked() -> ActionResult | None:
+    """A refusal when the screen is locked, else None (unknown state: allowed,
+    as before this check existed)."""
+    if _screen_locked():
+        log.warning("keyboard input refused: the screen is locked")
+        return ActionResult(False, SCREEN_LOCKED)
+    return None
 
 
 def github_upload_attachment(args: dict) -> ActionResult:
@@ -832,6 +859,8 @@ def type_text(args: dict) -> ActionResult:
         return ActionResult(False, "no text given")
     if shutil.which("wtype") is None:
         return ActionResult(False, "wtype is not installed")
+    if blocked := _keyboard_blocked():
+        return blocked
     # A trailing newline would submit implicitly; submission is press_key's job.
     text = text.rstrip("\r\n")
     if not text:
@@ -850,6 +879,8 @@ def press_key(args: dict) -> ActionResult:
         return ActionResult(False, "no key given")
     if shutil.which("wtype") is None:
         return ActionResult(False, "wtype is not installed")
+    if blocked := _keyboard_blocked():
+        return blocked
 
     modifiers = args.get("modifiers") or []
     if isinstance(modifiers, str):
@@ -881,6 +912,8 @@ def submit_sudo_password(_args: dict) -> ActionResult:
         return ActionResult(False, "wtype is not installed")
     if not load_config().sudo_access_enabled:
         return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
+    if blocked := _keyboard_blocked():
+        return blocked
     password = sudo_approval.retrieve()
     if password is None:
         return ActionResult(False, "no sudo password is saved in GNOME Keyring; add it in Assistant Settings")
