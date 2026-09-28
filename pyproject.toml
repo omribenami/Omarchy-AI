@@ -1,6 +1,6 @@
 [project]
 name = "omarchy-ai"
-version = "0.10.0"
+version = "0.10.1"
 description = "Independent voice assistant for Omarchy with Android TV/tablet casting"
 authors = [
     { name = "omribenami", email = "omribenami@users.noreply.github.com" }
@@ -42,6 +42,9 @@ omarchy-ai-tool = "omarchy_ai.cli.tools:main"
 # Live terminal dashboard for the MyApi integration — see
 # src/omarchy_ai/cli/dashboard.py's module docstring.
 omarchy-ai-dashboard = "omarchy_ai.cli.dashboard:main"
+# MyApi token vault for programs (user tools, task commands) -- see
+# src/omarchy_ai/myapi/vault.py. Values never go to a model.
+omarchy-ai-vault = "omarchy_ai.myapi.vault:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]
