@@ -29,6 +29,12 @@ class FakeClient:
 class VaultTests(unittest.TestCase):
     def setUp(self):
         vault._cache.clear()
+        # Never touch the real GNOME Keyring (2026-09-28: an unpatched run left a
+        # fake 'elevenlabs' value in the user's keyring cache).
+        for name, fake in (("_keyring_get", lambda name: None), ("_keyring_put", lambda name, value: None)):
+            patcher = patch.object(vault, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         patcher = patch.object(vault, "_revealed_path", return_value=Path(self.tmp.name) / "revealed.json")
         patcher.start()
@@ -46,11 +52,11 @@ class VaultTests(unittest.TestCase):
         self.assertNotIn("value-for-b-123", vault._revealed_path().read_text())
         self.assertIn("vt_b", vault._revealed_path().read_text())
 
-    def test_other_workspace_explains_what_to_do(self):
+    def test_listed_but_unreadable_token_says_to_re_add_it(self):
         with self.assertRaises(MyApiError) as ctx:
             vault.get("Home Assistant", FakeClient())
-        self.assertIn("'My Workspace'", str(ctx.exception))
-        self.assertIn("move it", str(ctx.exception))
+        self.assertIn("cannot be decrypted", str(ctx.exception))
+        self.assertIn("add it again", str(ctx.exception))
 
     def test_unknown_name_lists_what_exists(self):
         with self.assertRaises(MyApiError) as ctx:

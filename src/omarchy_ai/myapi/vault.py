@@ -12,9 +12,9 @@ task worked around it by borrowing the Home Assistant owner's login session.
   agenda and logs (execution/passwords.py `known_secrets`), so a worker that
   prints one does not put it in front of a model or on disk.
 
-MyApi quirk (confirmed 2026-09-28): /vault/tokens lists tokens from every
-workspace of the account, but /vault/tokens/{id}/reveal only finds tokens in
-the workspace this client's identity belongs to ("Token not found").
+MyApi (2026-09-28): reveal only searched the active workspace while the list
+showed all of them; fixed in MyApi d1140eb3. Reveal still answers "Token not
+found" for a stored value it cannot decrypt.
 """
 from __future__ import annotations
 
@@ -28,6 +28,37 @@ from .client import MyApiClient, MyApiError
 
 _CACHE_SECONDS = 300
 _cache: dict[str, tuple[float, str]] = {}
+# GNOME Keyring cache across processes (a user tool is a new process per call):
+# 2026-09-28 a Home Assistant call took 2.7 s, 0.8 s of it the MyApi round
+# trip, against 11 ms for Home Assistant itself. Refreshed after this long, or
+# at once with `get --fresh` (the tool does that when a service answers 401).
+KEYRING_SECONDS = 12 * 3600
+_KEYRING = ("application", "omarchy-ai", "purpose", "vault-cache")
+
+
+def _keyring_get(name: str) -> str | None:
+    import subprocess
+    try:
+        out = subprocess.run(["secret-tool", "search", "--unlock", *_KEYRING, "name", _norm(name)],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    at = re.search(r"^attribute\.at = (\d+)$", out.stderr + out.stdout, re.M)  # secret-tool prints attributes on stderr
+    secret = re.search(r"^secret = (.*)$", out.stdout, re.M)
+    if not at or not secret or time.time() - int(at[1]) > KEYRING_SECONDS:
+        return None
+    return secret[1]
+
+
+def _keyring_put(name: str, value: str) -> None:
+    import subprocess
+    try:
+        subprocess.run(["secret-tool", "clear", *_KEYRING, "name", _norm(name)], capture_output=True, timeout=5)
+        subprocess.run(["secret-tool", "store", "--label", f"Omarchy AI vault cache: {name}", *_KEYRING,
+                        "name", _norm(name), "at", str(int(time.time()))], input=value, capture_output=True,
+                       text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _revealed_path() -> Path:
@@ -70,7 +101,11 @@ def find(name: str, client: MyApiClient | None = None) -> dict:
     return loose[0]
 
 
-def get(name: str, client: MyApiClient | None = None) -> str:
+def get(name: str, client: MyApiClient | None = None, *, fresh: bool = False) -> str:
+    if not fresh and not name.startswith("vt_"):
+        cached = _keyring_get(name)
+        if cached:
+            return cached
     client = client or MyApiClient()
     token = find(name, client)
     cached = _cache.get(token["id"])
@@ -80,20 +115,20 @@ def get(name: str, client: MyApiClient | None = None) -> str:
         data = client.request("GET", f"/vault/tokens/{token['id']}/reveal")
     except MyApiError as exc:
         if "not found" in str(exc).lower():
-            where = token.get("workspaceId")
-            try:
-                where = next((w.get("name") for w in client.request("GET", "/workspaces").get("workspaces", [])
-                              if w.get("id") == where), where)
-            except MyApiError:
-                pass
-            raise MyApiError(f"the vault token {token.get('label')!r} is in the MyApi workspace {where!r}, which Omarchy "
-                             "AI's MyApi login cannot read; move it to Omarchy AI's workspace at myapiai.com") from exc
+            # MyApi answers "Token not found" both for a missing row and for a
+            # stored value it cannot decrypt (2026-09-28: the March 'home
+            # assistant' token failed while a new token in the same workspace
+            # revealed fine, after the workspace fix was deployed).
+            raise MyApiError(f"MyApi listed the vault token {token.get('label')!r} but cannot return its value "
+                             "(its stored value cannot be decrypted): delete it and add it again at myapiai.com") from exc
         raise
     value = (data.get("data") or data).get("token")
     if not value:
         raise MyApiError(f"MyApi returned no value for {token.get('label')!r}")
     _cache[token["id"]] = (time.time(), value)
     _record(token["id"])
+    if not name.startswith("vt_"):
+        _keyring_put(name, value)
     return value
 
 
@@ -129,7 +164,7 @@ def revealed_values() -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`omarchy-ai-vault list` | `omarchy-ai-vault get NAME` (value on stdout,
+    """`omarchy-ai-vault list` | `omarchy-ai-vault get [--fresh] NAME` (value on stdout,
     for a program: `curl -H "Authorization: Bearer $(omarchy-ai-vault get
     'home assistant')" ...`)."""
     import sys
@@ -141,8 +176,11 @@ def main(argv: list[str] | None = None) -> int:
         if argv[:1] == ["get"] and len(argv) == 2:
             sys.stdout.write(get(argv[1]))
             return 0
+        if argv[:2] == ["get", "--fresh"] and len(argv) == 3:
+            sys.stdout.write(get(argv[2], fresh=True))
+            return 0
     except MyApiError as exc:
         print(f"omarchy-ai-vault: {exc}", file=sys.stderr)
         return 1
-    print("usage: omarchy-ai-vault list | get NAME", file=sys.stderr)
+    print("usage: omarchy-ai-vault list | get [--fresh] NAME", file=sys.stderr)
     return 2
