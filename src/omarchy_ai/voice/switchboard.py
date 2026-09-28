@@ -102,7 +102,7 @@ def _options(tool: str, ctx: Context) -> dict:
 
 
 def questions(tool: str, ctx: Context) -> dict:
-    return {
+    result = {
         "route": choice(
             "The live model wants to make `call` for the user's latest `request` (earlier turns and the calls it "
             "already made this turn are context). Decide where this goes. Relaying or typing text the user "
@@ -124,6 +124,13 @@ def questions(tool: str, ctx: Context) -> dict:
              "not_asked": "The user did not ask for this.",
              "ambiguous": "The request does not say clearly what to act on."}),
     }
+    if tool == "myapi_write":
+        result["confirmed"] = boolean(
+            "Does the user's latest request explicitly say yes or otherwise clearly approve this exact MyApi "
+            "external change after the assistant asked for confirmation? The original instruction to do the "
+            "work is not confirmation, and a refusal, correction, or unrelated answer is false."
+        )
+    return result
 
 
 def state(tool: str, args: dict, ctx: Context) -> dict:
@@ -154,6 +161,13 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
     route, p = answers["route"]["choice"], answers["route"]["p"]
     match, gap = answers["matches"]["p"], answers["gap"]["choice"]
     evidence = {"route": route, "p": round(p, 2), "matches": round(match, 2), "gap": gap}
+    if tool == "myapi_write":
+        confirmed = answers.get("confirmed", {}).get("p", 0)
+        evidence["confirmed"] = round(confirmed, 2)
+        if confirmed < 0.8:
+            return Verdict("reject", evidence=evidence, message=(
+                "MyApi action not run: Jev did not find an explicit confirmation of this exact external "
+                "change in the user's latest answer. Do not retry unless the user clearly says yes."))
     confident_hint = bool(ctx.hint and ctx.hint.get("p", 0) >= 0.8)
     bar = DESKTOP_REROUTE_P if route == "desktop_task" and confident_hint else REROUTE_P
     if route in REROUTES and p >= bar and _hint_allows(route, ctx.hint):
@@ -219,7 +233,11 @@ class Switchboard:
                 return cached[1]
         started = time.monotonic()
         if not ctx.request.strip():
-            verdict = Verdict("execute", tool, dict(args or {}), evidence={"skipped": "no user request"})
+            if tool == "myapi_write":
+                verdict = Verdict("reject", evidence={"confirmation": "no user request"}, message=(
+                    "MyApi action not run: there is no current user confirmation for this external change."))
+            else:
+                verdict = Verdict("execute", tool, dict(args or {}), evidence={"skipped": "no user request"})
         elif (missing := _missing_agent(tool, args, ctx)) is not None:
             verdict = missing
         elif _relays_to_task(tool, args):
@@ -235,8 +253,13 @@ class Switchboard:
                                                    timeout=TIMEOUT, retries=0, fail_fast=True)
                 verdict = decide(answers, tool, args, ctx)
             except (JevError, KeyError) as exc:
-                log.warning("Switchboard unavailable, running %s unreviewed: %s", tool, str(exc)[:160])
-                verdict = Verdict("execute", tool, dict(args or {}), evidence={"unavailable": str(exc)[:120]})
+                if tool == "myapi_write":
+                    log.warning("Switchboard unavailable, refusing %s: %s", tool, str(exc)[:160])
+                    verdict = Verdict("reject", evidence={"unavailable": str(exc)[:120]}, message=(
+                        "MyApi action not run: confirmation could not be verified because Jev is unavailable."))
+                else:
+                    log.warning("Switchboard unavailable, running %s unreviewed: %s", tool, str(exc)[:160])
+                    verdict = Verdict("execute", tool, dict(args or {}), evidence={"unavailable": str(exc)[:120]})
         verdict.ms = (time.monotonic() - started) * 1000
         with self._lock:
             self._cache = {k: v for k, v in self._cache.items() if now - v[0] < CACHE_SECONDS}

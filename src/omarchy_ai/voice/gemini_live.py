@@ -61,7 +61,7 @@ NON_BLOCKING_ACTIONS = {
     "describe_screen", "open_browser", "start_casting", "stop_casting", "list_cast_targets",
     "install_receiver_on_tv", "list_commands", "find_skill",
     "check_assistant_updates", "update_assistant", "get_release_notes", "report_issue",
-    "myapi_list_services", "myapi_vault_list", "myapi_service_methods", "myapi_call",
+    "myapi_list_services", "myapi_vault_list", "myapi_service_methods", "myapi_call", "myapi_write",
     "myapi_gmail_search", "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
     # The catalog holds slow tools (casting, MyApi, issues); its quick ones
     # just report when she is idle.
@@ -878,6 +878,11 @@ class GeminiLiveSession:
                 elif early is not None and name == tool:
                     action = early
                 else:
+                    if name == "myapi_write":
+                        # The switchboard's dedicated `confirmed` judgment is
+                        # semantic and multilingual. InputGuard still pins that
+                        # approval to this exact payload before execution.
+                        self._input_guard.approve_external_write(args)
                     action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, self._run_tool, name, args))
                 try:
                     if action is not None:

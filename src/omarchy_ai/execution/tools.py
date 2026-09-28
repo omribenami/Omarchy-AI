@@ -2,10 +2,10 @@
 
 Kept separate from actions.py: this is what the model sees and reasons
 about (names, descriptions, typed parameters), actions.py is what actually
-runs. Only Level 1 (read-only) and Level 2 (reversible) actions per
-ADR-0001's policy table are exposed here — nothing sensitive/dangerous
-(logout, reboot, shutdown, package changes) until there's a real
-confirm/policy layer, not just a hopeful description.
+runs. Most entries are Level 1 (read-only) or Level 2 (reversible) per
+ADR-0001's policy table. Sensitive actions are exposed only when code owns a
+real confirmation gate (currently MyApi external writes); dangerous local
+actions such as logout, reboot, shutdown, and package changes remain absent.
 """
 
 from __future__ import annotations
@@ -703,9 +703,8 @@ TOOLS: list[dict] = [
 # spreads this list in conditionally (myapi.is_connected()) instead of
 # unconditionally like everything above — an unconnected user should never
 # see the model attempt (and fail) a MyApi call it has no way to make
-# succeed. myapi_call is GET-only for the same "no confirm/policy layer
-# yet" reasoning as run_omarchy_command's own allowlist above; see
-# execution/actions.py's myapi_call for the enforcement.
+# succeed. Reads and external writes are distinct tools so the switchboard
+# can speculate only on reads and InputGuard can confirm the exact mutation.
 MYAPI_TOOLS: list[dict] = [
     _tool(
         "myapi_vault_list",
@@ -772,6 +771,33 @@ MYAPI_TOOLS: list[dict] = [
                 },
             },
             "required": ["service", "path"],
+        },
+    ),
+    _tool(
+        "myapi_write",
+        "Create, update, send, or delete data in any connected MyApi service. Use the service's "
+        "documented REST path from myapi_service_methods. This is a real external side effect: the "
+        "first identical call is blocked and tells you exactly what to confirm; ask the user, wait "
+        "for an explicit yes, then retry the identical call. Never treat an earlier general request "
+        "as that confirmation. MyApi still enforces the access scope granted to this assistant.",
+        {
+            "type": "object",
+            "properties": {
+                "service": {"type": "string", "description": "Connected service id."},
+                "path": {"type": "string", "description": "Provider REST path."},
+                "method": {
+                    "type": "string",
+                    "enum": ["POST", "PUT", "PATCH", "DELETE"],
+                    "description": "The mutating HTTP method documented for this operation.",
+                },
+                "query": {"type": "object", "description": "Optional query parameters."},
+                "body": {"type": "object", "description": "Optional JSON request body."},
+                "description": {
+                    "type": "string",
+                    "description": "A short, concrete account of what will change, including the target.",
+                },
+            },
+            "required": ["service", "path", "method", "description"],
         },
     ),
     _tool(

@@ -1,5 +1,17 @@
 # Status
 
+## 2026-09-28: faster, full-scope MyApi path
+
+- Removed the post-call Gateway prose generation plus Jev fact-check chain. Small MyApi
+  results now reach the live model immediately; oversized record sets use one bounded
+  Jev choice to rank relevant records, then the live model phrases the answer.
+- Service and method discovery is cached for 15 minutes per enrolled identity, avoiding
+  repeated network round trips during a conversation.
+- MyApi is no longer artificially GET-only. `myapi_write` supports POST/PUT/PATCH/DELETE
+  within the device's MyApi scope. It is a distinct state-changing tool and requires an
+  intervening user-confirmation turn for the exact service/path/method/query/body; a
+  changed payload requires a new confirmation.
+
 ## Phase 1: real OS control wired up, confirmed live
 
 Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:

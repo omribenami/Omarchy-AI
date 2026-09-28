@@ -582,7 +582,8 @@ flowchart LR
 - **MyApi.** One code from your [MyApi](https://www.myapiai.com) dashboard
   connects Gmail, Calendar, Drive, Notion, Slack and 200+ services, with no
   OAuth redirect and no token shown. It prefers a real API call over a
-  browser and a screenshot (read-only for now). Gmail attachments have a
+  browser and a screenshot. Reads run directly; sends, creates, updates and
+  deletes require a fresh confirmation of the exact operation. Gmail attachments have a
   dedicated search-and-download flow into `~/Downloads/Omarchy_AI/`. A bar
   panel and `omarchy-ai-dashboard` show live per-service usage. Requires a
   MyApi Pro/Heavy/Enterprise plan.
@@ -860,7 +861,8 @@ Documented honestly rather than papered over:
   enabled and the saved password to be your login password.
 - **"One job, one task" is a Jev judgement.** If Jev is unreachable or
   unsure, a new task starts rather than risk merging two different jobs.
-- **MyApi is read-only**: sending mail or creating events isn't wired up.
+- **MyApi capabilities follow the scope granted to the enrolled device.**
+  External writes additionally require confirmation in the current conversation.
   Disconnecting in the panel only stops this machine; remove the device in
   your MyApi dashboard to fully revoke access.
 - The settings panel's path to the settings CLI is hardcoded to the original

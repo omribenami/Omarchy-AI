@@ -10,8 +10,9 @@ from omarchy_ai.voice.switchboard import Context, Switchboard
 
 
 class FakeJev:
-    def __init__(self, route="execute", p=0.97, matches=0.95, gap="none", fail=False):
+    def __init__(self, route="execute", p=0.97, matches=0.95, gap="none", fail=False, confirmed=0.99):
         self.answers = {"route": {"choice": route, "p": p}, "matches": {"p": matches}, "gap": {"choice": gap, "p": 0.9}}
+        self.answers["confirmed"] = {"p": confirmed}
         self.fail, self.calls = fail, []
 
     def ask(self, state, questions, **kwargs):
@@ -79,6 +80,18 @@ class PolicyTests(unittest.TestCase):
         v = Switchboard(FakeJev(fail=True)).review("volume_up", {}, ctx("louder"))
         self.assertEqual(v.action, "execute")
         self.assertIn("unavailable", v.evidence)
+
+    def test_myapi_write_requires_jev_verified_confirmation(self):
+        args = {"service": "gmail", "path": "/send", "method": "POST"}
+        denied = Switchboard(FakeJev(confirmed=0.1)).review("myapi_write", args, ctx("no"))
+        self.assertEqual(denied.action, "reject")
+        approved = Switchboard(FakeJev(confirmed=0.99)).review("myapi_write", args, ctx("yes"))
+        self.assertEqual(approved.action, "execute")
+
+    def test_myapi_write_fails_closed_when_jev_is_down(self):
+        args = {"service": "gmail", "path": "/send", "method": "POST"}
+        verdict = Switchboard(FakeJev(fail=True)).review("myapi_write", args, ctx("yes"))
+        self.assertEqual(verdict.action, "reject")
 
     def test_repeated_identical_calls_reuse_the_decision(self):
         jev = FakeJev()

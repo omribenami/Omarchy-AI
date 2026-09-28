@@ -56,16 +56,44 @@ class InputGuard:
         # Session-ending input waiting for the user's answer: its key, when
         # it was blocked, and blocked -> asked -> answered.
         self._confirm_key, self._confirm_at, self._confirm_stage = None, 0.0, ""
+        self._write_key, self._write_at, self._write_stage = None, 0.0, ""
 
     def assistant_replied(self) -> None:
         """The assistant finished speaking (after a block: it asked)."""
         if self._confirm_stage == "blocked":
             self._confirm_stage = "asked"
+        if self._write_stage == "blocked":
+            self._write_stage = "asked"
 
     def heard_user(self) -> None:
         """The user spoke (after the question: they answered)."""
         if self._confirm_stage == "asked":
             self._confirm_stage = "answered"
+        if self._write_stage == "asked":
+            self._write_stage = "answered"
+
+    def _external_write_allowed(self, name, args) -> ActionResult | None:
+        if name != "myapi_write":
+            return None
+        material = {key: args.get(key) for key in ("service", "path", "method", "query", "body")}
+        key = json.dumps(material, sort_keys=True, default=str)
+        if key == self._write_key and self._write_stage == "answered" and \
+                time.monotonic() - self._write_at < self.CONFIRM_SECONDS:
+            self._write_key, self._write_stage = None, ""
+            return None
+        self._write_key, self._write_at, self._write_stage = key, time.monotonic(), "blocked"
+        description = str(args.get("description") or f"{material['method']} {material['path']}")
+        return ActionResult(False, (
+            f"MyApi action NOT run: {description}. Ask the user to confirm this exact change and wait for "
+            "their answer. Retry the identical call only after an explicit yes; if they change any detail, "
+            "submit the changed call and confirm it separately."))
+
+    def approve_external_write(self, args: dict) -> None:
+        """Record an exact write that the Jev switchboard just confirmed."""
+        material = {key: args.get(key) for key in ("service", "path", "method", "query", "body")}
+        self._write_key = json.dumps(material, sort_keys=True, default=str)
+        self._write_at = time.monotonic()
+        self._write_stage = "answered"
 
     def _session_end_allowed(self, name, args, window) -> ActionResult | None:
         """None to send it; otherwise the block, the first time around."""
@@ -100,6 +128,9 @@ class InputGuard:
         return window.get("address") if window else None
 
     def run(self, execute, name, args):
+        blocked_write = self._external_write_allowed(name, args)
+        if blocked_write is not None:
+            return blocked_write
         keyboard = name in {"type_text", "press_key", "submit_sudo_password"}
         window = self.focused_window(execute) if keyboard and self.address else None
         if keyboard and (not self.address or not window or window.get("address") != self.address):

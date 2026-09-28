@@ -111,6 +111,24 @@ class InputGuardTests(unittest.TestCase):
         self.assertTrue(ends_session('press_key', {'key': 'd', 'modifiers': ['ctrl']}))
         self.assertFalse(ends_session('press_key', {'key': 'c', 'modifiers': ['ctrl']}))
 
+    def test_myapi_write_requires_an_intervening_confirmation_turn(self):
+        args = {"service": "gmail", "path": "/messages/send", "method": "POST",
+                "body": {"to": "a@example.com"}, "description": "send mail to a@example.com"}
+        self.assertFalse(self.guard.run(self.execute, "myapi_write", args).ok)
+        self.assertFalse(self.guard.run(self.execute, "myapi_write", args).ok)
+        self.guard.assistant_replied()
+        self.guard.heard_user()
+        self.assertTrue(self.guard.run(self.execute, "myapi_write", args).ok)
+
+    def test_changed_myapi_write_needs_new_confirmation(self):
+        args = {"service": "gmail", "path": "/messages/send", "method": "POST",
+                "body": {"to": "a@example.com"}, "description": "send mail"}
+        self.assertFalse(self.guard.run(self.execute, "myapi_write", args).ok)
+        self.guard.assistant_replied()
+        self.guard.heard_user()
+        changed = {**args, "body": {"to": "b@example.com"}}
+        self.assertFalse(self.guard.run(self.execute, "myapi_write", changed).ok)
+
     def test_input_results_say_which_machine_runs_it(self):
         self.window = {'machine': 'REMOTE user@x230 (ssh): commands typed here run on that machine'}
         focused = self.guard.run(self.execute, 'focus_window', {'target': self.address})

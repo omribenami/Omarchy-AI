@@ -179,6 +179,22 @@ class GmailAttachmentToolTests(unittest.TestCase):
                          '{Chris Tri-Point "Tri Point" TriPoint}')
         self.assertEqual(payload["result"], found)
 
+    def test_myapi_write_passes_mutation_body_to_service(self):
+        client = MagicMock()
+        client.call_service.return_value = {"ok": True, "id": "event-1"}
+        with patch.object(actions.myapi, "is_connected", return_value=True), \
+             patch.object(actions.myapi, "MyApiClient", return_value=client), \
+             patch.object(actions.myapi_usage, "record"):
+            result = actions.myapi_write({
+                "service": "googlecalendar", "path": "/calendar/v3/calendars/primary/events",
+                "method": "POST", "body": {"summary": "Lunch"}, "description": "create Lunch",
+            })
+        self.assertTrue(result.ok)
+        client.call_service.assert_called_once_with(
+            "googlecalendar", "/calendar/v3/calendars/primary/events", "POST",
+            query=None, body={"summary": "Lunch"},
+        )
+
     def test_query_planner_preserves_hard_filters_and_relaxes_text_fields(self):
         planned = actions._gmail_fallback_queries(
             'from:Alex subject:"Quarterly-Update" has:attachment after:2026/01/01'

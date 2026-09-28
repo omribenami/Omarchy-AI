@@ -2043,10 +2043,9 @@ def run_omarchy_command(args: dict) -> ActionResult:
 # reachable from the phone bridge (phone/server.py), which doesn't share
 # that per-session check.
 #
-# myapi_call only allows GET: same "no real confirm/policy layer exists
-# yet, so only Level 1 (read-only) is voice-reachable" bar every other
-# action in this file holds to -- see the module docstring and
-# run_omarchy_command's own allowlist just above.
+# Reads and writes deliberately use separate actions. myapi_call remains
+# GET-only; InputGuard applies a conversation-scoped exact-payload
+# confirmation before myapi_write can reach this module.
 
 
 def myapi_vault_list(args: dict) -> ActionResult:
@@ -2233,6 +2232,45 @@ def myapi_call(args: dict) -> ActionResult:
             service=service.strip(), path=path.strip(), method=method,
             ok=ok, duration_ms=(time.monotonic() - started) * 1000,
         )
+
+
+def myapi_write(args: dict) -> ActionResult:
+    """Run one already-confirmed external mutation through MyApi.
+
+    Conversation-scoped confirmation is enforced by InputGuard before this
+    function is reached. Keeping reads and writes as different tool names also
+    lets the switchboard treat speculative reads optimistically without ever
+    starting a mutation before its verdict.
+    """
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
+    service = args.get("service")
+    path = args.get("path")
+    method = str(args.get("method") or "").strip().upper()
+    if not isinstance(service, str) or not service.strip():
+        return ActionResult(False, "no service given")
+    if not isinstance(path, str) or not path.strip():
+        return ActionResult(False, "no path given")
+    if method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return ActionResult(False, "method must be POST, PUT, PATCH, or DELETE")
+    query, body = args.get("query"), args.get("body")
+    if query is not None and not isinstance(query, dict):
+        return ActionResult(False, "query must be an object")
+    if body is not None and not isinstance(body, dict):
+        return ActionResult(False, "body must be an object")
+    started = time.monotonic()
+    ok = False
+    try:
+        result = myapi.MyApiClient().call_service(
+            service.strip(), path.strip(), method, query=query, body=body,
+        )
+        ok = True
+        return ActionResult(True, json.dumps(result))
+    except myapi.MyApiError as exc:
+        return ActionResult(False, f"MyApi action failed: {exc}")
+    finally:
+        myapi_usage.record(service=service.strip(), path=path.strip(), method=method,
+                           ok=ok, duration_ms=(time.monotonic() - started) * 1000)
 
 
 def _gmail_execute(method: str, arguments: dict) -> dict:
@@ -2516,6 +2554,7 @@ ACTIONS = {
     "myapi_vault_list": myapi_vault_list,
     "myapi_service_methods": myapi_service_methods,
     "myapi_call": myapi_call,
+    "myapi_write": myapi_write,
     "myapi_gmail_search": myapi_gmail_search,
     "myapi_gmail_search_attachments": myapi_gmail_search_attachments,
     "myapi_gmail_download_attachment": myapi_gmail_download_attachment,

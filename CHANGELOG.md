@@ -19,6 +19,25 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.11.3] - 2026-09-28
+
+### Highlights
+
+- Connected MyApi services can now create, send, update, and delete—not just
+  read—after you confirm the exact change.
+- MyApi answers arrive faster: ordinary results no longer wait for a second
+  writing model and a separate fact-check before she can answer you.
+- Repeated service and method lookups are reused during the conversation.
+
+### Under the hood
+
+- External MyApi writes support POST, PUT, PATCH, and DELETE within the
+  enrolled device's scope. Jev verifies the confirmation and writes fail
+  closed if that check is unavailable.
+- Large structured results use one bounded Jev ranking pass; small results
+  go directly to the live model.
+- Service discovery metadata is cached for 15 minutes per enrolled identity.
+
 ## [0.11.2] - 2026-09-28
 
 ### Highlights

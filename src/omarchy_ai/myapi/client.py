@@ -41,6 +41,8 @@ log = logging.getLogger("omarchy_ai.myapi")
 
 BASE_URL = "https://www.myapiai.com/api/v1"
 _TIMEOUT = 15
+_DISCOVERY_TTL = 15 * 60
+_discovery_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 # myapiai.com sits behind Cloudflare, which blocks urllib's default
 # "Python-urllib/x.y" User-Agent outright (HTTP 403, body "error code:
 # 1010") before the request ever reaches the app -- confirmed live by
@@ -234,10 +236,27 @@ class MyApiClient:
     # -- convenience wrappers over the service gateway --------------------
 
     def list_services(self) -> dict:
-        return self.request("GET", "/services")
+        return self._cached_discovery("services", "/services")
 
     def service_methods(self, service: str) -> dict:
-        return self.request("GET", f"/services/{service}/methods")
+        service = service.strip().casefold()
+        return self._cached_discovery(f"methods:{service}", f"/services/{service}/methods")
+
+    def _cached_discovery(self, name: str, path: str) -> dict:
+        """Reuse stable discovery metadata across short-lived client objects.
+
+        The voice layer constructs a client per action. Without a process-wide
+        cache, a normal service request pays an avoidable MyApi round trip just
+        to rediscover the same catalog on every turn.
+        """
+        identity = str((self._identity or {}).get("key_fingerprint") or "anonymous")
+        key = (identity, name)
+        cached = _discovery_cache.get(key)
+        if cached and time.monotonic() - cached[0] < _DISCOVERY_TTL:
+            return cached[1]
+        result = self.request("GET", path)
+        _discovery_cache[key] = (time.monotonic(), result)
+        return result
 
     def call_service(
         self, service: str, path: str, method: str = "GET",
