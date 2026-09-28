@@ -50,7 +50,7 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
 "Why is it using grok-4.1 and not codex as I asked?" Evidence, task
 20260927-154507-92b0ee: at 15:45 the user said "open a terminal, cd to
 Git/Omarchy-AI, open codex --yolo and ask him as follows: ..."; she called
-start_task with only the inner request (no Codex, no directory -> /home/user).
+start_task with only the inner request (no Codex, no directory -> the home directory).
 The switchboard voted reject (p=0.84, not_asked) but matches 0.32 passed the
 0.30 bar. Jev routed SYSTEM_AGENT: qwen3.7-flash, then grok-4.1 (paid API).
 Root cause underneath: under the service, `codex`, `claude` and `gh` resolve
@@ -116,8 +116,8 @@ home assistant task?" then "I want you to do it. SSH to it yourself":
    password) and never to hand a remote step back to the user.
 After all three: task_respond relayed and executed, the task resumed, and
 the worker chose `ssh-copy-id -i ~/.ssh/id_ed25519_ha_jev.pub
-user@192.0.2.10` on its own -> ELEVATED approval "logs in to
-user@192.0.2.10 with your password", announced by her ("approve or
+<user>@<ha-host>` on its own -> ELEVATED approval "logs in to
+<user>@<ha-host> with your password", announced by her ("approve or
 deny?"). Left for the user to approve. Still wrong: her reply to the relayed
 turn itself was still "I can't" (the tool result says "resumed"); the
 approval announcement followed ~30 s later.
@@ -154,7 +154,7 @@ conversation_history.jsonl only (journal, tasks, agenda, config: clean).
   real one (restored from Sudo Access: same password, compared by hash).
 - Migrated: the one spoken password moved from the history file to the
   keyring; the file rewritten masked (grep: 0 hits anywhere in state/config).
-- Verified live against the HA box (192.0.2.10, PubkeyAuthentication=no,
+- Verified live against the HA box (<ha-host>, PubkeyAuthentication=no,
   so the password is what logs in): task path `sshpass ssh ... echo` ->
   LOGIN_OK; tmux terminal via ssh_terminal_command -> TMUX_LOGIN_OK; plain
   `ssh` prompt answered by terminal_sudo -> PROMPT_LOGIN_OK. 13 new tests
@@ -164,10 +164,10 @@ conversation_history.jsonl only (journal, tasks, agenda, config: clean).
 ### 2026-09-27: she refused to SSH ("No ssh to it" was "Now ssh to it")
 
 Phone call 18:53-18:55 about the Home Assistant task (20260927-154507-92b0ee,
-waiting_user: it asked the user to install an SSH key on 192.0.2.10).
+waiting_user: it asked the user to install an SSH key on <ha-host>).
 User: "I gave you credentials for that" / "So youbrun it" / "No ssh to it"
 (STT for "Now ssh to it"). She called terminal_task `ssh
-user@192.0.2.10`; the switchboard rejected it (route=reject p=0.94,
+<user>@<ha-host>`; the switchboard rejected it (route=reject p=0.94,
 matches=0.08, gap=tool) against the literal "No ssh to it", and she then told
 the user she could not connect and they must do it themselves.
 - Replayed that exact context against Jev: reject in 2/3 runs (matches

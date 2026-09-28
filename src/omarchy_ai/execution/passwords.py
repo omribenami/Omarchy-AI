@@ -1,6 +1,6 @@
 """Passwords: kept out of every file and log, and supplied to SSH by the harness.
 
-Real case 2026-09-27 18:55: the user said "User: user Pass: <password>" on
+Real case 2026-09-27 18:55: the user said "User: <login> Pass: <password>" on
 a phone call so she could SSH to their Home Assistant box. The password was
 then stored in plain text in conversation_history.jsonl, and she still could
 not use it (no sshpass; the saved Sudo Access password only fed `sudo -S`).
