@@ -23,9 +23,9 @@ Commands:
   disconnect-myapi           -> delete the local MyApi identity
   myapi-usage                -> per-service call counts (omarchy-ai.myapi panel)
   configure-sudo             -> save persistent Sudo Access in GNOME Keyring
+                                 (password read from stdin)
   forget-sudo                -> delete saved Sudo Access from GNOME Keyring
-  set-approval-pin           -> save the phone approval PIN (env
-                                 OMARCHY_AI_APPROVAL_PIN) as a scrypt hash
+  set-approval-pin           -> save the phone approval PIN (stdin) as a scrypt hash
                                  (see execution/approval_pin.py)
   forget-approval-pin        -> delete it (phone approvals stop working)
   set-github-issue-token     -> save a personal GitHub token (env
@@ -326,10 +326,10 @@ def cmd_myapi_usage(_args: argparse.Namespace) -> dict:
 
 
 def cmd_configure_sudo(_args: argparse.Namespace) -> dict:
-    """Accept a password from the QML process environment, never argv/stdout."""
+    """Accept a password through an anonymous stdin pipe, never env/argv/stdout."""
     from ..execution import sudo_approval
 
-    password = os.environ.get("OMARCHY_AI_SUDO_PASSWORD", "")
+    password = "" if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
     if not password:
         return {"error": "enter your password first"}
     try:
@@ -349,11 +349,12 @@ def cmd_forget_sudo(_args: argparse.Namespace) -> dict:
 
 
 def cmd_set_approval_pin(_args: argparse.Namespace) -> dict:
-    """Like configure-sudo: the PIN arrives in the environment, never argv/stdout."""
+    """Like configure-sudo: the PIN arrives via stdin, never env/argv/stdout."""
     from ..execution import approval_pin
 
     try:
-        approval_pin.store(os.environ.get("OMARCHY_AI_APPROVAL_PIN", ""))
+        pin = "" if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
+        approval_pin.store(pin)
     except (OSError, ValueError) as error:
         return {"error": str(error)}
     return _snapshot()
@@ -400,17 +401,11 @@ def cmd_refresh_cast_targets(_args: argparse.Namespace) -> dict:
 def cmd_set_api_key(_args: argparse.Namespace) -> dict:
     """Store an OpenAI API key at OMARCHY_KEY_PATH, 0600.
 
-    The key is read from the OMARCHY_AI_API_KEY environment variable, or
-    stdin if that's unset — never from argv. A process's argv is
-    world-readable via /proc/<pid>/cmdline, so anyone with a shell on this
-    machine could read a key passed as an argument straight out of `ps`;
-    /proc/<pid>/environ is 0400 owner-only, and a pipe isn't exposed at
-    all. That difference is the whole reason this isn't just another
-    `set <key> <value>` call.
+    The key is read from stdin, never the environment, argv, or stdout.
+    Process metadata is exposed in /proc while an anonymous pipe is not;
+    that is why this is not another `set <key> <value>` call.
     """
-    raw = os.environ.get("OMARCHY_AI_API_KEY")
-    if raw is None:
-        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    raw = "" if sys.stdin.isatty() else sys.stdin.readline()
     key = (raw or "").strip()
 
     if not key:
@@ -440,9 +435,7 @@ def cmd_set_api_key(_args: argparse.Namespace) -> dict:
     return _snapshot()
 
 def cmd_set_gemini_api_key(_args: argparse.Namespace) -> dict:
-    raw = os.environ.get("GEMINI_API_KEY")
-    if raw is None:
-        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    raw = "" if sys.stdin.isatty() else sys.stdin.readline()
     key = (raw or "").strip()
     if not key or any(c.isspace() for c in key):
         return {"error": "no valid Gemini API key provided"}
@@ -455,9 +448,7 @@ def cmd_set_gemini_api_key(_args: argparse.Namespace) -> dict:
 
 
 def cmd_set_vercel_gateway_api_key(_args: argparse.Namespace) -> dict:
-    raw = os.environ.get("AI_GATEWAY_API_KEY")
-    if raw is None:
-        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+    raw = "" if sys.stdin.isatty() else sys.stdin.readline()
     key = (raw or "").strip()
     if len(key) < 12 or any(c.isspace() for c in key):
         return {"error": "no valid Vercel AI Gateway key provided"}

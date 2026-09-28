@@ -19,6 +19,19 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.10.2] - 2026-09-27
+
+### Highlights
+
+- Assistant Settings now sends passwords, approval PINs, and provider API
+  keys through private input pipes instead of exposing them in helper process
+  environments.
+
+### Under the hood
+
+- The marketplace settings widget and its command-line helper enforce stdin
+  for sensitive values, with regression coverage for the security boundary.
+
 ## [0.10.1] - 2026-09-28
 
 ### Highlights

@@ -29,15 +29,33 @@ class GatewayKeySettingsTests(unittest.TestCase):
             self.assertEqual(initial.returncode, 0, initial.stderr)
             self.assertFalse(json.loads(initial.stdout)['vercel_gateway_api_key']['set'])
 
-            env['AI_GATEWAY_API_KEY'] = 'test-gateway-key-1234567890'
+            key = 'test-gateway-key-1234567890'
             saved = subprocess.run(command + ['set-vercel-gateway-api-key'], env=env,
-                                   capture_output=True, text=True, timeout=20)
+                                   input=key + '\n', capture_output=True, text=True, timeout=20)
             self.assertEqual(saved.returncode, 0, saved.stderr)
             self.assertTrue(json.loads(saved.stdout)['vercel_gateway_api_key']['set'])
-            self.assertNotIn(env['AI_GATEWAY_API_KEY'], saved.stdout)
+            self.assertNotIn(key, saved.stdout)
             key_path = config / 'omarchy-ai/vercel-ai-gateway-key'
-            self.assertEqual(key_path.read_text().strip(), env['AI_GATEWAY_API_KEY'])
+            self.assertEqual(key_path.read_text().strip(), key)
             self.assertEqual(key_path.stat().st_mode & 0o777, 0o600)
+
+    def test_marketplace_panel_sends_secrets_only_over_stdin(self):
+        root = Path(__file__).resolve().parents[1]
+        panels = (
+            root / 'quickshell/plugins/omarchy-ai.settings/Panel.qml',
+            root / 'scripts/marketplace-plugin/seed/Panel.qml',
+        )
+        forbidden = (
+            'OMARCHY_AI_SUDO_PASSWORD', 'OMARCHY_AI_APPROVAL_PIN',
+            'OMARCHY_AI_API_KEY', 'GEMINI_API_KEY', 'AI_GATEWAY_API_KEY',
+            'settingsProc.environment',
+        )
+        for panel in panels:
+            text = panel.read_text()
+            self.assertIn('stdinEnabled: true', text)
+            self.assertIn('write(_stdinText + "\\n")', text)
+            for value in forbidden:
+                self.assertNotIn(value, text)
 
 
 class DashboardTests(unittest.TestCase):
