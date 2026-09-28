@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 
 log = logging.getLogger(__name__)
@@ -101,6 +102,44 @@ def parse(response: dict, questions: dict) -> dict:
     return result
 
 
+_DOWN = re.compile(_TRANSIENT.pattern + r"|Gateway is unavailable", re.I)
+
+
+class _Breaker:
+    """Real session 2026-09-28 08:34-08:38 (phone): Gateway returned 503s and
+    timeouts on every call, and each user turn waited ~6.8s on the fast path
+    plus ~3s on the switchboard before Gemini could act -- she seemed deaf.
+    After THRESHOLD consecutive gateway-down failures, fail_fast callers skip
+    Jev for COOLDOWN seconds; the first call after that is the probe."""
+    THRESHOLD = 3
+    COOLDOWN = 30.0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._until = 0.0
+
+    def open_for(self) -> float:
+        with self._lock:
+            return max(0.0, self._until - time.monotonic())
+
+    def failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self.THRESHOLD and self._until <= time.monotonic():
+                self._until = time.monotonic() + self.COOLDOWN
+                log.warning("Gateway circuit open for %.0fs after %d failures", self.COOLDOWN, self._failures)
+
+    def success(self) -> None:
+        with self._lock:
+            if self._failures >= self.THRESHOLD:
+                log.info("Gateway circuit closed")
+            self._failures, self._until = 0, 0.0
+
+
+BREAKER = _Breaker()
+
+
 class Jev:
     """evaluate_response(state: str, questions: dict, timeout=...) -> raw dict."""
 
@@ -114,9 +153,14 @@ class Jev:
             self._evaluate = GatewayClient(load_config()).evaluate_response
         return self._evaluate
 
-    def ask(self, state, questions: dict, *, timeout: float = 8, retries: int = 2) -> dict:
+    def ask(self, state, questions: dict, *, timeout: float = 8, retries: int = 2,
+            fail_fast: bool = False) -> dict:
         """`retries` bounds transient-error retries; interactive callers use
-        fewer so a flaky Gateway falls back fast instead of adding seconds."""
+        fewer so a flaky Gateway falls back fast instead of adding seconds.
+        `fail_fast` callers (voice) skip the call entirely while the shared
+        breaker is open; every call still feeds the breaker."""
+        if fail_fast and (left := BREAKER.open_for()) > 0:
+            raise JevError(f"Gateway circuit open ({left:.0f}s left)")
         text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
         for attempt in range(retries + 1):
             try:
@@ -130,5 +174,8 @@ class Jev:
                 if attempt < retries and _TRANSIENT.search(str(exc)):
                     time.sleep(0.6 * 2 ** attempt)
                     continue
+                if _DOWN.search(str(exc)):
+                    BREAKER.failure()
                 raise JevError(str(exc)) from exc
+        BREAKER.success()
         return parse(response, questions)

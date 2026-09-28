@@ -57,6 +57,9 @@ ROUTES = {
 
 THRESHOLD = 0.95        # desktop_jev's mutation bar
 SINGLE_THRESHOLD = 0.9
+# 7 days of live calls (2026-09-28): p50 0.41s, p90 0.60s, 2 of 589 took
+# 1.5-3.5s. A miss only means Gemini handles the request, as before.
+TIMEOUT = 1.5
 
 
 def questions() -> dict:
@@ -84,7 +87,7 @@ def judge(text: str, jev: Jev | None = None) -> tuple[tuple[str, dict, dict] | N
     if not 2 <= len(text) <= 300:
         return None, None
     try:
-        answers = (jev or Jev()).ask({"request": text}, questions(), timeout=3, retries=1)
+        answers = (jev or Jev()).ask({"request": text}, questions(), timeout=TIMEOUT, retries=0, fail_fast=True)
     except JevError as exc:
         log.info("Jev fast path unavailable: %s", str(exc)[:120])
         return None, None

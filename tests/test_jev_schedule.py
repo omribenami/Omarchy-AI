@@ -77,6 +77,60 @@ class JevParseTests(unittest.TestCase):
             jev.Jev(bad).ask({}, {"b": self.qs["b"]})
         self.assertEqual(len(attempts), 1)
 
+
+class BreakerTests(unittest.TestCase):
+    """2026-09-28: Gateway 503s/timeouts added ~10s to every voice turn."""
+    def setUp(self):
+        jev.BREAKER = jev._Breaker()
+        self.qs = {"b": jev.boolean("?")}
+        self.attempts = []
+
+    def down(self, state, questions, timeout):
+        self.attempts.append(1)
+        raise RuntimeError("Gateway request timed out")
+
+    def ok(self, state, questions, timeout):
+        self.attempts.append(1)
+        return gateway({"b": {"type": "boolean", "probability": 0.9}})
+
+    def fail(self, fn=None, **kwargs):
+        with self.assertRaises(jev.JevError) as caught:
+            jev.Jev(fn or self.down).ask({}, self.qs, retries=0, **kwargs)
+        return str(caught.exception)
+
+    def test_opens_after_threshold_and_skips_fail_fast_callers(self):
+        for _ in range(jev._Breaker.THRESHOLD):
+            self.fail(fail_fast=True)
+        self.assertIn("circuit open", self.fail(fail_fast=True))
+        self.assertEqual(len(self.attempts), jev._Breaker.THRESHOLD)
+
+    def test_background_callers_still_try_while_open(self):
+        for _ in range(jev._Breaker.THRESHOLD):
+            self.fail()
+        self.fail()
+        self.assertEqual(len(self.attempts), jev._Breaker.THRESHOLD + 1)
+
+    def test_probe_after_cooldown_closes_it(self):
+        for _ in range(jev._Breaker.THRESHOLD):
+            self.fail()
+        with patch.object(jev.time, "monotonic", return_value=jev.time.monotonic() + jev._Breaker.COOLDOWN + 1):
+            self.assertEqual(jev.Jev(self.ok).ask({}, self.qs, fail_fast=True)["b"]["p"], 0.9)
+        self.assertEqual(jev.BREAKER.open_for(), 0)
+        self.fail(fail_fast=True)
+        self.assertEqual(jev.BREAKER.open_for(), 0)  # one failure does not reopen it
+
+    def test_permanent_errors_and_successes_do_not_trip_it(self):
+        def bad(state, questions, timeout):
+            raise RuntimeError("Gateway request failed (HTTP 400): bad")
+        for _ in range(jev._Breaker.THRESHOLD + 2):
+            self.fail(bad)
+        self.assertEqual(jev.BREAKER.open_for(), 0)
+        for _ in range(jev._Breaker.THRESHOLD - 1):
+            self.fail()
+        jev.Jev(self.ok).ask({}, self.qs)
+        self.fail()
+        self.assertEqual(jev.BREAKER.open_for(), 0)
+
 class CronTests(unittest.TestCase):
     now = datetime(2026, 9, 22, 23, 30)  # a Tuesday
 

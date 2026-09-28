@@ -64,7 +64,7 @@ HARD_MISMATCH = 0.1   # a call this far from the request never runs
 READ_MISMATCH = 0.05  # reads are harmless: reject only obvious nonsense
 ASK_P = 0.85
 CACHE_SECONDS = 30
-TIMEOUT = 3.0
+TIMEOUT = 1.5         # 651 live reviews to 2026-09-28: p99 0.77s, max 0.91s
 
 
 @dataclass
@@ -232,7 +232,7 @@ class Switchboard:
         else:
             try:
                 answers = (self._jev or Jev()).ask(state(tool, args, ctx), questions(tool, ctx),
-                                                   timeout=TIMEOUT, retries=0)
+                                                   timeout=TIMEOUT, retries=0, fail_fast=True)
                 verdict = decide(answers, tool, args, ctx)
             except (JevError, KeyError) as exc:
                 log.warning("Switchboard unavailable, running %s unreviewed: %s", tool, str(exc)[:160])

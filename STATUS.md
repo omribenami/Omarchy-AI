@@ -45,6 +45,25 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-28: "she can't hear me" was the Gateway, not the mic
+
+- Phone session 08:34-08:38: speech was transcribed every time, but the
+  Vercel AI Gateway answered Jev with 503 (AI_APICallError) or timed out.
+  Each user turn then waited ~6.8 s on the Jev fast path (3 s timeout + 1
+  retry) and ~3 s on the switchboard before Gemini could act; the stuck-turn
+  guard fired repeatedly. Gemini Live also closed once with 1011 (Google
+  side), and a MyApi Gmail read hung 15 s before the user hung up. Desktop
+  mic, PipeWire and Tailscale to the phone were all fine.
+- Fix: a shared breaker in `core/jev.py`. 3 consecutive gateway-down failures
+  (5xx/429/timeout/unreachable; not 4xx) open it for 30 s; voice callers pass
+  `fail_fast=True` and skip Jev at once while it is open (Gemini handles the
+  request unreviewed, as on any Jev failure). Background callers still try
+  and feed it; any success closes it. Voice Jev timeouts 3 s -> 1.5 s, no
+  retry: 7 days of live calls had p90 0.6 s, switchboard max 0.91 s, and 2
+  of 589 fast-path calls took 1.5-3.5 s.
+- Pre-existing, unrelated failure on main:
+  `test_submit_sudo_password_never_returns_the_secret`.
+
 ### 2026-09-28: vault decrypt failures; faster tool calls; install gate; SSH key removed
 
 (The user's personal integration and its tool are local only: never in this
