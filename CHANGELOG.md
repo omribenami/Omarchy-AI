@@ -19,6 +19,36 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.10.0] - 2026-09-27
+
+### Highlights
+
+- Background tasks are now done by Codex or Claude Code. The paid API worker
+  is only used when both are unavailable or out of quota, and only after you
+  approve it for that task.
+- Ask for a specific agent, like "open Codex with yolo and ask it to ...",
+  and that agent does every step. You can also say "move that task to Codex".
+- When you tell her to SSH to a machine, she does it. For password logins
+  she types the password you gave her, or your saved one, without ever
+  putting it in a command.
+- Passwords you say or type are kept in your keyring and masked everywhere
+  else: conversation history, task files and logs.
+- She now passes your answers to a task that asked you a question, instead
+  of telling you to do it yourself.
+
+### Fixes
+
+- Codex and Claude Code were unavailable to every task when started from the
+  service (a mise wrapper hung), so jobs fell back to paid API models.
+- A misheard "No ssh to it" (really "Now ssh to it") no longer blocks the SSH.
+- A task done only by a coding agent can be verified and finished.
+
+### Under the hood
+
+- Codex with yolo runs without its sandbox after one high-risk approval.
+- A coding agent that hits its usage limit is skipped until its reset time.
+- The task list she reads is compact, with what to do for each waiting task.
+
 ## [0.9.0] - 2026-09-27
 
 ### Highlights
