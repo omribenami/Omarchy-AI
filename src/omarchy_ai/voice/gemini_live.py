@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 import numpy as np
 from .. import myapi
-from ..core import updates
+from ..core import alert_clips, updates
 from ..core.history import append_session
 from ..execution import catalog
 from ..execution.actions import run_action, ActionResult
@@ -1251,3 +1251,5 @@ class GeminiLiveSession:
                 self._overlay = False
                 await asyncio.to_thread(watchdog.stop)
             await asyncio.to_thread(append_session, self._transcript, self.config.context_retention_hours)
+            # Alerts in the language just spoken, while a model works (core/alert_clips.py).
+            alert_clips.prepare_in_background(self.config)

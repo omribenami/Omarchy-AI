@@ -711,9 +711,9 @@ def cmd_myapi_dashboard(args):
 def cmd_test_quota_alert(args: argparse.Namespace) -> dict:
     """Show and say the out-of-credit alert for one provider, for real
     (screen, notification and voice), without anything having run out."""
-    from ..core import quota
+    from ..core import alert_clips, quota
     quota._alert(args.provider)
-    return {"ok": True, "provider": args.provider, "language": quota.language()}
+    return {"ok": True, "provider": args.provider, "language": alert_clips.language()}
 
 
 def main(argv: list[str] | None = None) -> int:

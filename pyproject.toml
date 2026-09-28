@@ -26,6 +26,7 @@ dependencies = [
     # Browser Use's Jev-ultrafast agent. Browser decisions are routed through
     # our Gateway adapter, so it never needs a second TypeSafe/OpenRouter key.
     "jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast.git@1231850a0bf1a0c0341fe408ef1668dbbfdfac46",
+    "py3langid>=0.4.0",
 ]
 
 [project.scripts]

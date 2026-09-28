@@ -109,6 +109,24 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   result that outlives its connection is logged as lost instead of raising.
   Tested against a fake Live API (1011 mid-call -> reconnect on 3.1 with
   context); not yet seen in a real outage.
+- Alerts in any language, not Hebrew/English (the user: "the code uploaded to
+  git shouldn't be limited to hebrew/english"). `core/alert_clips.py`: the
+  repo ships quota and fallback alerts in English only; the user's language
+  is detected offline from recent words (py3langid, 97 languages; Gemini
+  Live's transcription `language_code` came back None in a probe, and it
+  returned no Hebrew transcript at all); after a conversation in a language
+  with no clips, while a model works, the alerts are translated and spoken
+  once into ~/.local/state/omarchy-ai/alert_clips/<stem>-<lang>.ogg. A take
+  is kept only if its length fits and a complete transcript is in that
+  language; a model that fails a take hands over to the next one. Real
+  Spanish run: 3.8 and 3.1 each threw 1011 once, 2.5 rendered all 6
+  (e.g. "Lo siento, retroceder no solucionó el problema, por favor, prueba
+  con un proveedor diferente."). The Hebrew clips moved from the repo to
+  this machine's local folder. `quota.language()` (he/en only) is gone.
+- Still Hebrew-specific elsewhere (older code, not changed yet): system
+  prompt "The user speaks Hebrew and English" (voice/live.py), exit and
+  farewell phrase lists (config.py, voice/live.py), escalation regexes,
+  the password keyword, "thanks" words, Jev prompts naming Hebrew.
 - Still open: some short Hebrew utterances are transcribed as Italian or
   Spanish fragments ("scommettiti", "Chiamati.", "suceder"), phone speech
   level p50 ~3000 at 08:51 vs 6000-10000 at other times.

@@ -252,6 +252,8 @@ async def _serve(config, sdp, answer, cancelled):
         await peer.close()
         await client.aio.aclose()
         await asyncio.to_thread(append_session, adapter._transcript, config.context_retention_hours)
+        from ..core import alert_clips
+        alert_clips.prepare_in_background(config)  # alerts in the language just spoken
 
 
 def relay_offer(config, sdp):

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from omarchy_ai.core import quota
+from omarchy_ai.core import alert_clips, quota
 
 
 # Real error text from this machine's logs (see core/quota.py).
@@ -50,28 +50,30 @@ class AlertTests(unittest.TestCase):
             return quota.report(provider, "detail", **kw)
 
     def test_screen_notification_and_clip(self):
-        with patch.object(quota, "language", return_value="he"):
+        with patch.object(alert_clips, "language", return_value="fr"), \
+                patch.object(alert_clips, "LOCAL", Path(tempfile.mkdtemp())):
             self.assertTrue(self.alert_now("openai"))
         tools = [argv[0] for argv in self.runs]
         self.assertEqual(tools, ["omarchy-shell", "notify-send", "pw-play"])
         self.assertEqual(json.loads(self.runs[0][-1]), {"provider": "OpenAI", "message": "credits used up"})
         self.assertIn("-u", self.runs[1])
-        self.assertTrue(self.runs[2][1].endswith("quota-openai-he.ogg"))
+        # No French clip rendered on this machine yet: the shipped English one.
+        self.assertTrue(self.runs[2][1].endswith("quota-openai-en.ogg"))
 
     def test_every_shipped_clip_exists(self):
-        for provider, lang in quota.MESSAGES:
-            self.assertTrue((quota.CLIP_DIR / f"quota-{provider}-{lang}.ogg").exists(), (provider, lang))
+        for provider in quota.MESSAGES:
+            self.assertTrue((alert_clips.PACKAGED / f"quota-{provider}-en.ogg").exists(), provider)
 
     def test_an_open_conversation_on_another_provider_says_it_instead_of_the_clip(self):
         said = []
         quota.speaker = lambda provider, text: said.append((provider, text)) or provider != "gemini"
-        with patch.object(quota, "language", return_value="en"):
+        with patch.object(alert_clips, "language", return_value="en"):
             self.alert_now("vercel")
         self.assertEqual(said[0][0], "vercel")
         self.assertIn("Vercel AI Gateway credits used up", said[0][1])
         self.assertNotIn("pw-play", [argv[0] for argv in self.runs])
         self.runs.clear()
-        with patch.object(quota, "language", return_value="en"):
+        with patch.object(alert_clips, "language", return_value="en"):
             self.alert_now("gemini")       # the conversation's own provider is out: clip
         self.assertIn("pw-play", [argv[0] for argv in self.runs])
 
@@ -84,26 +86,6 @@ class AlertTests(unittest.TestCase):
 
     def test_unknown_provider_is_ignored(self):
         self.assertFalse(quota.report("anthropic"))
-
-
-class LanguageTests(unittest.TestCase):
-    def history(self, *user_texts):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        path = Path(directory.name)
-        (path / "conversation_history.jsonl").write_text(
-            json.dumps({"turns": [{"role": "user", "text": t} for t in user_texts]}) + "\n")
-        return patch("omarchy_ai.config.STATE_DIR", path)
-
-    def test_hebrew_speaker_gets_the_hebrew_clip(self):
-        with self.history("תעבירי ל-Workspace 5", "תודה"):
-            self.assertEqual(quota.language(), "he")
-        with self.history("switch to workspace 4"):
-            self.assertEqual(quota.language(), "en")
-
-    def test_no_history_is_english(self):
-        with patch("omarchy_ai.config.STATE_DIR", Path("/nonexistent")):
-            self.assertEqual(quota.language(), "en")
 
 
 class HookTests(unittest.TestCase):

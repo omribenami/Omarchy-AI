@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 from google.genai import errors
 from omarchy_ai.config import Config
-from omarchy_ai.core.quota import CLIP_DIR
+from omarchy_ai.core import alert_clips
 from omarchy_ai.voice import fallback
 from omarchy_ai.voice.gemini_live import GeminiLiveSession
 
@@ -41,11 +41,12 @@ class FallbackTests(unittest.TestCase):
     def test_names_and_clips(self):
         self.assertEqual(fallback.display_name("gemini-3.8-live"), "Gemini 3.8 Live")
         self.assertEqual(fallback.company("gemini-3.8-live"), "Google")
-        for lang in ("en", "he"):
-            self.assertTrue((CLIP_DIR / fallback.clip_name("switching", lang, Config().gemini_model)).exists())
-            self.assertTrue((CLIP_DIR / fallback.clip_name("switching", lang)).exists())
-            self.assertTrue((CLIP_DIR / fallback.clip_name("failed", lang)).exists())
-        with patch.object(fallback, "language", return_value="en"):
+        texts = fallback.texts(Config().gemini_model)
+        self.assertIn("Gemini 3.8 Live is experiencing issues on Google's side", texts["fallback-switching-gemini-3.8-live"])
+        self.assertIn("on the provider's side", texts["fallback-switching"])
+        for stem in texts:
+            self.assertTrue((alert_clips.PACKAGED / f"{stem}-en.ogg").exists(), stem)
+        with patch.object(alert_clips, "language", return_value="en"):
             self.assertEqual(fallback.clip("switching", "gemini-9-live").name, "fallback-switching-en.ogg")
 
     def test_carry_over_joins_transcript_fragments(self):

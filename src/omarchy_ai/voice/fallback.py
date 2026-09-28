@@ -11,8 +11,8 @@ Now a provider failure moves the conversation to the next model in
 Config.gemini_fallback_models, carrying the recent transcript over. A failed
 model is skipped for DOWN_SECONDS so the next call does not hit it first.
 
-The notices are pre-rendered clips (voice/alerts/, made by
-scripts/make_quota_clips.py): a model that is failing cannot say that it is
+The notices are pre-rendered clips in the user's language
+(core/alert_clips.py): a model that is failing cannot say that it is
 failing, and this machine has no local TTS engine.
 """
 from __future__ import annotations
@@ -23,7 +23,8 @@ import subprocess
 import threading
 import time
 
-from ..core.quota import CLIP_DIR, is_quota_error, language
+from ..core import alert_clips
+from ..core.quota import is_quota_error
 
 log = logging.getLogger("omarchy_ai.voice.fallback")
 
@@ -34,15 +35,10 @@ CARRY_OVER_CHARS = 4000
 
 COMPANIES = {"gemini": "Google"}
 
-# Spoken text; the clips are rendered from exactly these strings (the
-# "switching" one per default model, see clip()). Hebrew is gender-neutral.
-MESSAGES = {
-    ("switching", "en"): "The default model {model} is experiencing issues on {company}'s side, falling back to "
-                         "an older model.",
-    ("switching", "he"): "למודל ברירת המחדל {model} יש תקלה בצד של {company}. עוברים למודל ישן יותר.",
-    ("failed", "en"): "Sorry, falling back did not fix the problem, please try a different provider.",
-    ("failed", "he"): "סליחה, המעבר למודל אחר לא פתר את הבעיה. כדאי לנסות ספק אחר.",
-}
+# Spoken text, in English; the clips are rendered from these strings (see
+# texts(): the "switching" one names the default model).
+SWITCHING = "The default model {model} is experiencing issues on {company}'s side, falling back to an older model."
+FAILED = "Sorry, falling back did not fix the problem, please try a different provider."
 
 # Closed by the server for its own reasons, not ours: 1011 is "internal
 # error", 1006 an abnormal close, 503/UNAVAILABLE an overloaded backend.
@@ -94,21 +90,19 @@ def should_announce() -> bool:
         return True
 
 
-def clip_name(kind: str, lang: str, model: str | None = None) -> str:
-    return f"fallback-{kind}-{model}-{lang}.ogg" if kind == "switching" and model else f"fallback-{kind}-{lang}.ogg"
+def texts(model: str) -> dict[str, str]:
+    """{clip stem: English text}: "switching" for this default model, a
+    generic one for a default model with no clip of its own, and "failed"."""
+    return {f"fallback-switching-{model}": SWITCHING.format(model=display_name(model), company=company(model)),
+            "fallback-switching": SWITCHING.replace(" {model}", "").format(company="the provider"),
+            "fallback-failed": FAILED}
 
 
 def clip(kind: str, model: str | None = None):
-    """The clip for this notice in the user's language, else English. A
-    "switching" clip names the default model, so it exists per model; a
-    model with no clip of its own gets the generic wording."""
-    lang = language()
-    for name in (clip_name(kind, lang, model), clip_name(kind, "en", model),
-                 clip_name(kind, lang), clip_name(kind, "en")):
-        path = CLIP_DIR / name
-        if path.exists():
-            return path
-    return None
+    """The notice in the user's language, else English; a "switching" clip
+    for this model before the generic one."""
+    stems = [f"fallback-{kind}-{model}", f"fallback-{kind}"] if kind == "switching" and model else [f"fallback-{kind}"]
+    return alert_clips.find(stems)
 
 
 def play_local(kind: str, model: str | None = None) -> None:

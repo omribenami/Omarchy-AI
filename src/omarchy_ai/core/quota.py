@@ -14,9 +14,9 @@ An alert is three things at once:
   stays until dismissed.
 - Voice: if a conversation is open on a different, working provider, it says
   the warning in the user's language (`speaker`, set by the daemon).
-  Otherwise a pre-rendered clip in the assistant's own voice plays locally
-  (voice/alerts/, made by scripts/make_quota_clips.py). The out-of-credit
-  provider cannot be asked to speak about itself.
+  Otherwise a pre-rendered clip in the assistant's own voice plays locally,
+  in the user's language when one was rendered (core/alert_clips.py). The
+  out-of-credit provider cannot be asked to speak about itself.
 
 Background failures (Jev, vision, heartbeat) alert at most once per provider
 every ALERT_EVERY seconds. A failure the user just caused, such as saying the
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 import re
 import subprocess
 import threading
@@ -35,7 +34,6 @@ import time
 
 log = logging.getLogger("omarchy_ai.core.quota")
 
-CLIP_DIR = Path(__file__).resolve().parent.parent / "voice" / "alerts"
 ALERT_EVERY = 600
 USER_DEBOUNCE = 20
 
@@ -45,19 +43,13 @@ PROVIDERS = {
     "vercel": ("Vercel AI Gateway", "credits used up", "https://vercel.com/dashboard/ai-gateway"),
 }
 
-# Spoken text; the clips are rendered from exactly these strings. Hebrew is
-# phrased gender-neutrally.
+# Spoken text, in English; the clips are rendered from exactly these strings
+# (other languages are translated from them, see core/alert_clips.py).
 MESSAGES = {
-    ("openai", "en"): "Heads up: your OpenAI credits have run out. Add credits on the OpenAI billing page to keep "
-                      "using it.",
-    ("gemini", "en"): "Heads up: your Gemini quota has run out. It works again when the quota resets, or after you "
-                      "raise it.",
-    ("vercel", "en"): "Heads up: your Vercel AI Gateway credits have run out. Jev and the Gateway features are "
-                      "paused until you add credits.",
-    ("openai", "he"): "לתשומת הלב: נגמר הקרדיט ב-OpenAI. כדי להמשיך, צריך להוסיף קרדיט בדף החיוב של OpenAI.",
-    ("gemini", "he"): "לתשומת הלב: נגמרה המכסה של Gemini. זה יחזור לעבוד כשהמכסה תתאפס, או אחרי שמגדילים אותה.",
-    ("vercel", "he"): "לתשומת הלב: נגמר הקרדיט ב-Vercel AI Gateway. Jev והיכולות של ה-Gateway מושהים עד שמוסיפים "
-                      "קרדיט.",
+    "openai": "Heads up: your OpenAI credits have run out. Add credits on the OpenAI billing page to keep using it.",
+    "gemini": "Heads up: your Gemini quota has run out. It works again when the quota resets, or after you raise it.",
+    "vercel": "Heads up: your Vercel AI Gateway credits have run out. Jev and the Gateway features are paused "
+              "until you add credits.",
 }
 
 # Wording the providers really use for "out of credit/quota" (see the
@@ -103,32 +95,17 @@ def _alert(provider: str) -> None:
     _run(["omarchy-shell", "-q", "quotaAlert", "show", json.dumps({"provider": name, "message": what})])
     _run(["notify-send", "-u", "critical", "-a", "Omarchy AI", f"$ {name} {what}",
           f"Omarchy AI can't use {name} until this is fixed.\n{url}"])
-    lang = language()
     said = False
     if speaker is not None:
         try:
-            said = bool(speaker(provider, f"{name} {what}. " + MESSAGES[(provider, lang)]))
+            said = bool(speaker(provider, f"{name} {what}. " + MESSAGES[provider]))
         except Exception:  # noqa: BLE001
             log.debug("live speaker failed", exc_info=True)
     if not said:
-        clip = CLIP_DIR / f"quota-{provider}-{lang}.ogg"
-        if not clip.exists():
-            clip = CLIP_DIR / f"quota-{provider}-en.ogg"
-        _run(["pw-play", str(clip)], timeout=20)
-
-
-def language() -> str:
-    """The user's language from their recent words: Hebrew or English."""
-    try:
-        from ..config import STATE_DIR
-        lines = (STATE_DIR / "conversation_history.jsonl").read_text().splitlines()[-3:]
-        text = " ".join(t["text"] for line in lines for t in json.loads(line).get("turns", [])
-                        if t.get("role") == "user")
-    except (OSError, ValueError, KeyError, TypeError):
-        return "en"
-    hebrew = sum(1 for c in text if "֐" <= c <= "׿")
-    latin = sum(1 for c in text if c.isascii() and c.isalpha())
-    return "he" if hebrew > latin else "en"
+        from .alert_clips import find
+        clip = find(f"quota-{provider}")
+        if clip is not None:
+            _run(["pw-play", str(clip)], timeout=20)
 
 
 def _run(argv: list[str], timeout: float = 5) -> None:
