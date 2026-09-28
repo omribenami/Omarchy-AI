@@ -1,12 +1,17 @@
-# Marketplace listing for `omarchy-ai.settings`
+# Marketplace listing for Omarchy AI
 
 The Omarchy plugin marketplace (plugins.omarchy.org, repository
 [omacom/omarchy-plugin-marketplace](https://github.com/omacom/omarchy-plugin-marketplace))
 lists one Quattro plugin per GitHub repository, with `manifest.json` at the
 repository root. This monorepo's desktop UI is eight plugins under
-`quickshell/plugins/`. The public face is the settings bar widget,
-`omarchy-ai.settings`. The voice assistant stays in
-[Omarchy-AI](https://github.com/omribenami/Omarchy-AI).
+`quickshell/plugins/`. The public listing is the front door for the full
+[Omarchy AI](https://github.com/omribenami/Omarchy-AI) assistant: wake word,
+overlays, settings, and desktop integration. The repository still contains
+one plugin, the settings bar widget `omarchy-ai.settings`. `omarchy plugin
+add` does not install the daemon. The plugin id stays `omarchy-ai.settings`
+so the live page
+<https://omarchyplugins.com/plugin.html?id=omarchy-ai.settings> keeps
+working.
 
 `scripts/marketplace-plugin/assemble.py` builds the listing tree:
 
@@ -39,7 +44,7 @@ From a machine logged in as `omribenami` (`gh auth login`, `repo` scope):
 ```bash
 gh repo create omribenami/omarchy-ai-settings \
   --public \
-  --description "Omarchy shell bar widget for Omarchy AI settings"
+  --description "Omarchy AI voice assistant. This marketplace entry is the settings panel; install the full assistant from Omarchy-AI releases."
 
 workdir="$(mktemp -d)"
 git init -b main "$workdir"
@@ -92,48 +97,28 @@ those installs.
 
 ## Marketplace submission
 
-Do not open the marketplace issue until the listing repository is public
-and you have approved the body below. Automated validation is not a
-security review. Suggested listing metadata, matching the manifest
-category: category `System`, tags `ai`, `bar`, `quickshell`. The plugin id
-stays `omarchy-ai.settings` (outside the reserved `omarchy.*` namespace) so
-local installs and the marketplace listing stay the same plugin.
+The listing is already published as `omarchy-ai.settings`
+([omacom/omarchy-plugin-marketplace#9079](https://github.com/omacom/omarchy-plugin-marketplace/issues/9079),
+approved and verified). Do not open a second submission. Changing the
+plugin id would break that page. Suggested metadata, matching the manifest
+category: category `System`, tags `ai`, `bar`, `quickshell`.
 
-Title: `[Plugin]: Omarchy AI Settings`
+Title on the live issue: `[Plugin]: Omarchy AI Settings`. The product name
+in the manifest is now `Omarchy AI`. A verification request for a newer
+listing SHA should use that name and these maintainer notes:
 
 ```markdown
-### Repository URL
-
-https://github.com/omribenami/omarchy-ai-settings
-
-### Category
-
-System
-
-### Tags
-
-ai, bar, quickshell
-
-### Suggest a missing tag
-
-_No response_
-
-### Maintainer notes
-
-Marketplace install is the settings bar widget only. The voice assistant
-is installed from https://github.com/omribenami/Omarchy-AI releases.
-
-### Submission checklist
-
-- [x] The repository is public and contains installation and removal instructions.
-- [x] I have documented the plugin license and any external dependencies.
-- [x] I confirm that I own or have permission to submit this plugin and its preview assets.
-- [x] The plugin does not overwrite user configuration without explicit consent.
-- [x] I understand that approval is for listing and is not a security review.
+The marketplace page is the front door for the full Omarchy AI assistant.
+Install that from https://github.com/omribenami/Omarchy-AI releases
+(`install.sh`). `omarchy plugin add` still installs only the settings bar
+widget and does not run the daemon. The panel needs the
+`@OMARCHY_AI_SETTINGS@` path rewrite from the full install (manual-setup).
 ```
 
-File it only after those five checklist lines are true, with the GitHub CLI
-against `omacom/omarchy-plugin-marketplace` as described in that
-repository's `SUBMISSION.md`. Later sync commits move the listing `main`
-ahead of the approved snapshot. The marketplace shows that as an unverified
-update until you file a plugin-verification request for the new SHA.
+Later sync commits move the listing `main` ahead of the approved snapshot.
+The marketplace shows that as an unverified update until a
+plugin-verification request is filed for the new SHA, as described in that
+repository's `SUBMISSION.md`. The original checklist remains true: the
+repository is public, install and remove are documented, the license and
+the external daemon dependency are documented, and the panel does not
+overwrite user configuration without an explicit action.
