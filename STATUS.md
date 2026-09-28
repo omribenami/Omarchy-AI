@@ -69,6 +69,19 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   15 rescued by forced closure. Now started on phone calls too. (The echo
   gate is not a factor on the phone: `_playback_until` is only set by the
   desktop player.)
+- "I need that feedback that she heard me and is doing what I asked": at
+  08:37:57 she started a Gmail fetch without a word (turn complete 12 ms
+  after the call) and 26 s of silence followed until the user hung up.
+  NON_BLOCKING kept her listening (at 08:36:46 she answered mid-task) but
+  nothing made her speak, and the announcer's `_idle()` counts a running
+  background task as busy, so it stayed quiet exactly then. New
+  `_task_status` worker (desktop and phone): a background task still
+  running 1.5 s after it started, with no audio from her since the user's
+  last words, gets a text turn asking for one short "heard you, doing it"
+  line in the user's language, no tool call. Then "still on it" every 12 s
+  of her silence, at most 3 times. Only when neither is talking, no
+  BLOCKING call is pending and her turn that started the task is over.
+  Logged as "Task status prompted". Not yet seen on a real call.
 - Still open: some short Hebrew utterances are transcribed as Italian or
   Spanish fragments ("scommettiti", "Chiamati.", "suceder"), phone speech
   level p50 ~3000 at 08:51 vs 6000-10000 at other times.

@@ -789,6 +789,72 @@ class StuckTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(worker, return_exceptions=True)
 
 
+class TaskStatusTests(unittest.IsolatedAsyncioTestCase):
+    """2026-09-28 08:37:57: a silent Gmail fetch, then 26s of nothing."""
+    def session(self, started_ago=2.0, **state):
+        s = GeminiLiveSession(Config())
+        now = time.monotonic()
+        s._last_user_speech = now - started_ago - 0.5
+        s._last_turn_done_at = now - started_ago + 0.02  # her tool-call turn ended
+        s._working["c1"] = {"what": "Search Gmail for Alex", "started": now - started_ago,
+                            "heard_at": s._last_user_speech, "noted": 0.0, "notes": 0}
+        for key, value in state.items():
+            setattr(s, key, value)
+        return s, now
+
+    def test_silent_task_gets_an_acknowledgement(self):
+        s, now = self.session()
+        self.assertEqual(s._status_due(now)[:2], ("c1", "ack"))
+
+    def test_not_before_the_grace_period(self):
+        s, now = self.session(started_ago=0.5)
+        self.assertIsNone(s._status_due(now))
+
+    def test_no_ack_when_she_already_said_something(self):
+        s, now = self.session()
+        s._last_audio_at = s._working["c1"]["started"] - 0.3  # "checking your email..." then the call
+        self.assertIsNone(s._status_due(now))
+        self.assertTrue(s._working["c1"]["noted"])
+
+    def test_never_over_the_user_or_her_own_speech_or_an_open_turn(self):
+        s, now = self.session()
+        s._last_user_speech = now - 0.3
+        self.assertIsNone(s._status_due(now))
+        s, now = self.session()
+        s._audio.put_nowait((0, b"\0\0"))
+        self.assertIsNone(s._status_due(now))
+        s, now = self.session()
+        s._last_turn_done_at = 0.0
+        self.assertIsNone(s._status_due(now))
+        s, now = self.session(_running_blocking=1)
+        self.assertIsNone(s._status_due(now))
+
+    def test_progress_every_interval_then_stops(self):
+        s, now = self.session(started_ago=40.0)
+        s._working["c1"]["noted"] = now - s.PROGRESS_EVERY_SECONDS - 1
+        s._last_audio_at = s._working["c1"]["noted"]
+        s._last_turn_done_at = s._last_audio_at + 2  # her "on it" reply is over
+        self.assertEqual(s._status_due(now)[1], "progress")
+        s._working["c1"]["notes"] = s.MAX_PROGRESS_NOTES
+        self.assertIsNone(s._status_due(now))
+
+    async def test_prompts_her_once_as_a_turn(self):
+        s, _ = self.session()
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        worker = asyncio.create_task(s._task_status(session))
+        try:
+            await asyncio.sleep(.5)
+            session.send_client_content.assert_awaited_once()
+            kwargs = session.send_client_content.call_args.kwargs
+            self.assertTrue(kwargs["turn_complete"])
+            text = kwargs["turns"].parts[0].text
+            self.assertIn("Search Gmail for Alex", text)
+            self.assertIn("Do not call any tool", text)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+
 class MissionVisibilityTests(unittest.TestCase):
     def test_mission_browser_steps_are_always_shown(self):
         from omarchy_ai.execution import missions

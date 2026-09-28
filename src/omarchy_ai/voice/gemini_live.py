@@ -173,6 +173,9 @@ class GeminiLiveSession:
         self._spliced_at = 0.0
         self._force_close_at = 0.0
         self._splices = 0
+        self._working = {}  # background call id -> what/started/heard_at/noted/notes (_task_status)
+        self._last_audio_at = 0.0
+        self._last_turn_done_at = 0.0
         self._forced_turn_closures = 0
         # Jev fast path (voice/jev_fast.py): the current utterance, whether
         # Jev has judged it, and what Jev last did (dedupe against Gemini).
@@ -299,11 +302,13 @@ class GeminiLiveSession:
                         if part.inline_data and part.inline_data.data:
                             self._replied()
                             self._awaiting_since = 0.0
+                            self._last_audio_at = time.monotonic()
                             self._received_audio_bytes += len(part.inline_data.data)
                             self._audio.put_nowait((self._generation, part.inline_data.data))
                 if server.turn_complete or server.interrupted:
                     self._awaiting_since = 0.0
                 if server.turn_complete:
+                    self._last_turn_done_at = time.monotonic()
                     self._turn_done.set()
                     self._maybe_escalate()
                     log.info("Gemini turn complete: session=%s interrupted=%s queued_chunks=%d",
@@ -415,6 +420,60 @@ class GeminiLiveSession:
     def acknowledged_ids(self) -> list[str]:
         """Results the user heard AND answered (spoke after them)."""
         return [i for i, said in self._announced if self.user_spoke_at > said]
+
+    # Real phone call 2026-09-28 08:37:57: she started a Gmail fetch without
+    # a word, her turn ended 12ms later, and 26s of silence followed until
+    # the user hung up. NON_BLOCKING lets the user talk during a task, but
+    # nothing made HER talk (STATUS.md 2026-09-23). The user: "I need that
+    # feedback that she heard me and is doing what I asked".
+    ACK_AFTER_SECONDS = 1.5
+    PROGRESS_EVERY_SECONDS = 12.0
+    MAX_PROGRESS_NOTES = 3
+
+    def _status_due(self, now: float) -> tuple[str, str, dict] | None:
+        """(call id, kind, entry) of a running task she should speak about now."""
+        if (self._running_blocking or not self._audio.empty() or self._display_state(now) == "speaking"
+                or now - max(self._last_user_speech, self._last_loud_at) < 1.0):
+            return None
+        for call_id, w in sorted(self._working.items(), key=lambda item: item[1]["started"]):
+            # Her turn that started the task must be over, or the prompt cuts it off.
+            if self._last_turn_done_at < max(w["started"], w["noted"]):
+                continue
+            if not w["noted"]:
+                if self._last_audio_at > w["heard_at"]:
+                    w["noted"] = w["started"]  # she already said something about it
+                elif now - w["started"] >= self.ACK_AFTER_SECONDS:
+                    return call_id, "ack", w
+            elif (w["notes"] < self.MAX_PROGRESS_NOTES
+                  and now - max(w["noted"], self._last_audio_at) >= self.PROGRESS_EVERY_SECONDS):
+                return call_id, "progress", w
+        return None
+
+    async def _task_status(self, session) -> None:
+        """Say "heard you, on it" when a background task starts silently, and
+        "still on it" while it runs long."""
+        from google.genai import types
+        while not self._hangup.is_set():
+            await asyncio.sleep(0.2)
+            now = time.monotonic()
+            due = self._status_due(now)
+            if due is None:
+                continue
+            call_id, kind, w = due
+            if kind == "ack":
+                text = (f"[Automatic status, not from the user] You started this and it is still running: "
+                        f"{w['what']}. Tell the user in one short sentence, in their language, that you heard "
+                        "them and are doing it now. Do not call any tool; the result comes to you by itself.")
+            else:
+                text = (f"[Automatic status, not from the user] Still running after {now - w['started']:.0f}s: "
+                        f"{w['what']}. Tell the user in a few words, in their language, that you are still on "
+                        "it. Do not call any tool.")
+                w["notes"] += 1
+            w["noted"] = now
+            await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=text)]),
+                                              turn_complete=True)
+            log.info("Task status prompted: session=%s call=%s kind=%s after=%.1fs",
+                     self._audit_session, call_id, kind, now - w["started"])
 
     def _idle(self) -> bool:
         now = time.monotonic()
@@ -685,6 +744,10 @@ class GeminiLiveSession:
         background = call.name in NON_BLOCKING_ACTIONS
         if background:
             self._running_background += 1
+            args = call.args or {}
+            self._working[call.id] = {
+                "what": str(args.get("request") or call.name.replace("_", " "))[:160],
+                "started": time.monotonic(), "heard_at": self._last_user_speech, "noted": 0.0, "notes": 0}
         else:
             self._running_blocking += 1
         if self._overlay:
@@ -763,6 +826,7 @@ class GeminiLiveSession:
         self._maybe_escalate()
         if background:
             self._running_background -= 1
+            self._working.pop(call.id, None)
         else:
             self._running_blocking -= 1
             # The model now composes its reply to this result: still busy.
@@ -1078,7 +1142,8 @@ class GeminiLiveSession:
                     self.on_connected()
                 await asyncio.to_thread(status_icon.set_live, True)
                 workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(),
-                           self._tools(session), self._stuck_turn_recovery(session), self._hangup.wait()]
+                           self._tools(session), self._stuck_turn_recovery(session), self._task_status(session),
+                           self._hangup.wait()]
                 if self.config.watchdog_enabled:
                     workers.append(self._visuals())
                 if self.config.jev_fast_path:
