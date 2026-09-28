@@ -1,0 +1,52 @@
+# Sync the Omarchy AI settings bar widget to its one-plugin marketplace listing.
+#
+# Listing repository: omribenami/omarchy-ai-settings (see
+# scripts/marketplace-plugin/listing.env). The job copies
+# quickshell/plugins/omarchy-ai.settings to that repo's root, with the
+# README and LICENSE templates from scripts/marketplace-plugin/templates/.
+#
+# Secret (repository secret on Omarchy-AI, not an environment secret):
+#   MARKETPLACE_PLUGIN_SYNC_TOKEN
+# A classic PAT (public_repo is enough for a public listing repo) or a
+# fine-grained token whose only repository is the listing repo and whose
+# Contents permission is Read and write. The job fails immediately, and
+# does not create a listing commit, when this secret is missing or blank.
+# GITHUB_TOKEN is not used: it cannot push to the sibling repository.
+#
+# A run whose assembled tree already matches the listing main branch
+# skips the commit. Pushes are fast-forwards; this workflow does not
+# force-push, because `omarchy plugin update` fast-forwards the install.
+#
+# Setup notes: scripts/marketplace-plugin/README.md
+
+name: Sync marketplace plugin
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "quickshell/plugins/omarchy-ai.settings/**"
+      - "scripts/marketplace-plugin/**"
+      - ".github/workflows/sync-marketplace-plugin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-marketplace-plugin
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Omarchy-AI
+        uses: actions/checkout@v4
+
+      - name: Sync listing repository
+        env:
+          MARKETPLACE_PLUGIN_SYNC_TOKEN: ${{ secrets.MARKETPLACE_PLUGIN_SYNC_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: bash scripts/marketplace-plugin/sync.sh

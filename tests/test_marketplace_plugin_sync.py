@@ -1,0 +1,134 @@
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PLUGIN = ROOT / "scripts" / "marketplace-plugin"
+SEED = PLUGIN / "seed"
+WORKFLOW = ROOT / ".github" / "workflows" / "sync-marketplace-plugin.yml"
+
+GIT_ENV = dict(
+    os.environ,
+    GIT_AUTHOR_NAME="marketplace-sync-test",
+    GIT_AUTHOR_EMAIL="marketplace-sync-test@example.com",
+    GIT_COMMITTER_NAME="marketplace-sync-test",
+    GIT_COMMITTER_EMAIL="marketplace-sync-test@example.com",
+)
+
+
+def run(args, **kwargs):
+    env = dict(GIT_ENV)
+    env.update(kwargs.pop("env", {}))
+    return subprocess.run(args, check=True, env=env, capture_output=True, text=True, **kwargs)
+
+
+class MarketplacePluginSyncTests(unittest.TestCase):
+    def assemble(self, dest: Path) -> None:
+        run(["python3", str(PLUGIN / "assemble.py"), str(dest)])
+
+    def test_seed_matches_assembler_and_keeps_plugin_identity(self):
+        source = json.loads((ROOT / "quickshell/plugins/omarchy-ai.settings/manifest.json").read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / "tree"
+            self.assemble(dest)
+            built = {path.relative_to(dest).as_posix(): path.read_bytes() for path in dest.rglob("*") if path.is_file()}
+        seeded = {path.relative_to(SEED).as_posix(): path.read_bytes() for path in SEED.rglob("*") if path.is_file()}
+        self.assertEqual(seeded, built)
+
+        manifest = json.loads((SEED / "manifest.json").read_text())
+        self.assertEqual(manifest["id"], "omarchy-ai.settings")
+        self.assertEqual(manifest["name"], source["name"])
+        self.assertEqual(manifest["version"], source["version"])
+        self.assertEqual(manifest["kinds"], ["bar-widget"])
+        self.assertEqual(manifest["entryPoints"], {"barWidget": "Panel.qml"})
+        self.assertEqual(manifest["author"], "Omri Ben Ami")
+        self.assertEqual((SEED / "Panel.qml").read_text(), (ROOT / "quickshell/plugins/omarchy-ai.settings/Panel.qml").read_text())
+        self.assertIn('@OMARCHY_AI_SETTINGS@', (SEED / "Panel.qml").read_text())
+        readme = (SEED / "README.md").read_text()
+        self.assertIn("omarchy plugin add https://github.com/omribenami/omarchy-ai-settings.git --enable", readme)
+        self.assertIn("omarchy plugin remove omarchy-ai.settings", readme)
+        self.assertIn("omarchy bar move omarchy-ai.settings --section right", readme)
+        self.assertIn("https://github.com/omribenami/Omarchy-AI#installation", readme)
+        self.assertIn("@OMARCHY_AI_SETTINGS@", readme)
+        license_text = (SEED / "LICENSE").read_text()
+        self.assertIn("Copyright (c) 2026 Omri Ben-Ami", license_text)
+        self.assertTrue(license_text.startswith("MIT License\n"))
+
+    def test_workflow_triggers_only_for_the_settings_plugin_and_names_the_secret(self):
+        text = WORKFLOW.read_text()
+        self.assertIn("workflow_dispatch:", text)
+        self.assertIn("MARKETPLACE_PLUGIN_SYNC_TOKEN", text)
+        self.assertIn("quickshell/plugins/omarchy-ai.settings/**", text)
+        self.assertIn("scripts/marketplace-plugin/**", text)
+        self.assertIn(".github/workflows/sync-marketplace-plugin.yml", text)
+        self.assertIn("branches:", text)
+        self.assertIn("- main", text)
+        self.assertNotIn("src/omarchy_ai/**", text)
+
+    def test_sync_fails_clearly_without_a_token(self):
+        env = dict(GIT_ENV)
+        env.pop("MARKETPLACE_PLUGIN_SYNC_TOKEN", None)
+        env.pop("LISTING_REMOTE", None)
+        result = subprocess.run(
+            ["bash", str(PLUGIN / "sync.sh")],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MARKETPLACE_PLUGIN_SYNC_TOKEN is not set", result.stdout + result.stderr)
+        self.assertIn("No listing commit was created", result.stdout + result.stderr)
+
+    def test_sync_pushes_once_and_skips_an_unchanged_tree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            remote = base / "listing.git"
+            run(["git", "init", "--bare", "-b", "main", str(remote)])
+            env = {"LISTING_REMOTE": str(remote), "SOURCE_SHA": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+            first = run(["bash", str(PLUGIN / "sync.sh")], cwd=ROOT, env=env)
+            self.assertIn("Pushed initial", first.stdout)
+            count = run(["git", "--git-dir", str(remote), "rev-list", "--count", "main"]).stdout.strip()
+            self.assertEqual(count, "1")
+            message = run(["git", "--git-dir", str(remote), "log", "-1", "--format=%B", "main"]).stdout
+            self.assertIn("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", message)
+
+            second = run(
+                ["bash", str(PLUGIN / "sync.sh")],
+                cwd=ROOT,
+                env={"LISTING_REMOTE": str(remote), "SOURCE_SHA": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+            )
+            self.assertIn("skipping commit", second.stdout)
+            count = run(["git", "--git-dir", str(remote), "rev-list", "--count", "main"]).stdout.strip()
+            self.assertEqual(count, "1")
+
+            checkout = base / "checkout"
+            run(["git", "clone", str(remote), str(checkout)])
+            readme = checkout / "README.md"
+            readme.write_text(readme.read_text() + "\nlocal edit\n")
+            run(["git", "add", "README.md"], cwd=checkout)
+            run(["git", "commit", "-m", "local edit"], cwd=checkout)
+            run(["git", "push", "origin", "main"], cwd=checkout)
+
+            third = run(
+                ["bash", str(PLUGIN / "sync.sh")],
+                cwd=ROOT,
+                env={"LISTING_REMOTE": str(remote), "SOURCE_SHA": "cccccccccccccccccccccccccccccccccccccccc"},
+            )
+            self.assertIn("Pushed omarchy-ai.settings sync", third.stdout)
+            count = run(["git", "--git-dir", str(remote), "rev-list", "--count", "main"]).stdout.strip()
+            self.assertEqual(count, "3")
+            tip = run(["git", "--git-dir", str(remote), "log", "-1", "--format=%B", "main"]).stdout
+            self.assertIn("cccccccccccccccccccccccccccccccccccccccc", tip)
+            shown = run(["git", "--git-dir", str(remote), "show", "main:manifest.json"]).stdout
+            self.assertEqual(json.loads(shown)["id"], "omarchy-ai.settings")
+            panel = run(["git", "--git-dir", str(remote), "show", "main:Panel.qml"]).stdout
+            self.assertIn("@OMARCHY_AI_SETTINGS@", panel)
+            self.assertNotIn("local edit", run(["git", "--git-dir", str(remote), "show", "main:README.md"]).stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
