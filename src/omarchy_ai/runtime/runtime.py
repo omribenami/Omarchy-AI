@@ -35,7 +35,7 @@ from .executors.base import (BLOCKED, DIAGNOSE, DONE, FAILED as R_FAILED, IMPLEM
                              NEEDS_CODE_CHANGE, NEEDS_USER, REVIEW, TEST, WORK, Assignment, Report)
 from . import llm
 from .llm import WorkerModel, WorkerModelError
-from .permissions import Assessment, Risk, Scope, classify, decide, split_commands
+from .permissions import _TOOLS_CLI, Assessment, Risk, Scope, classify, decide, split_commands
 from .task import (ACTIVE, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, TERMINAL, UNVERIFIED,
                    WAITING_APPROVAL, WAITING_USER, Task, TaskStore, new_id, owned_elsewhere, owner_alive,
                    this_process)
@@ -1098,6 +1098,11 @@ class WorkContextImpl:
             command, stdin_text = _sudo(command)
         event = self.runtime._cancel.get(self.task.id)
         run_as, env = passwords.ssh_env(command, shell._base_env())
+        installs = [t for v, t in _TOOLS_CLI.findall(command) if v == "install" and t]
+        if len(installs) == 1 and decision.behavior == "allow" and assessment.always_ask:
+            # The user just approved this exact install; the CLI must not ask twice.
+            from ..execution.user_tools import APPROVED_ENV
+            env[APPROVED_ENV] = installs[0]
         result = shell.run(run_as, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
                            output_dir=self.runtime.store.dir / self.task.id, env=env)
         result.output = passwords.redact(result.output)  # e.g. a vault token a command printed

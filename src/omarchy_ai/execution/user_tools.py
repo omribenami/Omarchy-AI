@@ -142,8 +142,45 @@ def approval_summary(name: str) -> str:
             f"{folder}; run begins: {run[:300]!r}")
 
 
+APPROVED_ENV = "OMARCHY_AI_TOOL_INSTALL_APPROVED"
+APPROVAL_SECONDS = 600
+
+
+def user_approves_install(name: str) -> tuple[bool, str]:
+    """Ask the user, every time, before a tool is installed.
+
+    2026-09-28: `omarchy-ai-tool install` said "ALWAYS asks the user first" but
+    only the Task Runtime asked (permissions.py marks the command always_ask);
+    run directly, it asked nothing, and Claude Code installed home_assistant
+    without the user's approval. Now the command asks: a y/N prompt in a
+    terminal, otherwise a desktop Approve/Deny notification (no answer = no).
+    The only pass: the runtime, after the user approved that exact install
+    command, sets APPROVED_ENV to the tool's name. Same-user boundary, as
+    the module docstring says: it stops mistakes and agents, not the user.
+    """
+    import os
+    import sys
+    if os.environ.get(APPROVED_ENV) == name:
+        return True, "approved in the Task Runtime"
+    summary = approval_summary(name)
+    if sys.stdin.isatty():
+        answer = input(f"{summary}\nInstall the assistant tool {name!r}? [y/N] ").strip().lower()
+        return answer in ("y", "yes"), "answered in the terminal"
+    try:
+        proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical", "-A", "approve=Install",
+                               "-A", "deny=Don't install", f"Install assistant tool: {name}?", summary[:600]],
+                              capture_output=True, text=True, timeout=APPROVAL_SECONDS)
+    except FileNotFoundError:
+        return False, "no terminal and no desktop notifications to ask the user with"
+    except subprocess.TimeoutExpired:
+        return False, f"no answer within {APPROVAL_SECONDS // 60} minutes"
+    choice = proc.stdout.strip()
+    return choice == "approve", ("approved on the desktop" if choice == "approve"
+                                 else "declined on the desktop" if choice == "deny" else "the notification was dismissed")
+
+
 def install(name: str) -> tuple[bool, str]:
-    """Only reached after the user approved (see module docstring)."""
+    """Only after the user approved: callers go through user_approves_install."""
     folder = PROPOSED_DIR / name
     spec, problems = validate(folder)
     if spec is None or problems:

@@ -45,6 +45,36 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-28: Home Assistant tool is Jev-powered; install gate; SSH key removed
+
+- MyApi fix deployed (vault reveal/delete across the owner's workspaces,
+  MyApi d1140eb3). The March 'home assistant' token still would not reveal:
+  MyApi also answers "Token not found" when it cannot decrypt a stored value
+  (a token added today in the same workspace revealed fine); the user added a
+  new one. omarchy-ai-vault now says so instead of blaming the workspace.
+- HA-Jev set up through Home Assistant's config flow API with the Jev key from
+  the vault: entry 'Jev' loaded, agent conversation.jev, fallback set to
+  conversation.home_assistant. HA-Jev routes device COMMANDS on exposed
+  entities; questions ("is the sun up?") go to the fallback, whose sentence
+  matching did not understand them, so the tool tells the model: commands ->
+  `ask`, questions -> `list`/`get` (exact state).
+- Speed: a call took 2.7 s, 1.8 s of it `import omarchy_ai` loading the
+  daemon (wake word, scikit-learn) and 0.8 s the MyApi round trip; Home
+  Assistant answers in 11 ms. Lazy package `main` (0.2 s import) and a GNOME
+  Keyring cache of vault values (12 h; `get --fresh` on a 401): ~0.3 s.
+- Installed home_assistant (REST + vault token; `ask` -> HA-Jev). It was
+  installed WITHOUT the user's approval: `omarchy-ai-tool install` only asked
+  when a task ran it (permissions.py always_ask); run directly it asked
+  nothing. It now asks itself (terminal y/N, else a desktop Approve/Deny
+  notification; no answer in 10 min = not installed). The runtime passes
+  APPROVED_ENV=<tool> only on the exact install command the user approved.
+  The user reviewed and kept the tool.
+- The task's SSH key ('omarchy-ai for HA-Jev') removed from the box's
+  authorized_keys (backup kept there) and deleted locally; login with it is
+  refused.
+- Not yet verified: a real device command through `ask` (it changes the
+  house; waiting for the user to name a device to toggle).
+
 ### 2026-09-28: why the Home Assistant task was half-done; vault access; history scrubbed
 
 Task 20260927-154507-92b0ee ended `failed` (Jev: FAIL p=0.51), but the user

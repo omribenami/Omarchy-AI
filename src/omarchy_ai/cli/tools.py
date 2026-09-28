@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
         passed, output = user_tools._test(user_tools.Path(args[0]).expanduser().resolve())
         print(("Test passed." if passed else "Test FAILED.") + (f"\n{output}" if output else ""))
         return 0 if passed else 1
+    if verb == "install" and args:
+        approved, how = user_tools.user_approves_install(args[0])
+        if not approved:
+            print(f"Not installed: the user did not approve it ({how}).")
+            return 1
     if verb in ("propose", "install", "remove") and args:
         ok, message = getattr(user_tools, verb)(args[0])
         print(message)

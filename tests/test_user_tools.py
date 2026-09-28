@@ -127,3 +127,94 @@ class ToolApprovalPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallGateTests(unittest.TestCase):
+    """`omarchy-ai-tool install` asks the user itself (2026-09-28: run directly,
+    it asked nothing, and a tool was installed without the user's approval)."""
+
+    def setUp(self):
+        import os
+        from omarchy_ai.execution import user_tools
+        self.user_tools = user_tools
+        env = patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(user_tools.APPROVED_ENV, None)
+        for target, value in (("approval_summary", "does things"),):
+            p = patch.object(user_tools, target, return_value=value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _cli(self, notify_stdout=None, notify_error=None):
+        import subprocess
+        from omarchy_ai.cli import tools as cli
+        answer = notify_error or (lambda *a, **k: subprocess.CompletedProcess(a, 0, notify_stdout, ""))
+        with patch.object(self.user_tools.subprocess, "run", side_effect=answer) as notify, \
+                patch("sys.stdin.isatty", return_value=False), \
+                patch.object(self.user_tools, "install", return_value=(True, "Installed x.")) as do_install:
+            code = cli.main(["install", "x"])
+        return code, notify, do_install
+
+    def test_declined_or_dismissed_means_not_installed(self):
+        for answer in ("deny", ""):
+            code, notify, do_install = self._cli(notify_stdout=answer)
+            self.assertEqual(code, 1)
+            do_install.assert_not_called()
+            self.assertIn("notify-send", notify.call_args.args[0])
+
+    def test_no_answer_in_time_means_not_installed(self):
+        import subprocess
+        code, _, do_install = self._cli(notify_error=subprocess.TimeoutExpired("notify-send", 600))
+        self.assertEqual(code, 1)
+        do_install.assert_not_called()
+
+    def test_approved_on_the_desktop_installs(self):
+        code, _, do_install = self._cli(notify_stdout="approve")
+        self.assertEqual(code, 0)
+        do_install.assert_called_once_with("x")
+
+    def test_runtime_approved_install_is_not_asked_twice(self):
+        import os
+        os.environ[self.user_tools.APPROVED_ENV] = "x"
+        code, notify, do_install = self._cli(notify_stdout="deny")
+        self.assertEqual(code, 0)
+        notify.assert_not_called()
+        do_install.assert_called_once_with("x")
+
+    def test_a_pass_for_another_tool_does_not_count(self):
+        import os
+        os.environ[self.user_tools.APPROVED_ENV] = "other_tool"
+        code, _, do_install = self._cli(notify_stdout="deny")
+        self.assertEqual(code, 1)
+        do_install.assert_not_called()
+
+
+from test_task_runtime import RuntimeHarness, ScriptedJev, ScriptExecutor  # noqa: E402
+
+
+class RuntimeInstallPassTests(RuntimeHarness):
+    def test_only_an_approved_install_command_carries_the_pass(self):
+        from omarchy_ai.runtime import shell
+        from omarchy_ai.runtime.executors.base import DONE, NEEDS_APPROVAL, Report
+        ran = []
+
+        def fake_run(command, cwd=None, **kw):
+            ran.append((command, dict(kw.get("env") or {})))
+            return shell.CommandResult(str(command), str(cwd), 0, "Installed x.", 0.1)
+
+        def work(a, ctx):
+            r = ctx.run_command("omarchy-ai-tool install x", a.workspace, 10)
+            if r["decision"] == "ask":
+                return Report(NEEDS_APPROVAL, claim="needs approval", approval=r["request"])
+            return Report(DONE, claim=r["output"])
+
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], ScriptedJev())
+        with patch.object(shell, "run", side_effect=fake_run), \
+                patch.object(user_tools, "approval_summary", return_value="does things"):
+            task = runtime.start("install my tool", str(self.ws), background=False)
+            self.assertFalse([c for c, _ in ran if "install" in str(c)])  # asked, never run
+            self.assertTrue(runtime.respond(task.id, approve=True, channel="cli", background=False)["ok"])
+        installs = [env for c, env in ran if "omarchy-ai-tool install" in str(c)]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0].get(user_tools.APPROVED_ENV), "x")
