@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
-from ..core.jev import Jev, JevError, boolean
+from ..core.jev import _DOWN, BREAKER, Jev, JevError, boolean
 from .omarchy import GatewayClient, GatewayError
 
+log = logging.getLogger("omarchy_ai.voice.myapi_refinement")
 
 MAX_REFINEMENT_SOURCE_CHARS = 80_000
 MAX_REFINED_ANSWER_CHARS = 12_000
@@ -39,6 +41,13 @@ def refine_myapi_result(config, request: str, result: str) -> str:
     request = request.strip()
     if not request or not result:
         return result
+    # Real session 2026-09-28 17:28-17:29 (phone): the Gateway was timing out,
+    # every Gmail result reached Gemini raw and truncated, and nothing in the
+    # log said why. Share Jev's Gateway breaker so a down Gateway costs no
+    # extra seconds per MyApi call, and log every fallback reason.
+    if (left := BREAKER.open_for()) > 0:
+        log.info("MyApi refinement skipped: Gateway circuit open (%.0fs left)", left)
+        return result
     source = _bounded_source(result)
     try:
         value = GatewayClient(config).complete_json(
@@ -46,12 +55,23 @@ def refine_myapi_result(config, request: str, result: str) -> str:
             {"original_request": request, "myapi_result": source},
             timeout=12,
         )
-        answer = value.get("answer")
-        if not isinstance(answer, str) or not answer.strip():
-            return result
-        answer = answer.strip()
-        if len(answer) > MAX_REFINED_ANSWER_CHARS:
-            return result
+    except GatewayError as exc:
+        if _DOWN.search(str(exc)):
+            BREAKER.failure()
+        log.info("MyApi refinement unavailable: Gateway: %s", str(exc)[:160])
+        return result
+    except (KeyError, TypeError, ValueError) as exc:
+        log.info("MyApi refinement unavailable: malformed Gateway answer: %s", str(exc)[:160])
+        return result
+    answer = value.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        log.info("MyApi refinement kept raw result: no answer in the Gateway response")
+        return result
+    answer = answer.strip()
+    if len(answer) > MAX_REFINED_ANSWER_CHARS:
+        log.info("MyApi refinement kept raw result: answer too long (%d chars)", len(answer))
+        return result
+    try:
         checks = Jev().ask(
             {
                 "original_request": request,
@@ -70,8 +90,11 @@ def refine_myapi_result(config, request: str, result: str) -> str:
             retries=0,
             fail_fast=True,
         )
-    except (GatewayError, JevError, KeyError, TypeError, ValueError):
+        scores = {name: checks[name]["p"] for name in ("answers_request", "grounded")}
+    except (JevError, KeyError, TypeError, ValueError) as exc:
+        log.info("MyApi refinement kept raw result: Jev unavailable: %s", str(exc)[:160])
         return result
-    if any(checks[name]["p"] < MIN_JEV_PROBABILITY for name in ("answers_request", "grounded")):
+    if any(p < MIN_JEV_PROBABILITY for p in scores.values()):
+        log.info("MyApi refinement kept raw result: Jev not confident %s", scores)
         return result
     return json.dumps({"jev_refined": True, "answer": answer}, ensure_ascii=False)

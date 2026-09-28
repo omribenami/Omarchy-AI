@@ -3,7 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from omarchy_ai.core.jev import JevError
+from omarchy_ai.core.jev import BREAKER, JevError
+from omarchy_ai.voice.omarchy import GatewayError
 from omarchy_ai.voice.myapi_refinement import (
     MAX_REFINEMENT_SOURCE_CHARS,
     refine_myapi_result,
@@ -11,6 +12,10 @@ from omarchy_ai.voice.myapi_refinement import (
 
 
 class MyApiRefinementTests(unittest.TestCase):
+    def setUp(self):
+        BREAKER.success()
+        self.addCleanup(BREAKER.success)
+
     def test_returns_jev_validated_answer(self):
         gateway = SimpleNamespace(complete_json=lambda *a, **k: {"answer": "Chris replied Monday."})
         jev = SimpleNamespace(ask=lambda *a, **k: {
@@ -62,6 +67,28 @@ class MyApiRefinementTests(unittest.TestCase):
         with patch("omarchy_ai.voice.myapi_refinement.GatewayClient") as gateway:
             self.assertEqual(refine_myapi_result(object(), "", raw), raw)
         gateway.assert_not_called()
+
+    def test_open_gateway_circuit_skips_refinement(self):
+        raw = '{"ok":true}'
+        for _ in range(BREAKER.THRESHOLD):
+            BREAKER.failure()
+        with patch("omarchy_ai.voice.myapi_refinement.GatewayClient") as gateway, \
+                self.assertLogs("omarchy_ai.voice.myapi_refinement", "INFO") as logs:
+            self.assertEqual(refine_myapi_result(object(), "Find it", raw), raw)
+        gateway.assert_not_called()
+        self.assertIn("circuit open", logs.output[0])
+
+    def test_gateway_timeouts_open_the_shared_circuit(self):
+        raw = '{"ok":true}'
+        def timed_out(*args, **kwargs):
+            raise GatewayError("Gateway request timed out")
+        gateway = SimpleNamespace(complete_json=timed_out)
+        with patch("omarchy_ai.voice.myapi_refinement.GatewayClient", return_value=gateway), \
+                self.assertLogs("omarchy_ai.voice.myapi_refinement", "INFO") as logs:
+            for _ in range(BREAKER.THRESHOLD):
+                self.assertEqual(refine_myapi_result(object(), "Find it", raw), raw)
+        self.assertGreater(BREAKER.open_for(), 0)
+        self.assertIn("timed out", logs.output[0])
 
 
 if __name__ == "__main__":

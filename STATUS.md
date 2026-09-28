@@ -45,6 +45,26 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-28: MyApi read timeouts and the silent refinement fallback
+
+- Live phone session 17:28-17:30 (journalctl), first real use of
+  `myapi_gmail_search`: "Chris TriPointe" missed exactly and matched on the
+  `{Chris TriPointe}` fallback (16 s). The next search failed as
+  "myapi_gmail_search crashed": `TimeoutError: The read operation timed
+  out` from `resp.read()` in `myapi/client.py`. urlopen only wraps
+  connect-time errors in URLError, so read timeouts and resets escaped
+  every `except MyApiError`. The client now converts TimeoutError/OSError
+  to MyApiError, so every MyApi action reports a retryable failure.
+- All three Gmail results reached Gemini raw at the 40k cap with no
+  "refined" line: the Gateway was timing out (switchboard "Gateway request
+  timed out" at 17:29:36) and `refine_myapi_result` swallowed that
+  silently, possibly waiting up to 12 s each time. It now skips while Jev's
+  shared Gateway breaker is open, counts its own Gateway-down errors toward
+  it, and logs every reason it keeps the raw result.
+- Same window, unrelated: gemini-3.8-live 1011 at 17:31:37, fallback to
+  3.1 flash worked as designed; phone-bridge HTTPS `ConnectionResetError`
+  tracebacks are noise from the phone dropping connections.
+
 ### 2026-09-28: no typing into a locked screen
 
 - The user: "she needs to make sure the screen is unlocked, otherwise

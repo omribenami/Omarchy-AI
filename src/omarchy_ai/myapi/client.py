@@ -210,6 +210,14 @@ class MyApiClient:
             raise MyApiError(message, reconnect_needed=e.code in (401, 403), details=parsed) from e
         except urllib.error.URLError as e:
             raise MyApiError(f"could not reach myapiai.com: {e.reason}") from e
+        # Real session 2026-09-28 17:29 (phone): a Gmail fetch timed out while
+        # reading the response body. urlopen only wraps connect-time errors in
+        # URLError, so the bare TimeoutError escaped every `except MyApiError`
+        # and the action was reported as "crashed" instead of a retryable miss.
+        except TimeoutError as e:
+            raise MyApiError(f"myapiai.com did not answer within {_TIMEOUT}s; try again") from e
+        except OSError as e:
+            raise MyApiError(f"connection to myapiai.com failed: {e}") from e
         if not raw:
             return {}
         try:
