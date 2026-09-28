@@ -19,6 +19,23 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.11.2] - 2026-09-28
+
+### Highlights
+
+- When your email service is slow to answer, she tells you and you can ask
+  again, instead of the search just failing.
+- When her helper service is down, she no longer waits on it before reading
+  you your email results.
+
+### Under the hood
+
+- MyApi read timeouts and dropped connections are reported as normal MyApi
+  errors instead of crashing the action.
+- Condensing MyApi results skips the Gateway while its circuit is open,
+  counts its own Gateway failures toward it, and logs why it kept a raw
+  result.
+
 ## [0.11.1] - 2026-09-28
 
 ### Highlights
