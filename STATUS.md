@@ -45,50 +45,42 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
-### 2026-09-28: Home Assistant tool is Jev-powered; install gate; SSH key removed
+### 2026-09-28: vault decrypt failures; faster tool calls; install gate; SSH key removed
 
+(The user's personal integration and its tool are local only: never in this
+repository. Their notes live in ~/.config/omarchy-ai/glossary.md.)
 - MyApi fix deployed (vault reveal/delete across the owner's workspaces,
-  MyApi d1140eb3). The March 'home assistant' token still would not reveal:
-  MyApi also answers "Token not found" when it cannot decrypt a stored value
-  (a token added today in the same workspace revealed fine); the user added a
-  new one. omarchy-ai-vault now says so instead of blaming the workspace.
-- HA-Jev set up through Home Assistant's config flow API with the Jev key from
-  the vault: entry 'Jev' loaded, agent conversation.jev, fallback set to
-  conversation.home_assistant. HA-Jev routes device COMMANDS on exposed
-  entities; questions ("is the sun up?") go to the fallback, whose sentence
-  matching did not understand them, so the tool tells the model: commands ->
-  `ask`, questions -> `list`/`get` (exact state).
-- Speed: a call took 2.7 s, 1.8 s of it `import omarchy_ai` loading the
-  daemon (wake word, scikit-learn) and 0.8 s the MyApi round trip; Home
-  Assistant answers in 11 ms. Lazy package `main` (0.2 s import) and a GNOME
-  Keyring cache of vault values (12 h; `get --fresh` on a 401): ~0.3 s.
-- Installed home_assistant (REST + vault token; `ask` -> HA-Jev). It was
-  installed WITHOUT the user's approval: `omarchy-ai-tool install` only asked
-  when a task ran it (permissions.py always_ask); run directly it asked
-  nothing. It now asks itself (terminal y/N, else a desktop Approve/Deny
-  notification; no answer in 10 min = not installed). The runtime passes
-  APPROVED_ENV=<tool> only on the exact install command the user approved.
-  The user reviewed and kept the tool.
-- The task's SSH key ('omarchy-ai for HA-Jev') removed from the box's
-  authorized_keys (backup kept there) and deleted locally; login with it is
-  refused.
-- Not yet verified: a real device command through `ask` (it changes the
-  house; waiting for the user to name a device to toggle).
+  MyApi d1140eb3). An older token still would not reveal: MyApi also answers
+  "Token not found" when it cannot decrypt a stored value (a token added the
+  same day in the same workspace revealed fine); the user re-added it.
+  omarchy-ai-vault now says so instead of blaming the workspace.
+- Speed: a user tool call took 2.7 s, 1.8 s of it `import omarchy_ai` loading
+  the daemon (wake word, scikit-learn) and 0.8 s the MyApi round trip; the
+  service it called answered in 11 ms. Lazy package `main` (0.2 s import) and
+  a GNOME Keyring cache of vault values (12 h; `get --fresh` on a 401): ~0.3 s.
+- A user tool was installed WITHOUT the user's approval: `omarchy-ai-tool
+  install` only asked when a task ran it (permissions.py always_ask); run
+  directly it asked nothing. It now asks itself (terminal y/N, else a desktop
+  Approve/Deny notification; no answer in 10 min = not installed). The runtime
+  passes APPROVED_ENV=<tool> only on the exact install command the user
+  approved. The user reviewed and kept the tool.
+- A task's SSH key removed from the server's authorized_keys (backup kept
+  there) and deleted locally; login with it is refused.
 
-### 2026-09-28: why the Home Assistant task was half-done; vault access; history scrubbed
+### 2026-09-28: why a smart-home task was half-done; vault access; history scrubbed
 
 Task 20260927-154507-92b0ee ended `failed` (Jev: FAIL p=0.51), but the user
 heard "failed. I could not complete this. Implemented and verified the
 connection": the FAIL path used the last worker's claim as the reason.
 - Root causes: (1) the planner guessed "Jev (likely referring to a
   JavaScript/TypeScript ... framework)" and wrote criteria for a UI; (2) the
-  worker found the right thing, HA-Jev (github.com/AboveColin/HA-Jev, the
-  Home Assistant integration for TypeSafe Jev) and copied it into
+  worker found the right thing, the Jev integration for that platform and copied it into
   custom_components (loaded, never set up: no config entry, no jevclient),
-  but setup needs a Jev API key and a Home Assistant token it could not get;
+  but setup needs a Jev API key and a smart-home token it could not get;
   (3) Codex then built a tool that SSHes in and mints tokens from the HA
   owner's refresh token -- no Jev involved.
-- runtime/glossary.py PROJECT_TERMS (Jev, HA-Jev, MyApi vault, user tools)
+- runtime/glossary.py PROJECT_TERMS (Jev, MyApi vault, user tools; personal terms
+  in the local ~/.config/omarchy-ai/glossary.md)
   goes to the planner, the System agent and the coding agents, with "find out
   or ask, never write 'likely X'".
 - FAIL message: the gate's reason or "Jev judged the criteria not met", what
@@ -98,12 +90,10 @@ connection": the FAIL path used the last worker's claim as the reason.
   $XDG_RUNTIME_DIR and masked (passwords.known_secrets) in command and
   executor output, task files, agenda and logs. MyApi quirk: /vault/tokens
   lists every workspace, reveal only finds the identity's own ("Token not
-  found"); the 'home assistant' token is in 'My Workspace', Omarchy AI's
+  found"); the smart-home token was in 'My Workspace', Omarchy AI's
   identity is in 'MyApi WS'. Confirmed: reveal of a token in 'MyApi WS'
   works (51 chars, masked after).
-- Draft tool ~/.config/omarchy-ai/tools/_drafts/home_assistant: HA REST on
-  the LAN with the vault token; `ask` goes to HA-Jev's conversation agent.
-  Blocked until the token is readable and HA-Jev has a Jev API key.
+- A personal user tool was drafted outside the repository (see local notes).
 - History: user's login, hosts, LAN/Tailscale IPs, email-in-files and the
   flagged fake test password scrubbed from all 211 commits, 3 branches and
   tags with git-filter-repo (29 committed archive versions repacked, their
@@ -138,7 +128,7 @@ Failed detection was cached 10 min, too.
   Codex/Claude; escalation briefs quoting the user get it from the text.
   Live: "open codex --yolo in Git/omarchy-ai and ask him ..." ->
   start_task(agent=codex, unsandboxed=true, workspace=~/Git/omarchy-ai).
-- runtime.reassign / task_respond(agent=...): "move the home assistant task to
+- runtime.reassign / task_respond(agent=...): "move the smart-home task to
   codex with yolo" -> "task 20260927-154507-92b0ee moved to CODEX"; it now
   waits for the HIGH approval (Codex unsandboxed).
 - The user's rule: Codex or Claude Code by default; SYSTEM_AGENT, TEST_AGENT
@@ -164,7 +154,7 @@ Phone call 19:21-19:29: she listed tasks (22,254 chars) and then made no tool
 call in six turns; input transcription also came out as Hindi/Spanish/French
 fragments ("Nota fiscal de la máquina…", "enfer"). Reproduced through the
 daemon's text chat (same GeminiLiveSession) with "What's the status of the
-home assistant task?" then "I want you to do it. SSH to it yourself":
+smart-home task?" then "I want you to do it. SSH to it yourself":
 1. task_status(list) returned full summaries (22k) without the waiting_user
    `what_to_do`. Now compact (`_brief`: 3,561 chars for 8 tasks) and each
    waiting task carries it.
@@ -219,7 +209,7 @@ conversation_history.jsonl only (journal, tasks, agenda, config: clean).
   real one (restored from Sudo Access: same password, compared by hash).
 - Migrated: the one spoken password moved from the history file to the
   keyring; the file rewritten masked (grep: 0 hits anywhere in state/config).
-- Verified live against the HA box (<ha-host>, PubkeyAuthentication=no,
+- Verified live against the server (<ha-host>, PubkeyAuthentication=no,
   so the password is what logs in): task path `sshpass ssh ... echo` ->
   LOGIN_OK; tmux terminal via ssh_terminal_command -> TMUX_LOGIN_OK; plain
   `ssh` prompt answered by terminal_sudo -> PROMPT_LOGIN_OK. 13 new tests
@@ -228,7 +218,7 @@ conversation_history.jsonl only (journal, tasks, agenda, config: clean).
 
 ### 2026-09-27: she refused to SSH ("No ssh to it" was "Now ssh to it")
 
-Phone call 18:53-18:55 about the Home Assistant task (20260927-154507-92b0ee,
+Phone call 18:53-18:55 about the smart-home task (20260927-154507-92b0ee,
 waiting_user: it asked the user to install an SSH key on <ha-host>).
 User: "I gave you credentials for that" / "So youbrun it" / "No ssh to it"
 (STT for "Now ssh to it"). She called terminal_task `ssh

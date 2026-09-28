@@ -142,7 +142,7 @@ class VoiceAgentTests(unittest.TestCase):
     def test_detects_the_named_agent(self):
         self.assertEqual(service.named_agent(SAID), ("codex", True))
         self.assertEqual(service.named_agent("have Claude Code review it"), ("claude_code", False))
-        self.assertEqual(service.named_agent("find a jev based home assistant solution"), ("", False))
+        self.assertEqual(service.named_agent("find a jev based smart home solution"), ("", False))
 
     def test_switchboard_rejects_a_task_that_drops_the_named_agent(self):
         jev = type("J", (), {"ask": lambda *a, **k: self.fail("code decides this, not Jev")})()

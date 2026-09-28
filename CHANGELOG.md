@@ -27,7 +27,7 @@ Rules for every release:
   can use a token without it ever being shown to her or saved anywhere.
 - When a task fails, she tells you why and what it still had to do, instead
   of repeating what the worker claimed.
-- Tasks know what Jev, HA-Jev and MyApi are, and look up any term they don't
+- Tasks know what Jev and MyApi are, and look up any term they don't
   know instead of guessing.
 
 ## [0.10.0] - 2026-09-27

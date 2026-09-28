@@ -1,5 +1,5 @@
 """MyApi vault for programs, never the model (2026-09-28: she could not find
-the Home Assistant token; a task borrowed the HA owner's session instead)."""
+a token; a task borrowed another service's login session instead)."""
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +9,7 @@ from omarchy_ai.myapi import vault
 from omarchy_ai.myapi.client import MyApiError
 
 TOKENS = {"data": [
-    {"id": "vt_a", "label": "home assistant", "service": "ha", "discoveredApiUrl": "https://ha.example",
+    {"id": "vt_a", "label": "weather api", "service": "weather", "discoveredApiUrl": "https://weather.example",
      "tokenPreview": "abc…", "workspaceId": "ws_other"},
     {"id": "vt_b", "label": "ElevenLabs", "service": "elevenlabs", "tokenPreview": "sk_…", "workspaceId": "ws_mine"}]}
 WORKSPACES = {"workspaces": [{"id": "ws_mine", "name": "MyApi WS"}, {"id": "ws_other", "name": "My Workspace"}]}
@@ -43,7 +43,7 @@ class VaultTests(unittest.TestCase):
 
     def test_labels_never_carry_values(self):
         items = vault.labels(FakeClient())
-        self.assertEqual([i["name"] for i in items], ["home assistant", "ElevenLabs"])
+        self.assertEqual([i["name"] for i in items], ["weather api", "ElevenLabs"])
         self.assertEqual(items[0]["workspace"], "My Workspace")
         self.assertFalse(any(k in i for i in items for k in ("token", "tokenPreview")))
 
@@ -54,7 +54,7 @@ class VaultTests(unittest.TestCase):
 
     def test_listed_but_unreadable_token_says_to_re_add_it(self):
         with self.assertRaises(MyApiError) as ctx:
-            vault.get("Home Assistant", FakeClient())
+            vault.get("Weather API", FakeClient())
         self.assertIn("cannot be decrypted", str(ctx.exception))
         self.assertIn("add it again", str(ctx.exception))
 

@@ -1157,7 +1157,7 @@ def terminal_sudo(args: dict) -> ActionResult:
     """Answer the password prompt in an assistant terminal: sudo gets the
     saved Sudo Access password; an SSH/ssh-copy-id/scp prompt gets the
     password the user stated (captured into the keyring), else the saved one
-    (2026-09-27: "same password as root" for the Home Assistant box)."""
+    (2026-09-27: "same password as root" for a home server)."""
     from . import passwords, workbench
     name = str(args.get("name") or "")
     screen = workbench.read(name, 6, settle=False) if workbench.exists(name) else None

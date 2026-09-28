@@ -203,7 +203,7 @@ class TaskRuntime:
     def reassign(self, task_id: str | None, agent: str, *, unsandboxed: bool = False,
                  background: bool = True) -> dict:
         """Hand an open task to the agent the user names; every later work
-        step uses it (2026-09-27: "move the Home Assistant task to Codex, I'm
+        step uses it (2026-09-27: "move that task to Codex, I'm
         paying API credit for nothing" -- it ran on qwen, then grok). A
         question or approval the old worker was waiting on is dropped: the
         new agent works it out itself."""

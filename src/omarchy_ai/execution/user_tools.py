@@ -151,7 +151,7 @@ def user_approves_install(name: str) -> tuple[bool, str]:
 
     2026-09-28: `omarchy-ai-tool install` said "ALWAYS asks the user first" but
     only the Task Runtime asked (permissions.py marks the command always_ask);
-    run directly, it asked nothing, and Claude Code installed home_assistant
+    run directly, it asked nothing, and Claude Code installed a user tool
     without the user's approval. Now the command asks: a y/N prompt in a
     terminal, otherwise a desktop Approve/Deny notification (no answer = no).
     The only pass: the runtime, after the user approved that exact install

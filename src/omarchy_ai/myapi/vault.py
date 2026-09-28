@@ -1,8 +1,8 @@
 """The MyApi token vault, for tasks and user tools -- never for the model.
 
-2026-09-28: asked to use the Home Assistant token from the vault, she could
-not: Omarchy AI had no vault access at all (only connected services), and a
-task worked around it by borrowing the Home Assistant owner's login session.
+2026-09-28: asked to use a token from the vault, she could not: Omarchy AI
+had no vault access at all (only connected services), and a task worked
+around it by borrowing another service's login session.
 
 - `labels()` is what the model may see: names, services and URLs, no values.
 - `get(name)` returns a value for a program (a user tool's `run`, a task
@@ -29,8 +29,8 @@ from .client import MyApiClient, MyApiError
 _CACHE_SECONDS = 300
 _cache: dict[str, tuple[float, str]] = {}
 # GNOME Keyring cache across processes (a user tool is a new process per call):
-# 2026-09-28 a Home Assistant call took 2.7 s, 0.8 s of it the MyApi round
-# trip, against 11 ms for Home Assistant itself. Refreshed after this long, or
+# 2026-09-28 a user tool's call took 2.7 s, 0.8 s of it the MyApi round
+# trip, against 11 ms for the service it called. Refreshed after this long, or
 # at once with `get --fresh` (the tool does that when a service answers 401).
 KEYRING_SECONDS = 12 * 3600
 _KEYRING = ("application", "omarchy-ai", "purpose", "vault-cache")
@@ -116,8 +116,8 @@ def get(name: str, client: MyApiClient | None = None, *, fresh: bool = False) ->
     except MyApiError as exc:
         if "not found" in str(exc).lower():
             # MyApi answers "Token not found" both for a missing row and for a
-            # stored value it cannot decrypt (2026-09-28: the March 'home
-            # assistant' token failed while a new token in the same workspace
+            # stored value it cannot decrypt (2026-09-28: an older token
+            # failed while a new token in the same workspace
             # revealed fine, after the workspace fix was deployed).
             raise MyApiError(f"MyApi listed the vault token {token.get('label')!r} but cannot return its value "
                              "(its stored value cannot be decrypted): delete it and add it again at myapiai.com") from exc
@@ -166,7 +166,7 @@ def revealed_values() -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     """`omarchy-ai-vault list` | `omarchy-ai-vault get [--fresh] NAME` (value on stdout,
     for a program: `curl -H "Authorization: Bearer $(omarchy-ai-vault get
-    'home assistant')" ...`)."""
+    'github')" ...`)."""
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     try:

@@ -709,7 +709,7 @@ TOOLS: list[dict] = [
 MYAPI_TOOLS: list[dict] = [
     _tool(
         "myapi_vault_list",
-        "Names of the API keys/tokens in the user's MyApi token vault (e.g. 'home assistant') and which "
+        "Names of the API keys/tokens in the user's MyApi token vault (e.g. 'github') and which "
         "workspace each is in. Values are never shown to you: a task or user tool uses one with "
         "`omarchy-ai-vault get 'NAME'`. Use this when the user refers to a token or key in their vault.",
     ),

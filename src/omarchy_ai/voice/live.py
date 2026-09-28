@@ -184,7 +184,7 @@ def build_session_config(config: Config) -> dict:
     # user's Claude Code window. list_windows now labels each terminal's
     # machine, and session-ending input needs the user's yes (InputGuard).
     # 2026-09-27 19:3x: with no ssh terminal open she read these rules as "I
-    # can't reach the Home Assistant box" and told the user to set up SSH by
+    # can't reach that server" and told the user to set up SSH by
     # hand, three calls in a row; she may open one herself.
     instructions += (
         "\n\nWHICH MACHINE: list_files, read_file, write_file, edit_file, search and terminal_task always act "

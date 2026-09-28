@@ -10,9 +10,8 @@ android-receiver/.gradle/
 android-receiver/build/
 android-receiver/local.properties
 
-# The user's local Home Assistant integration (a user tool in
-# ~/.config/omarchy-ai/tools/home_assistant). Never part of this repository,
-# even if a task copies it here.
+# The user's personal integrations (user tools in ~/.config/omarchy-ai/tools)
+# are never part of this repository, even if a task copies one here.
 **/home_assistant/
 **/home-assistant/
 **/homeassistant/
