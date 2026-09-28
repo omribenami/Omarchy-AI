@@ -107,6 +107,11 @@ def known_secrets() -> list[str]:
             value = None
         if value and len(value) >= _MIN_SECRET:
             values.append(value)
+    try:  # MyApi vault values a program was given (myapi/vault.py)
+        from ..myapi import vault
+        values += [v for v in vault.revealed_values() if len(v) >= _MIN_SECRET]
+    except Exception:  # noqa: BLE001
+        pass
     with _lock:
         _cache = (time.monotonic(), values)
     return values

@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from .. import discovery
+from ..glossary import PROJECT_TERMS
 from ..permissions import Risk, coding_agent_risk
 from .base import (DIAGNOSE, DONE, FAILED, IMPLEMENT, NEEDS_APPROVAL, REVIEW, TEST, WORK, Assignment, Executor, Report,
                    WorkContext)
@@ -84,7 +85,7 @@ _TEST_COMMAND = re.compile(r"^\s*TEST_COMMAND:\s*`?(.+?)`?\s*$", re.M)
 
 def build_prompt(assignment: Assignment) -> str:
     context = json.dumps(assignment.context, ensure_ascii=False, indent=1)[:12000] if assignment.context else "{}"
-    head = (f"You are a specialist executor working for Omarchy AI's task runtime.\n\n"
+    head = (f"You are a specialist executor working for Omarchy AI's task runtime.\n\n{PROJECT_TERMS}\n\n"
             f"OVERALL GOAL (from the user):\n{assignment.goal}\n\n"
             f"YOUR ASSIGNMENT ({assignment.role}):\n{assignment.instructions}\n\n"
             f"WORKSPACE: {assignment.workspace}\n\n"

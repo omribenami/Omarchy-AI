@@ -708,6 +708,12 @@ TOOLS: list[dict] = [
 # execution/actions.py's myapi_call for the enforcement.
 MYAPI_TOOLS: list[dict] = [
     _tool(
+        "myapi_vault_list",
+        "Names of the API keys/tokens in the user's MyApi token vault (e.g. 'home assistant') and which "
+        "workspace each is in. Values are never shown to you: a task or user tool uses one with "
+        "`omarchy-ai-vault get 'NAME'`. Use this when the user refers to a token or key in their vault.",
+    ),
+    _tool(
         "myapi_list_services",
         "Lists the services connected to the user's MyApi account (Gmail, "
         "Calendar, Drive, Notion, Slack, and whatever else they've "

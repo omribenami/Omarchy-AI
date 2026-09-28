@@ -45,6 +45,41 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-28: why the Home Assistant task was half-done; vault access; history scrubbed
+
+Task 20260927-154507-92b0ee ended `failed` (Jev: FAIL p=0.51), but the user
+heard "failed. I could not complete this. Implemented and verified the
+connection": the FAIL path used the last worker's claim as the reason.
+- Root causes: (1) the planner guessed "Jev (likely referring to a
+  JavaScript/TypeScript ... framework)" and wrote criteria for a UI; (2) the
+  worker found the right thing, HA-Jev (github.com/AboveColin/HA-Jev, the
+  Home Assistant integration for TypeSafe Jev) and copied it into
+  custom_components (loaded, never set up: no config entry, no jevclient),
+  but setup needs a Jev API key and a Home Assistant token it could not get;
+  (3) Codex then built a tool that SSHes in and mints tokens from the HA
+  owner's refresh token -- no Jev involved.
+- runtime/glossary.py PROJECT_TERMS (Jev, HA-Jev, MyApi vault, user tools)
+  goes to the planner, the System agent and the coding agents, with "find out
+  or ask, never write 'likely X'".
+- FAIL message: the gate's reason or "Jev judged the criteria not met", what
+  it had to achieve, and the last worker's report labelled NOT verified.
+- MyApi vault (myapi/vault.py, `omarchy-ai-vault list|get`, voice tool
+  myapi_vault_list with names only). A revealed value is recorded by id in
+  $XDG_RUNTIME_DIR and masked (passwords.known_secrets) in command and
+  executor output, task files, agenda and logs. MyApi quirk: /vault/tokens
+  lists every workspace, reveal only finds the identity's own ("Token not
+  found"); the 'home assistant' token is in 'My Workspace', Omarchy AI's
+  identity is in 'MyApi WS'. Confirmed: reveal of a token in 'MyApi WS'
+  works (51 chars, masked after).
+- Draft tool ~/.config/omarchy-ai/tools/_drafts/home_assistant: HA REST on
+  the LAN with the vault token; `ask` goes to HA-Jev's conversation agent.
+  Blocked until the token is readable and HA-Jev has a Jev API key.
+- History: user's login, hosts, LAN/Tailscale IPs, email-in-files and the
+  flagged fake test password scrubbed from all 211 commits, 3 branches and
+  tags with git-filter-repo (29 committed archive versions repacked, their
+  .sha256 files rewritten to match); verified 0 hits, same commits and
+  files, tests unchanged; force-pushed 2026-09-28.
+
 ### 2026-09-27: Codex/Claude Code do the work; the API worker only with approval
 
 "Why is it using grok-4.1 and not codex as I asked?" Evidence, task

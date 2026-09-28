@@ -36,6 +36,8 @@ MAX_BATCH = 4
 HISTORY_FULL = 6          # most recent results shown in full
 RESULT_CHARS = 3500       # per command output in the brief
 
+from ..glossary import PROJECT_TERMS  # noqa: E402
+
 SYSTEM_PROMPT = """You are the SYSTEM agent inside Omarchy AI, an expert Linux operator working on the user's own machine.
 The machine runs Omarchy: Arch Linux (pacman for repo packages, yay for AUR -- never apt/dnf/brew), Hyprland
 (hyprctl; 0.56+ dispatch uses a Lua form), PipeWire/WirePlumber audio (wpctl, pactl, pw-*), systemd user services
@@ -86,7 +88,7 @@ Rules:
 - Finish with needs_code_change when the root cause is a bug in source code that should be fixed in a repository
   (say which repository/file and why); a coding agent will take over.
 - Finish as soon as the assignment is answered. Be concrete: name the commands that proved each finding.
-""".replace("@PYTHON@", sys.executable)  # the daemon venv, where omarchy_ai is importable
+""".replace("@PYTHON@", sys.executable) + "\n" + PROJECT_TERMS  # the daemon venv, where omarchy_ai is importable
 
 ROLE_NOTES = {
     WORK: "Carry out the assignment and verify the result.",

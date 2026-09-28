@@ -58,6 +58,8 @@ MAX_CONSECUTIVE_RETRIES = 2
 _ACTION_RISK = {"list_windows": Risk.LOW, "list_bar_icons": Risk.LOW, "battery_status": Risk.LOW,
                 "list_cast_targets": Risk.LOW, "screenshot": Risk.LOW}
 
+from .glossary import PROJECT_TERMS  # noqa: E402
+
 PLAN_PROMPT = """You turn a user's request to Omarchy AI (a voice/desktop assistant on an Arch Linux + Hyprland
 machine) into a task objective with checkable acceptance criteria. Do not solve the task.
 Reply with one JSON object:
@@ -66,7 +68,11 @@ Reply with one JSON object:
  "verification_ideas": ["<how someone other than the worker could check it on this machine>", ...]}
 Criteria must be about the real outcome (the device works, the test passes, the file exists with X), not about
 effort. For a question the user wants answered, the criterion is that the answer is supported by evidence.
-Never add deliverables the user did not ask for (no reports, notes or saved files unless requested)."""
+Never add deliverables the user did not ask for (no reports, notes or saved files unless requested).
+Keep the user's own words for anything you are not sure of; an unknown term becomes a criterion that the worker
+finds out what it means, never a guess.
+
+""" + PROJECT_TERMS
 
 
 class TaskRuntime:
@@ -686,9 +692,18 @@ class TaskRuntime:
         d = directive.value
         last = task.steps[-1] if task.steps else None
         if d == "FAIL":
+            # Say why it failed; a worker's claim is only its claim. 2026-09-27
+            # 20:43 the user heard "failed. I could not complete this.
+            # Implemented and verified the connection" -- Codex's own words.
             done = [s for s in task.steps if s["outcome"] not in ("waiting_approval", "paused", "declined")]
-            reason = (done[-1]["claim"] if done else "") or "no further progress was possible"
-            self._finish(task, FAILED, f"I could not complete this. {reason[:600]}")
+            ok, gap = self._certification_gate(task)
+            why = gap if not ok else "Jev judged that the acceptance criteria are not met"
+            unmet = "; ".join(task.plan[:3])
+            message = f"I could not complete this: {why}. It had to achieve: {unmet[:400]}."
+            if done and done[-1].get("claim"):
+                message += (f" The last worker ({done[-1]['executor']}) reported this, NOT verified: "
+                            f"{done[-1]['claim'][:400]}")
+            self._finish(task, FAILED, message)
             return False
         if d == "ASK_USER":
             question = (last or {}).get("claim") or task.goal
@@ -1085,6 +1100,7 @@ class WorkContextImpl:
         run_as, env = passwords.ssh_env(command, shell._base_env())
         result = shell.run(run_as, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
                            output_dir=self.runtime.store.dir / self.task.id, env=env)
+        result.output = passwords.redact(result.output)  # e.g. a vault token a command printed
         data = result.as_dict()
         record.update(exit_code=result.exit_code, timed_out=result.timed_out, duration=round(result.duration, 2),
                       output=result.output[-3000:], full_output_path=result.full_output_path)
@@ -1207,6 +1223,8 @@ class WorkContextImpl:
         result = shell.run(argv, cwd, timeout=timeout, stdin_text=stdin_text,
                            cancel=self.runtime._cancel.get(self.task.id), env=env,
                            output_dir=self.runtime.store.dir / self.task.id)
+        from ..execution.passwords import redact
+        result.output = redact(result.output)
         self.task.add_command({"command": f"[executor] {' '.join(argv[:6])} …", "cwd": cwd, "step": self.step,
                                "decision": "allow", "exit_code": result.exit_code, "timed_out": result.timed_out,
                                "duration": round(result.duration, 1), "output": result.output[-1500:],

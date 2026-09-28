@@ -2015,6 +2015,16 @@ def run_omarchy_command(args: dict) -> ActionResult:
 # run_omarchy_command's own allowlist just above.
 
 
+def myapi_vault_list(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
+    from ..myapi import vault
+    try:
+        return ActionResult(True, json.dumps(vault.labels(), ensure_ascii=False))
+    except myapi.MyApiError as e:
+        return ActionResult(False, f"couldn't read the MyApi vault: {e}")
+
+
 def myapi_list_services(args: dict) -> ActionResult:
     if not myapi.is_connected():
         return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
@@ -2329,6 +2339,7 @@ ACTIONS = {
     "list_reminders": list_reminders,
     "clear_reminders": clear_reminders,
     "myapi_list_services": myapi_list_services,
+    "myapi_vault_list": myapi_vault_list,
     "myapi_service_methods": myapi_service_methods,
     "myapi_call": myapi_call,
     "myapi_gmail_search_attachments": myapi_gmail_search_attachments,
