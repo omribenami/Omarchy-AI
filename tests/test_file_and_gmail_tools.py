@@ -135,6 +135,65 @@ class LocalFileToolTests(unittest.TestCase):
 
 
 class GmailAttachmentToolTests(unittest.TestCase):
+    def test_gmail_search_uses_bounded_union_when_exact_text_misses(self):
+        empty = {"data": {"response": {"data": {"messages": []}}}}
+        found = {"data": {"response": {"data": {"messages": [
+            {"id": "message-1", "from": "Chris", "snippet": "Tri-Pointe update"}
+        ]}}}}
+        client = MagicMock()
+        client.request.side_effect = [empty, empty, empty, found]
+        with patch.object(actions.myapi, "is_connected", return_value=True), \
+             patch.object(actions.myapi, "MyApiClient", return_value=client), \
+             patch.object(actions.myapi_usage, "record"):
+            result = actions.myapi_gmail_search({"query": "Chris Tri-Point"})
+        self.assertTrue(result.ok)
+        payload = json.loads(result.message)
+        self.assertEqual(payload["gmail_search"]["attempted"], [
+            "Chris Tri-Point", 'Chris "Tri Point"', "Chris TriPoint",
+            '{Chris Tri-Point "Tri Point" TriPoint}',
+        ])
+        self.assertEqual(payload["gmail_search"]["matched_by"],
+                         '{Chris Tri-Point "Tri Point" TriPoint}')
+        queries = [call.kwargs["body"]["params"]["arguments"]["query"]
+                   for call in client.request.call_args_list]
+        self.assertEqual(queries, payload["gmail_search"]["attempted"])
+
+    def test_generic_gmail_zero_result_uses_search_fallback(self):
+        empty_rest = {"ok": True, "data": {"resultSizeEstimate": 0}}
+        empty = {"data": {"response": {"data": {"messages": []}}}}
+        found = {"data": {"response": {"data": {"messages": [{"id": "message-1"}]}}}}
+        client = MagicMock()
+        client.call_service.return_value = empty_rest
+        client.request.side_effect = [empty, empty, empty, empty, found]
+        with patch.object(actions.myapi, "is_connected", return_value=True), \
+             patch.object(actions.myapi, "MyApiClient", return_value=client), \
+             patch.object(actions.myapi_usage, "record"):
+            result = actions.myapi_call({
+                "service": "gmail",
+                "path": "/gmail/v1/users/me/messages",
+                "query": {"q": "from:Chris Tri-Point"},
+            })
+        self.assertTrue(result.ok)
+        payload = json.loads(result.message)
+        self.assertEqual(payload["gmail_search"]["matched_by"],
+                         '{Chris Tri-Point "Tri Point" TriPoint}')
+        self.assertEqual(payload["result"], found)
+
+    def test_query_planner_preserves_hard_filters_and_relaxes_text_fields(self):
+        planned = actions._gmail_fallback_queries(
+            'from:Alex subject:"Quarterly-Update" has:attachment after:2026/01/01'
+        )
+        self.assertEqual(planned[0], 'Alex Quarterly-Update has:attachment after:2026/01/01')
+        self.assertIn('Alex "Quarterly Update" has:attachment after:2026/01/01', planned)
+        self.assertTrue(all('has:attachment' in query and 'after:2026/01/01' in query
+                            for query in planned))
+        self.assertTrue(planned[-1].startswith('{'))
+
+    def test_query_planner_does_not_relax_filter_only_searches(self):
+        self.assertEqual(actions._gmail_fallback_queries(
+            'has:attachment after:2026/01/01 label:receipts'
+        ), [])
+
     def test_search_extracts_attachment_ids(self):
         response = {"data": {"response": {"data": {"messages": [{"id": "message-1", "payload": {"parts": [
             {"filename": "report.pdf", "mimeType": "application/pdf", "body": {"attachmentId": "attach-1", "size": 42}}

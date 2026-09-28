@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, patch
 from google.genai import types
 from omarchy_ai.config import Config
 from omarchy_ai.execution.actions import ActionResult
-from omarchy_ai.voice.gemini_live import GeminiLiveSession, build_live_config
+from omarchy_ai.voice.gemini_live import (
+    MAX_TOOL_RESPONSE_CHARS,
+    GeminiLiveSession,
+    _bounded_tool_message,
+    build_live_config,
+)
 from omarchy_ai.voice import switchboard
 
 # Dispatch tests below are about the pipeline, not Jev: the switchboard lets
@@ -26,6 +31,69 @@ def tearDownModule():
 
 
 class GeminiTests(unittest.IsolatedAsyncioTestCase):
+    def test_tool_results_are_bounded_before_sending_to_gemini(self):
+        message = "start" + "x" * 500_000 + "end"
+        bounded = _bounded_tool_message(message)
+        self.assertEqual(len(bounded), MAX_TOOL_RESPONSE_CHARS)
+        self.assertTrue(bounded.startswith("start"))
+        self.assertTrue(bounded.endswith("end"))
+        self.assertIn("tool result truncated", bounded)
+
+    async def test_oversized_action_result_is_bounded_on_live_session(self):
+        adapter = GeminiLiveSession(Config())
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        call = types.FunctionCall(id="large", name="list_windows", args={})
+        message = "start" + "x" * 500_000 + "end"
+        with patch('omarchy_ai.voice.gemini_live.run_action',
+                   return_value=ActionResult(True, message)), \
+                patch('omarchy_ai.voice.gemini_live.LiveSession._current_window', return_value={}):
+            await adapter._run_call(session, call)
+        reply = session.send_tool_response.call_args.kwargs['function_responses']
+        self.assertTrue(reply.response['ok'])
+        self.assertEqual(len(reply.response['message']), MAX_TOOL_RESPONSE_CHARS)
+        self.assertIn("tool result truncated", reply.response['message'])
+
+    async def test_myapi_result_is_refined_with_original_request(self):
+        adapter = GeminiLiveSession(Config())
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        call = types.FunctionCall(id="myapi", name="myapi_call", args={
+            "service": "gmail", "path": "/messages/1"
+        })
+        with patch.object(adapter, '_switchboard_context',
+                          return_value=SimpleNamespace(request="What did Chris say?")), \
+                patch('omarchy_ai.voice.gemini_live.run_action',
+                      return_value=ActionResult(True, '{"body":"Monday works"}')), \
+                patch('omarchy_ai.voice.gemini_live.refine_myapi_result',
+                      return_value='{"jev_refined":true,"answer":"Chris said Monday works."}') as refine, \
+                patch('omarchy_ai.voice.gemini_live.LiveSession._current_window', return_value={}):
+            await adapter._run_call(session, call)
+        refine.assert_called_once_with(
+            adapter.config, "What did Chris say?", '{"body":"Monday works"}'
+        )
+        reply = session.send_tool_response.call_args.kwargs['function_responses']
+        self.assertEqual(reply.response['message'],
+                         '{"jev_refined":true,"answer":"Chris said Monday works."}')
+
+    async def test_myapi_refinement_failure_preserves_bounded_raw_result(self):
+        adapter = GeminiLiveSession(Config())
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        call = types.FunctionCall(id="myapi", name="myapi_call", args={
+            "service": "gmail", "path": "/messages/1"
+        })
+        raw = "x" * 500_000
+        with patch.object(adapter, '_switchboard_context',
+                          return_value=SimpleNamespace(request="Read it")), \
+                patch('omarchy_ai.voice.gemini_live.run_action',
+                      return_value=ActionResult(True, raw)), \
+                patch('omarchy_ai.voice.gemini_live.refine_myapi_result',
+                      side_effect=RuntimeError("offline")), \
+                patch('omarchy_ai.voice.gemini_live.LiveSession._current_window', return_value={}):
+            await adapter._run_call(session, call)
+        reply = session.send_tool_response.call_args.kwargs['function_responses']
+        self.assertTrue(reply.response['ok'])
+        self.assertEqual(len(reply.response['message']), MAX_TOOL_RESPONSE_CHARS)
+        self.assertIn("tool result truncated", reply.response['message'])
+
     def test_config_waits_for_action_results_and_preserves_shared_context(self):
         with patch('omarchy_ai.voice.live.load_preferences', return_value=['Type English']), patch('omarchy_ai.voice.live.load_recent_context', return_value='old task'):
             config = types.LiveConnectConfig(**build_live_config(Config()))

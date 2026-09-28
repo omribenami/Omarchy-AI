@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -2081,6 +2082,108 @@ def myapi_service_methods(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(result))
 
 
+def _gmail_messages(value: object) -> list:
+    """Find a provider's nested Gmail message list without assuming wrappers."""
+    if isinstance(value, dict):
+        messages = value.get("messages")
+        if isinstance(messages, list):
+            return messages
+        for child in value.values():
+            found = _gmail_messages(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _gmail_messages(child)
+            if found:
+                return found
+    return []
+
+
+def _gmail_fallback_queries(query: str) -> list[str]:
+    """Plan increasingly broad Gmail queries while preserving hard filters.
+
+    Human text (plain terms plus from/to/subject values) may be unqualified,
+    punctuation-normalized, or ORed. Dates, mailbox state, attachment, label,
+    filename, size, and unknown operators remain attached to every attempt.
+    """
+    query = query.strip()
+    try:
+        tokens = shlex.split(query)
+    except ValueError:
+        tokens = query.split()
+    text_values: list[str] = []
+    hard: list[str] = []
+    text_operators = {"from", "to", "cc", "bcc", "subject"}
+    boolean_words = {"or", "and"}
+    for token in tokens:
+        clean = token.strip()
+        if not clean or clean.casefold() in boolean_words:
+            continue
+        if clean.startswith("-"):
+            hard.append(clean)
+            continue
+        if ":" in clean:
+            operator, value = clean.split(":", 1)
+            if operator.casefold() in text_operators and value:
+                text_values.append(value)
+            else:
+                hard.append(clean)
+        else:
+            text_values.append(clean.strip("(){}"))
+    text_values = [value for value in text_values if value]
+    if not text_values:
+        return []
+
+    def changed(value: str, replacement: str) -> str:
+        return re.sub(r"(?<=\w)[‐‑‒–—-](?=\w)", replacement, value)
+
+    def quote(value: str) -> str:
+        return json.dumps(value, ensure_ascii=False) if any(c.isspace() for c in value) else value
+
+    candidates: list[str] = []
+
+    def add(values: list[str], *, alternatives: bool = False) -> None:
+        values = list(dict.fromkeys(value for value in values if value))
+        if not values:
+            return
+        text = " ".join(quote(value) for value in values)
+        if alternatives and len(values) > 1:
+            text = "{" + text + "}"
+        candidate = " ".join([text, *hard]).strip()
+        if candidate != query and candidate not in candidates:
+            candidates.append(candidate)
+
+    # Remove text-field qualifiers first, but keep all words as an AND query.
+    add(text_values)
+    spaced = [changed(value, " ") for value in text_values]
+    collapsed = [changed(value, "") for value in text_values]
+    add(spaced)
+    add(collapsed)
+    # Last resort: fetch a bounded union of candidates. Jev receives their
+    # payloads and the original request, so it can identify the relevant one.
+    alternatives: list[str] = []
+    for original, with_space, without_space in zip(text_values, spaced, collapsed):
+        alternatives.extend((original, with_space, without_space))
+    add(alternatives, alternatives=True)
+    return candidates[:5]
+
+
+def _gmail_search_with_fallback(query: str, maximum: int = 10) -> tuple[dict, list[str]]:
+    attempted = [query]
+    result = _gmail_execute("GMAIL_FETCH_EMAILS", {
+        "query": query, "max_results": maximum, "include_payload": True,
+    })
+    for candidate in _gmail_fallback_queries(query):
+        if _gmail_messages(result):
+            break
+        attempted.append(candidate)
+        result = _gmail_execute("GMAIL_FETCH_EMAILS", {
+            "query": candidate, "max_results": maximum, "include_payload": True,
+        })
+    return result, attempted
+
+
 def myapi_call(args: dict) -> ActionResult:
     if not myapi.is_connected():
         return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
@@ -2108,6 +2211,19 @@ def myapi_call(args: dict) -> ActionResult:
     ok = False
     try:
         result = myapi.MyApiClient().call_service(service.strip(), path.strip(), method, query=query)
+        # The generic Gmail REST search returns only IDs. Retry a zero-result
+        # search through the read-only provider method, whose query planner
+        # preserves hard filters while relaxing human text and whose payloads
+        # give Jev enough evidence to select the relevant candidate.
+        gmail_q = query.get("q") if isinstance(query, dict) else None
+        if (service.strip().casefold() == "gmail"
+                and path.strip().rstrip("/") == "/gmail/v1/users/me/messages"
+                and isinstance(gmail_q, str) and gmail_q.strip()
+                and not _gmail_messages(result)):
+            fallback, attempted = _gmail_search_with_fallback(gmail_q.strip())
+            if _gmail_messages(fallback):
+                result = {"gmail_search": {"attempted": attempted, "matched_by": attempted[-1]},
+                          "result": fallback}
         ok = True
         return ActionResult(True, json.dumps(result))
     except myapi.MyApiError as e:
@@ -2177,6 +2293,31 @@ def myapi_gmail_search_attachments(args: dict) -> ActionResult:
         unique = {(x["message_id"], x["attachment_id"]): x for x in attachments}
         ok = True
         return ActionResult(True, json.dumps({"attachments": list(unique.values())[:100]}))
+    except myapi.MyApiError as exc:
+        return ActionResult(False, f"Gmail search failed: {exc}")
+    finally:
+        myapi_usage.record(service="gmail", path="/execute:GMAIL_FETCH_EMAILS", method="POST(read)", ok=ok,
+                           duration_ms=(time.monotonic() - started) * 1000)
+
+
+def myapi_gmail_search(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect Gmail from the Omarchy AI settings panel first.")
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return ActionResult(False, "a Gmail search query is required")
+    maximum = args.get("max_results", 10)
+    if not isinstance(maximum, int) or not 1 <= maximum <= 20:
+        return ActionResult(False, "max_results must be between 1 and 20")
+    started = time.monotonic()
+    ok = False
+    try:
+        result, attempted = _gmail_search_with_fallback(query.strip(), maximum)
+        ok = True
+        return ActionResult(True, json.dumps({
+            "gmail_search": {"attempted": attempted, "matched_by": attempted[-1] if _gmail_messages(result) else None},
+            "result": result,
+        }))
     except myapi.MyApiError as exc:
         return ActionResult(False, f"Gmail search failed: {exc}")
     finally:
@@ -2375,6 +2516,7 @@ ACTIONS = {
     "myapi_vault_list": myapi_vault_list,
     "myapi_service_methods": myapi_service_methods,
     "myapi_call": myapi_call,
+    "myapi_gmail_search": myapi_gmail_search,
     "myapi_gmail_search_attachments": myapi_gmail_search_attachments,
     "myapi_gmail_download_attachment": myapi_gmail_download_attachment,
 }

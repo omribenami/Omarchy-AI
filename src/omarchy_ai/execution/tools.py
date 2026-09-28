@@ -775,6 +775,14 @@ MYAPI_TOOLS: list[dict] = [
         },
     ),
     _tool(
+        "myapi_gmail_search",
+        "Search connected Gmail and return message payloads for answering any question about email. Use this directly instead of discovering Gmail methods or calling generic myapi_call. If an exact query misses, it preserves hard Gmail constraints (dates, mailbox, labels, attachments, filenames and state), relaxes only human-text fields, tries punctuation/spacing variants, and finally returns a bounded union of candidates for Jev to rank against the original request. This only reads mail.",
+        {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Any Gmail search query, including names, addresses, subjects, phrases, dates, labels, attachment filters, or combinations of them."},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum messages to return; omit for 10."},
+        }, "required": ["query"]},
+    ),
+    _tool(
         "myapi_gmail_search_attachments",
         "Search connected Gmail for messages with attachments and return the message ID, attachment ID, and filename needed to download one. Use a Gmail query such as 'from:alex has:attachment' or 'filename:invoice.pdf'. This only reads mail.",
         {"type": "object", "properties": {

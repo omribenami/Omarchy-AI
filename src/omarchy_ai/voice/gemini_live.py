@@ -21,6 +21,7 @@ from .tv_mic import Receiver as TvMicReceiver
 from .live import build_session_config, LiveSession
 from .echo_cancel import EchoCancellation
 from . import escalation, fallback, switchboard
+from .myapi_refinement import refine_myapi_result
 
 log = logging.getLogger("omarchy_ai.voice.gemini")
 
@@ -61,7 +62,7 @@ NON_BLOCKING_ACTIONS = {
     "install_receiver_on_tv", "list_commands", "find_skill",
     "check_assistant_updates", "update_assistant", "get_release_notes", "report_issue",
     "myapi_list_services", "myapi_vault_list", "myapi_service_methods", "myapi_call",
-    "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
+    "myapi_gmail_search", "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
     # The catalog holds slow tools (casting, MyApi, issues); its quick ones
     # just report when she is idle.
     "use_tool",
@@ -75,6 +76,26 @@ _TOOL_TEXT = {t["name"]: t["description"] for t in _TOOLS}
 # writer produced audible gaps/clicks on this 2-core machine under load.
 PLAYBACK_LATENCY = "100ms"
 PLAYBACK_LEAD = 0.3
+
+# Gemini Live closes the whole session with websocket code 1007 when a
+# function response is too large. MyApi can legitimately return hundreds of
+# kilobytes for one item (a Gmail message includes transport headers, MIME
+# bodies, and provider metadata), so bound every action at the protocol edge.
+# Keep both ends: JSON responses commonly put the requested data near the
+# front and status/provider metadata near the end.
+MAX_TOOL_RESPONSE_CHARS = 40_000
+
+
+def _bounded_tool_message(message: str) -> str:
+    if len(message) <= MAX_TOOL_RESPONSE_CHARS:
+        return message
+    marker = (
+        f"\n...[tool result truncated from {len(message):,} characters. "
+        "Use a narrower query if more detail is needed]...\n"
+    )
+    available = MAX_TOOL_RESPONSE_CHARS - len(marker)
+    head = available // 2
+    return message[:head] + marker + message[-(available - head):]
 
 
 def build_live_config(config):
@@ -800,6 +821,7 @@ class GeminiLiveSession:
 
     async def _run_call(self, session, call) -> None:
         from google.genai import types
+        original_request = self._switchboard_context().request
         log.info("Gemini action started: session=%s call=%s name=%s args=%r",
                  self._audit_session, call.id, call.name, call.args or {})
         self._gemini_inflight = self._gemini_inflight[-20:] + [(call.name, dict(call.args or {}), time.monotonic())]
@@ -876,7 +898,23 @@ class GeminiLiveSession:
                 else:
                     self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "message": result.message, "call_id": call.id, "ts": time.time(), "window": window})
                     self._action_log = self._action_log[-100:]
-            response = {"ok": result.ok, "message": result.message}
+            message = result.message
+            if result.ok and ran.startswith("myapi_"):
+                try:
+                    refined = await asyncio.to_thread(
+                        refine_myapi_result, self.config, original_request, message
+                    )
+                except Exception as exc:  # noqa: BLE001 -- raw bounded result is the safe fallback
+                    log.warning("MyApi refinement unavailable: session=%s call=%s: %s",
+                                self._audit_session, call.id, str(exc)[:160])
+                    refined = message
+                if refined != message:
+                    log.info(
+                        "MyApi result refined: session=%s call=%s raw_chars=%d refined_chars=%d",
+                        self._audit_session, call.id, len(message), len(refined),
+                    )
+                message = refined
+            response = {"ok": result.ok, "message": _bounded_tool_message(message)}
         except Exception:
             log.exception("Gemini action failed: %s", call.name)
             response = {"ok": False, "message": "Action failed; do not assume completion."}
