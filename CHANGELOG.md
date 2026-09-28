@@ -19,18 +19,46 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
-## [0.10.2] - 2026-09-27
+## [0.11.0] - 2026-09-28
 
 ### Highlights
 
-- Assistant Settings now sends passwords, approval PINs, and provider API
-  keys through private input pipes instead of exposing them in helper process
-  environments.
+- When Google's voice model has trouble on its side, she switches to an older
+  model by herself, tells you so, and carries on the same conversation. If
+  that doesn't help either, she says so and suggests trying another provider.
+- When you ask for something that takes a while, she tells you right away
+  that she heard you and what she's doing, and gives a short update if it
+  runs long.
+- Phone calls no longer go silent when she misses the end of what you said:
+  she answers anyway.
+- Her warnings, like running out of credits or switching models, are spoken
+  in your language, whichever language you speak.
+- When the Gateway is slow or down, she stops waiting on it and acts right
+  away, instead of pausing ten seconds on every sentence.
+- Assistant Settings keeps passwords, approval PINs and API keys out of view
+  of other programs on your computer.
+
+### Fixes
+
+- Saying "the password is secure" is no longer taken for a password.
+- A tool result that arrives after a dropped connection is logged instead of
+  crashing the call.
 
 ### Under the hood
 
-- The marketplace settings widget and its command-line helper enforce stdin
-  for sensitive values, with regression coverage for the security boundary.
+- Your languages now live in your own config.yaml, not in the code:
+  `user_languages` tells her which languages you speak, and
+  `extra_exit_phrases` / `extra_farewell_markers` hold your stop and goodbye
+  words for the OpenAI and Gateway providers. Hebrew stop words are no longer
+  built in; add them there if you use those providers.
+- The fallback order is `gemini_fallback_models` (Gemini 3.1 Flash Live, then
+  2.5 Flash Native Audio). A failing model is skipped for ten minutes.
+- Warnings ship in English and are recorded once in your language on your
+  machine, in ~/.local/state/omarchy-ai/alert_clips/.
+- Deciding when to hand a failing job to a background task, and spotting a
+  spoken password, now work in any language.
+- The marketplace listing presents the full assistant, and its settings
+  widget sends secrets over stdin.
 
 ## [0.10.1] - 2026-09-28
 
