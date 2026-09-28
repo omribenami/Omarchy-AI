@@ -81,6 +81,11 @@ API_URL = "https://api.openai.com/v1/live/sessions"
 class Config:
     provider: str = "openai"
     gemini_model: str = "gemini-3.8-live"
+    # Tried in order when gemini_model fails on Google's side (voice/fallback.py).
+    # Both confirmed with the full live config on 2026-09-28, while 3.8 failed
+    # every session with 1011: 3.1 answers in ~2s with tool calls, 2.5 in 6-8s.
+    gemini_fallback_models: list[str] = field(
+        default_factory=lambda: ["gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"])
     # Optional physical mic cap during desktop conversations only. None keeps
     # device/user defaults; restore the previous gain when the session ends.
     gemini_mic_volume_percent: int | None = None

@@ -20,7 +20,7 @@ from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
 from .live import build_session_config, LiveSession
 from .echo_cancel import EchoCancellation
-from . import escalation, switchboard
+from . import escalation, fallback, switchboard
 
 log = logging.getLogger("omarchy_ai.voice.gemini")
 
@@ -475,6 +475,47 @@ class GeminiLiveSession:
             log.info("Task status prompted: session=%s call=%s kind=%s after=%.1fs",
                      self._audit_session, call_id, kind, now - w["started"])
 
+    async def _say_clip(self, kind: str, model: str | None = None) -> None:
+        """A pre-rendered notice (voice/fallback.py), heard where she is heard."""
+        if self.from_paired_phone:
+            data = await asyncio.to_thread(fallback.pcm, kind, model)
+            if data:
+                self._audio.put_nowait((self._generation, data))
+                await asyncio.sleep(len(data) / 48000 + 0.3)  # 24kHz s16: let it play out
+        else:
+            await asyncio.to_thread(fallback.play_local, kind, model)
+
+    async def _start_models(self) -> list[str]:
+        """The models this conversation may use, in order. A default that
+        failed minutes ago is skipped, and the user is told once."""
+        models = fallback.chain(self.config)
+        if models[0] != self.config.gemini_model:
+            log.warning("Gemini Live starting on fallback %s: %s failed recently", models[0], self.config.gemini_model)
+            if fallback.should_announce():
+                await self._say_clip("switching", self.config.gemini_model)
+        return models
+
+    async def _fall_back(self, models: list[str], index: int, error: BaseException) -> bool:
+        """After models[index] failed: True to go on with the next model,
+        False to let the error end the conversation."""
+        if self._hangup.is_set() or not fallback.is_provider_failure(error):
+            return False
+        model = models[index]
+        fallback.mark_down(model, error)
+        if index + 1 >= len(models):
+            if len(models) > 1:
+                await self._say_clip("failed")
+            return False
+        log.warning("Gemini Live falling back: session=%s %s -> %s", self._audit_session, model, models[index + 1])
+        if model == self.config.gemini_model and fallback.should_announce():
+            await self._say_clip("switching", model)
+        return True
+
+    async def _carry_over(self, session) -> None:
+        text = fallback.carry_over(self._transcript)
+        if text:
+            await session.send_client_content(turns={"role": "user", "parts": [{"text": text}]}, turn_complete=False)
+
     def _idle(self) -> bool:
         now = time.monotonic()
         # The phone bridge plays from _audio without tracking _playback_until:
@@ -841,8 +882,16 @@ class GeminiLiveSession:
                 # cutting off whatever it's telling the user at that moment
                 # just because this background action happened to finish.
                 kwargs["scheduling"] = types.FunctionResponseScheduling.WHEN_IDLE
-            await session.send_tool_response(function_responses=types.FunctionResponse(
-                id=call.id, name=call.name, response=response, **kwargs))
+            try:
+                await session.send_tool_response(function_responses=types.FunctionResponse(
+                    id=call.id, name=call.name, response=response, **kwargs))
+            except Exception as exc:  # noqa: BLE001
+                # The connection it was asked on failed (fallback.py); a
+                # background result can outlive it.
+                log.warning("Gemini tool response lost: session=%s call=%s: %s", self._audit_session, call.id,
+                            str(exc)[:160])
+                self._pending_calls.discard(call.id)
+                return
             log.info("Gemini tool response delivered: session=%s call=%s interrupted=%s",
                      self._audit_session, call.id, call.id in self._interrupted_calls)
         self._pending_calls.discard(call.id)
@@ -1132,28 +1181,44 @@ class GeminiLiveSession:
                 self._tv_mic = TvMicReceiver(16000)
             except OSError as exc:
                 log.warning("TV microphone socket unavailable; desktop microphone only: %s", exc)
-            async with client.aio.live.connect(model=self.config.gemini_model, config=build_live_config(self.config)) as session:
-                argv = ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms"]
-                argv.extend(["--target", self._echo.source])
-                mic = await asyncio.create_subprocess_exec(*argv, "-a", "-", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-                log.info("Gemini Live connected: %s; full-duplex tools enabled", self.config.gemini_model)
-                log.info("Gemini speech detection: start=LOW end=LOW prefix=300ms silence=600ms; real interruptions enabled")
-                if self.on_connected:
-                    self.on_connected()
-                await asyncio.to_thread(status_icon.set_live, True)
-                workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(),
-                           self._tools(session), self._stuck_turn_recovery(session), self._task_status(session),
-                           self._hangup.wait()]
-                if self.config.watchdog_enabled:
-                    workers.append(self._visuals())
-                if self.config.jev_fast_path:
-                    workers.append(self._fast_path())
-                workers.append(self._announcer(session))
-                tasks = [asyncio.create_task(worker) for worker in workers]
-                await announce_update(session)
-                done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
-                    task.result()
+            models = await self._start_models()
+            for index, model in enumerate(models):
+                try:
+                    async with client.aio.live.connect(model=model, config=build_live_config(self.config)) as session:
+                        if mic is None:
+                            argv = ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms"]
+                            argv.extend(["--target", self._echo.source])
+                            mic = await asyncio.create_subprocess_exec(*argv, "-a", "-", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                        log.info("Gemini Live connected: %s; full-duplex tools enabled", model)
+                        if index:
+                            await self._carry_over(session)
+                        else:
+                            log.info("Gemini speech detection: start=LOW end=LOW prefix=300ms silence=600ms; real interruptions enabled")
+                            if self.on_connected:
+                                self.on_connected()
+                            await asyncio.to_thread(status_icon.set_live, True)
+                        workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(),
+                                   self._tools(session), self._stuck_turn_recovery(session), self._task_status(session),
+                                   self._hangup.wait()]
+                        if self.config.watchdog_enabled:
+                            workers.append(self._visuals())
+                        if self.config.jev_fast_path:
+                            workers.append(self._fast_path())
+                        workers.append(self._announcer(session))
+                        tasks = [asyncio.create_task(worker) for worker in workers]
+                        if not index:
+                            await announce_update(session)
+                        done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
+                        for task in done:
+                            task.result()
+                    break
+                except Exception as error:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    tasks = []
+                    if not await self._fall_back(models, index, error):
+                        raise
         finally:
             log.info("Gemini session audio summary: session=%s interruptions=%d received_audio_bytes=%d submitted_audio_bytes=%d "
                      "echo_gated_frames=%d user_barge_ins=%d stuck_turn_splices=%d forced_turn_closures=%d",

@@ -82,6 +82,33 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   of her silence, at most 3 times. Only when neither is talking, no
   BLOCKING call is pending and her turn that started the task is over.
   Logged as "Task status prompted". Not yet seen on a real call.
+- 09:29 "she just turned herself off": first sentence transcribed, then
+  Google closed the call with `1011 Internal error encountered` (no tool
+  call, no status prompt). Probed directly: gemini-3.8-live failed 6 of 6
+  sessions, even a bare "Say OK" with no tools, no resumption, no
+  compression; gemini-3.1-flash-live-preview (2.1 s, real tool calls with
+  the full live config) and gemini-2.5-flash-native-audio-latest (6-8 s)
+  worked on the same key. Earlier 1011s today: 08:35, 08:50 (1 s after a
+  412,318-char Gmail tool result), 09:29. 3.8 recovered intermittently
+  within the hour. (The key is on the free tier: generate_content hit
+  "generate_content_free_tier_requests, limit: 5" per minute.)
+- Model fallback (`voice/fallback.py`, desktop `run()` and phone `_serve`):
+  a provider failure (1011/1006/503/internal/unavailable, never quota)
+  reconnects on the next model in `gemini_fallback_models`, carrying the
+  last 20 turns as context. On the phone the WebRTC call stays up; only the
+  Gemini connection is replaced. A failed model is skipped for 10 min, so
+  the next call starts on the fallback. The user hears a pre-rendered clip
+  (a failing model cannot say it is failing): "The default model Gemini 3.8
+  Live is experiencing issues on Google's side, falling back to an older
+  model." once per outage, and "Sorry, falling back did not fix the
+  problem, please try a different provider." when the last model fails. EN
+  and HE, in voice/alerts/, by `scripts/make_quota_clips.py fallback`,
+  which now keeps a take only if its length fits the text and a transcript
+  matches (a flaky 3.8 returned a 0.7 s Hebrew clip, a 13.4 s English one);
+  all six final clips re-transcribed complete by gemini-2.5-flash. A tool
+  result that outlives its connection is logged as lost instead of raising.
+  Tested against a fake Live API (1011 mid-call -> reconnect on 3.1 with
+  context); not yet seen in a real outage.
 - Still open: some short Hebrew utterances are transcribed as Italian or
   Spanish fragments ("scommettiti", "Chiamati.", "suceder"), phone speech
   level p50 ~3000 at 08:51 vs 6000-10000 at other times.

@@ -130,8 +130,12 @@ async def _serve(config, sdp, answer, cancelled):
         if peer.connectionState in ('failed', 'closed', 'disconnected'):
             adapter._hangup.set()
 
+    track = None
+
     async def send_audio(session):
-        track = await incoming.get()
+        nonlocal track
+        if track is None:  # kept across a model fallback: the call itself stays up
+            track = await incoming.get()
         resampler = av.AudioResampler(format='s16', layout='mono', rate=16000)
         try:
             while True:
@@ -181,30 +185,52 @@ async def _serve(config, sdp, answer, cancelled):
         adapter._hangup.set()
 
     try:
-        async with client.aio.live.connect(model=config.gemini_model, config=build_live_config(config)) as session:
-            from ..core import agenda
-            agenda.mark_briefed()  # this prompt carried the heartbeat's pending results
-            # Task results and heartbeat results arriving mid-call are said
-            # here (2026-09-26: a task ended while the user was on the phone
-            # and they heard nothing).
-            agenda.attach_call(adapter, asyncio.get_running_loop())
-            await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
-            await peer.setLocalDescription(await peer.createAnswer())
-            if cancelled.is_set():
-                return
-            answer.set_result(peer.localDescription.sdp)
-            log.info('Phone Gemini WebRTC bridge ready: %s', config.gemini_model)
-            tasks = [asyncio.create_task(coro) for coro in (
-                send_audio(session), send_text(session), adapter._receive(session),
-                adapter._tools(session), adapter._announcer(session), watch_offer(), adapter._hangup.wait(),
-                # 2026-09-28 08:52: three splices, no reply, the user unheard. Over
-                # 3 days 22 of 62 phone splices were never answered (desktop:
-                # 15 rescued by this forced closure, which the phone lacked).
-                adapter._stuck_turn_recovery(session), adapter._task_status(session),
-                *([adapter._fast_path()] if config.jev_fast_path else []))]
-            done, _ = await asyncio.wait(tasks, timeout=config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                task.result()
+        from ..core import agenda
+        # Google's side can fail mid-call (voice/fallback.py): the WebRTC call
+        # stays up, only the Gemini connection moves to the next model.
+        models = await adapter._start_models()
+        peer_tasks = []
+        for index, model in enumerate(models):
+            session_tasks = []
+            try:
+                async with client.aio.live.connect(model=model, config=build_live_config(config)) as session:
+                    if not answer.done():
+                        agenda.mark_briefed()  # this prompt carried the heartbeat's pending results
+                        # Task results and heartbeat results arriving mid-call are said
+                        # here (2026-09-26: a task ended while the user was on the phone
+                        # and they heard nothing).
+                        agenda.attach_call(adapter, asyncio.get_running_loop())
+                        await peer.setRemoteDescription(RTCSessionDescription(sdp=sdp, type='offer'))
+                        await peer.setLocalDescription(await peer.createAnswer())
+                        if cancelled.is_set():
+                            return
+                        answer.set_result(peer.localDescription.sdp)
+                        peer_tasks = [asyncio.create_task(coro) for coro in (
+                            watch_offer(), adapter._hangup.wait(),
+                            *([adapter._fast_path()] if config.jev_fast_path else []))]
+                    if index:
+                        await adapter._carry_over(session)
+                    log.info('Phone Gemini WebRTC bridge ready: %s', model)
+                    session_tasks = [asyncio.create_task(coro) for coro in (
+                        send_audio(session), send_text(session), adapter._receive(session),
+                        adapter._tools(session), adapter._announcer(session),
+                        # 2026-09-28 08:52: three splices, no reply, the user unheard. Over
+                        # 3 days 22 of 62 phone splices were never answered (desktop:
+                        # 15 rescued by this forced closure, which the phone lacked).
+                        adapter._stuck_turn_recovery(session), adapter._task_status(session))]
+                    tasks = peer_tasks + session_tasks
+                    done, _ = await asyncio.wait(tasks, timeout=config.max_session_seconds,
+                                                 return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        task.result()
+                break
+            except Exception as error:
+                for task in session_tasks:
+                    task.cancel()
+                await asyncio.gather(*session_tasks, return_exceptions=True)
+                tasks = list(peer_tasks)
+                if not await adapter._fall_back(models, index, error):
+                    raise
     except Exception as error:
         from ..core import quota
         out_of_quota = quota.is_quota_error(str(error))
