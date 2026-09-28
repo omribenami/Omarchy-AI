@@ -19,6 +19,29 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.11.1] - 2026-09-28
+
+### Highlights
+
+- She finds the email you ask about even when you don't remember the exact
+  name, spelling or subject, and answers with what's in it instead of
+  reading out raw data.
+- A very long email or search result no longer cuts off the conversation.
+- She never types while your screen is locked, so nothing she types can end
+  up in the lock screen's password field and lock your account.
+
+### Under the hood
+
+- New read-only `myapi_gmail_search` tool. When an exact Gmail search finds
+  nothing, it keeps dates, labels, attachment and mailbox filters and
+  loosens only the names and words, trying a few variants.
+- MyApi results are condensed into a direct answer, used only when Jev
+  confirms it answers the question and is backed by the result.
+- Every tool reply to Gemini Live is capped at 40,000 characters, since an
+  oversized reply closes the whole session.
+- `type_text`, `press_key` and `submit_sudo_password` refuse while the screen
+  is locked.
+
 ## [0.11.0] - 2026-09-28
 
 ### Highlights
