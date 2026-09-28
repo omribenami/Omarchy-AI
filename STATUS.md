@@ -123,10 +123,30 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   (e.g. "Lo siento, retroceder no solucionó el problema, por favor, prueba
   con un proveedor diferente."). The Hebrew clips moved from the repo to
   this machine's local folder. `quota.language()` (he/en only) is gone.
-- Still Hebrew-specific elsewhere (older code, not changed yet): system
-  prompt "The user speaks Hebrew and English" (voice/live.py), exit and
-  farewell phrase lists (config.py, voice/live.py), escalation regexes,
-  the password keyword, "thanks" words, Jev prompts naming Hebrew.
+- The rest of the Hebrew-only code, changed the same day:
+  - System prompt: "The user speaks Hebrew and English" is now built from
+    config `user_languages` (empty by default; set in this machine's
+    config.yaml), and the misheard-speech rule speaks of "the user's words".
+  - Exit phrases and her own farewell markers (OpenAI and Gateway
+    providers; must stay local and instant): English defaults, other
+    languages from `extra_exit_phrases` / `extra_farewell_markers` in
+    config.yaml. The Hebrew words moved there. Gemini ends calls through
+    end_conversation, and the Gateway's Jev end_conversation question, in
+    any language already.
+  - Escalation's "she said she can't" / "the user asks why" were English and
+    Hebrew regexes; now one Jev question judging the meaning in any language,
+    asked only with a failure on record, off the event loop (fail_fast, 3 s),
+    both False when Jev is down (then only two failures escalate). A test
+    caught a real race in the first version: a second failure during an
+    in-flight Jev check was dropped; a re-check now follows.
+  - Password capture/masking: "password" in ~40 languages plus a short "is"
+    (contraseña es, Passwort ist, пароль:, 密码：). Only ":" or "=" now
+    takes any value; after a word the value must look like a password, so
+    "the password is secure" / "la contraseña es segura" capture nothing
+    (English captured "secure" before).
+  - The Gateway's canned "You're welcome." answers English only; Jev prompts
+    say "any language" without naming one.
+  - tests/test_languages.py fails if Hebrew returns to defaults or prompt code.
 - Still open: some short Hebrew utterances are transcribed as Italian or
   Spanish fragments ("scommettiti", "Chiamati.", "suceder"), phone speech
   level p50 ~3000 at 08:51 vs 6000-10000 at other times.

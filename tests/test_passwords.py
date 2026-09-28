@@ -44,6 +44,9 @@ class SpokenPasswordTests(KeyringFree):
     def test_finds_stated_passwords_only(self):
         cases = {f"User: alice Pass: {SECRET}": [SECRET], f"the password is {OTHER[0]}": [OTHER[0]],
                  f"סיסמה: {OTHER[1]}": [OTHER[1]], f"my pwd={OTHER[2]}": [OTHER[2]],
+                 f"la contraseña es {OTHER[3]}": [OTHER[3]], f"mot de passe : {OTHER[0]}": [OTHER[0]],
+                 f"пароль: {OTHER[1]}": [OTHER[1]], f"密码：{OTHER[2]}": [OTHER[2]],
+                 f"das Passwort ist {OTHER[3]}": [OTHER[3]], "la contraseña es segura": [], "the password is secure": [],
                  "same password as root": [], "the password for that": [], "password manager": [],
                  "passwords are fine": [], "password abc": []}
         for text, expected in cases.items():

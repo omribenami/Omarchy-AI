@@ -158,6 +158,8 @@ class UseToolDispatchTests(unittest.TestCase):
             s = GeminiLiveSession(Config())
         s._transcript = [{"role": "user", "text": "turn on the night light"}]
         s._switchboard = SimpleNamespace(review=review)
+        from omarchy_ai.voice import escalation
+        s._escalator = escalation.Escalator(lambda reply, latest: (False, False))  # no network in tests
         return s
 
     def dispatch(self, s, args, pick):
@@ -165,7 +167,10 @@ class UseToolDispatchTests(unittest.TestCase):
         with patch("omarchy_ai.voice.gemini_live.catalog.resolve", return_value=pick), \
                 patch("omarchy_ai.voice.gemini_live.run_action", return_value=ActionResult(True, "done")) as run, \
                 patch("omarchy_ai.voice.gemini_live.LiveSession._current_window", return_value={}):
-            asyncio.run(s._run_call(session, SimpleNamespace(id="c1", name="use_tool", args=args)))
+            async def call():
+                await s._run_call(session, SimpleNamespace(id="c1", name="use_tool", args=args))
+                await asyncio.gather(*list(s._bg_tasks))  # the escalation check runs in the background
+            asyncio.run(call())
         return run, session.send_tool_response.call_args.kwargs["function_responses"].response
 
     def test_jev_pick_runs_the_inner_tool_without_a_second_review(self):

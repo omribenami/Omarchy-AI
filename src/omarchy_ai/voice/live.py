@@ -261,9 +261,11 @@ def build_session_config(config: Config) -> dict:
         "mitigations (driver or module options, updates, workarounds, alternatives) and offer the concrete ones. "
         "Still ask before anything public or destructive (filing an issue, sending a message, deleting, "
         "closing the user's windows), and never claim success a tool result did not show."
-        "\n\nMISHEARD SPEECH: The user speaks Hebrew and English. What you receive is speech recognition and "
-        "it sometimes turns Hebrew into random words in other languages ('Saddam', 'electrician', 'Ja, vielen "
-        "herzlichen Dank', 'el Corte Inglés'). If what you heard does not fit the conversation, or is in a "
+        "\n\nMISHEARD SPEECH: " + (f"The user speaks {', '.join(config.user_languages)}. "
+                                    if config.user_languages else "")
+        + "What you receive is speech recognition and it sometimes turns the user's words into random words in "
+        "other languages (real cases: 'Saddam', 'electrician', 'Ja, vielen herzlichen Dank', 'el Corte "
+        "Inglés'). If what you heard does not fit the conversation, or is in a "
         "language the user was not speaking, treat it as misheard: do not act on it (no navigating, closing, "
         "sending or typing), do not switch language, and briefly ask in the conversation's language what they "
         "meant -- or, if it is plainly a continuation of the current job, carry on with that job. A misheard "
@@ -569,14 +571,10 @@ class LiveSession:
         "goodbye", "good bye", "bye for now", "bye!", "bye.",
         "farewell", "talk to you later", "take care of yourself",
         "take care now",
-        # Hebrew — this mechanism was English-only, confirmed live as a
-        # real gap: the model's own Hebrew farewell never matched, so a
-        # Hebrew conversation never hung up via this path either.
-        # להתראות/נתראה (goodbye/see you — essentially unambiguous, always
-        # a farewell) and ביי (bye, a common loanword). "שלום" deliberately
-        # excluded — it means both "hello" and "goodbye"/"peace", the same
-        # kind of genuine ambiguity that excluded "take care" above.
-        "להתראות", "נתראה", "ביי",
+        # Other languages come from config.extra_farewell_markers: an
+        # English-only list once never matched her own Hebrew farewell, so
+        # a Hebrew conversation never hung up this way. Pick unambiguous
+        # words (Hebrew "שלום" is both hello and goodbye, like "take care").
     )
 
     def __init__(self, config: Config, *, mic_source: str = "desktop"):
@@ -656,7 +654,7 @@ class LiveSession:
         # for a meaningful comparison at all.
         if len(norm) < 4:
             return False
-        for phrase in self.config.exit_phrases:
+        for phrase in [*self.config.exit_phrases, *self.config.extra_exit_phrases]:
             # fuzz.ratio (whole-string Levenshtein) rather than WRatio: no
             # partial/substring matching, so a short target phrase can't
             # score high against an unrelated fragment just because it
@@ -865,7 +863,8 @@ class LiveSession:
 
     def _check_farewell(self, text: str) -> bool:
         norm = text.strip().lower()
-        return any(marker in norm for marker in self._FAREWELL_MARKERS)
+        markers = [*self._FAREWELL_MARKERS, *(m.lower() for m in self.config.extra_farewell_markers)]
+        return any(marker in norm for marker in markers)
 
     async def _delayed_hangup(self, grace_seconds: float = 2.0) -> None:
         # Give the farewell line time to actually finish playing before

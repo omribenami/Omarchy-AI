@@ -12,6 +12,9 @@ It escalates when, within FAILURE_WINDOW seconds:
 - one fails and she then tells the user she can't / it failed, or
 - one fails and the user asks her to find out why.
 
+"Can't" and "why" are judged by Jev from the meaning, in any language (they
+were English and Hebrew regexes until 2026-09-28).
+
 Then the session starts a task itself with a brief of what the user said and
 what was tried, and she tells the user it was handed over. Once per incident:
 the failures are cleared, and nothing escalates again for COOLDOWN seconds or
@@ -49,16 +52,28 @@ _NOT_A_FAILURE = re.compile(
     r"^Not executed:|judged the request .* ambiguous|^Not run: Jev checked|^Input NOT sent"
     r'|name one|does not exist|similar names|"status": "handoff"', re.S)
 
-_GIVE_UP = re.compile(
-    r"\b(?:i can(?:'|no)t|i cannot|i'?m (?:not able|unable)|i am (?:not able|unable)|i (?:was|wasn'?t) (?:not )?able"
-    r"|i couldn'?t|i don'?t have (?:access|permission)|no access|there'?s no way|not possible|it failed|did not work"
-    r"|didn'?t work)\b"
-    r"|אני לא יכול|אינני יכול|איני יכול|לא הצלחתי|לא הצלחנו|אין לי גישה|אין דרך|לא ניתן|לא אפשרי|נכשל",
-    re.I)
-_WHY = re.compile(
-    r"\b(?:why|figure (?:it )?out|find out|debug|understand|what went wrong|what'?s wrong)\b"
-    r"|למה|תביני|תבין|להבין|תבדקי|תבדוק|מה הבעיה|מה קרה",
-    re.I)
+GIVE_UP_P = 0.8
+ASKS_WHY_P = 0.8
+
+
+def jev_judge(last_reply: str, latest: str) -> tuple[bool, bool]:
+    """(she told the user she can't / it failed, the user asks her to find
+    out why), judged in any language. Both False when Jev is unavailable:
+    then only repeated failures escalate."""
+    from ..core.jev import Jev, JevError, boolean
+    questions = {
+        "gave_up": boolean("Does the assistant's reply tell the user that it cannot do the task, has no access or "
+                           "permission, that there is no way, or that the attempt failed? Judge the meaning, in any "
+                           "language. A reply that is still trying, or correcting itself, is not giving up."),
+        "asks_why": boolean("Does the user's latest message ask the assistant to find out why something failed, "
+                            "to investigate, debug or figure it out? Judge the meaning, in any language."),
+    }
+    try:
+        answers = Jev().ask({"assistant_reply": last_reply[-400:], "user_latest_message": latest[-400:]}, questions,
+                            timeout=3, retries=0, fail_fast=True)
+    except JevError:
+        return False, False
+    return answers["gave_up"]["p"] >= GIVE_UP_P, answers["asks_why"]["p"] >= ASKS_WHY_P
 
 
 @dataclass
@@ -70,7 +85,8 @@ class Failure:
 
 
 class Escalator:
-    def __init__(self):
+    def __init__(self, judge=jev_judge):
+        self._judge = judge
         self._failures: list[Failure] = []
         self._last_escalation = -COOLDOWN
         self._own_task_at = -COOLDOWN
@@ -85,8 +101,14 @@ class Escalator:
             return
         self._failures.append(Failure(tool, dict(args or {}), message or "", now))
 
+    def pending(self, now: float) -> bool:
+        """A recent failure that could escalate (cheap; due() may call Jev)."""
+        return (any(now - f.at <= FAILURE_WINDOW for f in self._failures)
+                and now - self._last_escalation >= COOLDOWN and now - self._own_task_at >= COOLDOWN)
+
     def due(self, now: float, user_turns: list[str], last_reply: str) -> str | None:
-        """The start_task goal if this is the moment to escalate, else None."""
+        """The start_task goal if this is the moment to escalate, else None.
+        May call Jev: run it off the event loop."""
         self._failures = [f for f in self._failures if now - f.at <= FAILURE_WINDOW]
         if not self._failures:
             return None
@@ -96,10 +118,12 @@ class Escalator:
         reason = None
         if len(self._failures) >= FAILURES_TO_ESCALATE:
             reason = f"{len(self._failures)} attempts failed"
-        elif last_reply and _GIVE_UP.search(last_reply):
-            reason = "she told the user she could not do it"
-        elif latest and _WHY.search(latest):
-            reason = "the user asked her to find out why it failed"
+        elif last_reply or latest:
+            gave_up, asks_why = self._judge(last_reply, latest)
+            if gave_up:
+                reason = "she told the user she could not do it"
+            elif asks_why:
+                reason = "the user asked her to find out why it failed"
         if not reason:
             return None
         goal = brief(user_turns, self._failures, last_reply, reason)
@@ -119,7 +143,7 @@ def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reaso
     tried = "\n".join(f"- {f.tool}({_short(f.args)}) -> {f.message[:300]}" for f in failures[-6:])
     goal = (
         f"Escalated from the voice assistant ({reason}). Finish what the user asked, properly.\n\n"
-        "What the user said, oldest first. This is speech recognition: Hebrew is often misrecognized as words in "
+        "What the user said, oldest first. This is speech recognition: words are often misrecognized as words in "
         "other languages, so read it for meaning and use the earlier turns:\n"
         f"{said}\n\n"
         f"What the voice assistant tried, which failed:\n{tried}\n\n"

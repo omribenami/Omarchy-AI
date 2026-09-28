@@ -38,12 +38,23 @@ MASK = "[password]"
 _MIN_SECRET = 4
 _CACHE_SECONDS = 60
 
-# "pass: X", "password is X", "pwd=X", Hebrew "סיסמה: X". Without an explicit
-# separator the value must look like a password (digit or symbol), so
-# "password manager" or "same password as root" capture nothing.
-_KEYWORD = r"(?:pass(?:word)?|passwd|pwd|סיסמה|סיסמא)"
+# "pass: X", "password is X", "pwd=X", "contraseña: X", "пароль: X". Without an
+# explicit separator the value must look like a password (digit or symbol),
+# so "password manager" or "same password as root" capture nothing. The
+# word for "password" (and a short "is") in many languages, so a spoken
+# password is kept and masked whatever language the user speaks.
+_KEYWORDS = (
+    "password", "passwd", "pass", "pwd", "passcode", "passwort", "kennwort", "contraseña", "contrasena", "clave",
+    "mot de passe", "senha", "wachtwoord", "hasło", "haslo", "heslo", "jelszó", "parola", "parolă", "lozinka",
+    "salasana", "lösenord", "losenord", "adgangskode", "passord", "şifre", "sifre", "κωδικός", "пароль", "парола",
+    "סיסמה", "סיסמא", "كلمة المرور", "كلمة السر", "رمز عبور", "पासवर्ड", "密码", "密碼", "パスワード", "비밀번호",
+    "mật khẩu", "kata sandi", "kata laluan", "รหัสผ่าน",
+)
+_IS = ("is", "es", "est", "ist", "é", "è", "jest", "är", "er", "on", "היא", "هي", "это", "是", "は")
+_KEYWORD = "(?:" + "|".join(re.escape(k).replace(r"\ ", r"\s+") for k in sorted(_KEYWORDS, key=len, reverse=True)) + ")"
+_SEP = "(?:" + "|".join(re.escape(w) for w in _IS) + "|:|：|=)"
 _SPOKEN = re.compile(
-    rf"(?i)(?<![\w-]){_KEYWORD}(?![\w-])(?P<sep>\s*(?:is|היא|:|=)\s*|\s+)[\"'“”]?(?P<value>[^\s\"'“”]{{{_MIN_SECRET},128}})")
+    rf"(?i)(?<![\w-]){_KEYWORD}(?![\w-])(?P<sep>\s*{_SEP}\s*|\s+)[\"'“”]?(?P<value>[^\s\"'“”]{{{_MIN_SECRET},128}})")
 _NOT_A_PASSWORD = {"for", "to", "as", "is", "the", "a", "an", "my", "your", "our", "same", "saved", "correct",
                    "wrong", "that", "this", "it", "and", "or", "in", "on", "of", "with", "manager", "prompt",
                    "field", "again", "please", "needed", "required", "reset", "change", "protected", "less"}
@@ -120,10 +131,14 @@ def known_secrets() -> list[str]:
 def _spoken_values(text: str) -> list[str]:
     values = []
     for match in _SPOKEN.finditer(text or ""):
-        value = match.group("value").rstrip(".,;!?") if not match.group("sep").strip() else match.group("value")
+        # Only ":" or "=" says "the value follows"; after a word ("is", "es",
+        # "ist") it must look like a password, as with no separator at all:
+        # "la contraseña es segura" / "the password is secure" is no password.
+        explicit = any(c in match.group("sep") for c in ":：=")
+        value = match.group("value") if match.group("sep").strip() else match.group("value").rstrip(".,;!?")
         if value.lower() in _NOT_A_PASSWORD or len(value) < _MIN_SECRET:
             continue
-        if not match.group("sep").strip() and not re.search(r"[\d\W_]", value):
+        if not explicit and not re.search(r"[\d\W_]", value):
             continue
         values.append(value)
     return values

@@ -145,7 +145,7 @@ class GatewayClient:
             },
             "needs_desktop_action": {
                 "type": "boolean",
-                "instructions": "Does the user explicitly ask the desktop assistant to perform an action, rather than merely discuss a topic? Interpret commands in any language, including Hebrew. Switching workspaces and opening applications are desktop actions.",
+                "instructions": "Does the user explicitly ask the desktop assistant to perform an action, rather than merely discuss a topic? Interpret commands in any language. Switching workspaces and opening applications are desktop actions.",
             },
             "end_conversation": {
                 "type": "boolean",
@@ -153,7 +153,7 @@ class GatewayClient:
             },
             "risk": {
                 "type": "choice",
-                "instructions": "How should the agent handle this request? Interpret any language, including Hebrew. An explicit numbered workspace switch or opening a terminal is normal; non-English wording alone does not require clarification.",
+                "instructions": "How should the agent handle this request? Interpret any language. An explicit numbered workspace switch or opening a terminal is normal; non-English wording alone does not require clarification.",
                 "criteria": {
                     "normal": "A normal allowed desktop request or question.",
                     "clarify": "Insufficiently specific to safely choose a target or action.",
@@ -310,7 +310,7 @@ class OmarchySession:
             return False
         phrases = {
             re.sub(r"[^\w\s]", "", phrase.lower()).strip()
-            for phrase in self.config.exit_phrases
+            for phrase in [*self.config.exit_phrases, *self.config.extra_exit_phrases]
         }
         # Farewells are intentionally handled locally, before Jev/Gateway,
         # so a slow network call cannot keep the microphone session alive.
@@ -427,8 +427,10 @@ class OmarchySession:
         if risk_value == "decline":
             return "I can't help with that request."
         normalized = re.sub(r"[^\w\s]", "", text.lower()).strip()
-        if normalized in {"ok", "okay", "thanks", "thank you", "תודה", "בסדר"}:
-            return "You're welcome." if normalized in {"thanks", "thank you", "תודה"} else "Okay."
+        # English only: this canned reply is English. Other languages go to
+        # the model, which answers in the user's language.
+        if normalized in {"ok", "okay", "thanks", "thank you"}:
+            return "You're welcome." if normalized in {"thanks", "thank you"} else "Okay."
         action, confidence = _answer_boolean(decision.get("needs_desktop_action", {}))
         route = decision.get("fast_action", {}).get("choice", "other")
         route_confidence = decision.get("fast_action", {}).get("probabilities", {}).get(route, 0)

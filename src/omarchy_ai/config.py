@@ -273,8 +273,7 @@ class Config:
         "action. "
         "Briefly confirm what you did after calling a tool. "
         "Ending the conversation: when they indicate they want to stop — "
-        "goodbye, stop, that's all, or similar — in ANY language, "
-        "including languages other than English (e.g. Hebrew), this is "
+        "goodbye, stop, that's all, or similar — in ANY language, this is "
         "not optional: say a brief goodbye in the language they were "
         "using and then you MUST call the end_conversation tool in that "
         "same turn. Don't just reply with a farewell and wait — actually "
@@ -284,25 +283,26 @@ class Config:
 
     # How a session ends: the user saying one of these (fuzzy-matched
     # against the live input transcript) hangs up immediately and returns
-    # to wake-word listening, same as omavoice's "Q" / stop command.
-    # English-only for a long time — real gap, confirmed live: a Hebrew
-    # "stop"/goodbye never matched any of these, so the conversation never
-    # hung up on its own. fuzz.ratio (used to score these) is a plain
-    # edit-distance comparison, language-agnostic at the algorithm level;
-    # the list itself just needs real words in the languages actually
-    # spoken here. Hebrew added as the concrete case in hand — extend with
-    # more languages the same way if they come up, rather than trying to
-    # build a fully general solution up front.
+    # to wake-word listening, same as omavoice's "Q" / stop command. It is
+    # checked locally, before any model, so a slow network cannot keep the
+    # microphone open. fuzz.ratio is language-agnostic; the words are not:
+    # a Hebrew "stop"/goodbye once never matched the English-only list, so
+    # the conversation never hung up on its own. Add the words of the
+    # languages you speak in config.yaml's extra_exit_phrases (and the
+    # assistant's own goodbyes in extra_farewell_markers). The models
+    # themselves end a conversation in any language (end_conversation, and
+    # Jev's end_conversation question on the Gateway provider).
     exit_phrases: list[str] = field(
         default_factory=lambda: [
             "stop", "bye", "goodbye", "good bye", "finish",
             "end conversation", "that's all", "thats all", "never mind",
-            # Hebrew: תפסיק/תפסיקי (stop, m/f), מספיק (enough), סיימנו
-            # (we're done), ביי (bye, common loanword), להתראות (goodbye),
-            # זהו (that's it).
-            "תפסיק", "תפסיקי", "מספיק", "סיימנו", "ביי", "להתראות", "זהו",
         ]
     )
+    extra_exit_phrases: list[str] = field(default_factory=list)
+    extra_farewell_markers: list[str] = field(default_factory=list)
+    # The languages the user speaks (names or ISO codes), for the live
+    # model's misheard-speech rule. Empty: it is told nothing about them.
+    user_languages: list[str] = field(default_factory=list)
     exit_phrase_score_threshold: float = 82.0
 
     # Safety cap so a stuck session can't run (and bill) forever if the exit

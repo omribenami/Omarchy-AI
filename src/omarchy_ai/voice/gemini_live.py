@@ -191,6 +191,8 @@ class GeminiLiveSession:
         # Escalation (voice/escalation.py): repeated failures or giving up
         # hand the job to the Task Runtime without waiting for her to.
         self._escalator = escalation.Escalator()
+        self._escalation_check = None
+        self._escalation_again = False
         self._gemini_inflight = []  # (tool, args, monotonic start) of Gemini's recent calls
         self._script_read_at = 0.0  # when read_file last returned a multi-step script
         self._generation = 0
@@ -683,12 +685,31 @@ class GeminiLiveSession:
         return groups, " ".join("".join(reply).split())
 
     def _maybe_escalate(self) -> None:
-        groups, reply = self._user_turns()
-        goal = self._escalator.due(time.monotonic(), groups, reply)
-        if goal:
-            task = asyncio.create_task(self._escalate(goal))
-            self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
+        # due() may ask Jev (escalation.jev_judge): only with a failure on
+        # record, off the event loop, one check at a time -- and a failure or
+        # reply that arrives during a check gets a check of its own after it.
+        if not self._escalator.pending(time.monotonic()):
+            return
+        if self._escalation_check is not None:
+            self._escalation_again = True
+            return
+        self._escalation_check = asyncio.create_task(self._check_escalation())
+        self._bg_tasks.add(self._escalation_check)
+        self._escalation_check.add_done_callback(self._bg_tasks.discard)
+
+    async def _check_escalation(self) -> None:
+        try:
+            while True:
+                self._escalation_again = False
+                groups, reply = self._user_turns()
+                goal = await asyncio.to_thread(self._escalator.due, time.monotonic(), groups, reply)
+                if goal:
+                    await self._escalate(goal)
+                    return
+                if not self._escalation_again:
+                    return
+        finally:
+            self._escalation_check = None
 
     async def _escalate(self, goal: str) -> None:
         log.info("Escalating to the Task Runtime: session=%s goal=%r", self._audit_session, goal[:600])

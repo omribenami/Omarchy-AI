@@ -65,8 +65,8 @@ TIMEOUT = 1.5
 def questions() -> dict:
     return {
         "command": choice(
-            "Which single desktop command does the user's latest `request` ask for? Any language, including "
-            "Hebrew. Choose other for questions, conversation, anything negated or conditional, more than one "
+            "Which single desktop command does the user's latest `request` ask for? Any language. "
+            "Choose other for questions, conversation, anything negated or conditional, more than one "
             "task, a different window than the focused one, or anything not listed.",
             {"other": "None of these, or not exactly one of these.",
              **{key: text for key, (_, _, text) in ACTIONS.items()}}),
