@@ -71,10 +71,19 @@ def _load() -> list[dict]:
         return []
 
 
+def _redact(text: str) -> str:
+    """Saved passwords never land in the agenda files (execution/passwords.py)."""
+    try:
+        from ..execution.passwords import redact
+        return redact(text)
+    except Exception:  # noqa: BLE001
+        return text
+
+
 def _save(jobs: list[dict]) -> None:
     JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=JOBS_PATH.parent, delete=False) as stream:
-        json.dump(jobs, stream, ensure_ascii=False, indent=1)
+        stream.write(_redact(json.dumps(jobs, ensure_ascii=False, indent=1)))
         temp = Path(stream.name)
     temp.replace(JOBS_PATH)
 
@@ -106,7 +115,7 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
     with _lock:
         INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
         with INBOX_PATH.open("a") as stream:
-            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            stream.write(_redact(json.dumps(entry, ensure_ascii=False)) + "\n")
     for listener in list(listeners):
         try:
             listener(dict(entry))
@@ -149,7 +158,7 @@ def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | No
                  "delivered": False}
         INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
         with INBOX_PATH.open("a") as stream:
-            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            stream.write(_redact(json.dumps(entry, ensure_ascii=False)) + "\n")
     mark_delivered(stale)
     return dict(entry)
 
@@ -228,7 +237,7 @@ def mark_delivered(ids) -> None:
                 e["delivered"] = True
             if not e.get("delivered") or e.get("at", 0) >= cutoff:
                 kept.append(e)
-        INBOX_PATH.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in kept))
+        INBOX_PATH.write_text(_redact("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in kept)))
 
 
 # ---------------------------------------------------------------- creation

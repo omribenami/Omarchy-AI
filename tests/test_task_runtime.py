@@ -96,7 +96,11 @@ class RuntimeHarness(unittest.TestCase):
         self.ws = self.root / "ws"
         self.ws.mkdir()
         self.store = TaskStore(self.root / "tasks")
-        patcher = patch("omarchy_ai.runtime.runtime._config", side_effect=lambda name, default: default)
+        # These tests predate the Codex/Claude-first rule and have no coding
+        # agents; the API worker is allowed unless a test says otherwise.
+        self.config = {"task_api_worker": "always"}
+        patcher = patch("omarchy_ai.runtime.runtime._config",
+                        side_effect=lambda name, default: self.config.get(name, default))
         patcher.start()
         self.addCleanup(patcher.stop)
         hud = patch.object(TaskRuntime, "_refresh_task_hud")
@@ -585,7 +589,7 @@ class ReviewRegressionTests(RuntimeHarness):
         class FakeRuntime:
             store = SimpleNamespace(list=lambda n: [])  # no open task doing this job
 
-            def start(self, goal, workspace, source):
+            def start(self, goal, workspace, source, **kw):
                 started.update(goal=goal, workspace=workspace, source=source)
                 return Task(id="v", goal=goal, workspace=workspace)
         with patch.object(service, "get_runtime", return_value=FakeRuntime()), \

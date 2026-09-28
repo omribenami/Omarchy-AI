@@ -298,6 +298,9 @@ def main() -> None:
         level=getattr(logging, cfg.log_level.upper(), logging.INFO),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    from ..execution.passwords import RedactingFilter
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(RedactingFilter())
     daemon = OmaDaemon()
     try:
         asyncio.run(daemon.run())

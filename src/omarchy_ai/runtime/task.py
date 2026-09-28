@@ -57,6 +57,8 @@ class Task:
     phase: str = "route"
     objective: str = ""
     source: str = "cli"          # voice | cli | schedule
+    agent: str = ""              # executor the user asked for by name (e.g. CODEX): every work step uses it
+    unsandboxed: bool = False    # the user asked for it without its sandbox (codex --yolo); HIGH, approved once
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     plan: list[str] = field(default_factory=list)
@@ -165,7 +167,7 @@ class Task:
                 "steps": len(self.steps), "last_step": ({k: last.get(k) for k in ("executor", "model", "role", "outcome", "claim")}
                                                         if last else None),
                 "models": models, "decisions_by": "Jev (TypeSafe evaluation model): routing and certification",
-                "pending_approval": self.pending_approval, "question": self.question,
+                "pending_approval": self.pending_approval, "question": self.question, "agent": self.agent or None,
                 "certification": self.certification, "result": self.result,
                 "files_modified": self.files_modified[-20:], "errors": self.errors[-3:]}
 
@@ -223,7 +225,8 @@ class TaskStore:
         task.touch()
         target = self.path(task.id)
         tmp = target.with_suffix(f".json.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(asdict(task), ensure_ascii=False, indent=1))
+        from ..execution.passwords import redact
+        tmp.write_text(redact(json.dumps(asdict(task), ensure_ascii=False, indent=1)))
         os.replace(tmp, target)
 
     def update(self, task_id: str, change) -> Task | None:

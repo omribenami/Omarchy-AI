@@ -45,6 +45,144 @@ Oma can now actually do things, not just talk. `src/omarchy_ai/execution/`:
   Tracked in `LiveSession._action_log`, keyed by whichever window was
   focused at call time, queryable filtered by window.
 
+### 2026-09-27: Codex/Claude Code do the work; the API worker only with approval
+
+"Why is it using grok-4.1 and not codex as I asked?" Evidence, task
+20260927-154507-92b0ee: at 15:45 the user said "open a terminal, cd to
+Git/Omarchy-AI, open codex --yolo and ask him as follows: ..."; she called
+start_task with only the inner request (no Codex, no directory -> /home/user).
+The switchboard voted reject (p=0.84, not_asked) but matches 0.32 passed the
+0.30 bar. Jev routed SYSTEM_AGENT: qwen3.7-flash, then grok-4.1 (paid API).
+Root cause underneath: under the service, `codex`, `claude` and `gh` resolve
+to ~/.local/bin mise wrappers (`mise x <tool> -- <tool>`), which hang there
+(0.1 s in a terminal; `mise x codex -- codex --version` alone never returns
+with the service's environment). `codex --version` timed out, so BOTH coding
+agents were "unavailable" to every task and everything ran on API models.
+Failed detection was cached 10 min, too.
+- `coding_agents.real_binary`: skip a mise wrapper for the next real binary
+  on PATH (~/.local/share/mise/installs/<tool>/latest/...), for the check AND
+  the run. Detection: 30 s version timeout, failures cached 60 s. In the
+  service environment: Codex 0.05 s, Claude Code 0.33 s, both logged in.
+- Named agent: Task.agent/unsandboxed; start_task(agent=codex|claude_code,
+  unsandboxed=...). Every work step goes to it (no Jev routing, no
+  CHANGE_EXECUTOR). `unsandboxed` = `codex exec
+  --dangerously-bypass-approvals-and-sandbox` / `claude
+  --dangerously-skip-permissions` (Codex's sandbox also blocks the network,
+  so ssh work needs it): one HIGH approval per task. The switchboard rejects,
+  in code, a start_task without `agent` when the user's words name
+  Codex/Claude; escalation briefs quoting the user get it from the text.
+  Live: "open codex --yolo in Git/omarchy-ai and ask him ..." ->
+  start_task(agent=codex, unsandboxed=true, workspace=~/Git/omarchy-ai).
+- runtime.reassign / task_respond(agent=...): "move the home assistant task to
+  codex with yolo" -> "task 20260927-154507-92b0ee moved to CODEX"; it now
+  waits for the HIGH approval (Codex unsandboxed).
+- The user's rule: Codex or Claude Code by default; SYSTEM_AGENT, TEST_AGENT
+  and REVIEW_AGENT (paid API) only when neither can run, and only after the
+  user approves it for that task (kind "api", ELEVATED, always asked).
+  Config `task_api_worker: fallback` (default) | `always`. A usage-limit
+  failure ("usage limit", "limit reached|<epoch>", "try again in 2 hours")
+  marks the agent exhausted until its reset (else 1 h); a named agent that
+  cannot run hands over to the other coding agent, else the API approval.
+  DIRECT_TOOL (one small call for desktop actions) stays allowed.
+- Side effect found live: a correct Claude Code answer (94 .py files) ended
+  "failed": certification needs harness evidence and only the API TEST_AGENT
+  designed checks. Coding agents now have a read-only TEST role (TEST_COMMAND
+  lines, validated by Jev and run by the harness). Live after: task
+  20260927-203327-dd5fcc CLAUDE_CODE diagnose -> CLAUDE_CODE test -> 3/3
+  harness checks -> certified; no API worker step.
+- Still on the API: Jev (routing/certification answers) and the planner --
+  small structured calls, not worker loops.
+
+### 2026-09-27: "she won't do it" -- three blockers between "SSH to it" and the SSH
+
+Phone call 19:21-19:29: she listed tasks (22,254 chars) and then made no tool
+call in six turns; input transcription also came out as Hindi/Spanish/French
+fragments ("Nota fiscal de la máquina…", "enfer"). Reproduced through the
+daemon's text chat (same GeminiLiveSession) with "What's the status of the
+home assistant task?" then "I want you to do it. SSH to it yourself":
+1. task_status(list) returned full summaries (22k) without the waiting_user
+   `what_to_do`. Now compact (`_brief`: 3,561 chars for 8 tasks) and each
+   waiting task carries it.
+2. She relayed the words with task_respond(answer=...); the switchboard
+   rejected the relay (route reject p=0.55, matches 0.07 < HARD_MISMATCH:
+   "send a message" is not "SSH"). task_respond answer/guidance now skips
+   review (a relay is harmless; the task's own permissions gate the work);
+   approve/deny/cancel is still reviewed. Tests in test_switchboard.py.
+3. In a fresh session she called nothing and said "I can't access your HA
+   device directly; do it yourself": the WHICH MACHINE rules (voice/live.py,
+   shared by voice/phone/text chat) said remote work happens only in an
+   existing ssh terminal. They now say to open one (terminal_task `ssh
+   user@host`, or `ssh-copy-id`/`sshpass` with the harness typing the
+   password) and never to hand a remote step back to the user.
+After all three: task_respond relayed and executed, the task resumed, and
+the worker chose `ssh-copy-id -i ~/.ssh/id_ed25519_ha_jev.pub
+user@192.0.2.10` on its own -> ELEVATED approval "logs in to
+user@192.0.2.10 with your password", announced by her ("approve or
+deny?"). Left for the user to approve. Still wrong: her reply to the relayed
+turn itself was still "I can't" (the tool result says "resumed"); the
+approval announcement followed ~30 s later.
+
+### 2026-09-27: passwords never stored in plain text; SSH with a password runs
+
+The user's request after the refused SSH: no plain-text passwords, and when
+told to SSH, `ssh-copy-id`/`sshpass` must actually run (asking for approval
+is fine). Evidence first: the spoken password was in
+conversation_history.jsonl only (journal, tasks, agenda, config: clean).
+`execution/passwords.py`:
+- **Capture**: a stated password ("pass: X", "password is X", `pwd=X`,
+  Hebrew "סיסמה: X"; without a separator only a value with a digit/symbol,
+  so "same password as root" / "password manager" capture nothing) goes to
+  GNOME Keyring as soon as it is heard (GeminiLiveSession._capture_password
+  on each transcript fragment; typed phone/desktop chat lines too).
+- **Redaction** to "[password]" (also JSON-escaped) of the saved passwords
+  in: conversation history (a turn's fragments are joined first; the
+  password was split across them), task files (TaskStore._write), agenda
+  files, and every daemon log record (RedactingFilter on the root handlers).
+- **SSH**: `sshpass -p SECRET cmd` is rewritten to `sshpass cmd` before it
+  is classified, recorded or shown for approval. `sshpass`/`ssh-copy-id` are
+  ELEVATED ("logs in to <host> with your password"): voice or phone can
+  approve. At run time the harness drops the `sshpass` marker (sshpass is
+  not installed) and answers the prompt via SSH_ASKPASS
+  (`execution/askpass.py`, 0700 script in $XDG_RUNTIME_DIR): spoken
+  password, else the Sudo Access one; host-key question -> yes; key
+  passphrase -> fail rather than hang. terminal_task/terminal_type prefix
+  the same env; terminal_sudo answers a login prompt with the SSH password
+  (sudo prompts still get the sudo one). A failed `ssh` with "Permission
+  denied (...password" tells the worker to use `sshpass`/`ssh-copy-id`.
+- A literal written by a model is kept only if the user has not stated a
+  password: found while testing, a made-up `sshpass -p` literal overwrote the
+  real one (restored from Sudo Access: same password, compared by hash).
+- Migrated: the one spoken password moved from the history file to the
+  keyring; the file rewritten masked (grep: 0 hits anywhere in state/config).
+- Verified live against the HA box (192.0.2.10, PubkeyAuthentication=no,
+  so the password is what logs in): task path `sshpass ssh ... echo` ->
+  LOGIN_OK; tmux terminal via ssh_terminal_command -> TMUX_LOGIN_OK; plain
+  `ssh` prompt answered by terminal_sudo -> PROMPT_LOGIN_OK. 13 new tests
+  (tests/test_passwords.py) including a runtime run of a literal `sshpass
+  -p` through approval with no password in the task file.
+
+### 2026-09-27: she refused to SSH ("No ssh to it" was "Now ssh to it")
+
+Phone call 18:53-18:55 about the Home Assistant task (20260927-154507-92b0ee,
+waiting_user: it asked the user to install an SSH key on 192.0.2.10).
+User: "I gave you credentials for that" / "So youbrun it" / "No ssh to it"
+(STT for "Now ssh to it"). She called terminal_task `ssh
+user@192.0.2.10`; the switchboard rejected it (route=reject p=0.94,
+matches=0.08, gap=tool) against the literal "No ssh to it", and she then told
+the user she could not connect and they must do it themselves.
+- Replayed that exact context against Jev: reject in 2/3 runs (matches
+  0.09-0.13, HARD_MISMATCH=0.1). `voice/switchboard.py`: the route and
+  matches questions now say the request is garbled speech to be read with
+  the earlier turns. After: execute 5/5 (matches 0.13-0.17). Control "No,
+  don't ssh to it, just check the status": still reject 3/3 (p=0.99,
+  matches 0.02-0.03). The margin over HARD_MISMATCH is modest; watch for it.
+- She also read the task's question out as "waiting for your approval" and
+  never passed the user's replies on. `task_status` now adds `what_to_do`
+  for a waiting_user task (relay the reply with task_respond answer=, it is
+  not an approval), and the task_respond description says the same.
+- Not fixed: the task itself can't use the "same password as root" for SSH
+  (no sshpass; the Sudo Access password only feeds `sudo -S`).
+
 ### 2026-09-27: approve waiting tasks from the paired phone with a PIN
 
 Tasks sat stuck on in-PC approvals (the notification button / envelope HUD)

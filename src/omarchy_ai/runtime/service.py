@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 import subprocess
 import threading
@@ -75,6 +76,21 @@ def _same_job(runtime, goal: str, jev=None):
     return next(t for t in candidates if t.id == answer["choice"])
 
 
+_AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE"}
+_NAMED = [(re.compile(r"(?i)(?<![\w-])codex(?![\w-])"), "codex"),
+          (re.compile(r"(?i)(?<![\w-])claude(?:[ -]?code)?(?![\w-])"), "claude_code")]
+_UNSANDBOXED = re.compile(r"(?i)--?yolo\b|\byolo\b|dangerously|skip[- ]permissions|without (?:the |its )?sandbox|full access")
+
+
+def named_agent(text: str) -> tuple[str, bool]:
+    """The coding agent the user asked for by name in `text` ("open codex
+    --yolo and ask him ..."), and whether without its sandbox."""
+    for pattern, agent in _NAMED:
+        if pattern.search(text or ""):
+            return agent, bool(_UNSANDBOXED.search(text))
+    return "", False
+
+
 def start_task(args: dict) -> ActionResult:
     from ..config import load_config
     if not getattr(load_config(), "task_runtime_enabled", True):
@@ -83,7 +99,19 @@ def start_task(args: dict) -> ActionResult:
     if not goal or len(goal) > 4000:
         return ActionResult(False, "start_task needs the user's complete goal (1-4000 characters).")
     runtime = get_runtime()
+    agent = _AGENTS.get(str(args.get("agent") or "").strip().lower(), "")
+    if args.get("agent") and not agent:
+        return ActionResult(False, f"agent must be one of: {', '.join(sorted(_AGENTS))}")
+    unsandboxed = bool(args.get("unsandboxed"))
+    if not agent:
+        # An escalation brief quotes the user; honor an agent named there.
+        named, named_unsandboxed = named_agent(goal)
+        agent, unsandboxed = _AGENTS.get(named, ""), unsandboxed or named_unsandboxed
     existing = _same_job(runtime, goal)
+    if existing is not None and agent and existing.agent != agent:
+        # Same job, but the user wants it done by a named agent: a new task,
+        # not a steer into one that another worker is doing.
+        existing = None
     if existing is not None:
         runtime.steer(existing.id, _job_text(goal))
         summary = existing.summary()
@@ -99,11 +127,12 @@ def start_task(args: dict) -> ActionResult:
     try:
         # The daemon's own cwd is this project's checkout; a voice task must not
         # silently work (and checkpoint/roll back) inside it (code review 2026-09-23).
-        task = runtime.start(goal, args.get("workspace") or str(Path.home()), source="voice")
+        task = runtime.start(goal, args.get("workspace") or str(Path.home()), source="voice", agent=agent,
+                             unsandboxed=unsandboxed)
     except ValueError as exc:
         return ActionResult(False, str(exc))
     return ActionResult(True, json.dumps({
-        "task_id": task.id, "status": "started", "workspace": task.workspace,
+        "task_id": task.id, "status": "started", "workspace": task.workspace, "agent": task.agent or "chosen by Jev",
         "note": ("Running in the background. Tell the user it has started; its result, any approval it needs and "
                  "any question will be announced. Do not claim it is done until task_status says certified."),
     }))
@@ -140,14 +169,42 @@ def change_preview(workspace: str, limit: int = 3000) -> dict | None:
 def task_status(args: dict) -> ActionResult:
     runtime = get_runtime()
     if args.get("list"):
-        return ActionResult(True, json.dumps([t.summary() for t in runtime.store.list(8)], ensure_ascii=False))
+        # Compact: 2026-09-27 19:21 the full summaries were 22,254 chars, she
+        # acted on none of it and never saw a waiting task's what_to_do.
+        return ActionResult(True, json.dumps([_brief(t.summary()) for t in runtime.store.list(8)], ensure_ascii=False))
     summary = runtime.status(args.get("task_id") or None)
     if summary is None:
         return ActionResult(False, "No task found.")
     if summary.get("pending_approval"):
         task = runtime.store.load(summary["id"])
         summary["change_preview"] = change_preview(task.workspace if task else "")
-    return ActionResult(True, json.dumps(summary, ensure_ascii=False))
+    return ActionResult(True, json.dumps(_with_next_step(summary), ensure_ascii=False))
+
+
+def _brief(summary: dict) -> dict:
+    brief = {"id": summary["id"], "goal": _job_text(summary.get("goal", ""))[:240], "status": summary.get("status")}
+    if summary.get("pending_approval"):
+        request = summary["pending_approval"]
+        brief["pending_approval"] = {k: request.get(k) for k in ("kind", "subject", "risk")}
+    if summary.get("question"):
+        brief["question"] = summary["question"][:400]
+    if summary.get("result"):
+        brief["result"] = str(summary["result"])[:240]
+    return _with_next_step(brief)
+
+
+def _with_next_step(summary: dict) -> dict:
+    if summary.get("status") == "waiting_user" and summary.get("question"):
+        # Real case 2026-09-27 18:55: the task asked the user to set up an SSH
+        # key; she called it "waiting for your approval", then answered "I
+        # gave you credentials" / "so you run it" herself with "I cannot"
+        # instead of passing the replies on, and the task stayed stuck.
+        summary["what_to_do"] = (
+            f"Task {summary['id']} is NOT waiting for approval: it asked the user a question. Say the question in "
+            "plain words. Whatever the user replies (an answer, details, credentials, or 'you do it') goes to the "
+            f"task word for word: task_respond with task_id {summary['id']} and answer=<their reply>. The task "
+            "does the work; never tell the user you can't or that they must do it themselves.")
+    return summary
 
 
 def task_respond(args: dict) -> ActionResult:
@@ -160,6 +217,12 @@ def task_respond(args: dict) -> ActionResult:
         return ActionResult(result["ok"], result["message"])
     if args.get("cancel"):
         result = runtime.cancel(args.get("task_id") or None)
+        return ActionResult(result["ok"], result["message"])
+    if args.get("agent"):
+        agent = _AGENTS.get(str(args["agent"]).strip().lower(), "")
+        if not agent:
+            return ActionResult(False, f"agent must be one of: {', '.join(sorted(_AGENTS))}")
+        result = runtime.reassign(args.get("task_id") or None, agent, unsandboxed=bool(args.get("unsandboxed")))
         return ActionResult(result["ok"], result["message"])
     approve = args.get("approve")
     result = runtime.respond(args.get("task_id") or None, approve=approve if isinstance(approve, bool) else None,

@@ -159,6 +159,7 @@ class TextChat:
         while True:
             text = await queue.get()
             adapter._transcript.append({"role": "user", "text": text})
+            adapter._capture_password(text)
             adapter._input_guard.heard_user()
             # A typed line is the user answering: announcements said before
             # it count as heard (acknowledged_ids), as speech does in a call.

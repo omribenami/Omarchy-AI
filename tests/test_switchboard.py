@@ -151,3 +151,24 @@ class DispatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskRelayTests(unittest.TestCase):
+    # 2026-09-27 19:33: relaying "I want you to do it. SSH to it yourself" to a
+    # waiting task was rejected and she told the user she couldn't.
+    def test_relaying_the_users_words_to_a_task_is_not_second_guessed(self):
+        from omarchy_ai.voice.switchboard import Context, Switchboard
+        jev = SimpleNamespace(ask=lambda *a, **k: self.fail("Jev must not be asked"))
+        ctx = Context(request="I want you to do it. SSH to it yourself", earlier=[], hint=None, calls=[])
+        for args in ({"task_id": "t1", "answer": "I want you to do it. SSH to it yourself"},
+                     {"task_id": "t1", "guidance": "use ssh-copy-id"}):
+            self.assertEqual(Switchboard(jev).review("task_respond", args, ctx).action, "execute")
+
+    def test_approving_is_still_reviewed(self):
+        from omarchy_ai.voice.switchboard import Context, Switchboard
+        asked = []
+        jev = SimpleNamespace(ask=lambda *a, **k: asked.append(1) or {
+            "route": {"choice": "reject", "p": 0.95}, "matches": {"p": 0.02}, "gap": {"choice": "not_asked"}})
+        ctx = Context(request="what's the weather", earlier=[], hint=None, calls=[])
+        verdict = Switchboard(jev).review("task_respond", {"task_id": "t1", "approve": True}, ctx)
+        self.assertEqual((verdict.action, asked), ("reject", [1]))

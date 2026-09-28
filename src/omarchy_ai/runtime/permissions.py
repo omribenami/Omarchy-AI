@@ -576,6 +576,11 @@ def _classify_one(sub: str, cwd: Path, scope: Scope) -> Assessment:
             result.raise_to(Risk.NORMAL, "")
     elif word in ("ssh",):
         result.raise_to(Risk.NORMAL, "runs a command on another machine")
+    elif word in ("sshpass", "ssh-copy-id"):
+        # The harness answers the password prompt (execution/passwords.py):
+        # the user's password goes to another machine, so the user OKs it.
+        host = next((a for a in args if "@" in a and not a.startswith("-")), "another machine")
+        result.raise_to(Risk.ELEVATED, f"logs in to {host} with your password (the harness types it; never shown)")
     elif word in ("gh",):
         verb = " ".join(args[:2])
         if re.match(r"(?:pr|issue|release|repo)\s+(?:create|merge|close|delete|edit|comment)|api", verb):

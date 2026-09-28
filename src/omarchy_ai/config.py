@@ -334,6 +334,10 @@ class Config:
     # asking (LOW, NORMAL or ELEVATED; HIGH always asks, BLOCKED never runs).
     task_runtime_enabled: bool = True
     task_auto_approve: str = "NORMAL"
+    # Who does task work: "fallback" (default) = Codex or Claude Code; the
+    # paid API worker only when neither can run and the user approves it for
+    # that task. "always" = the API worker is a normal choice too.
+    task_api_worker: str = "fallback"
     # Worker text model (through the Gateway) for the System agent, planner,
     # direct-tool picker and internal reviewer. "auto" (runtime/models.py):
     # the cheapest Gateway model that passes the worker exam, re-chosen as

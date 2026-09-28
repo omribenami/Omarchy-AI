@@ -1106,7 +1106,10 @@ def terminal_task(args: dict) -> ActionResult:
             return shown
     elif show in (None, "", "auto"):
         workbench.pending_handover.add(name)
-    typed = workbench.send(name, command)
+    from . import passwords
+    # sshpass/ssh-copy-id: the harness answers the password prompt; a literal
+    # `sshpass -p SECRET` never reaches the terminal or its scrollback.
+    typed = workbench.send(name, passwords.ssh_terminal_command(command))
     if not typed.ok:
         return typed
     where = ("on the user's screen" if on_screen else
@@ -1123,8 +1126,9 @@ def terminal_read(args: dict) -> ActionResult:
 
 
 def terminal_type(args: dict) -> ActionResult:
-    from . import workbench
-    return workbench.send(str(args.get("name") or ""), str(args.get("text") or ""), bool(args.get("enter", True)))
+    from . import passwords, workbench
+    return workbench.send(str(args.get("name") or ""), passwords.ssh_terminal_command(str(args.get("text") or "")),
+                          bool(args.get("enter", True)))
 
 
 def terminal_show(args: dict) -> ActionResult:
@@ -1150,10 +1154,24 @@ def terminal_close(args: dict) -> ActionResult:
 
 
 def terminal_sudo(args: dict) -> ActionResult:
-    from . import workbench
+    """Answer the password prompt in an assistant terminal: sudo gets the
+    saved Sudo Access password; an SSH/ssh-copy-id/scp prompt gets the
+    password the user stated (captured into the keyring), else the saved one
+    (2026-09-27: "same password as root" for the Home Assistant box)."""
+    from . import passwords, workbench
+    name = str(args.get("name") or "")
+    screen = workbench.read(name, 6, settle=False) if workbench.exists(name) else None
+    prompt = next((line for line in reversed((screen.message if screen and screen.ok else "").lower().splitlines())
+                   if line.strip()), "")
+    if "password" in prompt and "[sudo]" not in prompt:  # "user@host's password:", not "[sudo] password for"
+        password = passwords.ssh_password()
+        if password is None:
+            return ActionResult(False, "no password to give: ask the user to say it (\"password: ...\"), or save "
+                                       "one in Assistant Settings > Sudo Access")
+        submitted = workbench.submit_password(name, password)
+        return ActionResult(submitted.ok, "password submitted to the login prompt" if submitted.ok else submitted.message)
     if not load_config().sudo_access_enabled:
         return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
-    name = str(args.get("name") or "")
     if not workbench.exists(name):
         # 2026-09-24 00:28: called twice on the user's own terminal, failed,
         # and she told the user to type the password themselves.

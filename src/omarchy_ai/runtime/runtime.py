@@ -43,6 +43,11 @@ from .task import (ACTIVE, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, T
 log = logging.getLogger(__name__)
 
 CODING = {"CLAUDE_CODE", "CODEX"}
+# Workers that spend the paid API worker model. The user's rule (2026-09-27,
+# "I'm paying API credit for nothing"): Codex or Claude Code do the work; the
+# API workers run only when both cannot (not installed, logged out, usage
+# limit reached), and only after the user approves it for that task.
+API_WORKERS = {"SYSTEM_AGENT", "TEST_AGENT", "REVIEW_AGENT"}
 VALIDATED_P = 0.6          # Jev must think the test plan proves the behavior
 CERTIFY_P = 0.8            # Jev certification threshold
 MAX_CERT_REJECTIONS = 3
@@ -93,15 +98,20 @@ class TaskRuntime:
 
     # ------------------------------------------------------------------ API
     def start(self, goal: str, workspace: str | None = None, *, source: str = "cli", background: bool = True,
-              auto_approve: str | None = None, max_steps: int | None = None) -> Task:
+              auto_approve: str | None = None, max_steps: int | None = None, agent: str = "",
+              unsandboxed: bool = False) -> Task:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("a task needs a goal")
         ws = Path(workspace or os.getcwd()).expanduser().resolve()
         if not ws.is_dir():
             raise ValueError(f"workspace {ws} is not a directory")
+        agent = (agent or "").upper().replace(" ", "_").replace("-", "_")
+        if agent and agent not in self.executors:
+            raise ValueError(f"unknown agent {agent!r}; known: {', '.join(sorted(self.executors))}")
         task = Task(id=new_id(), goal=goal[:4000], workspace=str(ws), source=source,
-                    auto_approve=(auto_approve or self.default_auto_approve).upper())
+                    auto_approve=(auto_approve or self.default_auto_approve).upper(), agent=agent,
+                    unsandboxed=bool(unsandboxed and agent in CODING))
         task.budget["max_steps"] = int(max_steps or _config("task_max_steps", 12))
         task.budget["max_seconds"] = int(_config("task_max_minutes", 60)) * 60
         self.store.save(task)
@@ -183,6 +193,40 @@ class TaskRuntime:
             return {"ok": False, "message": "no interrupted task"}
         self._launch(task, background)
         return {"ok": True, "message": f"resumed {task.id}", "task_id": task.id}
+
+    def reassign(self, task_id: str | None, agent: str, *, unsandboxed: bool = False,
+                 background: bool = True) -> dict:
+        """Hand an open task to the agent the user names; every later work
+        step uses it (2026-09-27: "move the Home Assistant task to Codex, I'm
+        paying API credit for nothing" -- it ran on qwen, then grok). A
+        question or approval the old worker was waiting on is dropped: the
+        new agent works it out itself."""
+        agent = (agent or "").upper().replace(" ", "_").replace("-", "_")
+        if agent not in self.executors or agent not in CODING:
+            return {"ok": False, "message": f"can only move a task to {', '.join(sorted(CODING))}"}
+        task = self._get(task_id, None) if task_id else self.store.latest(
+            ACTIVE | {WAITING_APPROVAL, WAITING_USER, INTERRUPTED})
+        if task is None:
+            return {"ok": False, "message": "no such task"}
+        if task.status in TERMINAL:
+            return {"ok": False, "message": f"task {task.id} already {task.status}"}
+        if owned_elsewhere(task):
+            return {"ok": False, "message": f"task {task.id} is being run by another process (pid {task.owner['pid']})"}
+        waiting = task.status in (WAITING_APPROVAL, WAITING_USER, INTERRUPTED)
+        task.agent, task.unsandboxed = agent, bool(unsandboxed)
+        task.add_note(f"User moved the task to {agent}" + (" without its sandbox" if unsandboxed else "")
+                      + "; it continues from the work so far.")
+        if waiting:
+            dropped = (task.pending_approval or {}).get("subject") or task.question
+            task.pending_approval, task.question = None, None
+            task.next_dispatch = self._assignment(task, agent, "CHANGE_EXECUTOR")
+            if dropped:
+                task.next_dispatch["context"]["previous_worker_was_waiting_on"] = str(dropped)[:1500]
+        self.store.save(task)
+        self._refresh_task_hud()
+        if waiting:
+            self._launch(task, background)
+        return {"ok": True, "message": f"task {task.id} moved to {agent}", "task": task.summary()}
 
     def steer(self, task_id: str, text: str) -> dict:
         """New direction from the user for a task that keeps running: its next
@@ -359,7 +403,12 @@ class TaskRuntime:
         self.store.save(task)
 
     # --------------------------------------------------------------- route
-    def _candidates(self, *, roles: set[str] | None = None, exclude: set[str] = frozenset()) -> dict[str, str]:
+    def _candidates(self, *, roles: set[str] | None = None, exclude: set[str] = frozenset(),
+                    task: Task | None = None) -> dict[str, str]:
+        if task is not None:
+            exclude = set(exclude) | (CODING - set(self._coding_ready()))
+            if not self._api_allowed(task):
+                exclude |= API_WORKERS
         out = {}
         for name, info in self.available().items():
             executor = self.executors[name]
@@ -370,9 +419,87 @@ class TaskRuntime:
             out[name] = executor.description
         return out
 
+    def _coding_ready(self, refresh: bool = False) -> list[str]:
+        """Checked live, not from the 5-minute cache: an agent that just hit
+        its usage limit must stop being chosen at once."""
+        ready = []
+        for name in sorted(CODING & set(self.executors)):
+            executor = self.executors[name]
+            detect = getattr(executor, "detect", None)
+            if refresh and detect:
+                detect(force=True)  # a cached failure may be a one-off slow start
+            try:
+                ok, _ = executor.available()
+            except Exception:  # noqa: BLE001
+                ok = False
+            if ok:
+                ready.append(name)
+        if refresh:
+            self.available(refresh=True)
+        return ready
+
+    def _api_allowed(self, task: Task) -> bool:
+        if str(_config("task_api_worker", "fallback")).lower() == "always":
+            return True
+        if self._coding_ready():
+            return False
+        return f"api-worker:{task.id}" in task.grants
+
+    def _workers_ready(self, task: Task) -> bool:
+        """Codex/Claude Code first; the paid API worker only with the user's
+        OK when neither can run. False while waiting for that OK."""
+        ready = self._coding_ready()
+        if task.agent and task.agent not in ready:
+            ready = self._coding_ready(refresh=True)
+        if task.agent and task.agent not in ready:
+            reason = self.executors[task.agent].available()[1] or "it is not available"
+            other = next((n for n in ready if n != task.agent), None)
+            if other:
+                task.add_note(f"{task.agent} cannot run ({reason}); {other} continues the task.")
+                task.agent = other
+                self.store.save(task)
+                return True
+            if f"api-worker:{task.id}" not in task.grants:
+                return self._request_api(task, f"{task.agent}: {reason}")
+            task.add_note(f"{task.agent} cannot run ({reason}); the approved API worker continues.")
+            task.agent, task.unsandboxed = "", False
+            self.store.save(task)
+            return True
+        if not ready and not self._api_allowed(task):
+            why = "; ".join(f"{n}: {self.executors[n].available()[1] or 'unavailable'}"
+                            for n in sorted(CODING & set(self.executors))) or "no coding agent is set up"
+            return self._request_api(task, why)
+        return True
+
+    def _request_api(self, task: Task, why: str) -> bool:
+        if not self.available().get("SYSTEM_AGENT", {}).get("available"):
+            self._finish(task, FAILED, f"No worker can run: {why}; the API worker is unavailable too.")
+            return False
+        model = _model_of(self.executors["SYSTEM_AGENT"]) or "the API worker model"
+        subject = f"use the paid API worker ({model}) for this task, because Codex and Claude Code can't run"
+        assessment = Assessment(Risk.ELEVATED, [why[:300], "spends API credit"])
+        # Always asked (never auto-approved): the grant is this exact fingerprint.
+        task.pending_approval = {"fingerprint": f"api-worker:{task.id}", "kind": "api", "subject": subject,
+                                 "risk": "ELEVATED", "reasons": assessment.reasons}
+        task.next_dispatch = None
+        task.status, task.phase = WAITING_APPROVAL, "waiting_approval"
+        task.add_note(f"Waiting for approval to use the API worker: {why[:300]}")
+        self.store.save(task)
+        self._emit(task, "waiting_approval")
+        return False
+
     def _route(self, task: Task) -> bool:
         task.phase = "route"
-        candidates = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"})
+        if not self._workers_ready(task):
+            return False
+        candidates = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
+        if task.agent:
+            # The user named the worker (2026-09-27: "open codex --yolo and ask
+            # him ..." ran on qwen, then grok). No routing.
+            task.add_decision("route", task.agent, 1.0, {"requested_by_user": True})
+            task.next_dispatch = self._assignment(task, task.agent, "ROUTE")
+            self.store.save(task)
+            return True
         if not candidates:
             self._finish(task, FAILED, "No executor is available (the worker model and coding agents are all unreachable).")
             return False
@@ -392,10 +519,12 @@ class TaskRuntime:
         last = last or (task.steps[-1] if task.steps else None)
         last_claim = (last or {}).get("claim", "")[:1200]
         needs_code = (task.needs_code or 0) >= 0.5 or bool(last and last.get("report_status") == NEEDS_CODE_CHANGE)
-        if executor == "TEST_AGENT":
+        if executor == "TEST_AGENT" or directive == "REQUEST_MORE_TESTS":
             role = TEST
         elif executor == "REVIEW_AGENT" or directive == "REQUEST_REVIEW":
             role = REVIEW
+        elif executor in CODING and executor == task.agent:
+            role = WORK  # asked for by name to do the job, not just to diagnose it
         elif executor in CODING:
             role = IMPLEMENT if needs_code else DIAGNOSE
         else:
@@ -432,11 +561,15 @@ class TaskRuntime:
                    "notes": task.notes[-5:], "user_answers": task.answers[-3:]}
         if task.reviews:
             context["latest_review"] = task.reviews[-1]
+        if task.unsandboxed and dispatch.get("executor") == task.agent:
+            context["unsandboxed"] = True
         context.update(dispatch.get("context") or {})
         return context
 
     def _dispatch(self, task: Task, dispatch: dict) -> bool:
         """Run one executor assignment. False when the task must wait."""
+        if task.agent and dispatch["role"] not in (TEST, REVIEW) and dispatch["executor"] != task.agent:
+            dispatch = self._assignment(task, task.agent, "CHANGE_EXECUTOR")  # moved to it mid-run
         name = dispatch["executor"]
         executor = self.executors.get(name)
         if executor is None:
@@ -508,7 +641,7 @@ class TaskRuntime:
     def _allowed_directives(self, task: Task) -> list[str]:
         last = task.steps[-1] if task.steps else None
         allowed = ["CONTINUE", "SPAWN_SUBAGENT", "ASK_USER", "FAIL"]
-        if len(self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"})) > 1:
+        if len(self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)) > 1:
             allowed.append("CHANGE_EXECUTOR")
         if last and last["outcome"] in ("failed", "blocked") and self._consecutive(task) <= MAX_CONSECUTIVE_RETRIES:
             allowed.append("RETRY")
@@ -518,7 +651,7 @@ class TaskRuntime:
         validated = (task.test_plan.get("validated") or 0) >= VALIDATED_P
         if validated and not self._tests_since_change(task):
             allowed.append("RUN_TESTS")
-        if not validated and task.test_plan.get("attempts", 0) < MAX_PLAN_ATTEMPTS and "TEST_AGENT" in self._candidates():
+        if not validated and task.test_plan.get("attempts", 0) < MAX_PLAN_ATTEMPTS and self._tester(task):
             allowed.append("REQUEST_MORE_TESTS")
         if changed and task.checkpoints:
             allowed.append("ROLLBACK")
@@ -540,7 +673,12 @@ class TaskRuntime:
         # The test and review subagents are reached only through REQUEST_MORE_TESTS
         # and REQUEST_REVIEW (live run 2026-09-23: CONTINUE -> TEST_AGENT looped
         # nine times past the test-plan attempt limit).
-        executors = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"})
+        if not self._workers_ready(task):
+            return False
+        executors = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
+        if task.agent:
+            executors = {k: v for k, v in executors.items() if k == task.agent}
+            allowed = [d for d in allowed if d != "CHANGE_EXECUTOR"]
         directive, pick = self.control.direct(task, allowed, executors)
         task.add_decision("direct", directive.value, directive.p,
                           {"executor": pick.value, "executor_p": pick.p, "allowed": allowed, "fallback": directive.fallback})
@@ -565,7 +703,7 @@ class TaskRuntime:
             return self._rollback(task)
         if d == "REQUEST_MORE_TESTS":
             task.test_plan["attempts"] = task.test_plan.get("attempts", 0) + 1
-            task.next_dispatch = self._assignment(task, "TEST_AGENT", d)
+            task.next_dispatch = self._assignment(task, self._tester(task) or "TEST_AGENT", d)
             return True
         if d == "REQUEST_REVIEW":
             reviewers = self._reviewers(task)
@@ -582,6 +720,8 @@ class TaskRuntime:
                         next((n for n in executors if n != prev), name))
         elif d == "SPAWN_SUBAGENT" and self.executors.get(name, self.executors.get("SYSTEM_AGENT")).kind != "internal":
             name = "SYSTEM_AGENT" if "SYSTEM_AGENT" in executors else name
+        if task.agent:
+            name = task.agent
         task.next_dispatch = self._assignment(task, name, d)
         return True
 
@@ -633,9 +773,18 @@ class TaskRuntime:
     def _tests_since_change(self, task: Task) -> list[dict]:
         return [t for t in task.tests if t.get("after_change") and t["at"] >= task.budget.get("changed_at", 0)]
 
+    def _tester(self, task: Task) -> str | None:
+        """Who designs verification: the API test agent only where API work
+        is allowed; otherwise a coding agent (the task's own first)."""
+        available = self._candidates(roles={TEST}, task=task)
+        if "TEST_AGENT" in available:
+            return "TEST_AGENT"
+        coding = [n for n in available if n in CODING]
+        return task.agent if task.agent in coding else (coding[0] if coding else None)
+
     def _reviewers(self, task: Task) -> list[str]:
         writers = {s["executor"] for s in task.steps if s["role"] in (IMPLEMENT, WORK)}
-        available = self._candidates(roles={REVIEW})
+        available = self._candidates(roles={REVIEW}, task=task)
         independent = [n for n in available if n in CODING and n not in writers]
         return independent + (["REVIEW_AGENT"] if "REVIEW_AGENT" in available else [])
 
@@ -906,6 +1055,10 @@ class WorkContextImpl:
                 "risk": decision.assessment.risk.name, "reasons": decision.assessment.reasons[:5]}
 
     def run_command(self, command: str, cwd: str | None = None, timeout: float = 120, *, role: str = "") -> dict:
+        from ..execution import passwords
+        # A literal `sshpass -p SECRET` becomes `sshpass` before anything is
+        # classified, recorded or shown for approval; the harness supplies it.
+        command = passwords.sanitize_command(command)
         cwd = str(Path(cwd or self.task.workspace).expanduser())
         assessment = classify(command, cwd, self.scope)
         decision = self._decide("command", command, assessment)
@@ -929,13 +1082,21 @@ class WorkContextImpl:
         if assessment.risk >= Risk.HIGH and re.match(r"\s*sudo\s", command):
             command, stdin_text = _sudo(command)
         event = self.runtime._cancel.get(self.task.id)
-        result = shell.run(command, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
-                           output_dir=self.runtime.store.dir / self.task.id)
+        run_as, env = passwords.ssh_env(command, shell._base_env())
+        result = shell.run(run_as, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
+                           output_dir=self.runtime.store.dir / self.task.id, env=env)
         data = result.as_dict()
         record.update(exit_code=result.exit_code, timed_out=result.timed_out, duration=round(result.duration, 2),
                       output=result.output[-3000:], full_output_path=result.full_output_path)
         self.task.add_command(record)
         ok, meaning = result.ok, ""
+        if (not result.ok and re.search(r"(?<![\w-])(?:ssh|scp|rsync)\s", command) and not passwords.needs_password(command)
+                and re.search(r"Permission denied \([^)]*password", result.output)):
+            # 2026-09-27: the worker asked the user to install its key by hand
+            # instead of using the password it had been told about.
+            meaning = (" (this host wants a password: run it as `sshpass <the same command>` or install the key "
+                       "with `ssh-copy-id -i <key.pub> user@host`; the harness types the password, never put it in "
+                       "the command)")
         last = (split_commands(command) or [""])[-1].split()
         if result.exit_code == 1 and not result.output.strip() and last and last[0] in ("grep", "egrep", "rg", "pgrep"):
             ok, meaning = None, " (no match -- for this tool exit 1 with no output means nothing was found)"

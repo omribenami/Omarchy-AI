@@ -57,6 +57,9 @@ Actions:
 - run:        {"commands": ["<bash>", ...up to 4, run in order], "cwd": "<optional dir>", "timeout": <seconds, optional>}
               Non-interactive only (no editors, pagers, prompts, `sudo` password prompts, `watch`, `-f` follow modes
               without a timeout). Add flags like --no-pager, -n 50, -j. Long jobs: raise timeout (max 1800).
+              SSH with a password (the user gave one, or said it is the same as root/sudo): `ssh-copy-id -i
+              <key.pub> user@host` once, or `sshpass ssh user@host '<cmd>'`; the harness types the password.
+              Never write a password into a command and never ask the user to do it by hand.
 - find_tools: {"query": "<need, e.g. 'bluetooth radio'>"}      search installed commands and the man index
 - help:       {"tool": "<command>", "topic": "<optional option/subcommand>"}  local --help/man for the INSTALLED version.
               Use it whenever you are unsure of a flag; do not guess version-specific options.

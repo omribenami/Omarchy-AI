@@ -6,6 +6,7 @@ import json
 import logging
 from collections import deque
 import uuid
+import threading
 import time
 from pathlib import Path
 import numpy as np
@@ -177,6 +178,7 @@ class GeminiLiveSession:
         # Jev has judged it, and what Jev last did (dedupe against Gemini).
         self._turn_done = asyncio.Event()  # set on every Gemini turn_complete
         self._utterance: list[str] = []
+        self._password_seen = ""
         self._utterance_checked = False
         self._jev_done = None  # (tool, args, monotonic time, message, text)
         # Switchboard (voice/switchboard.py): the fast pass's route for the
@@ -256,6 +258,7 @@ class GeminiLiveSession:
                             if self._utterance_checked:
                                 self._utterance, self._utterance_checked = [], False
                             self._utterance.append(transcription.text)
+                            self._capture_password()
                             self._splice_armed = True
                             self._input_guard.heard_user()
                 if server.interrupted or server.turn_complete:
@@ -821,6 +824,17 @@ class GeminiLiveSession:
     SPLICE_ABORT_RMS = 3500.0
     SPLICE_ABORT_FRAMES = 3
     FORCE_CLOSE_AFTER_SECONDS = 8.0
+
+    def _capture_password(self, text: str | None = None) -> None:
+        """A password the user states ("pass: X") goes to GNOME Keyring at
+        once, so terminal_sudo / an SSH prompt can use it and every file and
+        log masks it (execution/passwords.py). Off the receive loop: the
+        keyring write is a subprocess."""
+        from ..execution import passwords
+        values = passwords._spoken_values(text if text is not None else "".join(self._utterance))
+        if values and values[-1] != self._password_seen:
+            self._password_seen = values[-1]
+            threading.Thread(target=passwords.store_spoken, args=(values[-1],), daemon=True).start()
 
     def _replied(self) -> None:
         self._input_guard.assistant_replied()

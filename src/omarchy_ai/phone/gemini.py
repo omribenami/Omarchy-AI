@@ -163,6 +163,7 @@ async def _serve(config, sdp, answer, cancelled):
                     turn_complete=False)
                 told = True
             adapter._transcript.append({'role': 'user', 'text': text})
+            adapter._capture_password(text)  # a typed "pass: X" goes to the keyring too
             adapter._input_guard.heard_user()
             emit({'type': 'response.event', 'event': {'type': 'response.created'}})
             await session.send_client_content(turns={'role': 'user', 'parts': [{'text': text}]}, turn_complete=True)

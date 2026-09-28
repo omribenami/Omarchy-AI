@@ -47,6 +47,21 @@ def _load_raw() -> list[dict]:
     return records
 
 
+def _redacted(turns: list[dict]) -> list[dict]:
+    """Join each speaker's consecutive transcript fragments (a password is
+    often split across them), then mask passwords: a stated one in the
+    user's words, and any saved one anywhere (execution/passwords.py; real
+    case 2026-09-27 18:55, a spoken SSH password stored here in plain text)."""
+    from ..execution.passwords import redact
+    merged: list[dict] = []
+    for turn in turns:
+        if merged and merged[-1].get("role") == turn.get("role"):
+            merged[-1] = {**merged[-1], "text": merged[-1].get("text", "") + turn.get("text", "")}
+        else:
+            merged.append(dict(turn))
+    return [{**t, "text": redact(t.get("text", ""), speech=t.get("role") == "user")} for t in merged]
+
+
 def append_session(turns: list[dict], retention_hours: float) -> None:
     """Record this session's turns, then drop anything older than
     retention_hours so the file can't grow without bound."""
@@ -54,7 +69,7 @@ def append_session(turns: list[dict], retention_hours: float) -> None:
         return
     now = time.time()
     records = _load_raw()
-    records.append({"ts": now, "turns": turns})
+    records.append({"ts": now, "turns": _redacted(turns)})
     cutoff = now - retention_hours * 3600
     records = [r for r in records if r.get("ts", 0) >= cutoff]
     STATE_DIR.mkdir(parents=True, exist_ok=True)

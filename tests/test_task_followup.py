@@ -175,3 +175,18 @@ class ClaudeModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskQuestionGuidanceTests(unittest.TestCase):
+    # 2026-09-27 18:55: a task waiting on a question was read out as an
+    # approval and the user's replies were never passed to it.
+    def test_status_of_a_task_with_a_question_says_to_relay_the_reply(self):
+        from unittest.mock import MagicMock, patch
+        from omarchy_ai.runtime import service
+        runtime = MagicMock()
+        runtime.status.return_value = {"id": "t1", "status": "waiting_user", "question": "add the key?",
+                                       "pending_approval": None}
+        with patch.object(service, "get_runtime", return_value=runtime):
+            summary = json.loads(service.task_status({}).message)
+        self.assertIn("NOT waiting for approval", summary["what_to_do"])
+        self.assertIn("task_respond with task_id t1 and answer=", summary["what_to_do"])

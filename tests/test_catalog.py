@@ -29,6 +29,12 @@ class PickJev:
 
 class CatalogTests(unittest.TestCase):
     def test_every_tool_is_either_declared_or_in_the_catalog(self):
+        # Built-in tools only: the user's own tools (~/.config/omarchy-ai/tools,
+        # e.g. the home_assistant one a task installed 2026-09-27) are not TOOLS.
+        from omarchy_ai.execution import user_tools
+        patcher = patch.object(user_tools, "schemas", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
         declared = {t["name"] for t in catalog.declared()}
         self.assertEqual({t["name"] for t in TOOLS}, (declared - {"use_tool"}) | set(catalog.catalog()))
         self.assertFalse(declared & set(catalog.catalog()))

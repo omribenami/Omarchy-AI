@@ -108,10 +108,14 @@ def questions(tool: str, ctx: Context) -> dict:
             "already made this turn are context). Decide where this goes. Relaying or typing text the user "
             "dictated into a terminal or to a coding agent (Claude Code, Codex) is exactly what they asked: "
             "execute it. A request that is cut off mid-sentence, or the user describing or explaining how "
-            "something works, asks for nothing: reject a call that acts on it.", _options(tool, ctx)),
+            "something works, asks for nothing: reject a call that acts on it. The request is speech recognition "
+            "output and often garbled: read it with the earlier turns. A short request that only makes sense as "
+            "a follow-up (e.g. 'No ssh to it' right after 'So you run it', really 'Now ssh to it') asks for that "
+            "follow-up; do not reject on a misheard word.", _options(tool, ctx)),
         "matches": boolean(
             "Does `call` carry out what the user's latest `request` asks, or a sensible step toward it, with the "
-            "right target and values (numbers, names, text)?"),
+            "right target and values (numbers, names, text)? Read the request as the user meant it given the "
+            "earlier turns, not its misheard words."),
         "gap": choice(
             "If `call` does not fit the request, what is wrong with it?",
             {"none": "Nothing, it fits.",
@@ -154,7 +158,13 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
     bar = DESKTOP_REROUTE_P if route == "desktop_task" and confident_hint else REROUTE_P
     if route in REROUTES and p >= bar and _hint_allows(route, ctx.hint):
         goal = ctx.request.strip()
-        return Verdict("reroute", route, {"goal": goal}, evidence=evidence,
+        rerouted = {"goal": goal}
+        if route == "start_task":
+            from ..runtime.service import named_agent
+            agent, unsandboxed = named_agent(goal)
+            if agent:
+                rerouted.update(agent=agent, unsandboxed=unsandboxed)
+        return Verdict("reroute", route, rerouted, evidence=evidence,
                        message=f"Jev routed this request to {route} instead of {tool}.")
     if route == "ask_user" and p >= ASK_P:
         return Verdict("ask", evidence=evidence, message=(
@@ -168,6 +178,30 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
             f"Not run: Jev checked {tool} {json.dumps(_short(args), ensure_ascii=False)[:200]} against the user's "
             f"request {ctx.request[-200:]!r} and {why}. Re-read the request and make the right call, or ask."))
     return Verdict("execute", tool, dict(args or {}), evidence=evidence)
+
+
+def _missing_agent(tool: str, args: dict, ctx: Context) -> Verdict | None:
+    """Code-owned: the user named a coding agent, the task must use it.
+    2026-09-27 15:45: "open codex --yolo and ask him as follows: ..." became
+    start_task without Codex (Jev voted reject p=0.84 but matches 0.32 passed
+    the 0.30 bar); the job ran on qwen, then grok."""
+    if tool != "start_task" or (args or {}).get("agent"):
+        return None
+    from ..runtime.service import named_agent
+    said = " ".join([*ctx.earlier[-1:], ctx.request])
+    agent, unsandboxed = named_agent(said)
+    if not agent:
+        return None
+    return Verdict("reject", evidence={"missing_agent": agent}, message=(
+        f"Not run: the user asked for {agent} by name. Call start_task again with agent='{agent}'"
+        + (", unsandboxed=true (they asked for it without its sandbox)" if unsandboxed else "")
+        + ", the directory they named as workspace (absolute path), and their full request as the goal."))
+
+
+def _relays_to_task(tool: str, args: dict) -> bool:
+    args = args or {}
+    return (tool == "task_respond" and "approve" not in args and not args.get("cancel")
+            and bool(args.get("answer") or args.get("guidance")))
 
 
 class Switchboard:
@@ -186,6 +220,15 @@ class Switchboard:
         started = time.monotonic()
         if not ctx.request.strip():
             verdict = Verdict("execute", tool, dict(args or {}), evidence={"skipped": "no user request"})
+        elif (missing := _missing_agent(tool, args, ctx)) is not None:
+            verdict = missing
+        elif _relays_to_task(tool, args):
+            # 2026-09-27 19:33: "I want you to do it. SSH to it yourself" relayed
+            # verbatim as a task answer was rejected (matches 0.07: Jev saw
+            # "send a message", not "SSH"), and she told the user she couldn't.
+            # A relay is harmless: what the task then does passes its own
+            # permission checks. Approve/deny stays reviewed.
+            verdict = Verdict("execute", tool, dict(args or {}), evidence={"skipped": "relays the user's words to a task"})
         else:
             try:
                 answers = (self._jev or Jev()).ask(state(tool, args, ctx), questions(tool, ctx),

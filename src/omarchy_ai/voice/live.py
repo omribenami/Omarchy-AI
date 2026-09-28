@@ -183,6 +183,9 @@ def build_session_config(config: Config) -> dict:
     # following "to work here after ssh, type exit", typed exit into the
     # user's Claude Code window. list_windows now labels each terminal's
     # machine, and session-ending input needs the user's yes (InputGuard).
+    # 2026-09-27 19:3x: with no ssh terminal open she read these rules as "I
+    # can't reach the Home Assistant box" and told the user to set up SSH by
+    # hand, three calls in a row; she may open one herself.
     instructions += (
         "\n\nWHICH MACHINE: list_files, read_file, write_file, edit_file, search and terminal_task always act "
         "on THIS computer. Every terminal in list_windows has a `machine`: 'REMOTE user@host (ssh)' means "
@@ -195,7 +198,12 @@ def build_session_config(config: Config) -> dict:
         "window: never do it unless the user explicitly asks; to work on this computer while an ssh terminal is "
         "open, use terminal_task or a local terminal instead. You CAN work on other machines "
         "through such terminals: never say you cannot reach a remote machine or ask the user to paste a remote "
-        "file before calling list_windows and looking for a terminal whose title shows that host."
+        "file before calling list_windows and looking for a terminal whose title shows that host. No terminal "
+        "for that host yet? OPEN one: terminal_task `ssh user@host`. If it needs a password, run "
+        "`ssh-copy-id user@host` or `sshpass ssh user@host` instead -- the harness types the password the user "
+        "gave or the saved one (never write a password in a command); a password prompt in your terminal is "
+        "answered with terminal_sudo. When the user tells you to SSH or to do a remote step yourself, do it; "
+        "never tell them to do it by hand."
         "\n\nSTAY IN THE USER'S TERMINAL: When the user is working in a terminal or points you at one, keep "
         "working in that same window. Do not open new terminals (terminal_task, open_terminal) unless they ask "
         "or the job is a separate local background job. Do not close windows you did not open unless told."
