@@ -9,6 +9,9 @@ $OMARCHY_PATH/shell/plugins/panels/dropbox/status.py already uses inside
 the shell itself). Always emits one line of JSON on stdout and exits 0 —
 callers check the `error` key rather than the exit code, since a QML
 `StdioCollector` only has one clean path for "read what came back".
+The reply is capped at HELPER_STDOUT_MAX_BYTES; a larger document is
+replaced with an error so the panel's producer ceiling is not the first
+place a runaway reply is noticed.
 
 Commands:
   get                        -> current settings snapshot + wake model list
@@ -82,6 +85,13 @@ _START_MARKER = "wake word detected, starting live session"
 _END_MARKER = "session ended, back to listening"
 
 SERVICE = "omarchy-ai.service"
+
+# The settings panel collects this process's stdout in the long-lived shell.
+# Stay under the same ceiling bounded-stdio.sh enforces with `head -c` for
+# helper mode, and fail closed instead of emitting a document the panel must
+# refuse. Pairing QR JSON is far smaller than this; the cap is for a runaway
+# reply, not a normal snapshot.
+HELPER_STDOUT_MAX_BYTES = 262144
 
 WATCHDOG_DISPLAY_MODES = ("feed", "visualizer", "both")
 TEXT_CHAT_MODES = ("keybinding", "always")
@@ -716,6 +726,16 @@ def cmd_test_quota_alert(args: argparse.Namespace) -> dict:
     return {"ok": True, "provider": args.provider, "language": alert_clips.language()}
 
 
+def _response_bytes(result: dict) -> bytes:
+    """JSON reply, or a small error if the reply would exceed the panel cap."""
+    encoded = json.dumps(result).encode()
+    if len(encoded) <= HELPER_STDOUT_MAX_BYTES:
+        return encoded
+    return json.dumps({
+        "error": f"Settings helper output exceeded {HELPER_STDOUT_MAX_BYTES} bytes",
+    }).encode()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="omarchy-ai-settings")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -788,7 +808,8 @@ def main(argv: list[str] | None = None) -> int:
         "test-quota-alert": cmd_test_quota_alert,
     }[args.command]
     result = handler(args)
-    print(json.dumps(result))
+    sys.stdout.buffer.write(_response_bytes(result))
+    sys.stdout.buffer.write(b"\n")
     return 0
 
 
