@@ -55,20 +55,18 @@ IPC calls from the Python daemon (`voice/watchdog.py`,
 nothing to place in the bar, they just need to be enabled so Quickshell
 loads them.
 
-## A real, known limitation
+## Settings CLI path
 
-`omarchy-ai.settings/Panel.qml` **and** `omarchy-ai.myapi/Panel.qml` both
-shell out to this project's settings CLI via the same **hardcoded absolute
-path**:
+`omarchy-ai.settings` looks up `omarchy-ai-settings` when the panel opens
+(`resolve-settings.sh`: the user systemd unit from `install.sh`, `PATH`,
+or the known release directories). A marketplace install of that plugin
+does not need a path written into `Panel.qml`. If the assistant is not
+installed, the panel explains the Releases / `install.sh` install.
 
-```qml
-readonly property string py: "/home/user/Git/omarchy-ai/.venv/bin/omarchy-ai-settings"
-```
-
-This project has so far only ever run on one machine, at one checkout path
-— if you clone this somewhere other than `~/Git/omarchy-ai` (or as a
-different user), edit that line in **both** files to match your actual
-path before enabling either plugin. Same story for the systemd unit
-template (`systemd/omarchy-ai.service`) and its `@VENV@` substitution —
-see the main [README](../README.md#manual-installation) for the install
-steps that account for this.
+The other plugins that shell out to the same CLI (`omarchy-ai.myapi`,
+`omarchy-ai.tv-discovery`, `omarchy-ai.assistant-huds`,
+`omarchy-ai.chat-hud`) still carry an install-time path token.
+`scripts/install-plugins.sh` rewrites it to
+`.venv/bin/omarchy-ai-settings` for the checkout that ran `install.sh`.
+Those plugins are not the marketplace listing. The systemd unit template
+(`systemd/omarchy-ai.service`) is still rendered by `scripts/setup.sh`.

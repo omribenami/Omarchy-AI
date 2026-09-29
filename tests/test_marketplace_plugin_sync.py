@@ -40,11 +40,13 @@ class MarketplacePluginSyncTests(unittest.TestCase):
 
         manifest = json.loads((SEED / "manifest.json").read_text())
         self.assertEqual(manifest["id"], "omarchy-ai.settings")
-        self.assertEqual(manifest["name"], "Omarchy AI")
+        self.assertEqual(manifest["name"], "Omarchy-AI")
         self.assertEqual(manifest["name"], source["name"])
+        self.assertNotIn("Settings", manifest["name"])
         self.assertEqual(manifest["version"], "0.4.0")
         self.assertEqual(manifest["version"], source["version"])
-        self.assertEqual(manifest["barWidget"]["displayName"], "Omarchy AI")
+        self.assertEqual(manifest["barWidget"]["displayName"], "Omarchy-AI")
+        self.assertNotIn("Settings", manifest["barWidget"]["displayName"])
         self.assertEqual(manifest["kinds"], ["bar-widget"])
         self.assertEqual(manifest["entryPoints"], {"barWidget": "Panel.qml"})
         self.assertEqual(manifest["author"], "Omri Ben Ami")
@@ -63,10 +65,22 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertIn("preview.png", built)
         panel = (SEED / "Panel.qml").read_text()
         self.assertEqual(panel, (ROOT / "quickshell/plugins/omarchy-ai.settings/Panel.qml").read_text())
-        self.assertIn("@OMARCHY_AI_SETTINGS@", panel)
+        self.assertNotIn("@OMARCHY_AI_SETTINGS@", panel)
+        self.assertNotRegex(panel, r"@[A-Z0-9_]+@")
+        self.assertIn("resolve-settings.sh", panel)
+        self.assertIn("assistant_installed", panel)
+        self.assertIn("https://github.com/omribenami/Omarchy-AI#installation", panel)
+        self.assertIn("install.sh", panel)
+        self.assertIn("does not install the voice assistant", panel)
+        resolver = (SEED / "resolve-settings.sh").read_text()
+        self.assertEqual(
+            resolver,
+            (ROOT / "quickshell/plugins/omarchy-ai.settings/resolve-settings.sh").read_text(),
+        )
+        self.assertNotIn("@OMARCHY_AI_SETTINGS@", resolver)
         self.assertIn("configure-sudo", panel)
         readme = (SEED / "README.md").read_text()
-        self.assertTrue(readme.startswith("# Omarchy AI\n"))
+        self.assertTrue(readme.startswith("# Omarchy-AI\n"))
         self.assertLess(
             readme.index("https://github.com/omribenami/Omarchy-AI#installation"),
             readme.index("omarchy plugin add https://github.com/omribenami/omarchy-ai-settings.git --enable"),
@@ -75,8 +89,14 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertIn("omarchy plugin remove omarchy-ai.settings", readme)
         self.assertIn("omarchy bar move omarchy-ai.settings --section right", readme)
         self.assertIn("does not run the daemon", readme)
-        self.assertIn("@OMARCHY_AI_SETTINGS@", readme)
+        self.assertNotIn("@OMARCHY_AI_SETTINGS@", readme)
+        self.assertNotIn("## Manual setup", readme)
+        self.assertIn("## How the panel finds the assistant", readme)
+        self.assertIn("resolve-settings.sh", readme)
+        self.assertIn("does not install Omarchy-AI", readme)
         self.assertNotIn("Omarchy AI Settings", readme)
+        self.assertNotIn("Omarchy-AI. Settings", readme)
+        self.assertNotIn("Omarchy-AI Settings", readme)
         self.assertIn("## Features", readme)
         self.assertIn("Task Runtime", readme)
         self.assertLess(
@@ -159,7 +179,10 @@ class MarketplacePluginSyncTests(unittest.TestCase):
             shown = run(["git", "--git-dir", str(remote), "show", "main:manifest.json"]).stdout
             self.assertEqual(json.loads(shown)["id"], "omarchy-ai.settings")
             panel = run(["git", "--git-dir", str(remote), "show", "main:Panel.qml"]).stdout
-            self.assertIn("@OMARCHY_AI_SETTINGS@", panel)
+            self.assertNotIn("@OMARCHY_AI_SETTINGS@", panel)
+            self.assertIn("resolve-settings.sh", panel)
+            resolver = run(["git", "--git-dir", str(remote), "show", "main:resolve-settings.sh"]).stdout
+            self.assertIn("assistant_installed", resolver)
             self.assertNotIn("local edit", run(["git", "--git-dir", str(remote), "show", "main:README.md"]).stdout)
 
 

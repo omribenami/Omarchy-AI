@@ -109,6 +109,12 @@ class BoundedStdioTests(unittest.TestCase):
         self.assertIn('readonly property int settingsDeadlineSec: 20', text)
         self.assertIn('root._boundedCommand("paste", ["/usr/bin/wl-paste", "--no-newline", "--type", "text"])', text)
         self.assertIn('root._boundedCommand("helper", next.argv)', text)
+        self.assertIn('"/usr/bin/bash", root._localPath("resolve-settings.sh")', text)
+        self.assertNotIn("@OMARCHY_AI_SETTINGS@", text)
+        self.assertEqual(
+            (ROOT / "quickshell/plugins/omarchy-ai.settings/resolve-settings.sh").read_bytes(),
+            (ROOT / "scripts/marketplace-plugin/seed/resolve-settings.sh").read_bytes(),
+        )
         self.assertIn("configure-sudo", text)
         self.assertIn("forget-sudo", text)
         self.assertIn('stdinEnabled: true', text)

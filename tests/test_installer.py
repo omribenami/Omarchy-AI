@@ -45,11 +45,18 @@ class InstallerTests(unittest.TestCase):
                        TEST_COMMAND_LOG=str(base / 'commands'))
             subprocess.run(['bash', str(ROOT / 'scripts/install-plugins.sh')], env=env, check=True, capture_output=True)
             plugins = base / 'config/omarchy/plugins'
-            for name in ('omarchy-ai.settings/Panel.qml', 'omarchy-ai.myapi/Panel.qml', 'omarchy-ai.tv-discovery/TvDiscovery.qml'):
+            for name in ('omarchy-ai.myapi/Panel.qml', 'omarchy-ai.tv-discovery/TvDiscovery.qml'):
                 text = (plugins / name).read_text()
                 self.assertNotIn('@OMARCHY_AI_SETTINGS@', text)
                 self.assertIn(str(ROOT / '.venv/bin/omarchy-ai-settings'), text)
             settings_panel = (plugins / 'omarchy-ai.settings/Panel.qml').read_text()
+            self.assertNotIn('@OMARCHY_AI_SETTINGS@', settings_panel)
+            self.assertIn('resolve-settings.sh', settings_panel)
+            resolver = plugins / 'omarchy-ai.settings/resolve-settings.sh'
+            self.assertEqual(
+                resolver.read_text(),
+                (ROOT / 'quickshell/plugins/omarchy-ai.settings/resolve-settings.sh').read_text(),
+            )
             self.assertNotIn('old Settings panel', settings_panel)
             self.assertIn('value: root.selectedProvider', settings_panel)
             self.assertIn('Jev / Vercel AI Gateway key', settings_panel)
