@@ -50,10 +50,17 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertEqual(manifest["author"], "Omri Ben Ami")
         for text in (manifest["description"], manifest["barWidget"]["description"]):
             lowered = text.lower()
+            self.assertLessEqual(len(text), 500)
+            self.assertTrue(lowered.startswith("self-hosted agentic voice assistant"))
             self.assertIn("wake word", lowered)
             self.assertIn("settings", lowered)
             self.assertIn("full assistant", lowered)
             self.assertIn("does not run the daemon", lowered)
+        preview = SEED / "preview.png"
+        self.assertTrue(preview.is_file())
+        self.assertTrue(preview.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertLess(preview.stat().st_size, 50 * 1024 * 1024)
+        self.assertIn("preview.png", built)
         panel = (SEED / "Panel.qml").read_text()
         self.assertEqual(panel, (ROOT / "quickshell/plugins/omarchy-ai.settings/Panel.qml").read_text())
         self.assertIn("@OMARCHY_AI_SETTINGS@", panel)
@@ -70,6 +77,15 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertIn("does not run the daemon", readme)
         self.assertIn("@OMARCHY_AI_SETTINGS@", readme)
         self.assertNotIn("Omarchy AI Settings", readme)
+        self.assertIn("## Features", readme)
+        self.assertIn("Task Runtime", readme)
+        self.assertLess(
+            readme.index("https://github.com/user-attachments/assets/ea736181-9cf3-423a-b7d5-91a895fe6589"),
+            readme.index("## Install the full assistant"),
+        )
+        self.assertIn("https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f", readme)
+        self.assertIn("https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66", readme)
+        self.assertIn("omarchy plugin add` does not install the daemon", readme)
         license_text = (SEED / "LICENSE").read_text()
         self.assertIn("Copyright (c) 2026 Omri Ben-Ami", license_text)
         self.assertTrue(license_text.startswith("MIT License\n"))

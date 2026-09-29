@@ -5,17 +5,23 @@ The Omarchy plugin marketplace (plugins.omarchy.org, repository
 lists one Quattro plugin per GitHub repository, with `manifest.json` at the
 repository root. This monorepo's desktop UI is eight plugins under
 `quickshell/plugins/`. The public listing is the front door for the full
-[Omarchy AI](https://github.com/omribenami/Omarchy-AI) assistant: wake word,
-overlays, settings, and desktop integration. The repository still contains
-one plugin, the settings bar widget `omarchy-ai.settings`. `omarchy plugin
-add` does not install the daemon. The plugin id stays `omarchy-ai.settings`
-so the live page
+[Omarchy AI](https://github.com/omribenami/Omarchy-AI) assistant. Its README
+(`templates/README.md`) is that front door: the product pitch, features, and
+the demo videos from the Omarchy AI README. Catalog cards use the manifest
+`description` plus `preview.png`. The repository still contains one plugin,
+the settings bar widget `omarchy-ai.settings`. `omarchy plugin add` does not
+install the daemon. The plugin id stays `omarchy-ai.settings` so the live page
 <https://omarchyplugins.com/plugin.html?id=omarchy-ai.settings> keeps
 working.
 
 `scripts/marketplace-plugin/assemble.py` builds the listing tree:
 
-- every file in `quickshell/plugins/omarchy-ai.settings/` at the tree root
+- every file in `quickshell/plugins/omarchy-ai.settings/` at the tree root,
+  including `preview.png`. That still is a frame from
+  `docs/media/desktop-demo.mp4` (the primary README demo). The marketplace
+  shows it on catalog cards and does not host video; the listing README
+  embeds the demo videos instead. `sync.sh` needs no extra preview path:
+  `assemble.py` already copies every plugin file to the listing root.
 - `templates/README.md` and `templates/LICENSE` at the tree root
 - `manifest.json` id, name, kinds, and entry points copied as-is; `author`
   set to `Omri Ben Ami`
@@ -109,10 +115,12 @@ listing SHA should use that name and these maintainer notes:
 
 ```markdown
 The marketplace page is the front door for the full Omarchy AI assistant.
-Install that from https://github.com/omribenami/Omarchy-AI releases
-(`install.sh`). `omarchy plugin add` still installs only the settings bar
-widget and does not run the daemon. The panel needs the
-`@OMARCHY_AI_SETTINGS@` path rewrite from the full install (manual-setup).
+The listing README has the product features and demo videos. Catalog cards
+use the manifest description and preview.png. Install the assistant from
+https://github.com/omribenami/Omarchy-AI releases (`install.sh`).
+`omarchy plugin add` still installs only the settings bar widget and does
+not run the daemon. The panel needs the `@OMARCHY_AI_SETTINGS@` path
+rewrite from the full install (manual-setup).
 ```
 
 Later sync commits move the listing `main` ahead of the approved snapshot.
