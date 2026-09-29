@@ -1,5 +1,19 @@
 # Status
 
+## 2026-09-29: settings panel paste and helper streams are bounded
+
+Marketplace verification of `omarchy-ai.settings` at `111f9c8` blocked on two
+uncapped producers in the settings panel: `wl-paste` into a `StdioCollector`,
+and the settings helper stdout collected before JSON parsing. Both now go
+through `quickshell/plugins/omarchy-ai.settings/bounded-stdio.sh`, which is
+what the marketplace listing syncs.
+
+- API-key clipboard (`paste`): 4096 bytes, 2s deadline, SIGKILL 1s later.
+- Settings helper stdout (`helper`): 262144 bytes, 20s deadline, SIGKILL 2s
+  later. The helper itself also refuses to print a larger JSON document.
+- Overflow and expiry fail closed with a status message. `configure-sudo` /
+  `forget-sudo` are unchanged; the password still arrives on stdin.
+
 ## 2026-09-28: faster, full-scope MyApi path
 
 - Removed the post-call Gateway prose generation plus Jev fact-check chain. Small MyApi
