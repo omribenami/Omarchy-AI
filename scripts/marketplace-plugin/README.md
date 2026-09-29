@@ -40,15 +40,16 @@ assembler.
 ## Create the public listing repository
 
 This checkout's GitHub token cannot create repositories under `omribenami`
-(`Resource not accessible by integration (createRepository)`). The name
-`omribenami/omarchy-ai-settings` was free when that was checked. If it is
-taken, use `omribenami/Omarchy-AI-plugin`, change `LISTING_REPO` in
-`listing.env`, and regenerate `seed/`.
+(`Resource not accessible by integration (createRepository)`). The public
+listing repository is `omribenami/omarchy-ai-plugin` (`LISTING_REPO` in
+`listing.env`). It replaces `omribenami/omarchy-ai-settings`. GitHub redirects
+the old repository URL once that rename is in place. The plugin id stays
+`omarchy-ai.settings`.
 
 From a machine logged in as `omribenami` (`gh auth login`, `repo` scope):
 
 ```bash
-gh repo create omribenami/omarchy-ai-settings \
+gh repo create omribenami/omarchy-ai-plugin \
   --public \
   --description "Omarchy AI voice assistant. This marketplace entry is the settings panel; install the full assistant from Omarchy-AI releases."
 
@@ -58,7 +59,7 @@ cp -a scripts/marketplace-plugin/seed/. "$workdir/"
 git -C "$workdir" add -A
 git -C "$workdir" -c user.name="Omri Ben Ami" -c user.email="omribenami@users.noreply.github.com" \
   commit -m "Seed omarchy-ai.settings marketplace listing"
-git -C "$workdir" remote add origin https://github.com/omribenami/omarchy-ai-settings.git
+git -C "$workdir" remote add origin https://github.com/omribenami/omarchy-ai-plugin.git
 git -C "$workdir" push -u origin main
 ```
 
@@ -77,9 +78,13 @@ add a repository secret:
 | `MARKETPLACE_PLUGIN_SYNC_TOKEN` | PAT or fine-grained token with **contents:write** on the listing repo |
 
 Fine-grained token: resource owner `omribenami`, repository access only
-`omarchy-ai-settings`, permission **Contents: Read and write**. A classic
-PAT needs `public_repo` for a public listing repo (or `repo` if the listing
-is private while you are setting it up).
+`omarchy-ai-plugin`, permission **Contents: Read and write**. A token whose
+allowlist still names only `omarchy-ai-settings` is bound to that repository
+id, so a GitHub rename usually keeps contents access. If sync returns 403 or
+404 after the rename, open the token and select `omarchy-ai-plugin` again.
+Contents permission cannot rename the repository. A classic PAT needs
+`public_repo` for a public listing repo (or `repo` if the listing is private
+while you are setting it up).
 
 The workflow reads that secret and passes it to `scripts/marketplace-plugin/sync.sh`.
 If the secret is missing or blank, the job prints an error and exits

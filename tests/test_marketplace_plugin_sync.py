@@ -83,7 +83,7 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertTrue(readme.startswith("# Omarchy-AI\n"))
         self.assertLess(
             readme.index("https://github.com/omribenami/Omarchy-AI#installation"),
-            readme.index("omarchy plugin add https://github.com/omribenami/omarchy-ai-settings.git --enable"),
+            readme.index("omarchy plugin add https://github.com/omribenami/omarchy-ai-plugin.git --enable"),
         )
         self.assertIn("## Settings panel only", readme)
         self.assertIn("omarchy plugin remove omarchy-ai.settings", readme)
