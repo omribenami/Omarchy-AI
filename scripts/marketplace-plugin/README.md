@@ -119,8 +119,11 @@ The listing README has the product features and demo videos. Catalog cards
 use the manifest description and preview.png. Install the assistant from
 https://github.com/omribenami/Omarchy-AI releases (`install.sh`).
 `omarchy plugin add` still installs only the settings bar widget and does
-not run the daemon. The panel needs the `@OMARCHY_AI_SETTINGS@` path
-rewrite from the full install (manual-setup).
+not run the daemon. The panel resolves `omarchy-ai-settings` at runtime
+and, when the assistant is absent, explains that install. It does not
+depend on an install-time path rewrite. Standard installation can be
+requested for a listing commit that contains this lookup; this repository
+does not apply that marketplace label.
 ```
 
 Later sync commits move the listing `main` ahead of the approved snapshot.

@@ -1,5 +1,19 @@
 # Status
 
+## 2026-09-29: settings panel works from a marketplace install
+
+`omarchy plugin add` of `omarchy-ai.settings` used to leave an unreplaced
+settings-CLI path in `Panel.qml`. Only `scripts/install-plugins.sh` rewrote
+that token, so the listing required a manual edit before the panel could
+load.
+
+The settings panel now calls `resolve-settings.sh`, which execs
+`omarchy-ai-settings` from `OMARCHY_AI_SETTINGS`, the user systemd unit
+`install.sh` writes, `PATH`, or the known release directories. When the
+assistant is not installed, the panel opens and explains the Releases /
+`install.sh` install. It does not install the daemon. The other desktop
+plugins still use the install-time token. Stream bounds are unchanged.
+
 ## 2026-09-29: settings panel paste and helper streams are bounded
 
 Marketplace verification of `omarchy-ai.settings` at `111f9c8` blocked on two
