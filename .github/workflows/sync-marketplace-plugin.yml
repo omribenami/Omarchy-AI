@@ -4,7 +4,7 @@
 # repository still contains one Quattro plugin: the settings bar widget.
 # `omarchy plugin add` does not install the daemon.
 #
-# Listing repository: omribenami/omarchy-ai-settings (see
+# Listing repository: omribenami/omarchy-ai-plugin (see
 # scripts/marketplace-plugin/listing.env). The job copies
 # quickshell/plugins/omarchy-ai.settings to that repo's root, with the
 # README and LICENSE templates from scripts/marketplace-plugin/templates/.
