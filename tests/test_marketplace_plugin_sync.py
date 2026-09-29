@@ -40,11 +40,13 @@ class MarketplacePluginSyncTests(unittest.TestCase):
 
         manifest = json.loads((SEED / "manifest.json").read_text())
         self.assertEqual(manifest["id"], "omarchy-ai.settings")
-        self.assertEqual(manifest["name"], "Omarchy AI")
+        self.assertEqual(manifest["name"], "Omarchy-AI")
         self.assertEqual(manifest["name"], source["name"])
+        self.assertNotIn("Settings", manifest["name"])
         self.assertEqual(manifest["version"], "0.4.0")
         self.assertEqual(manifest["version"], source["version"])
-        self.assertEqual(manifest["barWidget"]["displayName"], "Omarchy AI")
+        self.assertEqual(manifest["barWidget"]["displayName"], "Omarchy-AI")
+        self.assertNotIn("Settings", manifest["barWidget"]["displayName"])
         self.assertEqual(manifest["kinds"], ["bar-widget"])
         self.assertEqual(manifest["entryPoints"], {"barWidget": "Panel.qml"})
         self.assertEqual(manifest["author"], "Omri Ben Ami")
@@ -78,7 +80,7 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertNotIn("@OMARCHY_AI_SETTINGS@", resolver)
         self.assertIn("configure-sudo", panel)
         readme = (SEED / "README.md").read_text()
-        self.assertTrue(readme.startswith("# Omarchy AI\n"))
+        self.assertTrue(readme.startswith("# Omarchy-AI\n"))
         self.assertLess(
             readme.index("https://github.com/omribenami/Omarchy-AI#installation"),
             readme.index("omarchy plugin add https://github.com/omribenami/omarchy-ai-settings.git --enable"),
@@ -91,8 +93,10 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertNotIn("## Manual setup", readme)
         self.assertIn("## How the panel finds the assistant", readme)
         self.assertIn("resolve-settings.sh", readme)
-        self.assertIn("does not install Omarchy AI", readme)
+        self.assertIn("does not install Omarchy-AI", readme)
         self.assertNotIn("Omarchy AI Settings", readme)
+        self.assertNotIn("Omarchy-AI. Settings", readme)
+        self.assertNotIn("Omarchy-AI Settings", readme)
         self.assertIn("## Features", readme)
         self.assertIn("Task Runtime", readme)
         self.assertLess(

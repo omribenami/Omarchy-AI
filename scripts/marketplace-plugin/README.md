@@ -109,12 +109,13 @@ approved and verified). Do not open a second submission. Changing the
 plugin id would break that page. Suggested metadata, matching the manifest
 category: category `System`, tags `ai`, `bar`, `quickshell`.
 
-Title on the live issue: `[Plugin]: Omarchy AI Settings`. The product name
-in the manifest is now `Omarchy AI`. A verification request for a newer
-listing SHA should use that name and these maintainer notes:
+The original submission title was `[Plugin]: Omarchy AI Settings`. The
+catalog and bar name in the manifest is `Omarchy-AI`. A verification
+request for a newer listing SHA should use that name, not a Settings
+suffix, and these maintainer notes:
 
 ```markdown
-The marketplace page is the front door for the full Omarchy AI assistant.
+The marketplace page is the front door for the full Omarchy-AI assistant.
 The listing README has the product features and demo videos. Catalog cards
 use the manifest description and preview.png. Install the assistant from
 https://github.com/omribenami/Omarchy-AI releases (`install.sh`).

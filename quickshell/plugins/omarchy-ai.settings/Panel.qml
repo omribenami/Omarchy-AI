@@ -521,7 +521,7 @@ Panel {
     }
     slotSize: Style.bar.statusSlot
     fontSize: Style.font.caption
-    tooltipText: "Omarchy AI"
+    tooltipText: "Omarchy-AI"
     onPressed: root.toggle()
   }
 
@@ -570,7 +570,7 @@ Panel {
             spacing: Style.space(4)
             Text { text: "Omachy"; color: root.fg; font.family: root.bar.fontFamily; font.pixelSize: Style.font.title; font.bold: true }
             Text {
-              text: !root.helperChecked ? "Checking for Omarchy AI…" : root.assistantMissing ? "Assistant not installed" : root.assistantState === "active" ? "Conversation active" : root.assistantState === "starting" ? "Connecting…" : root.assistantState === "listening" ? "Ready · listening for your wake word" : "Assistant offline"
+              text: !root.helperChecked ? "Checking for Omarchy-AI…" : root.assistantMissing ? "Assistant not installed" : root.assistantState === "active" ? "Conversation active" : root.assistantState === "starting" ? "Connecting…" : root.assistantState === "listening" ? "Ready · listening for your wake word" : "Assistant offline"
               color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
             }
           }
@@ -580,7 +580,7 @@ Panel {
           width: parent.width
           wrapMode: Text.WordWrap
           textFormat: Text.PlainText
-          text: "Looking for Omarchy AI…"
+          text: "Looking for Omarchy-AI…"
           color: Color.muted
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -593,7 +593,7 @@ Panel {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: "Omarchy AI is not installed"
+            text: "Omarchy-AI is not installed"
             color: root.fg
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.body

@@ -1,6 +1,6 @@
-# Omarchy AI
+# Omarchy-AI
 
-**Omarchy AI** is a self-hosted, voice-driven **agentic assistant** for
+**Omarchy-AI** is a self-hosted, voice-driven **agentic assistant** for
 [Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. You say what
 you want done, from the desk, from your phone, or from the TV across the
 room. It plans the work, does it with real tools on your machine, checks the
@@ -19,7 +19,7 @@ This page is that product's marketplace front door. The marketplace still
 lists one Quattro plugin, the settings panel (`omarchy-ai.settings`).
 `omarchy plugin add` does not install the daemon, wake models, or the rest
 of the desktop plugins. The bar icon still loads. Without the assistant,
-the panel explains how to install Omarchy AI. With the assistant installed,
+the panel explains how to install Omarchy-AI. With the assistant installed,
 the same panel is the settings UI.
 
 ## Features
@@ -65,12 +65,12 @@ https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66
 
 Download a GitHub Release, or install from source with `install.sh`:
 
-- [Omarchy AI — Installation](https://github.com/omribenami/Omarchy-AI#installation)
+- [Omarchy-AI — Installation](https://github.com/omribenami/Omarchy-AI#installation)
 - Project home: <https://github.com/omribenami/Omarchy-AI>
 
 `install.sh` installs the Python daemon, wake models, desktop plugins, and
-this settings panel. That is the install that runs Omarchy AI. After the
-daemon is running, open **Omarchy AI** on the bar, choose a provider, save
+this settings panel. That is the install that runs Omarchy-AI. After the
+daemon is running, open **Omarchy-AI** on the bar, choose a provider, save
 a key, and apply the change so the service restarts with it.
 
 `omarchy plugin add` is not that install. It does not run the daemon.
@@ -87,9 +87,9 @@ Omarchy clones this repository into
 `~/.config/omarchy/plugins/omarchy-ai.settings`, validates `manifest.json`,
 and can enable the widget in the same step. Plugins run as unsandboxed code
 inside the shell; read the files before you confirm. This command does not
-start the daemon and does not install Omarchy AI.
+start the daemon and does not install Omarchy-AI.
 
-Open **Omarchy AI** on the bar. The panel looks up `omarchy-ai-settings`
+Open **Omarchy-AI** on the bar. The panel looks up `omarchy-ai-settings`
 when it opens. No path in `Panel.qml` has to be edited first. If the
 assistant is installed, the panel loads settings. If it is not, the panel
 stays open and shows how to install the full assistant from GitHub
@@ -102,7 +102,7 @@ you want it, place it on the right:
 omarchy bar move omarchy-ai.settings --section right
 ```
 
-If `bash install.sh` from Omarchy AI has already installed
+If `bash install.sh` from Omarchy-AI has already installed
 `omarchy-ai.settings`, keep that copy. It is the same plugin id, and
 Omarchy will refuse a second one. `install.sh` still installs the daemon
 and the rest of the desktop plugins. This marketplace command does not
@@ -115,7 +115,7 @@ omarchy plugin remove omarchy-ai.settings
 ```
 
 Removal disables the widget and deletes this git checkout. It does not
-uninstall the Omarchy AI daemon, your API keys, or
+uninstall the Omarchy-AI daemon, your API keys, or
 `~/.config/omarchy-ai/`.
 
 ## How the panel finds the assistant

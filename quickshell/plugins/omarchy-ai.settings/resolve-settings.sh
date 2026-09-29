@@ -13,7 +13,7 @@
 #   5. Newest self-update tree under $XDG_DATA_HOME/omarchy-ai/releases
 #
 # When none of those exist, print one JSON object and exit 0. The panel
-# reads assistant_installed=false and explains how to install Omarchy AI.
+# reads assistant_installed=false and explains how to install Omarchy-AI.
 set -euo pipefail
 
 accept() {
@@ -220,7 +220,7 @@ locate() {
 }
 
 not_installed() {
-  printf '%s\n' '{"assistant_installed":false,"error":"Omarchy AI is not installed. Install the full assistant from GitHub Releases or with install.sh, then reopen this panel."}'
+  printf '%s\n' '{"assistant_installed":false,"error":"Omarchy-AI is not installed. Install the full assistant from GitHub Releases or with install.sh, then reopen this panel."}'
   exit 0
 }
 

@@ -19,7 +19,7 @@ PLUGIN = ROOT / "quickshell/plugins/omarchy-ai.settings"
 MISSING = {
     "assistant_installed": False,
     "error": (
-        "Omarchy AI is not installed. Install the full assistant from "
+        "Omarchy-AI is not installed. Install the full assistant from "
         "GitHub Releases or with install.sh, then reopen this panel."
     ),
 }
@@ -72,7 +72,7 @@ class SettingsHelperDiscoveryTests(unittest.TestCase):
         panel = (PLUGIN / "Panel.qml").read_text()
         self.assertNotRegex(panel, r"@[A-Z0-9_]+@")
         self.assertIn('"/usr/bin/bash", root._localPath("resolve-settings.sh")', panel)
-        self.assertIn("Omarchy AI is not installed", panel)
+        self.assertIn("Omarchy-AI is not installed", panel)
         self.assertIn("install.sh", panel)
         self.assertIn("https://github.com/omribenami/Omarchy-AI#installation", panel)
         self.assertIn("does not install the voice assistant", panel)
