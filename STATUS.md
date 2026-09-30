@@ -56,6 +56,34 @@ the instructions). Device-specific recipes, such as which entity and service to
 use, belong in the local tool's own `tool.json` description, not in the repo.
 It takes effect for new sessions after a daemon restart.
 
+## 2026-09-29: settings panel works from a marketplace install
+
+`omarchy plugin add` of `omarchy-ai.settings` used to leave an unreplaced
+settings-CLI path in `Panel.qml`. Only `scripts/install-plugins.sh` rewrote
+that token, so the listing required a manual edit before the panel could
+load.
+
+The settings panel now calls `resolve-settings.sh`, which execs
+`omarchy-ai-settings` from `OMARCHY_AI_SETTINGS`, the user systemd unit
+`install.sh` writes, `PATH`, or the known release directories. When the
+assistant is not installed, the panel opens and explains the Releases /
+`install.sh` install. It does not install the daemon. The other desktop
+plugins still use the install-time token. Stream bounds are unchanged.
+
+## 2026-09-29: settings panel paste and helper streams are bounded
+
+Marketplace verification of `omarchy-ai.settings` at `111f9c8` blocked on two
+uncapped producers in the settings panel: `wl-paste` into a `StdioCollector`,
+and the settings helper stdout collected before JSON parsing. Both now go
+through `quickshell/plugins/omarchy-ai.settings/bounded-stdio.sh`, which is
+what the marketplace listing syncs.
+
+- API-key clipboard (`paste`): 4096 bytes, 2s deadline, SIGKILL 1s later.
+- Settings helper stdout (`helper`): 262144 bytes, 20s deadline, SIGKILL 2s
+  later. The helper itself also refuses to print a larger JSON document.
+- Overflow and expiry fail closed with a status message. `configure-sudo` /
+  `forget-sudo` are unchanged; the password still arrives on stdin.
+
 ## 2026-09-28: Omarchy AI inside Flux (prototype; upstream asked in bjarneo/flux#77)
 
 Goal: decide whether to offer [Flux](https://github.com/bjarneo/flux) a PR that
@@ -206,34 +234,6 @@ so the prototype is a branch in a local clone (`~/Git/flux`, branch
   every record with a local lexical shortlist before the one Jev ranking call;
   previously only the first 30 were visible. A live Gmail probe now selects
   `GMAIL_REPLY_TO_THREAD` first in ~0.65 s and compacts 68,721 characters to ~13k.
-
-## 2026-09-29: settings panel works from a marketplace install
-
-`omarchy plugin add` of `omarchy-ai.settings` used to leave an unreplaced
-settings-CLI path in `Panel.qml`. Only `scripts/install-plugins.sh` rewrote
-that token, so the listing required a manual edit before the panel could
-load.
-
-The settings panel now calls `resolve-settings.sh`, which execs
-`omarchy-ai-settings` from `OMARCHY_AI_SETTINGS`, the user systemd unit
-`install.sh` writes, `PATH`, or the known release directories. When the
-assistant is not installed, the panel opens and explains the Releases /
-`install.sh` install. It does not install the daemon. The other desktop
-plugins still use the install-time token. Stream bounds are unchanged.
-
-## 2026-09-29: settings panel paste and helper streams are bounded
-
-Marketplace verification of `omarchy-ai.settings` at `111f9c8` blocked on two
-uncapped producers in the settings panel: `wl-paste` into a `StdioCollector`,
-and the settings helper stdout collected before JSON parsing. Both now go
-through `quickshell/plugins/omarchy-ai.settings/bounded-stdio.sh`, which is
-what the marketplace listing syncs.
-
-- API-key clipboard (`paste`): 4096 bytes, 2s deadline, SIGKILL 1s later.
-- Settings helper stdout (`helper`): 262144 bytes, 20s deadline, SIGKILL 2s
-  later. The helper itself also refuses to print a larger JSON document.
-- Overflow and expiry fail closed with a status message. `configure-sudo` /
-  `forget-sudo` are unchanged; the password still arrives on stdin.
 
 ## 2026-09-28: faster, full-scope MyApi path
 

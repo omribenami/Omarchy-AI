@@ -19,6 +19,48 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.12.0] - 2026-09-29
+
+### Highlights
+
+- If you use Flux on your phone, my notifications now reach your phone too:
+  tasks that need you, finished or failed tasks, routines, and credit alerts.
+- With Flux's fingerprint approval set up, you can approve my tasks, and the
+  admin commands they run, with your fingerprint on the phone instead of a
+  password.
+- Gmail now sends and replies directly when you ask me to send, and never
+  sends when you only asked me to write or draft.
+- Your own tools now tell me what they are for, so I use them correctly the
+  first time.
+- Typing to me on the phone works again. Text-only mode could fail to start.
+
+### Fixes
+
+- The phone page's text-only mode crashed on load, so messages could not be
+  sent.
+- On a short phone screen, the ring and status no longer cover the text field
+  while you type, and a new Omarchy button switches straight back to voice.
+- A Gmail request that picked a draft method, or guessed a REST path, now uses
+  the dedicated send and reply tools, or MyApi's documented execute call.
+- The Assistant Settings panel works when installed from the Omarchy
+  marketplace, and explains how to install the assistant when it is missing.
+- The settings panel caps what it reads from the clipboard and from its
+  helper, and fails safely if either runs too long.
+
+### Under the hood
+
+- Flux integration through its public interfaces only: `notify.send` for
+  notifications (`flux_notifications`, on by default), fluxd's
+  `approve.request` with the root-owned enrolled key for approvals, and
+  `settings.set` for an allowlist of Flux features. See docs/FLUX.md.
+- New phone-bridge endpoints for the Flux app: `/api/hello`, automatic
+  pairing signed with the phone's Flux identity key, wake-word models,
+  TV casting, `/api/ask`, and Flux settings. The TLS key now persists across
+  restarts, so a pinned phone keeps trusting the server.
+- With Flux approval on for sudo, tasks send no saved password, and the sudo
+  timeout is 130 seconds so the phone can answer.
+- The catalog picker includes each user-added tool's description.
+
 ## [0.11.3] - 2026-09-28
 
 ### Highlights
