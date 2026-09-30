@@ -24,12 +24,12 @@
 
 ---
 
-**Omarchy AI** is a self-hosted, voice-driven **agentic assistant** for
-[Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. You say what
-you want done, from the desk, from your phone or from the TV across the
-room. It plans the work, does it with real tools on your machine (and on
-machines you're connected to), checks the result itself, and tells you when
-it is verified. It is not a chatbot bolted onto a terminal.
+**Omarchy AI** is an agentic AI harness built specifically for
+[Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. It lives
+directly in your session, with deep Omarchy integration and full control of
+the system. You talk or type to it, from the desk, from your phone, or from
+the TV across the room, and it does the work: it plans, uses real tools on
+your machine, and marks a job complete only from evidence.
 
 - **It operates the whole machine.** Desktop, windows and workspaces, its
   own terminals and yours, a real browser, files, system administration,
@@ -605,6 +605,20 @@ flowchart LR
 ---
 
 ## Installation
+
+### OmaStore
+
+[OmaStore](https://github.com/KitsuneSemCalda/OmaStore) lists this app once
+`omastore.toml` is on the default branch. The store installs the latest
+stable release archive. It extracts that archive and runs `bin/omarchy-ai`;
+it does not run `install.sh` during install. The launcher runs `install.sh`
+the first time this tree is not already the active install, then starts
+`omarchy-ai.service` and opens a conversation.
+
+Release `v0.12.0` does not contain `bin/omarchy-ai`, so the store can show
+the app before it can install it. A release built after that launcher is
+on `main` is what becomes installable. Until then, use the fast install
+below.
 
 ### Fast install (copy and paste)
 

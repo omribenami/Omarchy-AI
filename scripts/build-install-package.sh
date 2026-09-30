@@ -81,7 +81,9 @@ git archive --format=tar HEAD -- . \
   ':(exclude)dist' \
   ':(exclude)docs/media/original' \
   | tar -x -C "$package_dir"
-chmod 0755 "$package_dir/install.sh"
+# bin/omarchy-ai is the file OmaStore launches. git archive keeps the
+# executable bit; chmod again so a mode-stripping checkout still ships +x.
+chmod 0755 "$package_dir/install.sh" "$package_dir/bin/omarchy-ai"
 
 tar -C "$staging_dir" -czf "$archive" "$(basename "$package_dir")"
 (cd dist && sha256sum "$(basename "$archive")" >"$(basename "$archive").sha256")

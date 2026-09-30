@@ -93,7 +93,9 @@ def release_notes(version: str) -> str:
         f"    sha256sum -c {checksum}\n"
         f"    tar -xzf {package}\n"
         f"    cd omarchy-ai-{version}-linux-x86_64\n"
-        "    bash install.sh\n"
+        "    bash install.sh\n\n"
+        "OmaStore extracts this same archive and runs bin/omarchy-ai. "
+        "That launcher runs install.sh on first use, then starts the user service.\n"
     )
 
 
