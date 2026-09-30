@@ -100,6 +100,10 @@ def start_task(args: dict) -> ActionResult:
     goal = str(args.get("goal") or "").strip()
     if not goal or len(goal) > 4000:
         return ActionResult(False, "start_task needs the user's complete goal (1-4000 characters).")
+    if not args.get("agent") and _myapi_job(goal):
+        return ActionResult(False, "Not started: this job is in the user's connected services, so it goes to the "
+                                   "myapi tool (Jev runs it) -- call myapi with the request. Coding agents never do "
+                                   "email, calendar or other MyApi work.")
     runtime = get_runtime()
     agent = _AGENTS.get(str(args.get("agent") or "").strip().lower(), "")
     if args.get("agent") and not agent:
@@ -210,6 +214,24 @@ def _with_next_step(summary: dict) -> dict:
     return summary
 
 
+def _myapi_job(goal: str) -> bool:
+    """Whether a job lives only in the user's online accounts (Jev judges it).
+    2026-09-30: emailing Chris went to a Codex task three times and was never
+    sent; MyApi work is Jev's (execution/myapi_agent.py)."""
+    try:
+        from .. import myapi
+        if not myapi.is_connected():
+            return False
+        from ..core.jev import Jev, boolean
+        answer = Jev().ask({"goal": goal[-1500:]}, {"q": boolean(
+            "Is `goal` only about the user's online accounts or services (email, calendar, cloud files, GitHub, "
+            "messaging, social...), with nothing to do on this computer (no files, programs, terminals, system "
+            "settings or local code)?")}, timeout=4, retries=0, fail_fast=True)
+        return answer["q"]["p"] >= 0.8
+    except Exception:  # noqa: BLE001 -- without Jev the task runs as before
+        return False
+
+
 def task_respond(args: dict) -> ActionResult:
     runtime = get_runtime()
     if args.get("guidance"):
@@ -236,6 +258,13 @@ def task_respond(args: dict) -> ActionResult:
             return ActionResult(False, refusal)
     if task_id and task_id.startswith(conversations_tool_install()):
         return _answer_install(task_id, approve)
+    if task_id and task_id.startswith("action:"):
+        # A prepared MyApi action (execution/myapi_agent.py): the user's yes in its chat sends it.
+        from ..execution import myapi_agent
+        if approve is None:
+            return ActionResult(False, "Answer the prepared action with approve=true (send it) or false (cancel).")
+        ok, message = myapi_agent.decide(task_id[len("action:"):], approve, "by voice in the chat")
+        return ActionResult(ok, message)
     result = runtime.respond(task_id, approve=approve, answer=args.get("answer") or None, channel="voice")
     return ActionResult(result["ok"], result["message"])
 
@@ -257,7 +286,7 @@ def _in_this_conversation(runtime, task_id):
         return task_id, None
     ask = ("Ask the user which request they mean; do not answer any other. Each request's card is in its own chat "
            "in the phone's Text with Omarchy.")
-    if task_id and task_id.startswith(conversations.TOOL_INSTALL):
+    if task_id and (task_id.startswith(conversations.TOOL_INSTALL) or task_id.startswith(conversations.ACTION)):
         return task_id, None
     if task_id:
         task = runtime.store.load(task_id)
@@ -269,7 +298,8 @@ def _in_this_conversation(runtime, task_id):
                if t.status in (WAITING_APPROVAL, WAITING_USER) and t.conversation == current]
     installs = [line for line in (conversations.get(current) or {}).get("lines", [])
                 if line.get("role") == "card" and line.get("status") == "waiting"
-                and str(line.get("task_id", "")).startswith(conversations.TOOL_INSTALL)]
+                and (str(line.get("task_id", "")).startswith(conversations.TOOL_INSTALL)
+                     or line.get("kind") == "confirm")]
     if len(waiting) + len(installs) == 1:
         return (waiting[0].id if waiting else installs[0]["task_id"]), None
     if not waiting and not installs:

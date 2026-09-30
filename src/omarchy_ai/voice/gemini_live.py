@@ -62,7 +62,7 @@ NON_BLOCKING_ACTIONS = {
     "install_receiver_on_tv", "list_commands", "find_skill",
     "check_assistant_updates", "update_assistant", "get_release_notes", "report_issue",
     "myapi_list_services", "myapi_vault_list", "myapi_service_methods", "myapi_call", "myapi_write",
-    "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply",
+    "myapi", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply",
     "myapi_gmail_search", "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
     # The catalog holds slow tools (casting, MyApi, issues); its quick ones
     # just report when she is idle.

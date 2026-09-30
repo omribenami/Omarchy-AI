@@ -41,6 +41,7 @@ class SameJobTests(RuntimeHarness):
         self.store.save(self.task)
         patch.object(service, "get_runtime", return_value=self.rt).start()
         patch("omarchy_ai.config.load_config").start()
+        patch.object(service, "_myapi_job", return_value=False).start()  # not about MyApi (tested on its own)
         self.addCleanup(patch.stopall)
 
     def start(self, goal, jev):

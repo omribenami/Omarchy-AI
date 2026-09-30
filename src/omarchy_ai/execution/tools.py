@@ -708,6 +708,16 @@ TOOLS: list[dict] = [
 # can speculate only on reads and InputGuard can confirm the exact mutation.
 MYAPI_TOOLS: list[dict] = [
     _tool(
+        "myapi",
+        "Everything in the user's connected services (Gmail, Calendar, Drive, GitHub, Notion, Slack, ...): Jev picks "
+        "the service and each step, reads what it needs and returns the results. An action that sends, changes or "
+        "deletes comes back prepared and waits for the user's OK. One call per request.",
+        {"type": "object", "properties": {
+            "request": {"type": "string", "description": "The user's request resolved into one clear sentence: who, "
+                                                         "what, which thread or item, what to say and in which language."},
+        }, "required": ["request"]},
+    ),
+    _tool(
         "myapi_vault_list",
         "Names of the API keys/tokens in the user's MyApi token vault (e.g. 'github') and which "
         "workspace each is in. Values are never shown to you: a task or user tool uses one with "

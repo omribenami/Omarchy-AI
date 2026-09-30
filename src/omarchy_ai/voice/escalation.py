@@ -36,6 +36,8 @@ FAILURES_TO_ESCALATE = 2
 IGNORED_TOOLS = frozenset({
     "end_conversation", "start_task", "task_status", "task_respond", "show_window_labels",
     "hide_window_labels", "get_recent_actions", "remember_preference",
+    # MyApi is Jev's (execution/myapi_agent.py): a miss there is said, never handed to a coding worker.
+    "myapi",
 })
 # Failures that are not the job failing: the user cut in, or a guard telling
 # her how to correct the call (focus first, pick a terminal, the real file

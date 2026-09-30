@@ -45,7 +45,7 @@ CORE = frozenset({
 # use_tool). 2026-09-30 13:35: sending one email through use_tool failed four
 # ways in a row -- args nested twice, args left out, then refused as a loop --
 # and a body of text is never filled from a request, by design (_NO_FILL).
-MYAPI_CORE = frozenset({"myapi_gmail_search", "myapi_gmail_send", "myapi_gmail_reply"})
+MYAPI_CORE = frozenset({"myapi"})  # Jev runs MyApi (execution/myapi_agent.py)
 
 PICK_P = 0.6          # below this Jev's pick is offered, not run
 CANDIDATES = 3

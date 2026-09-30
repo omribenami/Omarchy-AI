@@ -779,6 +779,22 @@ class _Handler(BaseHTTPRequestHandler):
             ok = conversations.delete(path[len("/api/conversations/"):-len("/delete")])
             self._send_json(200 if ok else 404, {"ok": ok})
             return
+        if path == "/api/actions/respond":
+            # Send or Cancel on a prepared MyApi action's card (execution/myapi_agent.py).
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                data = self._read_json_body()
+            except (json.JSONDecodeError, ValueError):
+                data = None
+            if not isinstance(data, dict) or not isinstance(data.get("id"), str) or not isinstance(data.get("go"), bool):
+                self._send_json(400, {"ok": False, "message": "expected {id, go}"})
+                return
+            from ..execution import myapi_agent
+            ok, message = myapi_agent.decide(data["id"], data["go"], "on the phone")
+            self._send_json(200 if ok else 409, {"ok": ok, "message": message})
+            return
         if path == "/api/questions/answer":
             if not self._is_paired():
                 self._send_json(403, {"error": "not paired"})

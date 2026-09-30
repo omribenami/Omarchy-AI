@@ -276,7 +276,16 @@ def sync_installs() -> None:
             log.debug("tool install notice not sent", exc_info=True)
 
 
+ACTION = "action:"
+
+
 def _card_status(card: dict, tasks) -> str:
+    if card.get("kind") == "confirm":
+        from . import pending_actions
+        action = pending_actions.get((card.get("action") or {}).get("id"))
+        return "waiting" if action and action.get("status") == "waiting" else "done"
+    if str(card.get("task_id", "")).startswith(ACTION):
+        return "done"
     if str(card.get("task_id", "")).startswith(TOOL_INSTALL):
         from ..execution import user_tools
         waiting = {r["id"] for r in user_tools.pending_install_requests()}
@@ -301,6 +310,9 @@ def _with_status(conv: dict, tasks) -> list[dict]:
     for i, line in enumerate(lines):
         if line.get("role") == "card":
             line["status"] = _card_status(line, tasks) if latest.get(line.get("task_id")) == i else "done"
+            if line.get("kind") == "confirm":
+                from . import pending_actions
+                line["outcome"] = (pending_actions.get((line.get("action") or {}).get("id")) or {}).get("outcome", "")
     return lines
 
 

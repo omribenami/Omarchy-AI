@@ -2209,6 +2209,7 @@ def _gmail_digest(messages: list) -> list[dict]:
             "to": message.get("to"),
             "subject": message.get("subject") or preview.get("subject"),
             "unread": "UNREAD" in (message.get("labelIds") or []),
+            "sent": "SENT" in (message.get("labelIds") or []),  # the user wrote it
             "attachments": attachments[:10],
             "text": " ".join(str(message.get("messageText") or preview.get("body") or "").split()),
         })
@@ -2222,16 +2223,19 @@ def _gmail_digest(messages: list) -> list[dict]:
 
 
 def _gmail_search_with_fallback(query: str, maximum: int = 10) -> tuple[dict, list[str]]:
+    # Without the raw MIME payload: the message text, sender, subject, thread and
+    # attachment names still come, 6x faster (16.6 s vs 2.7 s for five messages,
+    # measured 2026-09-30). Attachment downloads fetch their message on their own.
     attempted = [query]
     result = _gmail_execute("GMAIL_FETCH_EMAILS", {
-        "query": query, "max_results": maximum, "include_payload": True,
+        "query": query, "max_results": maximum, "include_payload": False,
     })
     for candidate in _gmail_fallback_queries(query):
         if _gmail_messages(result):
             break
         attempted.append(candidate)
         result = _gmail_execute("GMAIL_FETCH_EMAILS", {
-            "query": candidate, "max_results": maximum, "include_payload": True,
+            "query": candidate, "max_results": maximum, "include_payload": False,
         })
     return result, attempted
 
@@ -2658,6 +2662,7 @@ ACTIONS = {
     "myapi_call": myapi_call,
     "myapi_write": myapi_write,
     "myapi_execute": myapi_execute,
+    "myapi": lambda args: __import__("omarchy_ai.execution.myapi_agent", fromlist=["run"]).run(args),
     "myapi_gmail_send": myapi_gmail_send,
     "myapi_gmail_reply": myapi_gmail_reply,
     "myapi_gmail_search": myapi_gmail_search,
