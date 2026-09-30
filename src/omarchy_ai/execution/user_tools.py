@@ -41,7 +41,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from ..config import CONFIG_DIR
+from ..config import CONFIG_DIR, STATE_DIR
 
 log = logging.getLogger(__name__)
 
@@ -166,22 +166,95 @@ def user_approves_install(name: str) -> tuple[bool, str]:
     if sys.stdin.isatty():
         answer = input(f"{summary}\nInstall the assistant tool {name!r}? [y/N] ").strip().lower()
         return answer in ("y", "yes"), "answered in the terminal"
+    # 2026-09-30: the user looked for this on the phone and it was not there --
+    # only the desktop notification could answer it. It is listed with the
+    # phone's approvals now (a fingerprint approves, Deny declines), and
+    # whichever answers first decides.
+    # The daemon turns the request into a card in the phone's chats and says
+    # so on the phone (core/conversations.sync_installs): this process may
+    # be a CLI whose memory the daemon never sees.
+    request = _open_install_request(name, summary)
+    desktop: dict = {}
+
+    def ask_desktop():
+        try:
+            proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical", "-A", "approve=Install",
+                                   "-A", "deny=Don't install", f"Install assistant tool: {name}?", summary[:600]],
+                                  capture_output=True, text=True, timeout=APPROVAL_SECONDS)
+            desktop["choice"] = proc.stdout.strip() or "dismissed"
+        except subprocess.TimeoutExpired:
+            desktop["choice"] = "timeout"
+        except FileNotFoundError:
+            desktop["choice"] = None  # no desktop notifications here: the phone is the only way to answer
+    import threading
+    threading.Thread(target=ask_desktop, daemon=True).start()
+    deadline = time.monotonic() + APPROVAL_SECONDS
     try:
-        from ..phone import flux_notify
-        flux_notify.send(f"Install assistant tool: {name}?", "Approve or decline it on the desktop notification.\n" + summary[:400], kind="approval")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical", "-A", "approve=Install",
-                               "-A", "deny=Don't install", f"Install assistant tool: {name}?", summary[:600]],
-                              capture_output=True, text=True, timeout=APPROVAL_SECONDS)
-    except FileNotFoundError:
-        return False, "no terminal and no desktop notifications to ask the user with"
-    except subprocess.TimeoutExpired:
+        while time.monotonic() < deadline:
+            decided = _install_requests().get(request, {}).get("decision")
+            if decided is not None:
+                return bool(decided["approve"]), decided["how"]
+            choice = desktop.get("choice")
+            if choice in ("approve", "deny"):
+                return choice == "approve", "approved on the desktop" if choice == "approve" else "declined on the desktop"
+            if choice == "dismissed":
+                return False, "the notification was dismissed"
+            if choice == "timeout":
+                break
+            time.sleep(0.2)
         return False, f"no answer within {APPROVAL_SECONDS // 60} minutes"
-    choice = proc.stdout.strip()
-    return choice == "approve", ("approved on the desktop" if choice == "approve"
-                                 else "declined on the desktop" if choice == "deny" else "the notification was dismissed")
+    finally:
+        _close_install_request(request)
+
+
+INSTALL_REQUESTS = STATE_DIR / "tool_install_requests.json"
+
+
+def _install_requests() -> dict:
+    try:
+        data = json.loads(INSTALL_REQUESTS.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_install_requests(data: dict) -> None:
+    INSTALL_REQUESTS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = INSTALL_REQUESTS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    tmp.replace(INSTALL_REQUESTS)
+
+
+def _open_install_request(name: str, summary: str) -> str:
+    import secrets
+    request = secrets.token_hex(8)
+    data = _install_requests()
+    data[request] = {"name": name, "summary": summary[:1500], "asked_at": time.time(), "decision": None}
+    _write_install_requests(data)
+    return request
+
+
+def _close_install_request(request: str) -> None:
+    data = _install_requests()
+    if data.pop(request, None) is not None:
+        _write_install_requests(data)
+
+
+def pending_install_requests() -> list[dict]:
+    """Tool installs waiting for the user, for the phone's approvals list."""
+    now = time.time()
+    return [{"id": rid, **r} for rid, r in _install_requests().items()
+            if r.get("decision") is None and now - float(r.get("asked_at") or 0) < APPROVAL_SECONDS]
+
+
+def decide_install(request: str, approve: bool, how: str) -> bool:
+    """The phone's answer to a waiting install (a fingerprint, or Deny)."""
+    data = _install_requests()
+    if request not in data or data[request].get("decision") is not None:
+        return False
+    data[request]["decision"] = {"approve": bool(approve), "how": how}
+    _write_install_requests(data)
+    return True
 
 
 def install(name: str) -> tuple[bool, str]:

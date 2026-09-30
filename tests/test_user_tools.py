@@ -151,6 +151,7 @@ class InstallGateTests(unittest.TestCase):
         from omarchy_ai.cli import tools as cli
         answer = notify_error or (lambda *a, **k: subprocess.CompletedProcess(a, 0, notify_stdout, ""))
         with patch.object(self.user_tools.subprocess, "run", side_effect=answer) as notify, \
+                patch.object(self.user_tools, "INSTALL_REQUESTS", Path(TemporaryDirectory().name) / "requests.json"), \
                 patch("sys.stdin.isatty", return_value=False), \
                 patch.object(self.user_tools, "install", return_value=(True, "Installed x.")) as do_install:
             code = cli.main(["install", "x"])
@@ -218,3 +219,48 @@ class RuntimeInstallPassTests(RuntimeHarness):
         installs = [env for c, env in ran if "omarchy-ai-tool install" in str(c)]
         self.assertEqual(len(installs), 1)
         self.assertEqual(installs[0].get(user_tools.APPROVED_ENV), "x")
+
+
+class PhoneInstallApprovalTests(unittest.TestCase):
+    """2026-09-30: a tool install was only approvable on the desktop notification."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(user_tools, "INSTALL_REQUESTS", Path(self.tmp.name) / "requests.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_phone_can_answer_a_waiting_install(self):
+        import threading
+        import time
+        from omarchy_ai.phone import server
+
+        def phone():
+            for _ in range(50):
+                items = [a for a in server.pending_approvals()["approvals"] if a["kind"] == "tool-install"]
+                if items:
+                    self.assertEqual(items[0]["subject"], "install tool home_assistant")
+                    status, _ = server.respond_approval({"task_id": items[0]["task_id"],
+                                                         "fingerprint": items[0]["fingerprint"], "approve": False})
+                    self.assertEqual(status, 200)
+                    return
+                time.sleep(0.1)
+        with patch("sys.stdin.isatty", return_value=False), \
+                patch.object(user_tools, "approval_summary", return_value="installs home_assistant"), \
+                patch.object(user_tools.subprocess, "run", side_effect=FileNotFoundError), \
+                patch("omarchy_ai.phone.flux_notify.send"), \
+                patch("omarchy_ai.runtime.service.get_runtime") as runtime:
+            runtime.return_value.store.list.return_value = []
+            answering = threading.Thread(target=phone)
+            answering.start()
+            approved, how = user_tools.user_approves_install("home_assistant")
+            answering.join(5)
+        self.assertEqual((approved, how), (False, "declined on the phone"))
+        self.assertEqual(user_tools.pending_install_requests(), [])  # closed once answered
+
+    def test_only_an_open_request_can_be_decided(self):
+        rid = user_tools._open_install_request("x", "summary")
+        self.assertTrue(user_tools.decide_install(rid, True, "approved with a fingerprint on the phone"))
+        self.assertFalse(user_tools.decide_install(rid, False, "again"))
+        self.assertFalse(user_tools.decide_install("nope", True, "x"))

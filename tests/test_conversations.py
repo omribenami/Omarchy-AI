@@ -3,6 +3,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+import unittest.mock
 from unittest.mock import patch
 
 from omarchy_ai.core import conversations
@@ -148,3 +149,85 @@ class TitleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopedApprovalTests(unittest.TestCase):
+    """2026-09-30: "approved" typed in one chat answered another chat's email task."""
+
+    def setUp(self):
+        from omarchy_ai.runtime.task import Task, TaskStore
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        for target, value in (("DIR", root / "conversations"), ("_cache", {}), ("_dirty", {}), ("_carded", set())):
+            patcher = patch.object(conversations, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for target in ("_maybe_title",):
+            patcher = patch.object(conversations, target)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.object(conversations, "_redact", side_effect=lambda text, speech: text)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        from omarchy_ai.execution import user_tools
+        patcher = patch.object(user_tools, "INSTALL_REQUESTS", root / "installs.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.store = TaskStore(root / "tasks")
+        self.runtime = SimpleNamespace(store=self.store, respond=unittest.mock.MagicMock(
+            return_value={"ok": True, "message": "resumed"}))
+        patcher = patch("omarchy_ai.runtime.service.get_runtime", return_value=self.runtime)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.here, self.there = conversations.create("phone-text"), conversations.create("phone-voice")
+        self.Task = Task
+
+    def respond(self, conversation, **args):
+        from omarchy_ai.runtime import service
+        token = conversations.CURRENT.set(conversation)
+        try:
+            return service.task_respond(args)
+        finally:
+            conversations.CURRENT.reset(token)
+
+    def test_another_conversations_request_is_not_answered(self):
+        self.store.save(self.Task(id="chris", goal="email Chris", workspace="/", status="waiting_user",
+                                  question="Send it?", conversation=self.there))
+        result = self.respond(self.here, approve=True)
+        self.assertFalse(result.ok)
+        self.assertIn("nothing in this conversation waits", result.message)
+        result = self.respond(self.here, approve=True, task_id="chris")
+        self.assertFalse(result.ok)
+        self.assertIn("another conversation", result.message)
+        self.runtime.respond.assert_not_called()
+
+    def test_the_one_request_of_this_conversation_is_answered(self):
+        self.store.save(self.Task(id="chris", goal="email Chris", workspace="/", status="waiting_user",
+                                  question="Send it?", conversation=self.here))
+        self.assertTrue(self.respond(self.here, approve=True).ok)
+        self.runtime.respond.assert_called_once_with("chris", approve=True, answer=None, channel="voice")
+
+    def test_a_tool_install_is_a_card_and_yes_sends_the_fingerprint_prompt(self):
+        from omarchy_ai.execution import user_tools
+        rid = user_tools._open_install_request("home_assistant", "installs home_assistant")
+        with patch("omarchy_ai.phone.flux_notify.send") as notify, \
+                patch("omarchy_ai.execution.flux_approve.available", return_value=True):
+            conversations.sync_installs()
+            conversations.sync_installs()  # once only
+        notify.assert_called_once()
+        system = notify.call_args.kwargs["conversation"]
+        card = conversations.get(system, lambda _: None)["lines"][-1]
+        self.assertEqual((card["kind"], card["status"], card["fingerprint"]), ("approval", "waiting", rid))
+        with patch("omarchy_ai.execution.flux_approve.available", return_value=True), \
+                patch("omarchy_ai.phone.server._fingerprint_install") as prompt:
+            result = self.respond(system, approve=True)
+            import threading
+            for thread in threading.enumerate():
+                if thread is not threading.current_thread() and thread.daemon:
+                    thread.join(1)
+        self.assertTrue(result.ok)
+        self.assertIn("fingerprint prompt", result.message)
+        prompt.assert_called_once()
+        user_tools.decide_install(rid, True, "approved with a fingerprint on the phone")
+        self.assertEqual(conversations.get(system, lambda _: None)["lines"][-1]["status"], "done")

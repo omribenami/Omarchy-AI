@@ -154,6 +154,8 @@ class OmaDaemon:
                 try:
                     from ..runtime import service as task_service
                     await asyncio.to_thread(task_service.get_runtime().tidy_approvals)
+                    from . import conversations
+                    await asyncio.to_thread(conversations.sync_installs)  # a tool install to approve, in its chat
                 except Exception:
                     log.warning("Approval tidy failed", exc_info=True)
                 await asyncio.sleep(max(15, self.config.heartbeat_seconds))

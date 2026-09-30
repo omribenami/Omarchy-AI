@@ -228,9 +228,73 @@ def task_respond(args: dict) -> ActionResult:
         result = runtime.reassign(args.get("task_id") or None, agent, unsandboxed=bool(args.get("unsandboxed")))
         return ActionResult(result["ok"], result["message"])
     approve = args.get("approve")
-    result = runtime.respond(args.get("task_id") or None, approve=approve if isinstance(approve, bool) else None,
-                             answer=args.get("answer") or None, channel="voice")
+    approve = approve if isinstance(approve, bool) else None
+    task_id = args.get("task_id") or None
+    if approve is not None or args.get("answer"):
+        task_id, refusal = _in_this_conversation(runtime, task_id)
+        if refusal:
+            return ActionResult(False, refusal)
+    if task_id and task_id.startswith(conversations_tool_install()):
+        return _answer_install(task_id, approve)
+    result = runtime.respond(task_id, approve=approve, answer=args.get("answer") or None, channel="voice")
     return ActionResult(result["ok"], result["message"])
+
+
+def conversations_tool_install() -> str:
+    from ..core import conversations
+    return conversations.TOOL_INSTALL
+
+
+def _in_this_conversation(runtime, task_id):
+    """(task_id, refusal): an approval or answer given in a conversation goes
+    only to a request of that conversation. 2026-09-30: the user typed
+    "approved" in a chat opened for a tool install, and it answered the Chris
+    email task's question from another talk -- she started sending the email."""
+    from ..core import conversations
+    from .task import WAITING_APPROVAL, WAITING_USER
+    current = conversations.CURRENT.get()
+    if not current:
+        return task_id, None
+    ask = ("Ask the user which request they mean; do not answer any other. Each request's card is in its own chat "
+           "in the phone's Text with Omarchy.")
+    if task_id and task_id.startswith(conversations.TOOL_INSTALL):
+        return task_id, None
+    if task_id:
+        task = runtime.store.load(task_id)
+        # Tasks from before conversations existed have none: they stay answerable.
+        if task is not None and task.conversation and task.conversation != current:
+            return None, f"Not answered: task {task_id} belongs to another conversation. {ask}"
+        return task_id, None
+    waiting = [t for t in runtime.store.list(50)
+               if t.status in (WAITING_APPROVAL, WAITING_USER) and t.conversation == current]
+    installs = [line for line in (conversations.get(current) or {}).get("lines", [])
+                if line.get("role") == "card" and line.get("status") == "waiting"
+                and str(line.get("task_id", "")).startswith(conversations.TOOL_INSTALL)]
+    if len(waiting) + len(installs) == 1:
+        return (waiting[0].id if waiting else installs[0]["task_id"]), None
+    if not waiting and not installs:
+        return None, f"Not answered: nothing in this conversation waits for an approval or an answer. {ask}"
+    return None, f"Not answered: several requests wait in this conversation; name the task. {ask}"
+
+
+def _answer_install(task_id: str, approve: bool | None) -> ActionResult:
+    """A tool install waiting in this chat: a yes sends the fingerprint prompt
+    (a model-relayed yes never installs code by itself), a no declines it."""
+    from ..execution import flux_approve, user_tools
+    from ..phone import server
+    request = server._install_request(task_id)
+    if request is None:
+        return ActionResult(False, "That install is no longer waiting.")
+    if approve is False:
+        user_tools.decide_install(request["id"], False, "declined by the user in the chat")
+        return ActionResult(True, "Declined: the tool will not be installed.")
+    if not flux_approve.available():
+        return ActionResult(False, "Not installed: approve it on the desktop notification (no phone is set up for "
+                                   "fingerprint approval). Tell the user that in one sentence.")
+    import threading
+    threading.Thread(target=server._fingerprint_install, args=(request,), daemon=True).start()
+    return ActionResult(True, "Not installed yet: a fingerprint prompt went to the phone; it installs when the user "
+                              "touches it. Tell the user that in one sentence.")
 
 
 # Outcomes the user must hear even if they hung up before the task ended.

@@ -233,7 +233,54 @@ def task_event(task, event: str) -> None:
     add_card(cid, card)
 
 
+TOOL_INSTALL = "tool-install:"
+
+
+def system() -> str:
+    """The conversation for requests no talk started (a tool install run by hand)."""
+    latest = next((c for c in _summaries(empty=True) if c["source"] == "system"), None)
+    if latest:
+        return latest["id"]
+    cid = create("system")
+    with _lock:
+        _cache[cid]["title"] = "System requests"
+        _save(_cache[cid], force=True)
+    return cid
+
+
+_carded: set[str] = set()
+
+
+def sync_installs() -> None:
+    """Each tool install waiting for the user becomes an approval card in the
+    System requests chat, once, with one phone notification that opens it.
+    2026-09-30: the only way to approve one was the desktop notification, and
+    the phone's notice promised a fingerprint prompt that never came."""
+    from ..execution import user_tools
+    for request in user_tools.pending_install_requests():
+        if request["id"] in _carded:
+            continue
+        _carded.add(request["id"])
+        cid = system()
+        add_card(cid, {"kind": "approval", "task_id": TOOL_INSTALL + request["id"], "event": "waiting_approval",
+                       "text": f"Install the assistant tool {request['name']}?",
+                       "subject": f"install tool {request['name']}", "risk": "ELEVATED",
+                       "reasons": [request["summary"][:300]], "fingerprint": request["id"]})
+        try:
+            from ..execution import flux_approve
+            from ..phone import flux_notify
+            how = ("Open the chat and tap Approve for your fingerprint prompt, or use the desktop notification."
+                   if flux_approve.available() else "Approve it on the desktop notification.")
+            flux_notify.send(f"Install assistant tool: {request['name']}?", how, kind="approval", conversation=cid)
+        except Exception:  # noqa: BLE001 -- the card is there either way
+            log.debug("tool install notice not sent", exc_info=True)
+
+
 def _card_status(card: dict, tasks) -> str:
+    if str(card.get("task_id", "")).startswith(TOOL_INSTALL):
+        from ..execution import user_tools
+        waiting = {r["id"] for r in user_tools.pending_install_requests()}
+        return "waiting" if card.get("fingerprint") in waiting else "done"
     task = tasks(card.get("task_id"))
     if task is None or card.get("kind") == "result":
         return "done"
@@ -290,6 +337,7 @@ def _summaries(empty: bool = False) -> list[dict]:
 
 
 def summaries(tasks=None) -> dict:
+    sync_installs()
     tasks = tasks or _task_lookup()
     rows, total = [], 0
     for conv in _summaries():
@@ -304,6 +352,7 @@ def summaries(tasks=None) -> dict:
 
 
 def get(cid, tasks=None) -> dict | None:
+    sync_installs()
     flush(cid if isinstance(cid, str) else None)
     conv = _load(cid)
     if conv is None:

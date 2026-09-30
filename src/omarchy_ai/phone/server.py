@@ -284,6 +284,13 @@ def pending_approvals() -> dict:
                       "kind": request.get("kind"), "subject": str(request.get("subject", ""))[:2000],
                       "risk": request.get("risk"), "reasons": request.get("reasons", []),
                       "preview": change_preview(task.workspace)})
+    # A tool the assistant wants to install waits for the user too (2026-09-30:
+    # the user looked for it on the phone and it was only on the desktop).
+    from ..execution import user_tools
+    for request in user_tools.pending_install_requests():
+        items.append({"task_id": f"{_TOOL_INSTALL}{request['id']}", "goal": f"Install the assistant tool {request['name']}",
+                      "fingerprint": request["id"], "kind": "tool-install", "subject": f"install tool {request['name']}",
+                      "risk": "ELEVATED", "reasons": [request["summary"][:300]], "preview": None})
     # A worker's question often is an approval in words ("approve sending this
     # email?", 2026-09-30), so the phone lists them beside the approvals.
     from ..runtime.task import WAITING_USER
@@ -332,6 +339,17 @@ def respond_approval(data: dict) -> tuple[int, dict]:
     task_id, fingerprint, approve = data.get("task_id"), data.get("fingerprint"), data.get("approve")
     if not isinstance(task_id, str) or not task_id or not isinstance(approve, bool):
         return 400, {"ok": False, "message": "expected {task_id, fingerprint, approve, pin}"}
+    if task_id.startswith(_TOOL_INSTALL):
+        from ..execution import user_tools
+        request = _install_request(task_id)
+        if request is None:
+            return 409, {"ok": False, "message": "that install is no longer waiting"}
+        if approve:
+            ok, reason = approval_pin.verify(data.get("pin") or "")
+            if not ok:
+                return 403, {"ok": False, "message": reason}
+        user_tools.decide_install(request["id"], approve, f"{'approved' if approve else 'declined'} on the phone")
+        return 200, {"ok": True, "message": "Installing it." if approve else "Not installing it."}
     runtime = get_runtime()
     task = runtime.store.load(task_id)
     if (not task or task.status != WAITING_APPROVAL
@@ -347,12 +365,39 @@ def respond_approval(data: dict) -> tuple[int, dict]:
     return (200 if result.get("ok") else 409), {"ok": bool(result.get("ok")), "message": result.get("message", "")}
 
 
+_TOOL_INSTALL = "tool-install:"
+
+
+def _install_request(task_id: str) -> dict | None:
+    from ..execution import user_tools
+    rid = task_id[len(_TOOL_INSTALL):]
+    return next((r for r in user_tools.pending_install_requests() if r["id"] == rid), None)
+
+
+def _fingerprint_install(request: dict) -> None:
+    """The fingerprint prompt for a waiting tool install; its signed answer decides it."""
+    from ..execution import flux_approve, user_tools
+    ok, reason = flux_approve.request(f"Omarchy AI: install the assistant tool {request['name']}")
+    log.info("phone bridge: tool install %s: fingerprint %s", request["name"], reason)
+    if ok is not None:
+        user_tools.decide_install(request["id"], ok, f"{'approved' if ok else 'declined'} with a fingerprint on the phone")
+
+
 def fingerprint_approval(data) -> tuple[int, dict]:
     """Send the Flux fingerprint prompt for the request the phone showed.
     Nothing is approved here: only the signed fingerprint answer approves."""
     from ..runtime.service import get_runtime
     if not isinstance(data, dict) or not isinstance(data.get("task_id"), str) or not data["task_id"]:
         return 400, {"ok": False, "message": "expected {task_id, fingerprint}"}
+    if data["task_id"].startswith(_TOOL_INSTALL):
+        from ..execution import flux_approve
+        request = _install_request(data["task_id"])
+        if request is None:
+            return 409, {"ok": False, "message": "that install is no longer waiting"}
+        if not flux_approve.available():
+            return 409, {"ok": False, "message": "No phone is set up for fingerprint approval (Flux)."}
+        threading.Thread(target=_fingerprint_install, args=(request,), daemon=True).start()
+        return 200, {"ok": True, "message": "Sent the fingerprint prompt to the phone."}
     result = get_runtime().ask_fingerprint(data["task_id"], data.get("fingerprint") or None)
     return (200 if result.get("ok") else 409), {"ok": bool(result.get("ok")), "message": result.get("message", "")}
 
