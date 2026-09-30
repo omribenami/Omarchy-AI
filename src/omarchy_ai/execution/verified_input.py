@@ -6,6 +6,11 @@ import time
 from .actions import ActionResult
 
 
+EXTERNAL_WRITE_TOOLS = frozenset({
+    "myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply",
+})
+
+
 # Guards WHERE input lands (verified focus), never WHAT is typed. A former
 # "this looks like a conversational request" text heuristic was removed on
 # purpose: relaying the user's prompts into claude/codex terminals is the
@@ -73,24 +78,24 @@ class InputGuard:
             self._write_stage = "answered"
 
     def _external_write_allowed(self, name, args) -> ActionResult | None:
-        if name != "myapi_write":
+        if name not in EXTERNAL_WRITE_TOOLS:
             return None
-        material = {key: args.get(key) for key in ("service", "path", "method", "query", "body")}
+        material = {"tool": name, "args": args}
         key = json.dumps(material, sort_keys=True, default=str)
         if key == self._write_key and self._write_stage == "answered" and \
                 time.monotonic() - self._write_at < self.CONFIRM_SECONDS:
             self._write_key, self._write_stage = None, ""
             return None
         self._write_key, self._write_at, self._write_stage = key, time.monotonic(), "blocked"
-        description = str(args.get("description") or f"{material['method']} {material['path']}")
+        description = str(args.get("description") or name.replace("myapi_", "").replace("_", " "))
         return ActionResult(False, (
             f"MyApi action NOT run: {description}. Ask the user to confirm this exact change and wait for "
             "their answer. Retry the identical call only after an explicit yes; if they change any detail, "
             "submit the changed call and confirm it separately."))
 
-    def approve_external_write(self, args: dict) -> None:
+    def approve_external_write(self, name: str, args: dict) -> None:
         """Record an exact write that the Jev switchboard just confirmed."""
-        material = {key: args.get(key) for key in ("service", "path", "method", "query", "body")}
+        material = {"tool": name, "args": args}
         self._write_key = json.dumps(material, sort_keys=True, default=str)
         self._write_at = time.monotonic()
         self._write_stage = "answered"

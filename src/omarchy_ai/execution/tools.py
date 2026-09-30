@@ -801,6 +801,46 @@ MYAPI_TOOLS: list[dict] = [
         },
     ),
     _tool(
+        "myapi_execute",
+        "Execute one documented state-changing MyApi service operation by its exact method name. Use the "
+        "operation and argument names returned by myapi_service_methods; do not translate an /execute method "
+        "into a provider REST path. Prefer dedicated tools such as myapi_gmail_send and myapi_gmail_reply when "
+        "available. MyApi enforces the enrolled device's scope and Jev verifies that the user explicitly asked "
+        "for this exact change.",
+        {"type": "object", "properties": {
+            "service": {"type": "string", "description": "Connected service id, e.g. gmail."},
+            "operation": {"type": "string", "description": "Exact documented method, e.g. GMAIL_CREATE_EMAIL_DRAFT."},
+            "arguments": {"type": "object", "description": "Exact operation arguments from its method schema."},
+            "description": {"type": "string", "description": "Concrete description of the external change."},
+        }, "required": ["service", "operation", "arguments", "description"]},
+    ),
+    _tool(
+        "myapi_gmail_send",
+        "Send a new Gmail message immediately. Use only when the user explicitly says to send—not when they ask "
+        "to write, compose, prepare, or draft. This calls GMAIL_SEND_EMAIL directly and needs no service-method "
+        "discovery. Jev verifies the exact recipient, subject, and body against the user's request.",
+        {"type": "object", "properties": {
+            "recipient_email": {"type": "string", "description": "Exact To address."},
+            "subject": {"type": "string", "description": "Exact subject."},
+            "body": {"type": "string", "description": "Complete message body."},
+            "cc": {"type": "array", "items": {"type": "string"}},
+            "bcc": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["recipient_email", "subject", "body"]},
+    ),
+    _tool(
+        "myapi_gmail_reply",
+        "Send a reply in an existing Gmail thread immediately. Use the thread_id from myapi_gmail_search and the "
+        "sender's exact email address. This calls GMAIL_REPLY_TO_THREAD directly and needs no service-method "
+        "discovery. Jev verifies the thread, recipient, and complete reply body against the user's request.",
+        {"type": "object", "properties": {
+            "thread_id": {"type": "string", "description": "Existing Gmail thread ID."},
+            "recipient_email": {"type": "string", "description": "Exact reply recipient."},
+            "message_body": {"type": "string", "description": "Complete reply body."},
+            "cc": {"type": "array", "items": {"type": "string"}},
+            "bcc": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["thread_id", "recipient_email", "message_body"]},
+    ),
+    _tool(
         "myapi_gmail_search",
         "Search connected Gmail and return message payloads for answering any question about email. Use this directly instead of discovering Gmail methods or calling generic myapi_call. If an exact query misses, it preserves hard Gmail constraints (dates, mailbox, labels, attachments, filenames and state), relaxes only human-text fields, tries punctuation/spacing variants, and finally returns a bounded union of candidates for Jev to rank against the original request. This only reads mail.",
         {"type": "object", "properties": {

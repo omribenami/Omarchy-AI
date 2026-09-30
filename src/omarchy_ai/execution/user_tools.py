@@ -167,6 +167,11 @@ def user_approves_install(name: str) -> tuple[bool, str]:
         answer = input(f"{summary}\nInstall the assistant tool {name!r}? [y/N] ").strip().lower()
         return answer in ("y", "yes"), "answered in the terminal"
     try:
+        from ..phone import flux_notify
+        flux_notify.send(f"Install assistant tool: {name}?", "Approve or decline it on the desktop notification.\n" + summary[:400], kind="approval")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical", "-A", "approve=Install",
                                "-A", "deny=Don't install", f"Install assistant tool: {name}?", summary[:600]],
                               capture_output=True, text=True, timeout=APPROVAL_SECONDS)

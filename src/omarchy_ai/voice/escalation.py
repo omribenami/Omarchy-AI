@@ -52,6 +52,17 @@ _NOT_A_FAILURE = re.compile(
     r"^Not executed:|judged the request .* ambiguous|^Not run: Jev checked|^Not run: the screen is locked|^Input NOT sent"
     r'|name one|does not exist|similar names|"status": "handoff"', re.S)
 
+# One of these means the assistant lacks a capability, rather than that one
+# ordinary attempt happened to fail. Waiting for a second identical failure
+# only makes it repeat itself. Escalate immediately so a coding worker can
+# add a reusable, approval-gated tool and resume the original goal.
+_CAPABILITY_GAP = re.compile(
+    r"No catalog tool does this|no (?:available|approved) tool|not an approved tool|"
+    r"isn't voice-reachable|not voice-reachable|unsupported (?:action|operation)|"
+    r"cannot .* with (?:the )?(?:available|current) tools|missing capability",
+    re.I,
+)
+
 GIVE_UP_P = 0.8
 ASKS_WHY_P = 0.8
 
@@ -116,7 +127,10 @@ class Escalator:
             return None
         latest = user_turns[-1] if user_turns else ""
         reason = None
-        if len(self._failures) >= FAILURES_TO_ESCALATE:
+        capability = next((f for f in reversed(self._failures) if _CAPABILITY_GAP.search(f.message)), None)
+        if capability is not None:
+            reason = f"missing capability: {capability.message[:180]}"
+        elif len(self._failures) >= FAILURES_TO_ESCALATE:
             reason = f"{len(self._failures)} attempts failed"
         elif last_reply or latest:
             gave_up, asks_why = self._judge(last_reply, latest)
@@ -153,9 +167,14 @@ def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reaso
         "unless you found and fixed why it failed. If it truly cannot be done, find out exactly why from evidence "
         "and say what would make it possible. Anything public or irreversible (posting, sending, deleting) needs "
         "the user's approval first.\n\n"
-        "Afterwards, if you solved it with a procedure the voice assistant lacked a tool for, package it as a "
-        f"reusable tool so next time it is one call: see `{sys.executable} -m omarchy_ai.cli.tools format`, then "
-        "`propose <dir>` and `install <name>` (install asks the user; once approved, use the tool to finish)."
+        "CAPABILITY INVARIANT: this accepted task may not be abandoned merely because a tool is missing. First "
+        "use the System agent's installed commands and APIs. If Omarchy lacks a reusable capability, route the "
+        "implementation to Claude Code or Codex, build and test a narrowly scoped user tool, then run "
+        f"`{sys.executable} -m omarchy_ai.cli.tools format`, `propose <dir>`, and `install <name>`. Installation "
+        "must wait for the user's approval. After approval, resume this SAME task and use the installed tool to "
+        "finish the original goal. A final failure is acceptable only with concrete evidence of an external "
+        "blocker that code or a new tool cannot overcome; otherwise remain running or waiting for the specific "
+        "approval/input needed."
     )
     return goal[:3900]
 

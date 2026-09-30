@@ -540,6 +540,13 @@ flowchart LR
 - The page is a full-screen state field readable across the room (red: it
   can't hear you).
 
+**With Flux** ([bjarneo/flux](https://github.com/bjarneo/flux))
+- Omarchy AI's notifications reach the phone paired in Flux, and tasks and
+  `sudo` can be approved with the phone's fingerprint through Flux's approval
+  key (`sudo flux-cli approve setup`). Setup, the optional lock-screen unlock,
+  and the status of an Omarchy AI build of the Flux Android app:
+  [docs/FLUX.md](docs/FLUX.md).
+
 **TV / projector mirroring**
 - `omarchy-ai-cast.service` captures the screen with `wlr-screencopy`,
   encodes `openh264enc` video and Opus system audio, and sends them over

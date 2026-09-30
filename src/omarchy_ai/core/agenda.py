@@ -365,6 +365,11 @@ def list_jobs(include_finished: bool = False) -> list[dict]:
 
 def notify(title: str, body: str = "", urgent: bool = False) -> None:
     try:
+        from ..phone import flux_notify
+        flux_notify.send(title[:120], body[:400])  # and on the phone, through Flux
+    except Exception:  # noqa: BLE001 -- the desktop notification must still go out
+        log.debug("flux notify unavailable", exc_info=True)
+    try:
         from ..execution.desktop_env import desktop_env
         env = desktop_env()
     except Exception:

@@ -60,6 +60,10 @@ CONSTRAINTS = """Constraints (enforced by Omarchy's harness; violations will be 
 - Do not use sudo, do not install system packages, do not restart system or audio services.
 - Keep the change minimal and focused on the assignment. Match the surrounding code style.
 - Never print or copy secrets.
+- If the assignment is a missing Omarchy capability, build a narrow reusable user tool with tool.json plus
+  executable run/test files, validate it with `python -m omarchy_ai.cli.tools format`, and propose it. Installation
+  must use the approval-gated CLI; never edit the installed-tools directory or approval ledger directly. After
+  approval, the parent task resumes and uses the tool to finish the user's original goal.
 - Omarchy will independently re-check your work (git diff, tests, runtime behavior); report honestly.
 End your reply with a short report:
 SUMMARY: <what you changed and why>

@@ -173,7 +173,10 @@ def edit_file(
             raise FileAccessError("a file path is required")
         path = _resolve_etc_path(value)
         if not sudo_password:
-            raise FileAccessError("Sudo Access is not enabled or no password is saved")
+            from . import flux_approve
+            if not flux_approve.sudo_ready():
+                raise FileAccessError("Sudo Access is not enabled or no password is saved")
+            sudo_password = None  # the phone approves each sudo instead
     else:
         path = resolve_path(value, config, must_exist=True)
     if not path.is_file():
@@ -211,9 +214,11 @@ def edit_file(
             ]
             backup_command = ["sudo", "-S", "-p", "", "cp", "--preserve=all", str(path), str(backup)]
             for argv in (backup_command, command):
+                # No password: sudo asks the phone (Flux fingerprint approval,
+                # up to its 120 s maximum), and a denial fails on empty stdin.
                 result = subprocess.run(
-                    argv, input=sudo_password + "\n", capture_output=True, text=True,
-                    timeout=15, check=False,
+                    argv, input="" if sudo_password is None else sudo_password + "\n", capture_output=True,
+                    text=True, timeout=15 if sudo_password is not None else 130, check=False,
                 )
                 if result.returncode != 0:
                     raise FileAccessError((result.stderr or result.stdout or "privileged edit failed").strip())

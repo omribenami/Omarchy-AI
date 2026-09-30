@@ -399,6 +399,8 @@ class Config:
     # beta test itself, via config.yaml, not this source default.
     phone_bridge_enabled: bool = False
     phone_bridge_port: int = 8766
+    # Omarchy's notifications (tasks, routines, alerts) also on the phone, through Flux.
+    flux_notifications: bool = True
 
     # Local file tools are intentionally limited to user-owned locations.
     # Add an explicit path here when a project lives elsewhere; paths are
@@ -428,18 +430,25 @@ MYAPI_INSTRUCTIONS = (
     "email, calendar, files, Notion, Slack, and whatever else is "
     "connected — prefer that over opening a browser and using "
     "describe_screen: call myapi_list_services if you're not sure what's "
-    "connected, myapi_service_methods before a service's first use, then "
-    "myapi_call to actually make the request. It's structured data, no "
+    "connected, myapi_service_methods before a service's first unfamiliar use, then "
+    "myapi_call for provider REST reads or myapi_execute for a documented named operation. "
+    "Never translate a documented /execute operation into a guessed REST path. It's structured data, no "
     "vision call needed, and much faster and cheaper than a screenshot. "
     "For finding or reading Gmail messages, call myapi_gmail_search directly; "
     "do not list Gmail methods first or use generic myapi_call for that. It "
     "preserves Gmail filters while adapting uncertain human text and returns payloads Jev can inspect. "
     "For Gmail attachments, use myapi_gmail_search_attachments to find "
     "the message and attachment IDs, then myapi_gmail_download_attachment "
-    "to save it in Downloads/Omarchy_AI. For a create, send, update, or delete, use "
+    "to save it in Downloads/Omarchy_AI. For Gmail, never discover methods just to send: use "
+    "myapi_gmail_send for a new message and myapi_gmail_reply with the thread_id from search for a reply. "
+    "'Write', 'compose', 'prepare', or 'draft' means prepare text or a draft, NOT send; only myapi_gmail_send/"
+    "reply when the user explicitly says send or confirms the exact message. A direct command naming the "
+    "recipient and asking to send is already explicit approval—do not demand a redundant yes. For other "
+    "creates, sends, updates, or deletes, use "
     "myapi_write with the operation documented by myapi_service_methods. Its first "
     "call deliberately stops and asks for confirmation; read the exact change to the "
-    "user, wait for an explicit yes, and only then retry the identical call. Never "
+    "user, wait for an explicit yes, and only then retry the identical call when their original request was "
+    "not already an explicit instruction to perform that exact change. Never "
     "change its target or payload after confirmation. The access scope granted in "
     "MyApi remains the final capability boundary. Only fall back to "
     "the browser/describe_screen path when nothing connected covers the "

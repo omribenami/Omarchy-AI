@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from ..core.jev import Jev, JevError, choice
 
@@ -50,25 +51,56 @@ def _compact(value: object, limit: int = MAX_CANDIDATE_CHARS) -> str:
     return rendered if len(rendered) <= limit else rendered[:limit] + "…"
 
 
+def _terms(text: str) -> set[str]:
+    terms: set[str] = set()
+    for word in re.findall(r"[a-z0-9]{3,}", text.casefold()):
+        terms.add(word)
+        for suffix in ("ing", "ed", "es", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+                terms.add(word[:-len(suffix)])
+    return terms
+
+
+def _shortlist(records: list, request: str) -> list:
+    """Lexically consider every row before giving Jev a bounded shortlist."""
+    wanted = _terms(request)
+    if len(records) <= MAX_CANDIDATES or not wanted:
+        return records[:MAX_CANDIDATES]
+
+    def score(item: tuple[int, object]) -> tuple[int, int]:
+        index, record = item
+        rendered = _compact(record, 4_000).casefold()
+        name = str(record.get("name") or "").casefold() if isinstance(record, dict) else ""
+        overlap = sum(1 for term in wanted if term in rendered)
+        named = sum(3 for term in wanted if term in name)
+        return named + overlap, -index
+
+    ranked = sorted(enumerate(records), key=score, reverse=True)
+    return [record for _index, record in ranked[:MAX_CANDIDATES]]
+
+
 def refine_myapi_result(config, request: str, result: str) -> str:
     """Return small results unchanged; rank records in oversized JSON once."""
     del config
     request = request.strip()
     if not request or not result or len(result) <= FAST_RESULT_CHARS:
         return result
-    source = _bounded_source(result)
     try:
-        parsed = json.loads(source)
+        # Parse before applying the text fallback bound. Cutting valid JSON at
+        # 80k made every multi-megabyte Gmail result invalid, so the exact
+        # payloads that most needed compaction still reached Gemini as a raw
+        # 40k prefix (the 2026-09-28 failed email run was 4.25 MB).
+        parsed = json.loads(result)
     except (json.JSONDecodeError, TypeError):
-        return source
+        return _bounded_source(result)
     lists = _candidate_lists(parsed)
     if not lists:
-        return source
+        return _bounded_source(result)
     path, records = max(lists, key=lambda item: (
         sum(isinstance(row, dict) for row in item[1][:MAX_CANDIDATES]),
         min(len(item[1]), MAX_CANDIDATES),
     ))
-    records = records[:MAX_CANDIDATES]
+    records = _shortlist(records, request)
     options = {f"r{i}": _compact(record) for i, record in enumerate(records)}
     options["none"] = "None of these records helps answer the request."
     try:
@@ -90,10 +122,10 @@ def refine_myapi_result(config, request: str, result: str) -> str:
         )
         selected = [records[index] for index, _score in ranked[:KEEP_CANDIDATES]]
         if not selected:
-            return source
+            return _bounded_source(result)
     except (JevError, KeyError, TypeError, ValueError) as exc:
         log.info("MyApi Jev selection unavailable: %s", str(exc)[:160])
-        return source
+        return _bounded_source(result)
     return json.dumps({
         "jev_selected": True,
         "request": request,

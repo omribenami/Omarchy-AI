@@ -32,6 +32,7 @@ import shutil
 import socket as socket_mod
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -41,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ..config import CONFIG_DIR, Config
-from . import cast_audio, presence
+from . import cast_audio, flux_pairing, flux_settings, presence, wake_models
 from ..execution.actions import run_action, unlock_screen_for_paired_phone
 from ..execution import approval_pin, vision
 from ..voice.live import build_session_config
@@ -78,6 +79,22 @@ def _write_json_0600(path: Path, data: dict | list) -> None:
     except Exception:
         os.close(fd)
         raise
+
+
+def _new_session_cookie() -> str:
+    """Records a new paired session and returns its Set-Cookie value."""
+    session_id = secrets.token_urlsafe(32)
+    sessions = _load_sessions()
+    sessions.append(session_id)
+    _write_json_0600(_SESSIONS_PATH, sessions)
+    cookie = http.cookies.SimpleCookie()
+    cookie[_SESSION_COOKIE] = session_id
+    cookie[_SESSION_COOKIE]["path"] = "/"
+    cookie[_SESSION_COOKIE]["secure"] = True
+    cookie[_SESSION_COOKIE]["httponly"] = True
+    cookie[_SESSION_COOKIE]["samesite"] = "Strict"
+    cookie[_SESSION_COOKIE]["max-age"] = _SESSION_MAX_AGE_SECONDS
+    return cookie[_SESSION_COOKIE].OutputString()
 
 
 def mint_pairing_token(config: Config) -> dict:
@@ -174,10 +191,13 @@ def _ensure_self_signed_cert() -> tuple[str, str] | None:
     warning to click through (unavoidable without installing a CA on the
     phone, out of scope for a beta), but getUserMedia itself then works.
 
-    Regenerated on every start rather than cached/reused: this machine's
-    LAN IP can change (DHCP), and a cert whose SAN doesn't match the
-    current URL's host is refused outright — cheap (<1s) to just always
-    generate a fresh one for the IP detected right now.
+    The cert is reissued on every start rather than cached/reused: this
+    machine's LAN IP can change (DHCP), and a cert whose SAN doesn't match
+    the current URL's host is refused outright — cheap (<1s) to just always
+    issue a fresh one for the IP detected right now. The key itself is kept
+    once made, so an app that pins it (Flux's embedded Omarchy screen pins
+    the public key on first use) keeps trusting the server across restarts
+    and address changes.
     """
     if shutil.which("openssl") is None:
         log.warning("phone bridge: openssl not found, cannot generate a TLS cert — staying on plain HTTP (mic access will fail)")
@@ -196,8 +216,10 @@ def _ensure_self_signed_cert() -> tuple[str, str] | None:
         pass
     r = subprocess.run(
         [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", str(_KEY_PATH), "-out", str(_CERT_PATH),
+            "openssl", "req", "-x509", "-nodes",
+            *(["-key", str(_KEY_PATH)] if _KEY_PATH.is_file()
+              else ["-newkey", "rsa:2048", "-keyout", str(_KEY_PATH)]),
+            "-out", str(_CERT_PATH),
             "-days", "3650", "-subj", "/CN=omarchy-phone-bridge",
             "-addext", san,
         ],
@@ -261,7 +283,8 @@ def pending_approvals() -> dict:
                       "kind": request.get("kind"), "subject": str(request.get("subject", ""))[:2000],
                       "risk": request.get("risk"), "reasons": request.get("reasons", []),
                       "preview": change_preview(task.workspace)})
-    return {"approvals": items, "pin": approval_pin.status()}
+    from ..execution import flux_approve
+    return {"approvals": items, "pin": approval_pin.status(), "fingerprint": bool(items) and flux_approve.available()}
 
 
 def respond_approval(data: dict) -> tuple[int, dict]:
@@ -407,6 +430,52 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
             return
 
+        if path == "/api/hello":
+            # Unauthenticated on purpose and says nothing private: it lets
+            # an app that already knows this computer (Flux, over its own
+            # paired link) tell that Omarchy AI answers here before it
+            # offers to open the page.
+            self._send_json(200, {"service": "omarchy-ai"})
+            return
+
+        if path == "/api/wake" or path.startswith("/api/wake/"):
+            # The desktop's wake word for a phone that listens for it itself
+            # (wake_models.py). Paired phones only: it is the user's own model.
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                if path == "/api/wake":
+                    self._send_json(200, wake_models.describe(self.config))
+                    return
+                target = wake_models.files(self.config).get(path.removeprefix("/api/wake/").removesuffix(".onnx"))
+            except (FileNotFoundError, ValueError) as exc:
+                self._send_json(404, {"error": str(exc)})
+                return
+            if target is None or not target.is_file():
+                self._send_json(404, {"error": "not found"})
+                return
+            self._send_file(target, "application/octet-stream")
+            return
+
+        if path == "/api/tvs":
+            # For Flux's Mirror to TV: the TVs the desktop can cast to (the same
+            # registry its TV overlay shows) and the one it mirrors to now.
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            from ..display import registry, session
+            self._send_json(200, {"tvs": registry.get_or_refresh(), "casting": session.target() if session.active() else None})
+            return
+
+        if path == "/api/flux/challenge":
+            # Public: a nonce and this server's key pin, nothing private.
+            if not _CERT_PATH.is_file():
+                self._send_json(503, {"error": "no TLS certificate"})
+                return
+            self._send_json(200, {"nonce": flux_pairing.new_challenge(), "key": flux_pairing.key_pin(_CERT_PATH)})
+            return
+
         if path == "/api/paired":
             # Polled by not_paired.html — a real, live confusion this
             # round: pairing had genuinely succeeded (confirmed in the
@@ -439,6 +508,35 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json(404, {"error": "not found"})
+
+    def _handle_flux_pair(self) -> None:
+        """A phone that desktop Flux paired signs a challenge instead of
+        scanning a QR code — see flux_pairing.py. Answers with the same
+        session cookie a QR pairing sets."""
+        # Reachable without pairing, so the body is capped before it is read.
+        try:
+            if int(self.headers.get("Content-Length", "0") or "0") > 8192:
+                raise ValueError("body too large")
+            data = self._read_json_body()
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            self._send_json(400, {"error": "bad request"})
+            return
+        if _CERT_PATH.is_file() and flux_pairing.verify(
+            data.get("device"), data.get("nonce"), data.get("signature"), flux_pairing.key_pin(_CERT_PATH),
+        ):
+            log.info("phone bridge: Flux-paired phone %s accepted from %s", data.get("device"), self.address_string())
+            body = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Set-Cookie", _new_session_cookie())
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        log.warning("phone bridge: Flux pairing refused from %s", self.address_string())
+        self._send_json(403, {"error": "not a phone that Flux paired with this computer"})
 
     def _handle_pair(self, query: dict) -> None:
         token = (query.get("token") or [""])[0]
@@ -473,28 +571,56 @@ class _Handler(BaseHTTPRequestHandler):
             pending["used"] = True
             _write_json_0600(_PAIR_TOKEN_PATH, pending)
 
-        session_id = secrets.token_urlsafe(32)
-        sessions = _load_sessions()
-        sessions.append(session_id)
-        _write_json_0600(_SESSIONS_PATH, sessions)
         log.info("phone bridge: new pairing accepted from %s", self.address_string())
-
-        cookie = http.cookies.SimpleCookie()
-        cookie[_SESSION_COOKIE] = session_id
-        cookie[_SESSION_COOKIE]["path"] = "/"
-        cookie[_SESSION_COOKIE]["secure"] = True
-        cookie[_SESSION_COOKIE]["httponly"] = True
-        cookie[_SESSION_COOKIE]["samesite"] = "Strict"
-        cookie[_SESSION_COOKIE]["max-age"] = _SESSION_MAX_AGE_SECONDS
-
         self.send_response(302)
-        self.send_header("Set-Cookie", cookie[_SESSION_COOKIE].OutputString())
+        self.send_header("Set-Cookie", _new_session_cookie())
         self.send_header("Location", "/")
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib method name
         path = self.path.split("?", 1)[0]
+        if path == "/api/flux/pair":
+            # Unpaired by definition: this is how a Flux phone becomes paired.
+            self._handle_flux_pair()
+            return
+        if path in ("/api/cast", "/api/cast/stop", "/api/ask", "/api/flux/setting"):
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                if int(self.headers.get("Content-Length", "0") or "0") > 8192:
+                    raise ValueError("body too large")
+                data = self._read_json_body()
+                if not isinstance(data, dict):
+                    raise ValueError("not an object")
+            except ValueError:
+                self._send_json(400, {"ok": False, "message": "bad request"})
+                return
+            if path == "/api/flux/setting":
+                # Flux's Omarchy button beside a feature that config.toml keeps
+                # off: the press on the paired phone is the request (flux_settings.py).
+                keys = data.get("keys")
+                ok, message = flux_settings.enable(keys if isinstance(keys, list) else [])
+                log.info("phone bridge: Flux setting %s: %s", keys, message)
+                self._send_json(200 if ok else 409, {"ok": ok, "message": message})
+                return
+            if path == "/api/ask":
+                # A Flux button hands Omarchy a job ("turn on remote input on
+                # this computer"): the Task Runtime plans it, asks approval where
+                # its permissions say so, and reports back like any other task.
+                from ..runtime.service import start_task
+                request = str(data.get("request") or "").strip()
+                if not request:
+                    self._send_json(400, {"ok": False, "message": "request is empty"})
+                    return
+                log.info("phone bridge: Flux asks Omarchy: %s", request[:200])
+                result = start_task({"goal": request})
+            else:
+                target = str(data.get("target") or "").strip()
+                result = run_action("stop_casting", {}) if path.endswith("/stop") else run_action("start_casting", {"target": target})
+            self._send_json(200 if result.ok else 409, {"ok": result.ok, "message": result.message})
+            return
         if path in ("/mirror/start", "/mirror/stop"):
             if not self._is_paired():
                 self._send_json(403, {"error": "not paired"}); return
@@ -616,6 +742,14 @@ class PhoneHTTPServer(ThreadingHTTPServer):
     tls_context: ssl.SSLContext | None = None
     handshake_timeout = 5
     request_timeout = 30
+
+    def handle_error(self, request, client_address):
+        # A phone that closes the page mid-request (Flux's screen closing, a
+        # dropped Wi-Fi link) resets its sockets; that is not a server fault,
+        # so it gets no traceback. Anything else still does.
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, ssl.SSLEOFError)):
+            return
+        super().handle_error(request, client_address)
 
     def process_request_thread(self, request, client_address):
         try:

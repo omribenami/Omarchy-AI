@@ -87,6 +87,9 @@ Rules:
   (real case 2026-09-27: a done README change was certified as failed that way).
 - Finish with needs_code_change when the root cause is a bug in source code that should be fixed in a repository
   (say which repository/file and why); a coding agent will take over.
+- A missing reusable capability is needs_code_change, not failed: report the exact interface the new user tool
+  needs, so Claude Code or Codex can build/test it through `omarchy-ai-tool propose` and the approval-gated install.
+  After installation the same task must use it to finish the original goal.
 - Finish as soon as the assignment is answered. Be concrete: name the commands that proved each finding.
 """.replace("@PYTHON@", sys.executable) + "\n" + PROJECT_TERMS  # the daemon venv, where omarchy_ai is importable
 
@@ -348,4 +351,3 @@ def _clamp(value, low, high, default):
         return max(low, min(high, float(value)))
     except (TypeError, ValueError):
         return default
-

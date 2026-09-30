@@ -59,6 +59,16 @@ class EscalatorTests(unittest.TestCase):
         e.observe_call("browser_task", {}, False, "stopped", 5.0)
         self.assertIsNone(e.due(6.0, ["open an issue"], "Let me try another way."))
 
+    def test_one_missing_capability_escalates_immediately_to_build_a_tool(self):
+        e = Escalator(judge())
+        e.observe_call("use_tool", {"request": "control the sprinkler"}, False,
+                       "Missing capability: No catalog tool does this.", 5.0)
+        goal = e.due(5.0, ["turn on the garden sprinkler"], "")
+        self.assertIn("missing capability", goal)
+        self.assertIn("Claude Code or Codex", goal)
+        self.assertIn("resume this SAME task", goal)
+        self.assertIn("finish the original goal", goal)
+
     def test_nothing_failed_nothing_escalates_and_jev_is_not_asked(self):
         decide = judge(gave_up=True)
         e = Escalator(decide)

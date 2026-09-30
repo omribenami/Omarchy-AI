@@ -195,6 +195,37 @@ class GmailAttachmentToolTests(unittest.TestCase):
             query=None, body={"summary": "Lunch"},
         )
 
+    def test_gmail_send_uses_documented_send_operation(self):
+        client = MagicMock()
+        client.request.return_value = {"ok": True, "message_id": "m1"}
+        with patch.object(actions.myapi, "MyApiClient", return_value=client), \
+             patch.object(actions.myapi_usage, "record"):
+            result = actions.myapi_gmail_send({
+                "recipient_email": "chris@example.com", "subject": "Quote", "body": "Any update?",
+            })
+        self.assertTrue(result.ok)
+        client.request.assert_called_once_with(
+            "POST", "/services/gmail/execute",
+            body={"method": "GMAIL_SEND_EMAIL", "params": {"arguments": {
+                "recipient_email": "chris@example.com", "subject": "Quote",
+                "body": "Any update?", "user_id": "me",
+            }}},
+        )
+
+    def test_gmail_reply_uses_thread_operation_not_draft(self):
+        client = MagicMock()
+        client.request.return_value = {"ok": True, "message_id": "m2"}
+        with patch.object(actions.myapi, "MyApiClient", return_value=client), \
+             patch.object(actions.myapi_usage, "record"):
+            result = actions.myapi_gmail_reply({
+                "thread_id": "abc123", "recipient_email": "chris@example.com",
+                "message_body": "We want to move forward.",
+            })
+        self.assertTrue(result.ok)
+        body = client.request.call_args.kwargs["body"]
+        self.assertEqual(body["method"], "GMAIL_REPLY_TO_THREAD")
+        self.assertNotEqual(body["method"], "GMAIL_CREATE_EMAIL_DRAFT")
+
     def test_query_planner_preserves_hard_filters_and_relaxes_text_fields(self):
         planned = actions._gmail_fallback_queries(
             'from:Alex subject:"Quarterly-Update" has:attachment after:2026/01/01'

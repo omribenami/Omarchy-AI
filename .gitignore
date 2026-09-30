@@ -16,3 +16,7 @@ android-receiver/local.properties
 **/home-assistant/
 **/homeassistant/
 **/*ha[-_]jev*
+
+# Agent instruction files stay local
+CLAUDE.md
+CLAUDE.local.md

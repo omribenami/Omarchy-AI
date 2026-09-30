@@ -95,6 +95,11 @@ def _alert(provider: str) -> None:
     _run(["omarchy-shell", "-q", "quotaAlert", "show", json.dumps({"provider": name, "message": what})])
     _run(["notify-send", "-u", "critical", "-a", "Omarchy AI", f"$ {name} {what}",
           f"Omarchy AI can't use {name} until this is fixed.\n{url}"])
+    try:
+        from ..phone import flux_notify
+        flux_notify.send(f"{name} {what}", f"Omarchy AI can't use {name} until this is fixed.\n{url}")
+    except Exception:  # noqa: BLE001
+        log.debug("flux notify unavailable", exc_info=True)
     said = False
     if speaker is not None:
         try:

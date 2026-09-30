@@ -62,6 +62,7 @@ NON_BLOCKING_ACTIONS = {
     "install_receiver_on_tv", "list_commands", "find_skill",
     "check_assistant_updates", "update_assistant", "get_release_notes", "report_issue",
     "myapi_list_services", "myapi_vault_list", "myapi_service_methods", "myapi_call", "myapi_write",
+    "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply",
     "myapi_gmail_search", "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
     # The catalog holds slow tools (casting, MyApi, issues); its quick ones
     # just report when she is idle.
@@ -801,6 +802,8 @@ class GeminiLiveSession:
         until it repeats. Journal 2026-09-27 01:33-01:34 and 02:03-02:04: the
         model re-sent use_tool without args ~60 and 18 times in a row, every
         offer ok=True, so escalation never saw a failure."""
+        if pick.message.startswith("No catalog tool does this"):
+            return ActionResult(False, "Missing capability: " + pick.message)
         if self._offers_turn != self._last_user_speech:
             self._offers_turn, self._offers = self._last_user_speech, 0
         self._offers += 1
@@ -878,11 +881,11 @@ class GeminiLiveSession:
                 elif early is not None and name == tool:
                     action = early
                 else:
-                    if name == "myapi_write":
+                    if name in {"myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply"}:
                         # The switchboard's dedicated `confirmed` judgment is
                         # semantic and multilingual. InputGuard still pins that
                         # approval to this exact payload before execution.
-                        self._input_guard.approve_external_write(args)
+                        self._input_guard.approve_external_write(name, args)
                     action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, self._run_tool, name, args))
                 try:
                     if action is not None:
@@ -905,9 +908,10 @@ class GeminiLiveSession:
                     self._action_log = self._action_log[-100:]
             message = result.message
             if result.ok and ran.startswith("myapi_"):
+                refinement_request = str((call.args or {}).get("request") or original_request)
                 try:
                     refined = await asyncio.to_thread(
-                        refine_myapi_result, self.config, original_request, message
+                        refine_myapi_result, self.config, refinement_request, message
                     )
                 except Exception as exc:  # noqa: BLE001 -- raw bounded result is the safe fallback
                     log.warning("MyApi refinement unavailable: session=%s call=%s: %s",

@@ -452,9 +452,13 @@ def edit_file(args: dict) -> ActionResult:
         privileged = bool(args.get("privileged"))
         password = None
         if privileged:
-            if not config.sudo_access_enabled:
-                return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
-            password = sudo_approval.retrieve()
+            from . import flux_approve
+            # With Flux's phone approval on for sudo, the phone approves the
+            # edit with a fingerprint and no saved password is used.
+            if not flux_approve.sudo_ready():
+                if not config.sudo_access_enabled:
+                    return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
+                password = sudo_approval.retrieve()
         path, count = local_files.edit_file(
             args.get("path"), args.get("old_text"), args.get("new_text"), config,
             expected_replacements=args.get("expected_replacements", 1),
@@ -2273,6 +2277,54 @@ def myapi_write(args: dict) -> ActionResult:
                            ok=ok, duration_ms=(time.monotonic() - started) * 1000)
 
 
+def _myapi_execute(service: str, operation: str, arguments: dict) -> ActionResult:
+    started = time.monotonic()
+    ok = False
+    try:
+        result = myapi.MyApiClient().request(
+            "POST", f"/services/{service}/execute",
+            body={"method": operation, "params": {"arguments": arguments}},
+        )
+        ok = True
+        return ActionResult(True, json.dumps(result))
+    except myapi.MyApiError as exc:
+        return ActionResult(False, f"MyApi action failed: {exc}")
+    finally:
+        myapi_usage.record(service=service, path=f"/execute:{operation}", method="POST(write)", ok=ok,
+                           duration_ms=(time.monotonic() - started) * 1000)
+
+
+def myapi_execute(args: dict) -> ActionResult:
+    if not myapi.is_connected():
+        return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
+    service, operation, arguments = args.get("service"), args.get("operation"), args.get("arguments")
+    if not isinstance(service, str) or not service.strip():
+        return ActionResult(False, "no service given")
+    if not isinstance(operation, str) or not operation.strip():
+        return ActionResult(False, "no operation given")
+    if not isinstance(arguments, dict):
+        return ActionResult(False, "arguments must be an object")
+    return _myapi_execute(service.strip(), operation.strip(), arguments)
+
+
+def myapi_gmail_send(args: dict) -> ActionResult:
+    required = ("recipient_email", "subject", "body")
+    if any(not isinstance(args.get(key), str) or not args[key].strip() for key in required):
+        return ActionResult(False, "recipient_email, subject, and body are required")
+    arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
+    arguments["user_id"] = "me"
+    return _myapi_execute("gmail", "GMAIL_SEND_EMAIL", arguments)
+
+
+def myapi_gmail_reply(args: dict) -> ActionResult:
+    required = ("thread_id", "recipient_email", "message_body")
+    if any(not isinstance(args.get(key), str) or not args[key].strip() for key in required):
+        return ActionResult(False, "thread_id, recipient_email, and message_body are required")
+    arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
+    arguments["user_id"] = "me"
+    return _myapi_execute("gmail", "GMAIL_REPLY_TO_THREAD", arguments)
+
+
 def _gmail_execute(method: str, arguments: dict) -> dict:
     """Call the small, explicitly read-only Gmail execute allowlist.
 
@@ -2555,6 +2607,9 @@ ACTIONS = {
     "myapi_service_methods": myapi_service_methods,
     "myapi_call": myapi_call,
     "myapi_write": myapi_write,
+    "myapi_execute": myapi_execute,
+    "myapi_gmail_send": myapi_gmail_send,
+    "myapi_gmail_reply": myapi_gmail_reply,
     "myapi_gmail_search": myapi_gmail_search,
     "myapi_gmail_search_attachments": myapi_gmail_search_attachments,
     "myapi_gmail_download_attachment": myapi_gmail_download_attachment,

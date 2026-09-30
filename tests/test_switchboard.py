@@ -88,6 +88,12 @@ class PolicyTests(unittest.TestCase):
         approved = Switchboard(FakeJev(confirmed=0.99)).review("myapi_write", args, ctx("yes"))
         self.assertEqual(approved.action, "execute")
 
+    def test_direct_send_command_counts_as_explicit_approval(self):
+        args = {"recipient_email": "chris@example.com", "subject": "Quote", "body": "Any update?"}
+        verdict = Switchboard(FakeJev(confirmed=0.99)).review(
+            "myapi_gmail_send", args, ctx("Send this email to Chris at chris@example.com"))
+        self.assertEqual(verdict.action, "execute")
+
     def test_myapi_write_fails_closed_when_jev_is_down(self):
         args = {"service": "gmail", "path": "/send", "method": "POST"}
         verdict = Switchboard(FakeJev(fail=True)).review("myapi_write", args, ctx("yes"))

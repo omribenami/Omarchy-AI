@@ -31,6 +31,32 @@ class MyApiRefinementTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in refined["selected_records"]], [7, 2])
         self.assertEqual(refined["source_path"], "$.data.messages")
 
+    def test_multi_megabyte_valid_json_is_parsed_before_fallback_bounding(self):
+        rows = [{"name": f"METHOD_{i}", "description": "x" * 100_000} for i in range(20)]
+        raw = json.dumps({"data": rows})
+        self.assertGreater(len(raw), MAX_REFINEMENT_SOURCE_CHARS)
+        jev = SimpleNamespace(ask=lambda *a, **k: {
+            "records": {"choice": "r3", "p": .95, "probabilities": {"r3": .95}}
+        })
+        with patch("omarchy_ai.voice.myapi_refinement.Jev", return_value=jev):
+            refined = json.loads(refine_myapi_result(object(), "Find method 3", raw))
+        self.assertTrue(refined["jev_selected"])
+        self.assertEqual(refined["selected_records"][0]["name"], "METHOD_3")
+
+    def test_relevant_method_after_first_thirty_is_still_offered_to_jev(self):
+        rows = [{"name": f"GMAIL_UNRELATED_{i}", "description": "Read settings " + "x" * 500} for i in range(40)]
+        rows.append({"name": "GMAIL_REPLY_TO_THREAD", "description": "Reply and send an email in a thread"})
+        raw = json.dumps({"data": rows})
+        captured = {}
+        def ask(state, questions, **kwargs):
+            captured.update(questions["records"]["criteria"])
+            key = next(key for key, value in captured.items() if "GMAIL_REPLY_TO_THREAD" in value)
+            return {"records": {"choice": key, "p": .99, "probabilities": {key: .99}}}
+        with patch("omarchy_ai.voice.myapi_refinement.Jev", return_value=SimpleNamespace(ask=ask)):
+            refined = json.loads(refine_myapi_result(object(), "Reply to this email thread and send it", raw))
+        self.assertTrue(any("GMAIL_REPLY_TO_THREAD" in value for value in captured.values()))
+        self.assertEqual(refined["selected_records"][0]["name"], "GMAIL_REPLY_TO_THREAD")
+
     def test_unavailable_jev_preserves_bounded_source(self):
         raw = json.dumps({"rows": [{"id": i, "text": "x" * 4000} for i in range(30)]})
         broken = SimpleNamespace(ask=lambda *a, **k: (_ for _ in ()).throw(JevError("offline")))

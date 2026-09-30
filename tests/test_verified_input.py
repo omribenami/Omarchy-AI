@@ -129,6 +129,13 @@ class InputGuardTests(unittest.TestCase):
         changed = {**args, "body": {"to": "b@example.com"}}
         self.assertFalse(self.guard.run(self.execute, "myapi_write", changed).ok)
 
+    def test_switchboard_can_pin_an_exact_gmail_send(self):
+        args = {"recipient_email": "a@example.com", "subject": "Hi", "body": "Hello"}
+        self.guard.approve_external_write("myapi_gmail_send", args)
+        self.assertTrue(self.guard.run(self.execute, "myapi_gmail_send", args).ok)
+        changed = {**args, "recipient_email": "b@example.com"}
+        self.assertFalse(self.guard.run(self.execute, "myapi_gmail_send", changed).ok)
+
     def test_input_results_say_which_machine_runs_it(self):
         self.window = {'machine': 'REMOTE user@x230 (ssh): commands typed here run on that machine'}
         focused = self.guard.run(self.execute, 'focus_window', {'target': self.address})

@@ -34,6 +34,24 @@ PHONE_SPLICE_ABORT_RMS = 1500.0
 _slots = threading.BoundedSemaphore(2)
 
 
+def _phone_message(raw):
+    """Return a validated (kind, text) data-channel message, or None."""
+    if not isinstance(raw, str) or len(raw) > 32768:
+        raise ValueError('Message too large')
+    message = json.loads(raw)
+    if message.get('type') == 'omarchy.context':
+        text = message.get('text')
+        if not isinstance(text, str):
+            raise ValueError('Invalid context')
+        text = text.strip()
+        return ('context', text) if text else None
+    item = message.get('item') or {}
+    if message.get('type') == 'response.item.create' and item.get('type') == 'message' and item.get('role') == 'user':
+        text = '\n'.join(p.get('text', '') for p in item.get('content', []) if p.get('type') == 'input_text')
+        return ('user', text) if text else None
+    return None
+
+
 class OutputAudio(AudioStreamTrack):
     def __init__(self, adapter):
         super().__init__()
@@ -110,14 +128,9 @@ async def _serve(config, sdp, answer, cancelled):
         @channel.on('message')
         def message_received(raw):
             try:
-                if not isinstance(raw, str) or len(raw) > 32768:
-                    raise ValueError('Message too large')
-                message = json.loads(raw)
-                item = message.get('item') or {}
-                if message.get('type') == 'response.item.create' and item.get('type') == 'message' and item.get('role') == 'user':
-                    text = '\n'.join(p.get('text', '') for p in item.get('content', []) if p.get('type') == 'input_text')
-                    if text:
-                        messages.put_nowait(text)
+                message = _phone_message(raw)
+                if message:
+                    messages.put_nowait(message)
             except (ValueError, TypeError, AttributeError, asyncio.QueueFull):
                 emit({'type': 'error', 'error': {'message': 'Invalid message or too many pending messages'}})
 
@@ -137,9 +150,32 @@ async def _serve(config, sdp, answer, cancelled):
         if track is None:  # kept across a model fallback: the call itself stays up
             track = await incoming.get()
         resampler = av.AudioResampler(format='s16', layout='mono', rate=16000)
+        # Numbers only, no audio: the incoming format once, and every 30 s the
+        # arrival gaps and bursts of the phone's frames. Calls from Flux's
+        # WebView stalled after 2-3 turns while the phone's browser ran 20+
+        # (2026-09-28), with the same levels; delivery timing is the next suspect.
+        described = False
+        last_arrival = window_start = time.monotonic()
+        gaps = []
+        received = 0.0
         try:
             while True:
-                for frame in resampler.resample(await track.recv()):
+                incoming_frame = await track.recv()
+                arrival = time.monotonic()
+                if not described:
+                    log.info('phone audio in: %s Hz, %s, %s samples/frame, %s', incoming_frame.sample_rate,
+                             incoming_frame.layout.name, incoming_frame.samples, incoming_frame.format.name)
+                    described = True
+                gaps.append(arrival - last_arrival)
+                last_arrival = arrival
+                received += incoming_frame.samples / (incoming_frame.sample_rate or 48000)
+                if arrival - window_start >= 30:
+                    ordered = sorted(gaps)
+                    log.info('phone audio timing: %.1fs of audio in %.1fs; frame gap p50=%.0fms p99=%.0fms max=%.0fms; '
+                             '>200ms gaps=%d', received, arrival - window_start, 1000 * ordered[len(ordered) // 2],
+                             1000 * ordered[int(len(ordered) * .99)], 1000 * ordered[-1], sum(g > .2 for g in gaps))
+                    window_start, gaps, received = arrival, [], 0.0
+                for frame in resampler.resample(incoming_frame):
                     pcm = bytes(frame.planes[0])[:frame.samples * 2]
                     # Same stuck-turn guard as the desktop mic (2026-09-24 21:07:50-21:09:26:
                     # a 96s freeze on the phone, where audio used to bypass it). The phone
@@ -156,7 +192,12 @@ async def _serve(config, sdp, answer, cancelled):
     async def send_text(session):
         told = False
         while True:
-            text = await messages.get()
+            kind, text = await messages.get()
+            if kind == 'context':
+                await session.send_client_content(
+                    turns={'role': 'user', 'parts': [{'text': '[Notification context, not a request; use this to understand the next user message]\n' + text}]},
+                    turn_complete=False)
+                continue
             if not told:
                 # Only Text mode types, and it plays no audio: tell her once
                 # so replies are written to be read (turn_complete=False adds

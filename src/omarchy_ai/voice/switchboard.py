@@ -31,6 +31,8 @@ from ..core.jev import Jev, JevError, boolean, choice
 
 log = logging.getLogger("omarchy_ai.voice.switchboard")
 
+MYAPI_WRITES = frozenset({"myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply"})
+
 # No side effects: these may start while Jev is still deciding, and their
 # result is dropped if Jev rejects the call.
 READ_ONLY = frozenset({
@@ -124,11 +126,13 @@ def questions(tool: str, ctx: Context) -> dict:
              "not_asked": "The user did not ask for this.",
              "ambiguous": "The request does not say clearly what to act on."}),
     }
-    if tool == "myapi_write":
+    if tool in MYAPI_WRITES:
         result["confirmed"] = boolean(
-            "Does the user's latest request explicitly say yes or otherwise clearly approve this exact MyApi "
-            "external change after the assistant asked for confirmation? The original instruction to do the "
-            "work is not confirmation, and a refusal, correction, or unrelated answer is false."
+            "Did the user explicitly instruct or approve this exact external change? A direct command such as "
+            "'send this email to X' is approval; a later clear yes after a read-back is also approval. Merely "
+            "asking to write, compose, prepare, or draft an email is NOT approval to send it. Check recipient, "
+            "subject/body, service target, and values against latest request plus earlier user turns. A refusal, "
+            "correction not yet incorporated, ambiguity, or unrelated answer is false."
         )
     return result
 
@@ -139,12 +143,13 @@ def state(tool: str, args: dict, ctx: Context) -> dict:
         "earlier_user_turns": [t[-200:] for t in ctx.earlier[-3:]],
         "fast_pass_route": ctx.hint,
         "calls_this_turn": [{"tool": n, "args": _short(a)} for n, a in ctx.calls[-6:]],
-        "call": {"tool": tool, "args": _short(args), "what_it_does": ctx.description[:240]},
+        "call": {"tool": tool, "args": _short(args, 2_000 if tool in MYAPI_WRITES else 300),
+                 "what_it_does": ctx.description[:240]},
     }
 
 
-def _short(args: dict) -> dict:
-    return {k: (v[:300] if isinstance(v, str) else v) for k, v in (args or {}).items()}
+def _short(args: dict, limit: int = 300) -> dict:
+    return {k: (v[:limit] if isinstance(v, str) else v) for k, v in (args or {}).items()}
 
 
 def _hint_allows(executor: str, hint: dict | None) -> bool:
@@ -161,13 +166,14 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
     route, p = answers["route"]["choice"], answers["route"]["p"]
     match, gap = answers["matches"]["p"], answers["gap"]["choice"]
     evidence = {"route": route, "p": round(p, 2), "matches": round(match, 2), "gap": gap}
-    if tool == "myapi_write":
+    if tool in MYAPI_WRITES:
         confirmed = answers.get("confirmed", {}).get("p", 0)
         evidence["confirmed"] = round(confirmed, 2)
         if confirmed < 0.8:
             return Verdict("reject", evidence=evidence, message=(
-                "MyApi action not run: Jev did not find an explicit confirmation of this exact external "
-                "change in the user's latest answer. Do not retry unless the user clearly says yes."))
+                "MyApi action not run: Jev did not find an explicit instruction or confirmation for this exact "
+                "external change. Read back the exact target and content, ask one short confirmation question, "
+                "and retry unchanged only after the user clearly says yes."))
     confident_hint = bool(ctx.hint and ctx.hint.get("p", 0) >= 0.8)
     bar = DESKTOP_REROUTE_P if route == "desktop_task" and confident_hint else REROUTE_P
     if route in REROUTES and p >= bar and _hint_allows(route, ctx.hint):
@@ -233,7 +239,7 @@ class Switchboard:
                 return cached[1]
         started = time.monotonic()
         if not ctx.request.strip():
-            if tool == "myapi_write":
+            if tool in MYAPI_WRITES:
                 verdict = Verdict("reject", evidence={"confirmation": "no user request"}, message=(
                     "MyApi action not run: there is no current user confirmation for this external change."))
             else:
@@ -253,7 +259,7 @@ class Switchboard:
                                                    timeout=TIMEOUT, retries=0, fail_fast=True)
                 verdict = decide(answers, tool, args, ctx)
             except (JevError, KeyError) as exc:
-                if tool == "myapi_write":
+                if tool in MYAPI_WRITES:
                     log.warning("Switchboard unavailable, refusing %s: %s", tool, str(exc)[:160])
                     verdict = Verdict("reject", evidence={"unavailable": str(exc)[:120]}, message=(
                         "MyApi action not run: confirmation could not be verified because Jev is unavailable."))

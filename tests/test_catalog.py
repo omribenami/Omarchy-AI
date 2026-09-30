@@ -134,6 +134,18 @@ class CatalogTests(unittest.TestCase):
     def test_signatures_mark_required_parameters(self):
         self.assertIn("set_reminder(minutes*, message)", catalog.signatures())
 
+    def test_documented_myapi_operation_keeps_exact_execute_shape(self):
+        r = catalog.resolve({
+            "name": "GMAIL_CREATE_EMAIL_DRAFT",
+            "parameters": {"recipient_email": "a@example.com", "body": "hello"},
+            "request": "Create a draft to a@example.com",
+        }, myapi_on=True)
+        self.assertTrue(r.run)
+        self.assertEqual(r.tool, "myapi_execute")
+        self.assertEqual(r.args["service"], "gmail")
+        self.assertEqual(r.args["operation"], "GMAIL_CREATE_EMAIL_DRAFT")
+        self.assertEqual(r.args["arguments"]["body"], "hello")
+
 
 class LiveConfigTests(unittest.TestCase):
     def test_picker_declares_core_plus_use_tool_and_explains_the_catalog(self):
@@ -202,6 +214,14 @@ class UseToolDispatchTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertIn("set_reminder", response["message"])
         self.assertEqual(s._escalator._failures, [])
+
+    def test_no_catalog_capability_is_a_failure_for_immediate_escalation(self):
+        s = self.session(lambda *a: self.fail("no review for an offer"))
+        run, response = self.dispatch(
+            s, {"request": "control the sprinkler"},
+            catalog.Resolution(False, message="No catalog tool does this. Use start_task."))
+        self.assertFalse(response["ok"])
+        self.assertIn("Missing capability", response["message"])
 
     def test_repeated_offers_become_a_failure(self):
         # Journal 2026-09-27: every offer was ok=True, so ~60 in a row never escalated.

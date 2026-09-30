@@ -119,6 +119,20 @@ body[data-hud="speaking"] #voiceAscii { opacity:1; font-size:36px; }
 #sendBtn { min-height:var(--tap-min); padding:0 14px; border:1px solid var(--accent); border-radius:8px;
            background:var(--accent-bg); color:var(--accent); font-family:var(--font-mono); font-size:12.5px; }
 #sendBtn:disabled { opacity:.5; }
+/* The Omarchy logo beside Send: talk instead of typing. */
+#talkInline { flex:0 0 auto; width:var(--tap-min); min-height:var(--tap-min); display:grid; place-items:center; padding:0;
+              border:1px solid var(--line); border-radius:8px; background:var(--bg-sunk); }
+#talkInline img { width:26px; height:26px; }
+#talkInline:disabled { opacity:.5; }
+/* The ring area clips rather than spilling over the dock when the screen is short. */
+#stage { overflow:hidden; }
+/* While typing, the keyboard takes half the screen: the ring and the button
+   rows step aside and the conversation gets the rest (2026-09-29: in Flux the
+   ring and "Start listening" covered the text field). */
+body[data-typing] #stage, body[data-typing] .primaryRow, body[data-typing] .controls { display:none; }
+body[data-typing] #voice > footer { flex:1; min-height:0; }
+body[data-typing] #textPanel { flex:1; max-height:none; }
+body[data-typing] #textPanel #transcript { flex:1; }
 #err { margin:0; font-family:var(--font-mono); font-size:12px; color:var(--red); }
 #err:empty { display:none; }
 #speakerStatus { position:fixed; top:max(8px, env(safe-area-inset-top)); left:12px; right:12px; z-index:20; margin:0;
@@ -172,6 +186,9 @@ body[data-mirror-controls="hidden"] #mirrorControls { opacity:0; transform:trans
              transition:bottom .2s, color .2s; }
 body[data-mirror-controls="hidden"] #mirrorEye { bottom:var(--safe-b); color:var(--state); }
 #mirrorEye svg { width:18px; height:18px; }
+/* The open chat floats in the same corner, so the eye would cover Send;
+   the chat has its own close button. */
+#mirrorChat:not([hidden]) ~ #mirrorEye { display:none; }
 #mirrorEye .eyeSlash { display:none; }
 #mirrorEye[aria-expanded="false"] .eyeSlash { display:block; }
 #mirrorHint { position:absolute; left:0; right:0; bottom:calc(var(--safe-b) + 56px); z-index:12; text-align:center;
@@ -252,7 +269,7 @@ body[data-mirror="on"] #speakerStatus { left:auto; right:36px; max-width:min(320
       </div>
       <div id="textPanel" hidden>
         <div id="transcript" hidden aria-live="polite"></div>
-        <form id="composer" hidden><input id="messageInput" aria-label="Message Omarchy" placeholder="Message Omarchy…" maxlength="8000" autocomplete="off" enterkeyhint="send" required><button id="sendBtn" type="submit">Send</button></form>
+        <form id="composer" hidden><input id="messageInput" aria-label="Message Omarchy" placeholder="Message Omarchy…" maxlength="8000" autocomplete="off" enterkeyhint="send" required><button id="talkInline" type="button" aria-label="Talk to Omarchy instead" title="Talk instead"><img src="omarchy-logo.png" alt=""></button><button id="sendBtn" type="submit">Send</button></form>
       </div>
       <div class="controls"><button id="modeBtn" aria-pressed="false">Text</button><button id="outputBtn">Output</button><button id="transcriptBtn" aria-expanded="false">Transcript</button><button id="speakerBtn" type="button">Enable audio</button><button id="talkFullscreen" type="button" aria-label="Enter fullscreen" title="Fullscreen">⛶</button></div>
       <p id="err" role="alert"></p>
@@ -321,6 +338,10 @@ const connPill = document.getElementById('connPill');
 const micStateEl = document.getElementById('micState');
 const mirrorStatePill = document.getElementById('mirrorStatePill');
 const voiceAscii = document.getElementById('voiceAscii');
+// Flux's native assistant sheet hosts this page out of sight and draws its
+// own UI from these reports (state, transcript, errors, the ASCII meter);
+// in a browser the bridge is absent.
+const nativeUi = globalThis.FluxAssist;
 const statusEl = document.getElementById('status');
 const errEl = document.getElementById('err');
 const transcriptEl = document.getElementById('transcript');
@@ -338,6 +359,7 @@ let replyBusy = false;
 let hasBackendText = false;
 let pendingTools = 0;
 let modeChanging = false;
+let pendingNotificationContext = '';
 const composer = document.getElementById('composer');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
@@ -455,6 +477,7 @@ function updateAscii() {
     out += r < .04 && idx > 0 ? GLITCH_CHARS[Math.floor(Math.random()*GLITCH_CHARS.length)] : r < .62 ? BRAILLE_CHARS[idx] : BLOCK_CHARS[idx];
   }
   out = out.padStart(14, ' ');
+  nativeUi?.ascii(out);
   if (mirrorOn) mirrorAscii.textContent = out.slice(-10);
   else voiceAscii.textContent = out;
 }
@@ -579,6 +602,9 @@ for (const container of [document.querySelector('.controls'), document.getElemen
   container.insertBefore(button, container.firstElementChild?.nextElementSibling || null);
   boostButtons.push(button);
 }
+// Declared before syncPhonePlayback, which the text page runs during startup.
+let castNode = null, castSource = null, castAvailable = false, castActive = false;
+let routeGeneration = 0;
 function syncPhonePlayback() {
   // Text mode answers on screen only: nothing unmutes her while it is on
   // (2026-09-26: "she answers in voice... I want her to answer only in text").
@@ -740,6 +766,7 @@ function renderHud() {
   mirrorListen.textContent = h.action;
   mirrorListen.setAttribute('aria-pressed', String(key === 'listening' || key === 'speaking'));
   talkBtn.setAttribute('aria-label', live ? 'End conversation' : connecting ? 'Connecting' : 'Start conversation');
+  nativeUi?.state(key, statusEl.textContent);
 }
 
 function setConvState(next) {
@@ -757,10 +784,12 @@ function setStatus(text, cls) {
 
 function setError(text) {
   errEl.textContent = text || '';
+  nativeUi?.error(text || '');
 }
 
 function appendTranscript(role, delta) {
   if (!delta) return;
+  nativeUi?.transcript(role, delta);
   if (role === 'user') {
     if (!userLine) {
       userLine = document.createElement('div');
@@ -886,6 +915,8 @@ function updateComposer() {
   mirrorListen.disabled = connecting || modeChanging;
   primaryBtn.disabled = connecting || modeChanging;
   sendBtn.disabled = connecting || replyBusy || pendingTools > 0 || modeChanging;
+  document.getElementById('talkInline').disabled = connecting || modeChanging;
+  nativeUi?.busy?.(sendBtn.disabled);
   sendBtn.textContent = connecting ? 'Connecting…' : (replyBusy || pendingTools > 0) ? 'Replying…' : 'Send';
 }
 function idleStatus() {
@@ -1049,6 +1080,21 @@ function onTalk(event) {
 }
 talkBtn.addEventListener('click', onTalk);
 primaryBtn.addEventListener('click', onTalk);
+// Opened as the phone's assistant (Flux's assist entry adds ?assist=1):
+// the long-press was the tap, so start listening straight away.
+if (/[?&]assist\b/.test(globalThis.location?.search || '')) start();
+// Flux's native chat (?text=1) hosts this page out of sight: text mode, so
+// answers stay on screen, and it sends each message through omarchySend.
+if (/[?&]text\b/.test(globalThis.location?.search || '')) {
+  mode = 'text';
+  modeBtn.textContent = 'Voice';
+  modeBtn.setAttribute('aria-pressed', 'true');
+  syncPhonePlayback();
+}
+globalThis.omarchySend = (text) => { messageInput.value = String(text); composer.requestSubmit(); };
+// Flux supplies a tapped notification here. It is held until the user asks
+// something, so merely opening the chat never causes an assistant response.
+globalThis.omarchyContext = (text) => { pendingNotificationContext = String(text || '').trim(); };
 
 const outputBtn = document.getElementById('outputBtn');
 async function selectSpeaker(ask = true) {
@@ -1100,8 +1146,6 @@ document.getElementById('speakerBtn').addEventListener('click', () => selectSpea
 document.getElementById('mirrorSpeakerBtn').addEventListener('click', () => selectSpeaker());
 document.getElementById('speakerBtn').textContent = 'Enable audio';
 document.getElementById('mirrorSpeakerBtn').textContent = 'Enable audio';
-let castNode = null, castSource = null, castAvailable = false, castActive = false;
-let routeGeneration = 0;
 function usePhone() {
   routeGeneration++;
   castActive = false;
@@ -1209,6 +1253,18 @@ async function switchInputMode() {
   }
 }
 modeBtn.addEventListener('click', switchInputMode);
+// Typing layout: see body[data-typing] in the CSS.
+messageInput.addEventListener('focus', () => { document.body.dataset.typing = 'on'; });
+messageInput.addEventListener('blur', () => { delete document.body.dataset.typing; });
+// A tap on the composer's buttons keeps the keyboard up until the button acts,
+// so the layout does not jump away from under the finger.
+composer.addEventListener('pointerdown', (event) => { if (event.target.closest('button')) event.preventDefault(); });
+// The Omarchy logo beside Send: stop typing and talk.
+document.getElementById('talkInline').addEventListener('click', async () => {
+  messageInput.blur();
+  if (mode === 'text') await switchInputMode();
+  if (mode === 'voice' && !live) await start();
+});
 composer.addEventListener('submit', async (event) => {
   event.preventDefault();
   const text = messageInput.value.trim();
@@ -1222,10 +1278,16 @@ composer.addEventListener('submit', async (event) => {
   if (!dc || dc.readyState !== 'open') { setError('Disconnected. Try sending again.'); return; }
   try {
     clearTimeout(speakTimer);
+    if (pendingNotificationContext) {
+      dc.send(JSON.stringify({type: 'omarchy.context', text: pendingNotificationContext}));
+      pendingNotificationContext = '';
+      nativeUi?.log?.('notification context sent to data channel');
+    }
     dc.send(JSON.stringify({type: 'response.item.create', item: {
       type: 'message', role: 'user', content: [{type: 'input_text', text}],
     }}));
     dc.send(JSON.stringify({type: 'response.create'}));
+    nativeUi?.log?.('text turn sent to data channel');
     userLine = null; assistantLine = null; hasBackendText = false;
     appendTranscript('user', text);
     userLine = null;
@@ -1291,7 +1353,11 @@ function renderApproval(data) {
   apPin.placeholder = pinSet ? 'Approval PIN' : 'No approval PIN set — Assistant Settings > Phone Bridge';
   document.getElementById('apApprove').disabled = approvalBusy || !pinSet;
   document.getElementById('apDeny').disabled = approvalBusy;
-  if (!same) { apPin.value = ''; apMsg.textContent = ''; }
+  if (!same) {
+    apPin.value = '';
+    // Flux shows a fingerprint prompt for the same request; the PIN stays as a fallback.
+    apMsg.textContent = data.fingerprint ? 'Approve with your fingerprint in the Flux prompt, or with the PIN.' : '';
+  }
 }
 async function refreshApprovals() {
   if (approvalBusy) return;

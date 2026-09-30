@@ -74,12 +74,25 @@ def catalog(myapi_on: bool = False) -> dict[str, dict]:
 
 def signatures(myapi_on: bool = False) -> str:
     """name(param*, param) per catalog tool, * = required: enough for the live
-    model to fill args in one call when it already knows the tool."""
+    model to fill args in one call when it already knows the tool.
+
+    Tools the user added also carry their description: the instructions cover
+    the built-in ones, not these. Journal 2026-09-29 18:58: seeing only a
+    smart-home user tool's bare signature, the model asked it to "list all
+    devices to find" the one the user named, twice (each ran as a command and
+    switched on the wrong device), and needed four calls for one command."""
     def sig(t):
         schema = t.get("parameters") or {}
         required = set(schema.get("required") or [])
         return f"{t['name']}({', '.join(k + ('*' if k in required else '') for k in schema.get('properties') or {})})"
-    return ", ".join(sig(t) for t in catalog(myapi_on).values())
+    try:
+        from . import user_tools
+        added = {t["name"] for t in user_tools.schemas()}
+    except ImportError:
+        added = set()
+    tools = catalog(myapi_on).values()
+    return ", ".join(sig(t) for t in tools if t["name"] not in added) + "".join(
+        f"\n- {sig(t)}: {t['description']}" for t in tools if t["name"] in added)
 
 
 def declared() -> list[dict]:
@@ -195,6 +208,22 @@ def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fi
     tools = catalog(myapi_on)
     name, given = _normalize(args, tools)
     request = str(args.get("request") or "").strip()
+    # MyApi method discovery returns exact operations such as
+    # GMAIL_CREATE_EMAIL_DRAFT. Gemini naturally calls that name directly
+    # with `parameters`, even though only our stable catalog tools are
+    # declared. Preserve the documented method and arguments instead of
+    # asking a text model to guess a raw provider REST path.
+    parameters = args.get("parameters")
+    if (myapi_on and name not in tools and isinstance(parameters, dict)
+            and re.fullmatch(r"[A-Z][A-Z0-9_]+", name)
+            and "myapi_execute" in tools):
+        service = name.split("_", 1)[0].lower()
+        return Resolution(True, "myapi_execute", {
+            "service": service,
+            "operation": name,
+            "arguments": parameters,
+            "description": request or f"Execute {name} on {service}",
+        }, evidence={"by": "myapi_operation", "operation": name})
     if name in CORE:
         return Resolution(False, message=f"{name} is one of your own tools: call it directly, not through use_tool.")
     if name in tools:

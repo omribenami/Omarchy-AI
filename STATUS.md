@@ -1,5 +1,212 @@
 # Status
 
+## 2026-09-29: first phone tests of Omarchy AI in Flux, fingerprint approvals live
+
+Released as 0.12.0 (Omarchy AI side). The Flux Android changes stay on the
+local branch `omarchy-ai-assistant` in `~/Git/flux`: Flux has no license, so the
+code and the APK are unpublished until the author answers
+[bjarneo/flux#77](https://github.com/bjarneo/flux/issues/77). User docs are in `docs/FLUX.md`.
+
+- Approvals were PIN-only because nothing was enrolled: `flux-cli approve status`
+  said "No phone can approve", and `/etc/flux/approve/` did not exist. After
+  `sudo flux-cli approve setup`, `flux_approve.available()` and `sudo_ready()`
+  are both True. `request()` was approved from the phone in 5.3 s, and
+  `sudo true` in 4.8 s. The earlier "no prompt" reports were 20 s timeouts
+  (fluxd log: "sudo for <user> asks <phone>", then `pam_exec ... exit code 1`
+  20 s later), with the phone not in hand.
+- polkit-1 was enabled with `flux-cli approve enable polkit-1`. `enable hyprlock`
+  fails because Omarchy's Quickshell lock uses the PAM service
+  `omarchy-lock-password` (fingerprint path `omarchy-lock-fingerprint`, gated on
+  fprintd). The helper line was added there by hand, after the faillock
+  preauth. `omarchy-apply-lock` overwrites that file.
+- Text chat never activated. The WebView console showed `Uncaught ReferenceError:
+  Cannot access 'castActive' before initialization` (index.html:608), which
+  stopped the script before the text bridge existed.
+  `syncPhonePlayback()` runs at startup in `?text=1` and read a `let` declared
+  500 lines later. The declarations were moved above it. Reproduced and
+  verified with headless Chromium. It is a latent page bug, not Flux-specific.
+- The mirror-key call played from the earpiece on One UI even though dumpsys
+  showed "Active communication device: speaker". WebView's players are
+  `USAGE_MEDIA`, and Samsung routes them apart from the communication device.
+  The app now also sets `isSpeakerphoneOn` after the mode becomes
+  IN_COMMUNICATION, but only with no external output. Leak: after the call,
+  Flux stayed a "Communication route client" (speaker), because
+  `setSpeakerphoneOn` registers a route that turning it off does not remove.
+  Release now turns speakerphone off first and then always calls
+  `clearCommunicationDevice()`.
+- The Codex runs died at first with no error. `/tmp` is a tmpfs with
+  `usrquota`, and 6 GB of old Claude session scratch (a 4.2 GB repo copy)
+  exhausted the user's quota ("Disk quota exceeded"; even `pwd` failed).
+- adb: `adb tcpip 5555` gives a fixed port over LAN and Tailscale. The full
+  APK is 255 MB, mostly `libonnxruntime.so` for 4 ABIs, which is too big to
+  install over Tailscale. An arm64-only copy (zip -d other ABIs, zipalign,
+  apksigner with the debug key) is 105 MB and installs.
+
+## 2026-09-29: user tools show their description to the live model
+
+Journal 2026-09-29 18:58–19:00: a one-line smart-home command took three
+phone sessions and five `use_tool` calls. With the catalog picker on, the live
+model saw only a user tool's bare signature (`name(operation*, text, ...)`),
+never its description (the part that says "commands go to `ask` in the
+user's words, in one call"). So it invented a "list all devices to find X
+first" plan. The argument filler turned that request into a command twice, and
+both times the wrong device was switched on. `catalog.signatures()` now appends
+each user-added tool's full description (built-in tools are already covered by
+the instructions). Device-specific recipes, such as which entity and service to
+use, belong in the local tool's own `tool.json` description, not in the repo.
+It takes effect for new sessions after a daemon restart.
+
+## 2026-09-28: Omarchy AI inside Flux (prototype; upstream asked in bjarneo/flux#77)
+
+Goal: decide whether to offer [Flux](https://github.com/bjarneo/flux) a PR that
+embeds Omarchy AI in its Android app, switchable from Flux's settings and usable
+as the phone's default assistant. Flux has no plugin system (Go daemon, KDE
+Connect v8 + Flux extensions, native Kotlin/Compose app, no license chosen yet),
+so the prototype is a branch in a local clone (`~/Git/flux`, branch
+`omarchy-ai-assistant`) and embeds our existing phone page instead of porting it.
+
+- Flux side: `core/OmarchyAi.kt` probes `https://<paired computer>:8766/api/hello`,
+  and when it answers the device page gets an "Omarchy AI" switch, an
+  "Omarchy AI" tile (WebView of our page) and a "Phone assistant" switch. The
+  assistant is a native, Google-style bottom sheet (`OmarchyAssistActivity`,
+  `ACTION_ASSIST`, translucent, disabled until that switch is on so other Flux
+  users are never offered Flux as an assistant). It shows only our ASCII meter,
+  the state word and the transcript; the voice call itself runs in our page in a
+  hidden WebView, which reports state/transcript/ASCII frames/errors through a
+  `FluxAssist` JS bridge (absent in a browser, so the page is unchanged there).
+  First design (the whole page as the assistant) was rejected by the user.
+  The WebView pins our cert's public key on first open (TOFU), grants the mic
+  only to our origin, and opens other links in the browser.
+- Our side: `/api/hello` (public, no pairing info, no presence side effect);
+  the TLS key is now kept across restarts (only the cert is reissued for the
+  current addresses) so the pin survives restarts and DHCP changes; the page
+  starts listening on load when opened with `?assist=1`.
+- Pairing is automatic for any Flux user (a copy-link-to-clipboard flow was
+  built first and dropped: the user wants it to work for other people's setups
+  with no manual step). `phone/flux_pairing.py`: the phone asks
+  `/api/flux/challenge`, signs `omarchy-ai-flux-pair\n<nonce>\n<server key pin>\n<device id>`
+  with its Flux identity key, and `/api/flux/pair` verifies it against that
+  device's certificate in desktop Flux's `$XDG_DATA_HOME/flux/devices.json`,
+  then sets the normal session cookie, which Flux puts in the WebView. Nonces
+  are single-use, 60 s; the pin binds the signature to our key so a look-alike
+  server cannot relay it; unpairing in Flux stops new sessions. Covered by
+  `tests/test_phone_flux_pairing.py`, incl. a real-TLS end-to-end run.
+- First live try inside Flux: "connection failed: could not start audio source"
+  (getUserMedia NotReadableError). Flux's manifest lacked
+  `MODIFY_AUDIO_SETTINGS`, which Chromium WebView needs for WebRTC capture;
+  added. Confirmed on the phone afterwards: calls ran, and Flux pairing worked
+  with no manual step (22:33:10 "Flux-paired phone … accepted").
+- User report on the first real calls: hard to hear, stops answering after 1-2
+  sentences, wrong language. Evidence: (1) WebView puts a mic-using page in
+  voice-call mode, which Android plays on the earpiece (Chrome switches to the
+  loudspeaker itself; WebView leaves it to the app) -> Flux now routes the call
+  to the loudspeaker unless a headset is connected, and the volume keys drive
+  the call stream. (2) The stalls start after the daemon's own quota alerts at
+  22:16-22:20 (Gemini quota, OpenAI and Vercel credit all exhausted; 429
+  RESOURCE_EXHAUSTED); browser calls earlier the same day did not stall.
+  (3) Wrong-language transcripts ("chiamati", "Bangladeş", ...) predate Flux,
+  from the browser and the desktop alike: Gemini Live's own recognition of
+  Hebrew; `user_languages` already tells the model to treat them as misheard.
+  (2) and (3) are not Flux issues and were left for separate work.
+- Fingerprint instead of PIN/password (`execution/flux_approve.py`): uses Flux's
+  enrolled approval key (`sudo flux-cli approve setup` -> root-owned
+  `/etc/flux/approve/<user>.pub`, EC P-256 in the phone's Keystore, signs only
+  after a strong biometric). A task waiting for approval also asks the phone
+  over the user's fluxd socket (`approve.request`/`approve.wait`, SO_PEERCRED
+  checked); Omarchy rebuilds the 8-line `flux-approve-v1` message itself and
+  verifies the signature with the root-owned key, as Flux's PAM helper does. No
+  answer leaves the notification/PIN channels open. With Flux's PAM helper on for
+  sudo (`sudo_ready`), task `sudo` and privileged edits send no saved password
+  (the phone approves; timeout raised from 15 s to 130 s so the phone can answer).
+  No Flux changes needed for this part. Not yet live-tested: needs the enroll.
+- Wake word on the phone ("Listen for Omarchy"): Flux runs openWakeWord with
+  ONNX Runtime (1.30.0) in a microphone foreground service, on the desktop's own
+  models, downloaded from `/api/wake` (paired only; `phone/wake_models.py` reuses
+  voice/wake.py's model lookup, first model, `wake_threshold`). `WakeStream.kt`
+  mirrors openWakeWord's streaming steps (1280-sample chunks + 480 context,
+  mel x/10+2, 76-frame embedding window, last-16 embeddings, 5 warm-up zeros;
+  unit-tested with fake models). Releases the mic while an Omarchy screen is
+  open. Verified live 23:34:15: "wake word omachy heard, score 0.914" (threshold
+  0.48). Flux holds the assistant role, which also grants it overlay permission,
+  so the sheet opens over other apps. APK grows 119 -> 254 MB (all ABIs): needs
+  ABI splits or on-demand runtime before any PR.
+- Flux device page redesign: an "Omarchy AI" section with an animated glitch
+  banner (block letters, red/cyan split, corruption bursts), Talk to Omarchy,
+  Mirror to TV (bottom sheet listing `/api/tvs` = display/registry.py, cast via
+  `/api/cast` -> start_casting, stop via `/api/cast/stop`), and the Omarchy
+  switches. Every Flux feature gated by a config.toml key (remote_input,
+  remote_desktop, herdr, herdr_control, herdr_terminals) gets the Omarchy logo
+  as a button (beside the home tile and in the feature's "off" screen) that
+  sends an exact request to `/api/ask` -> Task Runtime start_task. The logo
+  comes from our server, so Flux ships no Omarchy image. Rendering verified by
+  screenshot; Mirror to TV and the logo buttons not yet exercised end to end.
+- First live press of a logo button (Remote desktop, 2026-09-28 23:46/23:59): the
+  request reached the Task Runtime, but its worker's permission layer refused
+  both editing ~/.config and even `systemctl --user status fluxd`, so the task
+  stopped with a question that only reaches the desktop/voice; the phone saw
+  nothing. (Workers were also timing out: claude/codex 45 s, Gateway out of
+  credit.) A fixed, known edit should not need an LLM task: the button now calls
+  `/api/flux/setting` -> `phone/flux_settings.py`, which turns on only whitelisted
+  keys through fluxd's own `settings.set` IPC (saves config.toml and applies it
+  live, the call Flux's desktop window uses) and confirms via `state`. The phone
+  screen updates itself when fluxd pushes the new state. Buttons now live only
+  inside the features' "off" screens; the section moved below Sync with a
+  "Sync"-style label that decrypts through the visualizer glyphs every 3-5 s.
+- Omarchy notifications on the phone (`phone/flux_notify.py`): fluxd's
+  `notify.send` (behind `flux-cli notify`) to every paired, connected phone,
+  off the caller's thread. Hooked beside every existing desktop notification:
+  task events (runtime._notify: approval, question, done, failed), routines
+  (agenda.notify), provider credit/quota alerts (quota._alert), tool-install
+  approvals (user_tools). `flux_notifications: false` turns it off. No Flux
+  changes. Test notification reached the phone (1 device) 2026-09-29 00:20.
+- Phone page, keyboard up (reported from Flux, 2026-09-29): `#stage` had
+  min-height:0 but no clipping, so on a short viewport the ring and status text
+  painted over "Start listening" and the text field (reproduced headless at
+  412x430). Now `#stage` clips, and while the text field has focus
+  (`body[data-typing]`) the ring and button rows hide, the conversation fills the
+  space and the composer sits above the keyboard; composer buttons keep focus on
+  pointerdown so the relayout cannot swallow the tap. New Omarchy-logo button
+  between the field and Send: stop typing, switch to voice, start listening.
+- Flux section: "Talk to Omarchy" (the whole page) replaced by "Text with
+  Omarchy", a native chat (OmarchyAiActivity rewritten): the page runs hidden
+  with `?text=1` (text mode, answers on screen only), Flux sends through the
+  page's `omarchySend`, and lines come back over the FluxAssist bridge
+  (transcript + a new `busy` report). Flux's own dictation mic key sits in the
+  field. "Listen for Omarchy" renamed "Wake Omarchy". Built and unit-tested;
+  not yet installed on the phone.
+- Flux section: "Talk to Omarchy" (the whole page) replaced by "Text with
+  Omarchy", a native chat (OmarchyAiActivity rewritten): the page runs hidden
+  with `?text=1` (text mode, answers on screen only), Flux sends through the
+  page's `omarchySend`, and lines come back over the FluxAssist bridge
+  (transcript + a new `busy` report). Flux's own dictation mic key sits in the
+  field. "Listen for Omarchy" renamed "Wake Omarchy".
+- Desktop Flux installed from the v0.5.0 release package (checksum verified),
+  not yay: the AUR recipe needs go>=1.27.1 and Arch has 1.27.0. `flux-cli doctor`
+  clean apart from the optional webcam module; no inbound firewall rule needed
+  (the desktop dials the phone). Temporary ufw rule 8799/tcp serves the APK.
+- Builds and unit tests pass (27 suites, incl. `OmarchyAiLinksTest`). Not yet
+  verified on the phone: detection, WebView mic, the assistant sheet, and whether
+  One UI lists an `ACTION_ASSIST`-only app as the digital assistant.
+
+## 2026-09-28: Gmail send/reply correctness after the first 0.11.3 live run
+
+- The first attempted email after 0.11.3 never reached MyApi. Gemini discovered
+  `GMAIL_CREATE_EMAIL_DRAFT`, called that dynamic name with `parameters`, the
+  catalog tried to reinterpret it as a raw `myapi_write`, and Jev correctly
+  rejected it (confirmation p=0.09). The assistant neither asked for confirmation
+  nor retried. A draft would not have sent the message anyway.
+- Gmail now has direct `myapi_gmail_send` (`GMAIL_SEND_EMAIL`) and
+  `myapi_gmail_reply` (`GMAIL_REPLY_TO_THREAD`) tools. They skip method discovery,
+  cannot confuse drafting with sending, and preserve the thread/recipient/body.
+  An exact direct "send" command counts as approval; write/compose/draft does not.
+- Generic documented mutations use `myapi_execute`, preserving MyApi's method and
+  `{params: {arguments}}` shape. Dynamic uppercase method calls from the live model
+  are normalized to it instead of guessed into REST proxy paths.
+- Large valid JSON is parsed before fallback bounding. Method catalogs consider
+  every record with a local lexical shortlist before the one Jev ranking call;
+  previously only the first 30 were visible. A live Gmail probe now selects
+  `GMAIL_REPLY_TO_THREAD` first in ~0.65 s and compacts 68,721 characters to ~13k.
+
 ## 2026-09-29: settings panel works from a marketplace install
 
 `omarchy plugin add` of `omarchy-ai.settings` used to leave an unreplaced

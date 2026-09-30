@@ -37,10 +37,43 @@ class PhoneBridgeTests(unittest.TestCase):
                 for name in ['IP:192.0.2.20', 'IP:100.64.0.1', 'DNS:host.tail.ts.net']:
                     self.assertIn(name, san)
 
+    @unittest.skipUnless(server.shutil.which('openssl'), 'needs openssl')
+    def test_reissued_certificate_keeps_the_key(self):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import serialization
+        def public_key(path):
+            return x509.load_pem_x509_certificate(path.read_bytes()).public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(server, '_CERT_DIR', root), patch.object(server, '_CERT_PATH', root/'cert.pem'), patch.object(server, '_KEY_PATH', root/'key.pem'), patch.object(server, '_tailscale_address', return_value=(None, None)):
+                with patch.object(server, '_primary_lan_ip', return_value='192.0.2.20'):
+                    self.assertIsNotNone(server._ensure_self_signed_cert())
+                first = public_key(root/'cert.pem')
+                with patch.object(server, '_primary_lan_ip', return_value='192.0.2.21'):
+                    self.assertIsNotNone(server._ensure_self_signed_cert())
+                self.assertEqual(public_key(root/'cert.pem'), first)
+                san = x509.load_pem_x509_certificate((root/'cert.pem').read_bytes()).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                self.assertIn('192.0.2.21', [str(ip) for ip in san.get_values_for_type(x509.IPAddress)])
+
     def test_pcm_rejects_invalid_sizes(self):
         for packet in [b'', b'x', bytes(8194)]:
             with self.assertRaises(ValueError):
                 cast_audio.send_pcm(packet)
+
+    def test_phone_notification_context_is_separate_from_user_input(self):
+        from omarchy_ai.phone.gemini import _phone_message
+        self.assertEqual(
+            _phone_message(json.dumps({'type': 'omarchy.context', 'text': 'Build failed\nexit 1'})),
+            ('context', 'Build failed\nexit 1'),
+        )
+        self.assertEqual(
+            _phone_message(json.dumps({'type': 'response.item.create', 'item': {
+                'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'why?'}],
+            }})),
+            ('user', 'why?'),
+        )
+        self.assertIsNone(_phone_message(json.dumps({'type': 'response.create'})))
 
 
 if __name__ == '__main__':
