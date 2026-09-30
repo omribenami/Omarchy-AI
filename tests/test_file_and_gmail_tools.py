@@ -158,6 +158,32 @@ class GmailAttachmentToolTests(unittest.TestCase):
                    for call in client.request.call_args_list]
         self.assertEqual(queries, payload["gmail_search"]["attempted"])
 
+    def test_gmail_search_returns_a_digest_she_can_read_whole(self):
+        # 2026-09-30: ~1 MB per search, of which Jev passed on an attachment list or a header block.
+        big = "word " * 20000
+        messages = [{"messageId": f"m{i}", "threadId": "t1", "messageTimestamp": "2026-09-29T18:00:00Z",
+                     "sender": "Chris Watson <chris@example.com>", "to": "me@example.com",
+                     "subject": "Flooring quote", "labelIds": ["UNREAD", "INBOX"] if i == 0 else ["INBOX"],
+                     "attachmentList": [{"filename": "quote.pdf", "attachmentId": "a" * 300}],
+                     "messageText": big, "payload": {"headers": [{"name": "X", "value": "y" * 5000}] * 40}}
+                    for i in range(10)]
+        client = MagicMock()
+        client.request.return_value = {"data": {"response": {"data": {"messages": messages}}}}
+        with patch.object(actions.myapi, "is_connected", return_value=True), \
+             patch.object(actions.myapi, "MyApiClient", return_value=client), \
+             patch.object(actions.myapi_usage, "record"):
+            result = actions.myapi_gmail_search({"query": "from:chris"})
+        from omarchy_ai.voice.myapi_refinement import FAST_RESULT_CHARS
+        self.assertLess(len(result.message), FAST_RESULT_CHARS)  # never cut down by the refinement
+        rows = json.loads(result.message)["messages"]
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(rows[0]["thread_id"], "t1")
+        self.assertEqual(rows[0]["from"], "Chris Watson <chris@example.com>")
+        self.assertEqual(rows[0]["attachments"], ["quote.pdf"])
+        self.assertTrue(rows[0]["unread"])
+        self.assertFalse(rows[1]["unread"])
+        self.assertTrue(rows[0]["text"].startswith("word word"))
+
     def test_generic_gmail_zero_result_uses_search_fallback(self):
         empty_rest = {"ok": True, "data": {"resultSizeEstimate": 0}}
         empty = {"data": {"response": {"data": {"messages": []}}}}

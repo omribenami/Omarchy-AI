@@ -104,14 +104,15 @@ def build_live_config(config):
     declared = shared["delegation"]["responses"]["tools"]
     instructions = shared["instructions"]
     if getattr(config, "tool_picker", False):
-        declared = [t for t in declared if t["name"] == "end_conversation"] + catalog.declared()
+        myapi_on = getattr(config, "myapi_enabled", False) and myapi.is_connected()
+        declared = [t for t in declared if t["name"] == "end_conversation"] + catalog.declared(myapi_on)
         instructions += (
             "\n\nTOOL CATALOG: Only your most used tools are declared directly. Every other tool named in these "
             "instructions (start_casting, set_reminder, run_omarchy_command, report_issue, list_commands, "
             "submit_sudo_password, browser_control, schedule_task, and the rest) is reached with use_tool: pass "
             "`name` and `args` when you know them, or just `request` and Jev picks the right tool in a fraction "
             "of a second. Never tell the user you lack a tool before asking use_tool. Catalog (* = required): "
-            + catalog.signatures(getattr(config, "myapi_enabled", False) and myapi.is_connected()))
+            + catalog.signatures(myapi_on))
     tools = [{"name": t["name"], "description": t["description"],
               "parameters_json_schema": t["parameters"],
               "behavior": "NON_BLOCKING" if t["name"] in NON_BLOCKING_ACTIONS else "BLOCKING"}

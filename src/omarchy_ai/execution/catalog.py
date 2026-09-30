@@ -41,6 +41,12 @@ CORE = frozenset({
     "show_window_labels", "hide_window_labels", "get_recent_actions", "run_mission",
 })
 
+# Declared directly when MyApi is connected (and still reachable through
+# use_tool). 2026-09-30 13:35: sending one email through use_tool failed four
+# ways in a row -- args nested twice, args left out, then refused as a loop --
+# and a body of text is never filled from a request, by design (_NO_FILL).
+MYAPI_CORE = frozenset({"myapi_gmail_search", "myapi_gmail_send", "myapi_gmail_reply"})
+
 PICK_P = 0.6          # below this Jev's pick is offered, not run
 CANDIDATES = 3
 TIMEOUT = 3.0
@@ -95,9 +101,10 @@ def signatures(myapi_on: bool = False) -> str:
         f"\n- {sig(t)}: {t['description']}" for t in tools if t["name"] in added)
 
 
-def declared() -> list[dict]:
+def declared(myapi_on: bool = False) -> list[dict]:
     """The live model's function list when the picker is on."""
-    return [t for t in TOOLS if t["name"] in CORE] + [USE_TOOL]
+    return ([t for t in TOOLS if t["name"] in CORE] + [t for t in MYAPI_TOOLS if myapi_on and t["name"] in MYAPI_CORE]
+            + [USE_TOOL])
 
 
 @dataclass
@@ -166,6 +173,9 @@ def _normalize(args: dict, tools: dict[str, dict]) -> tuple[str, dict]:
     given = dict(args["args"]) if isinstance(args.get("args"), dict) else {}
     if not name and str(given.get("name") or "") in tools:
         name = given.pop("name")
+    # 2026-09-30 13:35: {"args": {"name": "myapi_gmail_send", "args": {...}}} -- the whole call nested once more.
+    if set(given) == {"args"} and isinstance(given["args"], dict):
+        given = dict(given["args"])
     props = ((tools.get(name) or {}).get("parameters") or {}).get("properties") or {}
     for key, value in args.items():
         if key not in ("name", "args", "request") and key in props:

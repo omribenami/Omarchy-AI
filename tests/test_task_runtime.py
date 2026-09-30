@@ -176,6 +176,9 @@ class PermissionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
             repo = Path(tmp)
             self.assertEqual(coding_agent_risk(repo, write=True)[0], Risk.ELEVATED)  # no git: no rollback
+            (repo / ".git").mkdir()  # an empty one, as a sandbox mount point leaves it
+            self.assertEqual(coding_agent_risk(repo, write=True)[0], Risk.ELEVATED)
+            (repo / ".git").rmdir()
             git_repo(repo)
             self.assertEqual(coding_agent_risk(repo, write=True)[0], Risk.NORMAL)
             self.assertEqual(coding_agent_risk(repo, write=False)[0], Risk.LOW)

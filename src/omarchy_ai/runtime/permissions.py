@@ -820,6 +820,9 @@ def coding_agent_risk(workspace: Path, write: bool) -> tuple[Risk, list[str]]:
     scratch = Path(tempfile.gettempdir()).resolve()
     if _HOME not in workspace.parents and scratch not in workspace.parents:
         return Risk.HIGH, [f"coding agent writing outside the home directory ({workspace})"]
-    if not any((p / ".git").exists() for p in (workspace, *workspace.parents)):
+    # A real repository only: 2026-09-30 13:11 a sandboxed Codex in ~ left an
+    # empty ~/.git (a mount point), which made every folder under ~ look
+    # rollback-able.
+    if not any((p / ".git" / "HEAD").exists() or (p / ".git").is_file() for p in (workspace, *workspace.parents)):
         return Risk.ELEVATED, [f"{workspace} is not a git repository, so changes cannot be rolled back"]
     return Risk.NORMAL, []

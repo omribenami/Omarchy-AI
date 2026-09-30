@@ -30,6 +30,28 @@ class PhoneGeminiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PhoneStartupTests(unittest.TestCase):
+    def test_a_new_phone_call_ends_the_last_one_and_waits_for_it_to_be_saved(self):
+        # 2026-09-30 13:36: a dead text chat stayed open on the server, so it was never saved.
+        import threading
+        from omarchy_ai.phone import gemini
+        loop = asyncio.new_event_loop()
+        adapter = SimpleNamespace(_hangup=asyncio.Event())
+        saved = threading.Event()
+        runner = threading.Thread(target=loop.run_forever, daemon=True)
+        runner.start()
+        call = (loop, adapter, saved)
+        gemini._calls.append(call)
+        try:
+            threading.Timer(0.2, saved.set).start()
+            gemini._end_previous_calls(timeout=2)
+            self.assertTrue(adapter._hangup.is_set())
+            self.assertTrue(saved.is_set())
+        finally:
+            gemini._calls.remove(call)
+            loop.call_soon_threadsafe(loop.stop)
+            runner.join(2)
+            loop.close()
+
     def test_phone_peer_never_waits_on_a_stun_server(self):
         # Regression: default aiortc STUN made every phone session wait 5.0s.
         from pathlib import Path

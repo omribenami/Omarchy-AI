@@ -32,6 +32,26 @@ log = logging.getLogger(__name__)
 # Calibrate from the "loud-run speech p50" in the guard's log lines.
 PHONE_SPLICE_ABORT_RMS = 1500.0
 _slots = threading.BoundedSemaphore(2)
+# Phone calls in progress: (their loop, adapter, set once the call is saved).
+_calls: list = []
+_calls_lock = threading.Lock()
+
+
+def _end_previous_calls(timeout: float = 3.0) -> None:
+    """A new call from the phone ends the calls before it, and waits until
+    their conversation is saved, so the new one starts with it as context.
+    2026-09-30 13:36: a text chat's link died without either side noticing;
+    the server kept the call open, so its conversation was never saved and
+    the reconnected chat had no memory of it."""
+    with _calls_lock:
+        current = list(_calls)
+    for loop, adapter, _ in current:
+        try:
+            loop.call_soon_threadsafe(adapter._hangup.set)
+        except RuntimeError:  # its loop already closed
+            pass
+    for _, _, saved in current:
+        saved.wait(timeout)
 
 
 def _phone_message(raw):
@@ -99,6 +119,9 @@ async def _serve(config, sdp, answer, cancelled):
     channel = None
     tasks = []
     client = genai.Client(api_key=Path(config.gemini_api_key_path).read_text().strip())
+    call = (asyncio.get_running_loop(), adapter, threading.Event())
+    with _calls_lock:
+        _calls.append(call)
 
     def emit(event):
         if channel is not None and channel.readyState == 'open':
@@ -195,7 +218,7 @@ async def _serve(config, sdp, answer, cancelled):
             kind, text = await messages.get()
             if kind == 'context':
                 await session.send_client_content(
-                    turns={'role': 'user', 'parts': [{'text': '[Notification context, not a request; use this to understand the next user message]\n' + text}]},
+                    turns={'role': 'user', 'parts': [{'text': '[Context from the phone (a notification, or this chat so far), not a request; use it to understand the next user message]\n' + text}]},
                     turn_complete=False)
                 continue
             if not told:
@@ -284,20 +307,27 @@ async def _serve(config, sdp, answer, cancelled):
             emit({'type': 'error', 'error': {'message': 'Gemini quota used up.' if out_of_quota
                                              else 'Gemini connection ended. Please reconnect.'}})
     finally:
-        from ..core import agenda
-        agenda.detach_call(adapter)
-        agenda.mark_delivered(adapter.acknowledged_ids())  # heard and answered on this call
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await peer.close()
-        await client.aio.aclose()
-        await asyncio.to_thread(append_session, adapter._transcript, config.context_retention_hours)
-        from ..core import alert_clips
-        alert_clips.prepare_in_background(config)  # alerts in the language just spoken
+        try:
+            from ..core import agenda
+            agenda.detach_call(adapter)
+            agenda.mark_delivered(adapter.acknowledged_ids())  # heard and answered on this call
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await peer.close()
+            await client.aio.aclose()
+            await asyncio.to_thread(append_session, adapter._transcript, config.context_retention_hours)
+            from ..core import alert_clips
+            alert_clips.prepare_in_background(config)  # alerts in the language just spoken
+        finally:
+            with _calls_lock:
+                if call in _calls:
+                    _calls.remove(call)
+            call[2].set()
 
 
 def relay_offer(config, sdp):
+    _end_previous_calls()
     if not _slots.acquire(blocking=False):
         raise RuntimeError('Two Gemini phone sessions are already active; hang up one first')
     answer = concurrent.futures.Future()

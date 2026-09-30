@@ -40,6 +40,18 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(declared & set(catalog.catalog()))
         self.assertLess(len(declared), 25)
 
+    def test_gmail_is_declared_directly_when_myapi_is_connected(self):
+        # 2026-09-30 13:35: sending one email through use_tool failed four ways.
+        names = {t["name"] for t in catalog.declared(myapi_on=True)}
+        self.assertTrue(catalog.MYAPI_CORE <= names)
+        self.assertFalse(catalog.MYAPI_CORE & {t["name"] for t in catalog.declared()})
+
+    def test_a_call_nested_inside_args_is_unwrapped(self):
+        args = {"recipient_email": "a@example.com", "subject": "Hi", "body": "Hello"}
+        r = catalog.resolve({"request": "send it", "args": {"name": "myapi_gmail_send", "args": args}}, myapi_on=True)
+        self.assertTrue(r.run)
+        self.assertEqual((r.tool, r.args), ("myapi_gmail_send", args))
+
     def test_a_confident_pick_without_arguments_runs_at_once(self):
         r = catalog.resolve({"request": "turn on the night light"}, jev=PickJev("nightlight_toggle"))
         self.assertTrue(r.run)

@@ -2184,6 +2184,43 @@ def _gmail_fallback_queries(query: str) -> list[str]:
     return candidates[:5]
 
 
+# The whole digest stays under the MyApi refinement threshold (16k chars), so
+# she gets every message whole rather than a record Jev picks from the raw
+# payload. 2026-09-30 13:29-13:35: from ~1 MB per search it picked the first
+# message's attachment list or its headers, six searches in a row.
+_GMAIL_DIGEST_CHARS = 14_000
+
+
+def _gmail_digest(messages: list) -> list[dict]:
+    """Each message as she needs it: who, when, what, the thread to reply in,
+    and its text, shortened evenly to fit."""
+    rows = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        preview = message.get("preview") if isinstance(message.get("preview"), dict) else {}
+        attachments = [a.get("filename") for a in message.get("attachmentList") or []
+                       if isinstance(a, dict) and a.get("filename")]
+        rows.append({
+            "message_id": message.get("messageId") or message.get("id"),
+            "thread_id": message.get("threadId"),
+            "date": message.get("messageTimestamp"),
+            "from": message.get("sender"),
+            "to": message.get("to"),
+            "subject": message.get("subject") or preview.get("subject"),
+            "unread": "UNREAD" in (message.get("labelIds") or []),
+            "attachments": attachments[:10],
+            "text": " ".join(str(message.get("messageText") or preview.get("body") or "").split()),
+        })
+    if rows:
+        fixed = sum(len(json.dumps({**row, "text": ""}, ensure_ascii=False)) for row in rows)
+        room = max(200, (_GMAIL_DIGEST_CHARS - fixed) // len(rows))
+        for row in rows:
+            if len(row["text"]) > room:
+                row["text"] = row["text"][:room] + "…"
+    return rows
+
+
 def _gmail_search_with_fallback(query: str, maximum: int = 10) -> tuple[dict, list[str]]:
     attempted = [query]
     result = _gmail_execute("GMAIL_FETCH_EMAILS", {
@@ -2416,10 +2453,11 @@ def myapi_gmail_search(args: dict) -> ActionResult:
     try:
         result, attempted = _gmail_search_with_fallback(query.strip(), maximum)
         ok = True
+        messages = _gmail_digest(_gmail_messages(result))
         return ActionResult(True, json.dumps({
-            "gmail_search": {"attempted": attempted, "matched_by": attempted[-1] if _gmail_messages(result) else None},
-            "result": result,
-        }))
+            "gmail_search": {"attempted": attempted, "matched_by": attempted[-1] if messages else None},
+            "messages": messages,
+        }, ensure_ascii=False))
     except myapi.MyApiError as exc:
         return ActionResult(False, f"Gmail search failed: {exc}")
     finally:
