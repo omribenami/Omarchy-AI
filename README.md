@@ -615,10 +615,8 @@ it does not run `install.sh` during install. The launcher runs `install.sh`
 the first time this tree is not already the active install, then starts
 `omarchy-ai.service` and opens a conversation.
 
-Release `v0.12.0` does not contain `bin/omarchy-ai`, so the store can show
-the app before it can install it. A release built after that launcher is
-on `main` is what becomes installable. Until then, use the fast install
-below.
+OmaStore installs `v0.12.1` or newer, which includes `bin/omarchy-ai`.
+`v0.12.0` predates that launcher, so the store does not install it.
 
 ### Fast install (copy and paste)
 
