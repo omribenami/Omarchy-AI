@@ -109,11 +109,13 @@ HTTPS on port 8766). They matter only to the modified Flux app below.
 | `GET /api/flux/challenge`, `POST /api/flux/pair` | Automatic pairing: the phone signs a single-use nonce with its Flux identity key, checked against desktop Flux's `devices.json` |
 | `GET /api/wake`, `/api/wake/<model>.onnx` | The computer's wake-word models, for "Wake Omarchy" on the phone |
 | `GET /api/tvs`, `POST /api/cast`, `POST /api/cast/stop` | Mirror to TV from the phone |
+| `POST /api/live/offer`, `POST /api/tool` | Voice and text calls: the app's native WebRTC client sends its offer (with an `oai-events` data channel) and, for OpenAI, runs the model's tool calls on the computer |
 | `POST /api/ask` | Send a request to the Task Runtime |
 | `POST /api/flux/setting` | Turn on an allowlisted Flux feature (`remote_input`, `remote_desktop`, `herdr`, `herdr_control`, `herdr_terminals`) through fluxd's own `settings.set` |
 | `POST /mirror/start`, `GET /mirror/stream`, `POST /mirror/stop` | The screen stream that the app shows in its remote desktop |
 
-Every endpoint except `/api/hello` requires a paired session.
+Every endpoint except `/api/hello` requires a paired session. The app uses
+only these endpoints and never opens Omarchy AI's web page.
 
 ## 2. Omarchy AI inside the Flux app (prototype)
 
