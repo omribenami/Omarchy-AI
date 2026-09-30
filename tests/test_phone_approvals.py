@@ -99,6 +99,16 @@ class RespondApprovalTests(unittest.TestCase):
         status, _ = server.respond_approval({"task_id": "t1", "approve": "yes"})
         self.assertEqual(status, 400)
 
+    def test_fingerprint_request_only_sends_the_prompt(self):
+        self.runtime.ask_fingerprint.return_value = {"ok": True, "message": "Sent the fingerprint prompt to the phone."}
+        status, body = server.fingerprint_approval({"task_id": "t1", "fingerprint": "fp1"})
+        self.assertEqual(status, 200)
+        self.runtime.ask_fingerprint.assert_called_once_with("t1", "fp1")
+        self.runtime.respond.assert_not_called()
+        self.runtime.ask_fingerprint.return_value = {"ok": False, "message": "task t1 is not waiting for approval"}
+        self.assertEqual(server.fingerprint_approval({"task_id": "t1", "fingerprint": "fp1"})[0], 409)
+        self.assertEqual(server.fingerprint_approval({"fingerprint": "fp1"})[0], 400)
+
     def test_lists_only_tasks_waiting_for_approval(self):
         self.runtime.store.list.return_value = [_task(), _task(status="running")]
         with patch.object(approval_pin, "status", return_value={"set": True, "locked_until": 0}):

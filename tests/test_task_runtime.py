@@ -302,17 +302,66 @@ class TaskRuntimeTests(RuntimeHarness):
         self.assertIsNone(evidence["ok"])
         self.assertIn("no match", evidence["text"])
 
-    def test_voice_cannot_approve_high_risk(self):
+    def _waiting_for_root(self):
         def work(a, ctx):
             r = ctx.run_command("sudo true", a.workspace, 10)
             return Report(NEEDS_APPROVAL, claim="need root", approval=r["request"])
         runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], ScriptedJev())
         task = runtime.start("root thing", str(self.ws), background=False)
         self.assertEqual(self.store.load(task.id).pending_approval["risk"], "HIGH")
-        result = runtime.respond(task.id, approve=True, channel="voice", background=False)
+        return runtime, task
+
+    def test_voice_cannot_approve_high_risk(self):
+        runtime, task = self._waiting_for_root()
+        with patch("omarchy_ai.runtime.runtime._flux_approval_available", return_value=False):
+            result = runtime.respond(task.id, approve=True, channel="voice", background=False)
         self.assertFalse(result["ok"])
         self.assertIn("not by voice", result["message"])
         self.assertEqual(self.store.load(task.id).status, "waiting_approval")
+
+    def test_voice_approval_of_high_risk_asks_for_the_fingerprint(self):
+        # 2026-09-30 12:32: "approve" by voice was a dead end.
+        runtime, task = self._waiting_for_root()
+        with patch("omarchy_ai.runtime.runtime._flux_approval_available", return_value=True), \
+                patch("omarchy_ai.runtime.runtime._fingerprint_prompt") as prompt:
+            result = runtime.respond(task.id, approve=True, channel="voice", background=False)
+            for thread in list(__import__("threading").enumerate()):
+                if thread.name == f"fingerprint-{task.id}":
+                    thread.join(2)
+        self.assertTrue(result["ok"])
+        self.assertIn("fingerprint prompt", result["message"])
+        prompt.assert_called_once()
+        self.assertEqual(self.store.load(task.id).status, "waiting_approval")  # only the fingerprint approves
+
+    def test_a_stale_approval_expires(self):
+        runtime, task = self._waiting_for_root()
+        asked = self.store.load(task.id).pending_approval["asked_at"]
+        self.assertEqual(runtime.tidy_approvals(asked + 3600), [])
+        self.assertEqual(runtime.tidy_approvals(asked + 5 * 3600), [f"{task.id}: expired"])
+        expired = self.store.load(task.id)
+        self.assertEqual(expired.status, "cancelled")
+        self.assertIn("expired", expired.result)
+        self.assertIsNone(expired.pending_approval)
+
+    def test_an_approval_the_rules_no_longer_need_resumes(self):
+        # Asked before sandboxed coding agents in ~ stopped needing approval.
+        runtime = self.runtime([], ScriptedJev())
+        subject = f"CODEX:write:{Path.home()}"
+        task = Task(id="t-home", goal="look up the skills", workspace=str(self.ws), status="waiting_approval",
+                    pending_approval={"fingerprint": f"executor:{subject}", "kind": "executor", "subject": subject,
+                                      "risk": "HIGH", "reasons": ["coding agent writing in ~"]})
+        self.store.save(task)
+        with patch.object(runtime, "_launch") as launch:
+            self.assertEqual(runtime.tidy_approvals(), ["t-home: no longer needs approval"])
+        launch.assert_called_once()
+        self.assertIn(f"executor:{subject}", self.store.load("t-home").grants)
+        # Still HIGH under today's rules: it keeps waiting.
+        yolo = f"CODEX:unsandboxed:{Path.home()}"
+        self.store.save(Task(id="t-yolo", goal="yolo", workspace=str(self.ws), status="waiting_approval",
+                             pending_approval={"fingerprint": f"executor:{yolo}", "kind": "executor",
+                                               "subject": yolo, "risk": "HIGH", "reasons": []}))
+        self.assertEqual(runtime.tidy_approvals(), [])
+        self.assertEqual(self.store.load("t-yolo").status, "waiting_approval")
 
     def test_phone_pin_channel_can_approve_high_risk(self):
         # The phone's approval card checks the PIN before calling respond

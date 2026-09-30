@@ -151,6 +151,11 @@ class OmaDaemon:
                     await asyncio.to_thread(agenda.tick)
                 except Exception:
                     log.warning("Heartbeat tick failed", exc_info=True)
+                try:
+                    from ..runtime import service as task_service
+                    await asyncio.to_thread(task_service.get_runtime().tidy_approvals)
+                except Exception:
+                    log.warning("Approval tidy failed", exc_info=True)
                 await asyncio.sleep(max(15, self.config.heartbeat_seconds))
         heart = asyncio.create_task(heartbeat()) if self.config.heartbeat_enabled else None
         async def handover():

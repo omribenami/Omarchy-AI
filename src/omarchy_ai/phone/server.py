@@ -275,6 +275,7 @@ def pending_approvals() -> dict:
     from ..runtime.service import change_preview, get_runtime
     from ..runtime.task import WAITING_APPROVAL
     items = []
+    get_runtime().tidy_approvals()  # never list one that expired or no longer needs asking
     for task in get_runtime().store.list(20):
         request = task.pending_approval
         if task.status != WAITING_APPROVAL or not request:
@@ -309,6 +310,16 @@ def respond_approval(data: dict) -> tuple[int, dict]:
             return 403, {"ok": False, "message": reason}
     log.info("phone bridge: task %s %s from the phone", task_id, "approved" if approve else "denied")
     result = runtime.respond(task_id, approve=approve, channel="phone")
+    return (200 if result.get("ok") else 409), {"ok": bool(result.get("ok")), "message": result.get("message", "")}
+
+
+def fingerprint_approval(data) -> tuple[int, dict]:
+    """Send the Flux fingerprint prompt for the request the phone showed.
+    Nothing is approved here: only the signed fingerprint answer approves."""
+    from ..runtime.service import get_runtime
+    if not isinstance(data, dict) or not isinstance(data.get("task_id"), str) or not data["task_id"]:
+        return 400, {"ok": False, "message": "expected {task_id, fingerprint}"}
+    result = get_runtime().ask_fingerprint(data["task_id"], data.get("fingerprint") or None)
     return (200 if result.get("ok") else 409), {"ok": bool(result.get("ok")), "message": result.get("message", "")}
 
 
@@ -673,6 +684,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"ok": False, "message": "invalid JSON"})
                 return
             self._send_json(*respond_approval(data if isinstance(data, dict) else {}))
+            return
+        if path == "/api/approvals/fingerprint":
+            # Flux's approvals list: Approve sends the fingerprint prompt, and
+            # the signed answer (not this request) is what approves.
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                data = self._read_json_body()
+            except (json.JSONDecodeError, ValueError):
+                data = None
+            self._send_json(*fingerprint_approval(data))
             return
         if path == "/api/tool":
             if not self._is_paired():

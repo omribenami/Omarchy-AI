@@ -110,6 +110,7 @@ HTTPS on port 8766). They matter only to the modified Flux app below.
 | `GET /api/wake`, `/api/wake/<model>.onnx` | The computer's wake-word models, for "Wake Omarchy" on the phone |
 | `GET /api/tvs`, `POST /api/cast`, `POST /api/cast/stop` | Mirror to TV from the phone |
 | `POST /api/live/offer`, `POST /api/tool` | Voice and text calls: the app's native WebRTC client sends its offer (with an `oai-events` data channel) and, for OpenAI, runs the model's tool calls on the computer |
+| `GET /api/approvals`, `POST /api/approvals/fingerprint`, `POST /api/approvals/respond` | The pending-approvals list: Approve sends the fingerprint prompt (only the signed fingerprint approves), Deny needs nothing more |
 | `POST /api/ask` | Send a request to the Task Runtime |
 | `POST /api/flux/setting` | Turn on an allowlisted Flux feature (`remote_input`, `remote_desktop`, `herdr`, `herdr_control`, `herdr_terminals`) through fluxd's own `settings.set` |
 | `POST /mirror/start`, `GET /mirror/stream`, `POST /mirror/stop` | The screen stream that the app shows in its remote desktop |
@@ -137,6 +138,11 @@ Flux.
   call in place. The key shows the connection state (pulsing while connecting,
   a green frame when connected, red on an error) and Omarchy's ASCII visualizer
   while she talks, so the screen stays visible.
+- **Pending approvals** on the computer's page in Flux, each with Approve
+  (your fingerprint) and Deny. An approval nobody answers expires after
+  `task_approval_hours` (4 by default), and one the current rules no longer
+  ask about goes ahead on its own. Saying "approve" to Omarchy for a HIGH-risk
+  step sends the same fingerprint prompt.
 - **Notification taps.** Tapping an approval opens Flux's fingerprint prompt.
   Tapping any other Omarchy AI notification opens the computer's page in Flux.
   No tap opens Omarchy AI's web page.

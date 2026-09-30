@@ -339,6 +339,9 @@ class Config:
     # asking (LOW, NORMAL or ELEVATED; HIGH always asks, BLOCKED never runs).
     task_runtime_enabled: bool = True
     task_auto_approve: str = "NORMAL"
+    # An approval nobody answers expires after this many hours, and its task
+    # stops (runtime.tidy_approvals); the heartbeat checks.
+    task_approval_hours: float = 4
     # Who does task work: "fallback" (default) = Codex or Claude Code; the
     # paid API worker only when neither can run and the user approves it for
     # that task. "always" = the API worker is a normal choice too.

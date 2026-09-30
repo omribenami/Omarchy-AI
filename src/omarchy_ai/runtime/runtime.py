@@ -35,7 +35,7 @@ from .executors.base import (BLOCKED, DIAGNOSE, DONE, FAILED as R_FAILED, IMPLEM
                              NEEDS_CODE_CHANGE, NEEDS_USER, REVIEW, TEST, WORK, Assignment, Report)
 from . import llm
 from .llm import WorkerModel, WorkerModelError
-from .permissions import _TOOLS_CLI, Assessment, Risk, Scope, classify, decide, split_commands
+from .permissions import _TOOLS_CLI, Assessment, Risk, Scope, classify, coding_agent_risk, decide, split_commands
 from .task import (ACTIVE, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, TERMINAL, UNVERIFIED,
                    WAITING_APPROVAL, WAITING_USER, Task, TaskStore, new_id, owned_elsewhere, owner_alive,
                    this_process)
@@ -96,6 +96,7 @@ class TaskRuntime:
         self._threads: dict[str, threading.Thread] = {}
         self._cancel: dict[str, threading.Event] = {}
         self._availability: tuple[float, dict] | None = None
+        self._prompting: set[str] = set()  # tasks whose fingerprint prompt is on the phone now
         self._mark_interrupted()
 
     @staticmethod
@@ -153,10 +154,18 @@ class TaskRuntime:
         if task.status == WAITING_APPROVAL:
             request = task.pending_approval or {}
             if approve and channel == "voice" and Risk.parse(request.get("risk"), Risk.HIGH) >= Risk.HIGH:
+                # A spoken yes is relayed by the model, so it cannot approve
+                # HIGH risk; a fingerprint on the phone can (2026-09-30: the
+                # user said "approve" and had no way to finish from there).
+                sent = self.ask_fingerprint(task.id)
+                if sent["ok"]:
+                    return {"ok": True, "message": (
+                        f"Not approved yet: '{request.get('subject')}' is HIGH risk, so a fingerprint prompt went to "
+                        "the phone. The task resumes when the user touches it. Tell the user that in one sentence.")}
                 return {"ok": False, "message": (
                     f"'{request.get('subject')}' is HIGH risk ({', '.join(request.get('reasons', []))}). It can only "
-                    "be approved with the desktop notification's Approve button, the paired phone's approval "
-                    f"card (with the approval PIN), or `omarchy-ai-task approve {task.id}` -- not by voice.")}
+                    "be approved with the Approve button on the desktop (the notification or the approval "
+                    f"envelope), or `omarchy-ai-task approve {task.id}` -- not by voice. {sent['message']}")}
             paused = next((s for s in task.steps if s["n"] == request.get("step")), None)
             if approve:
                 task.grants.append(request.get("fingerprint", ""))
@@ -189,6 +198,68 @@ class TaskRuntime:
             return {"ok": False, "message": f"task {task.id} was cancelled"}
         self._launch(task, background)
         return {"ok": True, "message": f"resumed task {task.id}", "task": task.summary()}
+
+    def ask_fingerprint(self, task_id: str, fingerprint: str | None = None) -> dict:
+        """Send the Flux fingerprint prompt for a waiting approval now: from
+        the phone's approvals list, or when the user says "approve" to a HIGH
+        request. The prompt at request time lasts ~20 s; this is the way back
+        to it. The fingerprint's answer resumes the task (_fingerprint_prompt)."""
+        task = self.store.load(task_id)
+        request = (task.pending_approval or {}) if task else {}
+        if not task or task.status != WAITING_APPROVAL or not request:
+            return {"ok": False, "message": f"task {task_id} is not waiting for approval"}
+        if fingerprint and request.get("fingerprint") != fingerprint:
+            return {"ok": False, "message": "that request is no longer waiting (already answered or changed)"}
+        if not _flux_approval_available():
+            return {"ok": False, "message": "No phone is set up for fingerprint approval (Flux)."}
+        with self._lock:
+            if task.id in self._prompting:
+                return {"ok": True, "message": "The fingerprint prompt is already on the phone."}
+            self._prompting.add(task.id)
+
+        def prompt():
+            try:
+                _fingerprint_prompt(self, task, request.get("fingerprint"))
+            finally:
+                with self._lock:
+                    self._prompting.discard(task.id)
+        threading.Thread(target=prompt, daemon=True, name=f"fingerprint-{task.id}").start()
+        return {"ok": True, "message": "Sent the fingerprint prompt to the phone."}
+
+    def tidy_approvals(self, now: float | None = None) -> list[str]:
+        """Approvals nobody answered do not wait forever (2026-09-30: three
+        tasks had waited up to a day for a request the rules no longer made).
+        One older than task_approval_hours expires and its task stops; a newer
+        one that the current rules allow resumes on its own. Returns what it did."""
+        now = time.time() if now is None else now
+        ttl = float(_config("task_approval_hours", 4)) * 3600
+        done = []
+        for task in self.store.list(50):
+            request = task.pending_approval or {}
+            if task.status != WAITING_APPROVAL or not request or owned_elsewhere(task):
+                continue
+            asked = float(request.get("asked_at") or task.updated_at or now)
+            if now - asked > ttl:
+                hours = f"{ttl / 3600:g}"
+
+                def expire(t, hours=hours, fingerprint=request.get("fingerprint")):
+                    if t.status == WAITING_APPROVAL and (t.pending_approval or {}).get("fingerprint") == fingerprint:
+                        t.status = CANCELLED
+                        t.result = (f"The approval request expired: nobody answered it within {hours} hours. "
+                                    "Ask again if it is still wanted.")
+                        t.pending_approval = None
+                        t.next_dispatch = None
+                self.store.update(task.id, expire)
+                done.append(f"{task.id}: expired")
+            elif _allowed_now(task, request):
+                task.add_note(f"The rules no longer ask about {request.get('kind')}: {request.get('subject')}; resumed.")
+                self.store.save(task)
+                if self.respond(task.id, approve=True, channel="policy").get("ok"):
+                    done.append(f"{task.id}: no longer needs approval")
+        if done:
+            log.info("approvals tidied: %s", "; ".join(done))
+            self._refresh_task_hud()
+        return done
 
     def resume(self, task_id: str | None, background: bool = True) -> dict:
         """Continue an interrupted task (its process died mid-step)."""
@@ -490,7 +561,7 @@ class TaskRuntime:
         assessment = Assessment(Risk.ELEVATED, [why[:300], "spends API credit"])
         # Always asked (never auto-approved): the grant is this exact fingerprint.
         task.pending_approval = {"fingerprint": f"api-worker:{task.id}", "kind": "api", "subject": subject,
-                                 "risk": "ELEVATED", "reasons": assessment.reasons}
+                                 "risk": "ELEVATED", "reasons": assessment.reasons, "asked_at": time.time()}
         task.next_dispatch = None
         task.status, task.phase = WAITING_APPROVAL, "waiting_approval"
         task.add_note(f"Waiting for approval to use the API worker: {why[:300]}")
@@ -974,7 +1045,7 @@ class TaskRuntime:
                           grants=set(task.grants))
         if decision.behavior != "allow":
             task.pending_approval = {"fingerprint": decision.fingerprint, "kind": "rollback", "subject": subject,
-                                     "risk": "ELEVATED", "reasons": assessment.reasons}
+                                     "risk": "ELEVATED", "reasons": assessment.reasons, "asked_at": time.time()}
             task.next_dispatch = None
             task.status = WAITING_APPROVAL
             task.add_note("Waiting for approval to roll back; after approval Jev will direct the rollback again.")
@@ -1078,7 +1149,8 @@ class WorkContextImpl:
 
     def _request(self, decision, kind: str, subject: str) -> dict:
         return {"fingerprint": decision.fingerprint, "kind": kind, "subject": subject[:600],
-                "risk": decision.assessment.risk.name, "reasons": decision.assessment.reasons[:5]}
+                "risk": decision.assessment.risk.name, "reasons": decision.assessment.reasons[:5],
+                "asked_at": time.time()}
 
     def run_command(self, command: str, cwd: str | None = None, timeout: float = 120, *, role: str = "") -> dict:
         from ..execution import passwords
@@ -1359,6 +1431,21 @@ def _phone(title: str, body: str, *, kind: str = "other") -> None:
         flux_notify.send(title, body, kind=kind)
     except Exception:  # noqa: BLE001 -- the desktop notification must still go out
         log.debug("flux notify unavailable", exc_info=True)
+
+
+def _allowed_now(task: Task, request: dict) -> bool:
+    """Whether the current rules would run this request without asking. Only
+    coding-agent requests are re-assessed: their subject names everything the
+    risk depends on; a command's depends on the step's working directory."""
+    if request.get("kind") != "executor":
+        return False
+    name, mode, workspace = (str(request.get("subject") or "").split(":", 2) + ["", ""])[:3]
+    if mode not in ("write", "read-only") or not workspace or not Path(workspace).is_dir():
+        return False
+    risk, reasons = coding_agent_risk(Path(workspace), mode == "write")
+    decision = decide("executor", str(request.get("subject")), Assessment(risk, reasons),
+                      auto_approve=Risk.parse(task.auto_approve, Risk.NORMAL), grants=set(task.grants))
+    return decision.allowed
 
 
 def _flux_approval_available() -> bool:
