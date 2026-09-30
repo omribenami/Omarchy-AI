@@ -104,7 +104,7 @@ class OutputAudio(AudioStreamTrack):
         return frame
 
 
-async def _serve(config, sdp, answer, cancelled):
+async def _serve(config, sdp, answer, cancelled, conversation=''):
     # No STUN: with iceServers unset aiortc falls back to Google's STUN and
     # waits out its timeout before answering -- measured 5.01s per phone
     # session vs 0.01s without (2026-09-23). The phone reaches this machine
@@ -119,6 +119,13 @@ async def _serve(config, sdp, answer, cancelled):
     channel = None
     tasks = []
     client = genai.Client(api_key=Path(config.gemini_api_key_path).read_text().strip())
+    # Everything said or typed goes into the phone's conversation as it happens,
+    # and the call's tasks report back into it (core/conversations.py).
+    from ..core import conversations
+    earlier = conversations.context(conversation) if conversation else ''
+    if conversation:
+        adapter._transcript = conversations.Transcript(conversation, adapter._transcript)
+        conversations.CURRENT.set(conversation)
     call = (asyncio.get_running_loop(), adapter, threading.Event())
     with _calls_lock:
         _calls.append(call)
@@ -274,6 +281,12 @@ async def _serve(config, sdp, answer, cancelled):
                             *([adapter._fast_path()] if config.jev_fast_path else []))]
                     if index:
                         await adapter._carry_over(session)
+                    elif earlier:
+                        # A conversation reopened on the phone goes on where it stopped.
+                        await session.send_client_content(
+                            turns={'role': 'user', 'parts': [{'text': '[Context, not a request: this conversation so '
+                                                                       'far. Continue it.]\n' + earlier}]},
+                            turn_complete=False)
                     log.info('Phone Gemini WebRTC bridge ready: %s', model)
                     session_tasks = [asyncio.create_task(coro) for coro in (
                         send_audio(session), send_text(session), adapter._receive(session),
@@ -316,7 +329,9 @@ async def _serve(config, sdp, answer, cancelled):
             await asyncio.gather(*tasks, return_exceptions=True)
             await peer.close()
             await client.aio.aclose()
-            await asyncio.to_thread(append_session, adapter._transcript, config.context_retention_hours)
+            await asyncio.to_thread(append_session, list(adapter._transcript), config.context_retention_hours)
+            if conversation:
+                conversations.flush(conversation)
             from ..core import alert_clips
             alert_clips.prepare_in_background(config)  # alerts in the language just spoken
         finally:
@@ -326,7 +341,7 @@ async def _serve(config, sdp, answer, cancelled):
             call[2].set()
 
 
-def relay_offer(config, sdp):
+def relay_offer(config, sdp, conversation=''):
     _end_previous_calls()
     if not _slots.acquire(blocking=False):
         raise RuntimeError('Two Gemini phone sessions are already active; hang up one first')
@@ -335,7 +350,7 @@ def relay_offer(config, sdp):
 
     def run():
         try:
-            asyncio.run(_serve(config, sdp, answer, cancelled))
+            asyncio.run(_serve(config, sdp, answer, cancelled, conversation))
         except Exception as error:
             if not answer.done():
                 answer.set_exception(error)

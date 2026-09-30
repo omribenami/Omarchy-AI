@@ -336,6 +336,28 @@ class TaskRuntimeTests(RuntimeHarness):
         prompt.assert_called_once()
         self.assertEqual(self.store.load(task.id).status, "waiting_approval")  # only the fingerprint approves
 
+    def _asking(self, question="Approve sending this email? Reply Approve."):
+        runtime = self.runtime([], ScriptedJev())
+        self.store.save(Task(id="t-ask", goal="email Chris", workspace=str(self.ws), status="waiting_user",
+                             question=question))
+        return runtime
+
+    def test_approve_to_a_question_is_its_answer(self):
+        # 2026-09-30 15:11: "approve" was refused -- the task waited for an answer, not an approval.
+        runtime = self._asking()
+        with patch.object(runtime, "_launch") as launch:
+            self.assertTrue(runtime.respond("t-ask", approve=True, channel="voice")["ok"])
+        launch.assert_called_once()
+        self.assertEqual(self.store.load("t-ask").answers, ["Yes, approved: go ahead."])
+
+    def test_an_update_to_a_task_waiting_on_its_question_answers_it(self):
+        # 2026-09-30: "yes, send it" was noted as an update, and the task kept waiting.
+        runtime = self._asking()
+        with patch.object(runtime, "_launch") as launch:
+            self.assertTrue(runtime.steer("t-ask", "yes, send it as a reply in the thread")["ok"])
+        launch.assert_called_once()
+        self.assertIn("yes, send it as a reply in the thread", self.store.load("t-ask").answers)
+
     def test_a_stale_approval_expires(self):
         runtime, task = self._waiting_for_root()
         asked = self.store.load(task.id).pending_approval["asked_at"]

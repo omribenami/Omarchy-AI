@@ -542,8 +542,9 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "stop_casting",
-        "Stop mirroring the screen/audio to the TV/projector. Safe to call "
-        "even if nothing is currently casting.",
+        "Stop mirroring this computer's screen/audio to the TV/projector. Safe to call "
+        "even if nothing is currently casting. It never turns a TV off or stops what the TV itself plays: for "
+        "that use the user's smart-home tool (2026-09-30: 'turn off the living room TV' stopped casting instead).",
     ),
     _tool(
         "list_cast_targets",

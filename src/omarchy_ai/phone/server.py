@@ -240,13 +240,13 @@ def _read_api_key(config: Config) -> str:
         return f.read().strip()
 
 
-def _relay_offer(config: Config, offer_sdp: str) -> str:
+def _relay_offer(config: Config, offer_sdp: str, conversation: str = "") -> str:
     """POSTs the browser's SDP offer to OpenAI (server-side, real key) and
     returns the answer SDP — same request shape as the desktop LiveSession,
     built from the same build_session_config so the two can't drift."""
     if config.provider == "gemini":
         from .gemini import relay_offer
-        return relay_offer(config, offer_sdp)
+        return relay_offer(config, offer_sdp, conversation)
     body = json.dumps(
         {
             "session": build_session_config(config),
@@ -284,8 +284,42 @@ def pending_approvals() -> dict:
                       "kind": request.get("kind"), "subject": str(request.get("subject", ""))[:2000],
                       "risk": request.get("risk"), "reasons": request.get("reasons", []),
                       "preview": change_preview(task.workspace)})
+    # A worker's question often is an approval in words ("approve sending this
+    # email?", 2026-09-30), so the phone lists them beside the approvals.
+    from ..runtime.task import WAITING_USER
+    questions = [{"task_id": task.id, "goal": task.goal[:600], "question": str(task.question or "")[:3000]}
+                 for task in get_runtime().store.list(20) if task.status == WAITING_USER and task.question]
     from ..execution import flux_approve
-    return {"approvals": items, "pin": approval_pin.status(), "fingerprint": bool(items) and flux_approve.available()}
+    return {"approvals": items, "questions": questions, "pin": approval_pin.status(),
+            "fingerprint": bool(items) and flux_approve.available()}
+
+
+def conversation_get(path: str, query: dict) -> tuple[int, dict]:
+    """The phone's conversation list, one conversation, or the one a
+    notification is about (core/conversations.py)."""
+    from ..core import conversations
+    if path == "/api/conversations":
+        return 200, conversations.summaries()
+    rest = path[len("/api/conversations/"):]
+    if rest == "for-notification":
+        cid = conversations.for_notification((query.get("title") or [""])[0])
+        return (200, {"id": cid}) if cid else (404, {"error": "no conversation for that notification"})
+    conv = conversations.get(rest)
+    if conv is None:
+        return 404, {"error": "no such conversation"}
+    from ..execution import flux_approve
+    return 200, {**conv, "fingerprint": flux_approve.available()}
+
+
+def answer_question(data) -> tuple[int, dict]:
+    """The paired phone answers a task's question (Yes, No, or its own words)."""
+    from ..runtime.service import get_runtime
+    if (not isinstance(data, dict) or not isinstance(data.get("task_id"), str)
+            or not isinstance(data.get("answer"), str) or not data["answer"].strip()):
+        return 400, {"ok": False, "message": "expected {task_id, answer}"}
+    result = get_runtime().respond(data["task_id"], answer=data["answer"].strip()[:2000], channel="phone")
+    log.info("phone bridge: task %s answered from the phone: %s", data["task_id"], result.get("message"))
+    return (200 if result.get("ok") else 409), {"ok": bool(result.get("ok")), "message": result.get("message", "")}
 
 
 def respond_approval(data: dict) -> tuple[int, dict]:
@@ -395,6 +429,13 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/pair":
             self._handle_pair(urllib.parse.parse_qs(parsed.query))
+            return
+
+        if path == "/api/conversations" or path.startswith("/api/conversations/"):
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            self._send_json(*conversation_get(path, urllib.parse.parse_qs(parsed.query)))
             return
 
         if path == "/api/audio/status":
@@ -685,6 +726,24 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(*respond_approval(data if isinstance(data, dict) else {}))
             return
+        if path.startswith("/api/conversations/") and path.endswith("/delete"):
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            from ..core import conversations
+            ok = conversations.delete(path[len("/api/conversations/"):-len("/delete")])
+            self._send_json(200 if ok else 404, {"ok": ok})
+            return
+        if path == "/api/questions/answer":
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            try:
+                data = self._read_json_body()
+            except (json.JSONDecodeError, ValueError):
+                data = None
+            self._send_json(*answer_question(data))
+            return
         if path == "/api/approvals/fingerprint":
             # Flux's approvals list: Approve sends the fingerprint prompt, and
             # the signed answer (not this request) is what approves.
@@ -713,8 +772,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "expected {\"sdp\": \"...\"}"})
             return
         try:
-            log.info("phone bridge: creating %s session", self.config.provider)
-            answer_sdp = _relay_offer(self.config, offer_sdp)
+            # The call's conversation: the one the phone reopened, or a new one.
+            from ..core import conversations
+            source = "phone-text" if data.get("mode") == "text" else "phone-voice"
+            conversation = conversations.continue_or_create(data.get("conversation_id"), source)
+            log.info("phone bridge: creating %s session (conversation %s)", self.config.provider, conversation)
+            answer_sdp = _relay_offer(self.config, offer_sdp, conversation)
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")
             log.error("phone bridge: session creation failed: HTTP %s %s", e.code, detail)
@@ -727,7 +790,7 @@ class _Handler(BaseHTTPRequestHandler):
             log.exception("phone bridge: offer relay failed")
             self._send_json(500, {"error": "offer relay failed"})
             return
-        self._send_json(200, {"sdp": answer_sdp})
+        self._send_json(200, {"sdp": answer_sdp, "conversation_id": conversation})
 
     def _handle_tool(self) -> None:
         try:

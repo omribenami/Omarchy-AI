@@ -11,7 +11,7 @@ class PhoneGeminiTests(unittest.IsolatedAsyncioTestCase):
         with patch('omarchy_ai.phone.gemini.relay_offer', return_value='answer') as relay, patch('omarchy_ai.phone.server._read_api_key') as key:
             config = SimpleNamespace(provider='gemini')
             self.assertEqual(_relay_offer(config, 'offer'), 'answer')
-            relay.assert_called_once_with(config, 'offer')
+            relay.assert_called_once_with(config, 'offer', '')
             key.assert_not_called()
 
     async def test_audio_is_framed_and_interruption_flushes_partial_buffer(self):

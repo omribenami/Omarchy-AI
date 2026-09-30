@@ -109,6 +109,18 @@ class RespondApprovalTests(unittest.TestCase):
         self.assertEqual(server.fingerprint_approval({"task_id": "t1", "fingerprint": "fp1"})[0], 409)
         self.assertEqual(server.fingerprint_approval({"fingerprint": "fp1"})[0], 400)
 
+    def test_questions_are_listed_and_answered_from_the_phone(self):
+        asking = SimpleNamespace(id="t2", status="waiting_user", goal="email Chris", question="Approve sending it?",
+                                 pending_approval=None)
+        self.runtime.store.list.return_value = [_task(), asking]
+        with patch.object(approval_pin, "status", return_value={"set": False, "locked_until": 0}):
+            data = server.pending_approvals()
+        self.assertEqual(data["questions"], [{"task_id": "t2", "goal": "email Chris", "question": "Approve sending it?"}])
+        status, _ = server.answer_question({"task_id": "t2", "answer": " Yes, approved: go ahead. "})
+        self.assertEqual(status, 200)
+        self.runtime.respond.assert_called_once_with("t2", answer="Yes, approved: go ahead.", channel="phone")
+        self.assertEqual(server.answer_question({"task_id": "t2", "answer": "  "})[0], 400)
+
     def test_lists_only_tasks_waiting_for_approval(self):
         self.runtime.store.list.return_value = [_task(), _task(status="running")]
         with patch.object(approval_pin, "status", return_value={"set": True, "locked_until": 0}):

@@ -167,7 +167,7 @@ class RuntimeFingerprintTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import MagicMock
         from omarchy_ai.runtime import runtime
-        task = SimpleNamespace(id='t1', goal='push the fix', question='', result='',
+        task = SimpleNamespace(id='t1', goal='push the fix', question='', result='', conversation='',
                                pending_approval={'fingerprint': 'f1', 'risk': 'HIGH', 'subject': 'git push'})
         for fingerprint in (True, False):
             with patch.object(runtime, '_flux_approval_available', return_value=fingerprint), \

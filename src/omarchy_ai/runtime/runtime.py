@@ -110,7 +110,7 @@ class TaskRuntime:
     # ------------------------------------------------------------------ API
     def start(self, goal: str, workspace: str | None = None, *, source: str = "cli", background: bool = True,
               auto_approve: str | None = None, max_steps: int | None = None, agent: str = "",
-              unsandboxed: bool = False) -> Task:
+              unsandboxed: bool = False, conversation: str = "") -> Task:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("a task needs a goal")
@@ -122,7 +122,7 @@ class TaskRuntime:
             raise ValueError(f"unknown agent {agent!r}; known: {', '.join(sorted(self.executors))}")
         task = Task(id=new_id(), goal=goal[:4000], workspace=str(ws), source=source,
                     auto_approve=(auto_approve or self.default_auto_approve).upper(), agent=agent,
-                    unsandboxed=bool(unsandboxed and agent in CODING))
+                    unsandboxed=bool(unsandboxed and agent in CODING), conversation=conversation)
         task.budget["max_steps"] = int(max_steps or _config("task_max_steps", 12))
         task.budget["max_seconds"] = int(_config("task_max_minutes", 60)) * 60
         self.store.save(task)
@@ -140,6 +140,16 @@ class TaskRuntime:
         response is used (never an interrupted or finished one)."""
         if approve is None and not answer:
             return {"ok": False, "message": "give an approval decision or an answer"}
+        if approve is not None and not answer:
+            # 2026-09-30 15:11: a worker asked "approve sending this email? Reply
+            # Approve" as a question; the user's approve was refused because the
+            # task waited for an answer, not an approval. A yes/no to a question
+            # is its answer. (The harness still gates every risky step itself.)
+            asking = (self.store.load(task_id) if task_id else
+                      None if self.store.latest({WAITING_APPROVAL}) else self.store.latest({WAITING_USER}))
+            if asking is not None and asking.status == WAITING_USER:
+                task_id, answer = asking.id, ("Yes, approved: go ahead." if approve else "No, not approved: do not do it.")
+                approve = None
         wanted = WAITING_APPROVAL if approve is not None else WAITING_USER
         task = self._get(task_id, {wanted})
         if task is None:
@@ -322,6 +332,10 @@ class TaskRuntime:
             return {"ok": False, "message": "no such task"}
         if task.status in TERMINAL:
             return {"ok": False, "message": f"task {task.id} already {task.status}"}
+        if task.status == WAITING_USER:
+            # A task waiting on its question takes the update as the answer and
+            # goes on (2026-09-30: "yes, send it" was noted, and it kept waiting).
+            return self.respond(task.id, answer=text, channel="voice")
 
         def mark(t):
             t.answers.append(f"User update: {text}")
@@ -1413,10 +1427,10 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
                              daemon=True).start()
         else:
             _phone(title, f"{task.goal[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
-                   "Approve it on the desktop.", kind="approval")
+                   "Approve it on the desktop.", kind="approval", conversation=task.conversation)
         return
     body = f"{task.goal[:120]}\n\n{(task.question if event == 'waiting_user' else task.result)[:400]}"
-    _phone(title, body)
+    _phone(title, body, conversation=task.conversation)
     try:
         subprocess.Popen(["notify-send", "-a", "Omarchy AI", "-u", "normal", title, body],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -1424,11 +1438,11 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
         pass
 
 
-def _phone(title: str, body: str, *, kind: str = "other") -> None:
+def _phone(title: str, body: str, *, kind: str = "other", conversation: str = "") -> None:
     """The same notification on the phone, through Flux (phone/flux_notify.py)."""
     try:
         from ..phone import flux_notify
-        flux_notify.send(title, body, kind=kind)
+        flux_notify.send(title, body, kind=kind, conversation=conversation)
     except Exception:  # noqa: BLE001 -- the desktop notification must still go out
         log.debug("flux notify unavailable", exc_info=True)
 

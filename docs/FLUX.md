@@ -109,8 +109,9 @@ HTTPS on port 8766). They matter only to the modified Flux app below.
 | `GET /api/flux/challenge`, `POST /api/flux/pair` | Automatic pairing: the phone signs a single-use nonce with its Flux identity key, checked against desktop Flux's `devices.json` |
 | `GET /api/wake`, `/api/wake/<model>.onnx` | The computer's wake-word models, for "Wake Omarchy" on the phone |
 | `GET /api/tvs`, `POST /api/cast`, `POST /api/cast/stop` | Mirror to TV from the phone |
-| `POST /api/live/offer`, `POST /api/tool` | Voice and text calls: the app's native WebRTC client sends its offer (with an `oai-events` data channel) and, for OpenAI, runs the model's tool calls on the computer |
+| `POST /api/live/offer`, `POST /api/tool` | Voice and text calls: the app's native WebRTC client sends its offer (with an `oai-events` data channel and the conversation to continue) and, for OpenAI, runs the model's tool calls on the computer |
 | `GET /api/approvals`, `POST /api/approvals/fingerprint`, `POST /api/approvals/respond` | The pending-approvals list: Approve sends the fingerprint prompt (only the signed fingerprint approves), Deny needs nothing more |
+| `GET /api/conversations`, `GET /api/conversations/<id>`, `POST /api/conversations/<id>/delete`, `GET /api/conversations/for-notification` | Every talk with Omarchy (typed or spoken, phone or desktop), with its tasks' approvals, questions and results as cards, and the chat a notification is about |
 | `POST /api/ask` | Send a request to the Task Runtime |
 | `POST /api/flux/setting` | Turn on an allowlisted Flux feature (`remote_input`, `remote_desktop`, `herdr`, `herdr_control`, `herdr_terminals`) through fluxd's own `settings.set` |
 | `POST /mirror/start`, `GET /mirror/stream`, `POST /mirror/stop` | The screen stream that the app shows in its remote desktop |
@@ -138,6 +139,11 @@ Flux.
   call in place. The key shows the connection state (pulsing while connecting,
   a green frame when connected, red on an error) and Omarchy's ASCII visualizer
   while she talks, so the screen stays visible.
+- **Conversations.** Text with Omarchy keeps every talk, typed or spoken, on
+  the phone or at the desk, in a side menu like other AI chat apps. The AI
+  names each one. Reopening one continues it where it stopped. A task's
+  approvals, questions and results appear in the chat it started in, and a
+  notification opens that chat. The Text button shows how many wait.
 - **Pending approvals** on the computer's page in Flux, each with Approve
   (your fingerprint) and Deny. An approval nobody answers expires after
   `task_approval_hours` (4 by default), and one the current rules no longer

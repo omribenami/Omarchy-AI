@@ -28,19 +28,27 @@ def _enabled() -> bool:
         return True
 
 
-def send(title: str, body: str = "", *, kind: str = "other") -> None:
-    """Show `title` and `body` on every paired phone that Flux has connected now."""
+def send(title: str, body: str = "", *, kind: str = "other", conversation: str = "") -> None:
+    """Show `title` and `body` on every paired phone that Flux has connected now.
+    With a `conversation`, a tap on it opens that chat in Flux."""
     if not title or not _enabled():
         return
+    if conversation:
+        from ..core import conversations
+        conversations.notified(_titled(title, kind)[:120], conversation)
     threading.Thread(target=deliver, args=(title, body, kind), daemon=True, name="flux-notify").start()
+
+
+def _titled(title: str, kind: str) -> str:
+    """The title as the phone shows it (deliver adds the marker)."""
+    marker = "Omarchy AI · Approval: " if kind == "approval" else "Omarchy AI · "
+    return title if title.startswith(marker) else marker + title.removeprefix("Omarchy AI · ")
 
 
 def deliver(title: str, body: str = "", kind: str = "other") -> int:
     """Sends now and returns how many phones got it (for tests and callers that wait)."""
     from ..execution.flux_approve import Fluxd
-    marker = "Omarchy AI · Approval: " if kind == "approval" else "Omarchy AI · "
-    if not title.startswith(marker):
-        title = marker + title.removeprefix("Omarchy AI · ")
+    title = _titled(title, kind)
     try:
         fluxd = Fluxd(timeout=2)
     except OSError:

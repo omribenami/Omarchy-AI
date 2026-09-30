@@ -1,3 +1,5 @@
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -130,6 +132,7 @@ class RunLoopFallbackTests(unittest.IsolatedAsyncioTestCase):
                 patch("omarchy_ai.voice.gemini_live.status_icon.set_live"), \
                 patch("omarchy_ai.voice.gemini_live.announce_update", AsyncMock()), \
                 patch("omarchy_ai.voice.gemini_live.append_session"), \
+                patch("omarchy_ai.core.conversations.DIR", Path(tempfile.mkdtemp())), \
                 patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mic)):
             await asyncio.wait_for(s.run(), 5)
         self.assertEqual(connected, [config.gemini_model, config.gemini_fallback_models[0]])

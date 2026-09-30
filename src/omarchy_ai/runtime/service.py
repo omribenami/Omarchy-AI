@@ -28,8 +28,10 @@ def get_runtime():
     global _runtime
     with _lock:
         if _runtime is None:
+            from ..core import conversations
             from .runtime import TaskRuntime
             _runtime = TaskRuntime()
+            _runtime.listeners.append(conversations.task_event)  # its cards go back to the talk it came from
         return _runtime
 
 
@@ -127,8 +129,9 @@ def start_task(args: dict) -> ActionResult:
     try:
         # The daemon's own cwd is this project's checkout; a voice task must not
         # silently work (and checkpoint/roll back) inside it (code review 2026-09-23).
+        from ..core import conversations
         task = runtime.start(goal, args.get("workspace") or str(Path.home()), source="voice", agent=agent,
-                             unsandboxed=unsandboxed)
+                             unsandboxed=unsandboxed, conversation=conversations.CURRENT.get())
     except ValueError as exc:
         return ActionResult(False, str(exc))
     return ActionResult(True, json.dumps({

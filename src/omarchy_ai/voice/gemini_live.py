@@ -1231,6 +1231,12 @@ class GeminiLiveSession:
         from google import genai
         client = genai.Client(api_key=Path(self.config.gemini_api_key_path).read_text().strip())
         self._loop = asyncio.get_running_loop()
+        # Desktop voice talks show in the phone's conversation list too, and the
+        # tasks started here report back into them (core/conversations.py).
+        from ..core import conversations
+        self.conversation = await asyncio.to_thread(conversations.desktop)
+        self._transcript = conversations.Transcript(self.conversation, self._transcript)
+        conversations.CURRENT.set(self.conversation)
         mic = None
         tasks = []
         try:
@@ -1319,6 +1325,7 @@ class GeminiLiveSession:
             if self._overlay:
                 self._overlay = False
                 await asyncio.to_thread(watchdog.stop)
-            await asyncio.to_thread(append_session, self._transcript, self.config.context_retention_hours)
+            await asyncio.to_thread(append_session, list(self._transcript), self.config.context_retention_hours)
+            await asyncio.to_thread(conversations.flush, self.conversation)
             # Alerts in the language just spoken, while a model works (core/alert_clips.py).
             alert_clips.prepare_in_background(self.config)
