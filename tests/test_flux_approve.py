@@ -161,6 +161,30 @@ class RuntimeFingerprintTests(unittest.TestCase):
                 runtime._fingerprint_prompt(rt, task, fingerprint)
             rt.respond.assert_not_called()
 
+    def test_one_phone_ping_per_approval_and_no_web_page(self):
+        # The user, 2026-09-30: Flux got an approval notification and a
+        # fingerprint prompt for the same step, and taps opened the web GUI.
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from omarchy_ai.runtime import runtime
+        task = SimpleNamespace(id='t1', goal='push the fix', question='', result='',
+                               pending_approval={'fingerprint': 'f1', 'risk': 'HIGH', 'subject': 'git push'})
+        for fingerprint in (True, False):
+            with patch.object(runtime, '_flux_approval_available', return_value=fingerprint), \
+                    patch.object(runtime, '_phone') as phone, \
+                    patch.object(runtime.threading, 'Thread') as thread:
+                runtime._notify(MagicMock(), task, 'waiting_approval')
+            targets = [c.kwargs['target'] for c in thread.call_args_list]
+            if fingerprint:
+                phone.assert_not_called()
+                self.assertIn(runtime._fingerprint_prompt, targets)
+            else:
+                self.assertNotIn(runtime._fingerprint_prompt, targets)
+                body = phone.call_args.args[1]
+                self.assertIn('on the desktop', body)
+                self.assertNotIn('PIN', body)
+                self.assertNotIn('in Flux', body)
+
 
 if __name__ == '__main__':
     unittest.main()

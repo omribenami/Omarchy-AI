@@ -180,6 +180,18 @@ class PermissionTests(unittest.TestCase):
             self.assertEqual(coding_agent_risk(repo, write=True)[0], Risk.NORMAL)
             self.assertEqual(coding_agent_risk(repo, write=False)[0], Risk.LOW)
         self.assertEqual(coding_agent_risk(Path("/etc"), write=True)[0], Risk.HIGH)
+        # Every voice task's default workspace; its sandbox still applies (2026-09-30).
+        self.assertEqual(coding_agent_risk(Path.home(), write=True)[0], Risk.NORMAL)
+
+    def test_read_only_github_and_public_keys_do_not_ask(self):
+        # Asked for approval on 2026-09-27: reads, not changes.
+        for command in ("gh api repos/a/b/contents/demo.mp4 --jq .name", "gh api user --method GET",
+                        "cat ~/.ssh/id_rsa.pub"):
+            self.assertEqual(classify(command, cwd=Path.home()).risk, Risk.LOW, command)
+        for command in ("gh api -X POST repos/a/b/issues", "gh api repos/a/b/issues -f title=x",
+                        "gh api --method=DELETE repos/a/b", "gh issue create -t x"):
+            self.assertEqual(classify(command, cwd=Path.home()).risk, Risk.ELEVATED, command)
+        self.assertEqual(classify("cat ~/.ssh/id_rsa", cwd=Path.home()).risk, Risk.HIGH)
 
     def test_secrets_are_scrubbed_from_subprocess_env(self):
         env = scrubbed_env({"PATH": "/usr/bin", "OPENAI_API_KEY": "x", "GITHUB_TOKEN": "y", "KEYBOARD": "us",

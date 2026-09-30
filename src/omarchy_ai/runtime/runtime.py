@@ -1330,16 +1330,18 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
         fingerprint = _flux_approval_available()
         if fingerprint:
             body += "\n\nOr approve it on your phone with your fingerprint (Flux)."
-        elif _approval_pin_set():
-            body += "\n\nOr approve it from your paired phone with the approval PIN."
         threading.Thread(target=_approval_prompt, args=(runtime, task.id, req.get("fingerprint"), title, body),
                          daemon=True).start()
-        _phone(title, f"{task.goal[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
-               + ("Approve with your fingerprint in the Flux prompt." if fingerprint
-                  else "Approve it in Omarchy AI in Flux, or on the desktop."), kind="approval")
+        # The user, 2026-09-30: Flux was spammed with approvals, and taps
+        # opened the phone bridge's web page, which Flux no longer uses. With
+        # fingerprint approval the Flux prompt is the one phone ping;
+        # otherwise the phone is told to approve on the desktop.
         if fingerprint:
             threading.Thread(target=_fingerprint_prompt, args=(runtime, task, req.get("fingerprint")),
                              daemon=True).start()
+        else:
+            _phone(title, f"{task.goal[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
+                   "Approve it on the desktop.", kind="approval")
         return
     body = f"{task.goal[:120]}\n\n{(task.question if event == 'waiting_user' else task.result)[:400]}"
     _phone(title, body)
@@ -1348,14 +1350,6 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         pass
-
-
-def _approval_pin_set() -> bool:
-    try:
-        from ..execution import approval_pin
-        return approval_pin.is_set()
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _phone(title: str, body: str, *, kind: str = "other") -> None:

@@ -41,8 +41,10 @@ works after a strong biometric check ([Flux's approval
 design](https://github.com/bjarneo/flux/blob/master/docs/approve.md)). Omarchy
 AI uses the same key:
 
-- A task that waits for your approval also asks the phone. A fingerprint there
-  approves it. Omarchy AI rebuilds the signed message itself and verifies it
+- A task that waits for your approval asks the phone once: the fingerprint
+  prompt, with no separate notification. A fingerprint there approves it.
+  Without fingerprint approval, the phone gets one notification that says to
+  approve on the desktop. Omarchy AI rebuilds the signed message itself and verifies it
   with the root-owned key, as Flux's PAM helper does.
 - With Flux approval on for `sudo`, tasks that need root send no saved
   password. `sudo` asks the phone, and you approve with your fingerprint.
@@ -133,10 +135,9 @@ Flux.
   call in place. The key shows the connection state (pulsing while connecting,
   a green frame when connected, red on an error) and Omarchy's ASCII visualizer
   while she talks, so the screen stays visible.
-- **Notification taps.** Tapping an approval opens the fingerprint prompt, and
-  falls back to the approval PIN page. Tapping any other Omarchy AI notification
-  opens Text with Omarchy with that notification pinned at the top and given
-  to her as context.
+- **Notification taps.** Tapping an approval opens Flux's fingerprint prompt.
+  Tapping any other Omarchy AI notification opens the computer's page in Flux.
+  No tap opens Omarchy AI's web page.
 - **Audio routing.** The app keeps a connected car (Android Auto), Bluetooth,
   USB or TV output. With no external output it uses the loudspeaker, and it
   releases the route when the call ends.

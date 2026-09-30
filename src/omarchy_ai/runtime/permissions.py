@@ -81,7 +81,7 @@ class Assessment:
 # BLOCKED: catastrophic / irreversible / exfiltration. Adapted from MiniMax's
 # HARD_BLOCKED_REGISTRY (Windows/macOS-only entries dropped).
 # ---------------------------------------------------------------------------
-_SENSITIVE_PATH = (r"(?:/etc/(?:shadow|gshadow|sudoers)|\.ssh/id_(?:rsa|dsa|ecdsa|ed25519)\b|"
+_SENSITIVE_PATH = (r"(?:/etc/(?:shadow|gshadow|sudoers)|\.ssh/id_(?:rsa|dsa|ecdsa|ed25519)\b(?!\.pub)|"
                    r"\.aws/credentials|\.gnupg/private|\.(?:p12|pfx|keystore|jks)\b|private[^/\s]*\.pem\b)")
 _INTERPRETERS = r"(?:bash|sh|zsh|dash|fish|ksh|python3?|perl|ruby|node)"
 
@@ -583,7 +583,12 @@ def _classify_one(sub: str, cwd: Path, scope: Scope) -> Assessment:
         result.raise_to(Risk.ELEVATED, f"logs in to {host} with your password (the harness types it; never shown)")
     elif word in ("gh",):
         verb = " ".join(args[:2])
-        if re.match(r"(?:pr|issue|release|repo)\s+(?:create|merge|close|delete|edit|comment)|api", verb):
+        # `gh api` is a GET unless a method or a field says otherwise.
+        api_writes = args[:1] == ["api"] and (
+            any(re.match(r"-[fF]|--(?:field|raw-field|input)\b", a) for a in args)
+            or any(m.upper() != "GET" for a, m in zip(args, args[1:]) if a in ("-X", "--method"))
+            or any(re.match(r"(?:-X|--method=)(?!GET$)\w", a, re.I) for a in args))
+        if re.match(r"(?:pr|issue|release|repo)\s+(?:create|merge|close|delete|edit|comment)", verb) or api_writes:
             result.raise_to(Risk.ELEVATED, f"gh {verb} changes GitHub state")
     elif word in ("claude", "codex"):
         result.raise_to(Risk.ELEVATED, "starts another coding agent outside the executor layer")
@@ -803,7 +808,12 @@ def coding_agent_risk(workspace: Path, write: bool) -> tuple[Risk, list[str]]:
     workspace = Path(workspace).expanduser().resolve()
     if not write:
         return Risk.LOW, []
-    if workspace in (Path("/"), _HOME) or str(workspace).startswith(_SYSTEM_DIRS):
+    if workspace == _HOME:
+        # Every voice task starts here. The user, 2026-09-30: approvals are for
+        # critical actions only; the agent's own sandbox still applies, and
+        # its pushes, root and --yolo runs still ask.
+        return Risk.NORMAL, []
+    if workspace == Path("/") or str(workspace).startswith(_SYSTEM_DIRS):
         return Risk.HIGH, [f"coding agent writing in {workspace}"]
     if any(workspace == c or c in workspace.parents for c in _CONFIG_DIRS):
         return Risk.ELEVATED, [f"coding agent writing user configuration in {workspace}"]
