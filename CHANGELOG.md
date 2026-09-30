@@ -19,6 +19,26 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.12.2] - 2026-09-30
+
+### Highlights
+
+- Your phone gets far fewer approval requests. I only ask for things that
+  really matter, like pushing code, running as root or touching your keys,
+  and each one reaches your phone once.
+- Tapping one of my notifications in Flux now stays in the Flux app.
+- I hand fewer jobs off to a background task by mistake. A locked screen,
+  a slow Gmail answer or a hiccup reading the screen no longer counts as
+  me failing.
+
+### Fixes
+
+- Focusing a window on a locked screen now says the screen is locked, and
+  assistant terminals are found by their own name after the shell renames them.
+- Gmail reads through MyApi wait up to 30 seconds instead of 15.
+- Reading GitHub with gh api, or reading a public SSH key, no longer asks for
+  approval, and coding agents working in your home folder no longer ask.
+
 ## [0.12.1] - 2026-09-29
 
 ### Highlights
