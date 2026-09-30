@@ -19,6 +19,12 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- You can install me from OmaStore. The first time you open me there, I finish setup on this machine and start listening.
+
 ## [0.12.0] - 2026-09-29
 
 ### Highlights

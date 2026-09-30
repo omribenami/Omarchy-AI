@@ -1,0 +1,19 @@
+# Listing for OmaStore. The file on the default branch is what gets the app
+# into the catalog. The store installs the latest stable release archive and
+# runs `exec`; it does not run install.sh during install.
+kind = "app"
+name = "Omarchy AI"
+summary = "Agentic AI harness for Omarchy: voice/text desktop co-pilot with task runtime, Claude Code/Codex, watches & routines, deep system control, and risk-gated approvals."
+categories = ["AudioVideo", "System"]
+icon = "src/omarchy_ai/phone/static/omarchy-logo.png"
+screenshots = [
+  "quickshell/plugins/omarchy-ai.settings/preview.png",
+  "docs/media/tv-mirroring-1.jpg",
+  "docs/media/tv-mirroring-2.jpg",
+]
+# First launch finishes setup in a terminal (missing packages, uv, systemd).
+terminal = true
+
+[linux.x86_64]
+asset = "omarchy-ai-{version}-linux-x86_64.tar.gz"
+exec = "omarchy-ai-{version}-linux-x86_64/bin/omarchy-ai"

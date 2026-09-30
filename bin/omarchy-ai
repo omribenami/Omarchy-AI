@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Launcher for one extracted release tree.
+#
+# OmaStore downloads the release archive, extracts it, and runs this file.
+# It never runs install.sh. The first launch of a tree that is not already
+# the active install bootstraps with install.sh (native packages, uv, the
+# systemd user unit, and desktop plugins), then starts the user service and
+# opens a conversation.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/omarchy-ai.service"
+if [[ ! -x "$root/.venv/bin/omarchy-ai" || ! -f "$unit" ]] || ! grep -F -q "WorkingDirectory=$root" "$unit"; then
+  echo "==> Setting up Omarchy AI from $root"
+  bash "$root/install.sh"
+fi
+
+if (($#)); then
+  exec "$root/.venv/bin/omarchy-ai" "$@"
+fi
+
+echo "==> Starting Omarchy AI"
+systemctl --user enable --now omarchy-ai.service
+
+response="$("$root/.venv/bin/omarchy-ai-settings" activate 2>&1)" || {
+  printf '%s\n' "$response" >&2
+  exit 1
+}
+if [[ "$response" == *'"state": "offline"'* || "$response" == *'"state":"offline"'* ]]; then
+  printf '%s\n' "$response" >&2
+  exit 1
+fi
+echo 'Omarchy AI is running. Say "omachy", or press Super+`.'
