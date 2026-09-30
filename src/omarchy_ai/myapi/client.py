@@ -40,7 +40,11 @@ from ..config import MYAPI_IDENTITY_PATH
 log = logging.getLogger("omarchy_ai.myapi")
 
 BASE_URL = "https://www.myapiai.com/api/v1"
-_TIMEOUT = 15
+# myapi_usage.jsonl 2026-09-23..30: GMAIL_FETCH_EMAILS answers in 5.5s
+# median but its p90 sat at the old 15s limit (successes up to 17.8s),
+# so a quarter of those calls timed out, she retried the same call and it
+# escalated (four background tasks for slow Gmail reads).
+_TIMEOUT = 30
 _DISCOVERY_TTL = 15 * 60
 _discovery_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 # myapiai.com sits behind Cloudflare, which blocks urllib's default

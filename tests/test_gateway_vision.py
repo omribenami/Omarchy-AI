@@ -25,6 +25,23 @@ class GatewayVisionTests(unittest.TestCase):
                 self.assertNotIn('tools', body)
                 self.assertTrue(body['messages'][1]['content'][1]['image_url']['url'].startswith('data:image/png;base64,'))
 
+    def test_transient_unprocessable_image_is_retried_once(self):
+        # 2026-09-27 10:42: Gemini's "Unable to process input image. Please retry" escalated.
+        from omarchy_ai.voice.omarchy import GatewayError
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'screen.png'
+            path.write_bytes(PNG_BYTES)
+            cfg = SimpleNamespace(omarchy_vision_model='google/gemini-2.5-flash-lite')
+            flaky = GatewayError('Gateway request failed (HTTP 400): {"error":{"message":"Unable to process input image. Please retry"}}')
+            ok = json.dumps({'choices': [{'message': {'content': 'A terminal is visible.'}}]}).encode()
+            with patch('omarchy_ai.voice.omarchy.GatewayClient') as client:
+                client.return_value._request.side_effect = [flaky, ok]
+                self.assertEqual(inspect_gateway_image(path, 'What is visible?', cfg), 'A terminal is visible.')
+            with patch('omarchy_ai.voice.omarchy.GatewayClient') as client:
+                client.return_value._request.side_effect = GatewayError('Gateway request failed (HTTP 402)')
+                self.assertTrue(inspect_gateway_image(path, 'What is visible?', cfg).startswith('error:'))
+                self.assertEqual(client.return_value._request.call_count, 1)
+
     def test_invalid_image_is_not_sent(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / 'screen.png'

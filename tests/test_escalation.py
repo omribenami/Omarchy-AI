@@ -103,6 +103,16 @@ class EscalatorTests(unittest.TestCase):
                        "Not executed: you just read a multi-step script. Perform it with run_mission", 45.0)
         self.assertIsNone(e.due(45.0, ["תתחילי הקלטה של המסך ואחרי זה תריצי את כל הפרסומת"], ""))
 
+    def test_waiting_on_the_user_is_not_a_failure(self):
+        # 2026-09-27 02:06 (which TV) and 10:24 (a sign-in only the user can finish).
+        e = Escalator(judge(gave_up=True))
+        e.observe_call("run_mission", {}, False, "Mission stopped at step 8 (start_casting {}): found 2 TVs on the "
+                       "network (A, B) -- call list_cast_targets and ask the user which one, then call start_casting", 1.0)
+        e.observe_call("browser_task", {}, False, "Browser task NOT verified (blocked). Likely cause (from the page "
+                       "itself): The assistant's browser is not signed in to github.com. Signing in here needs the "
+                       "user's password: call show_browser and ask the user to sign in there", 2.0)
+        self.assertIsNone(e.due(3.0, ["upload it"], "I can't"))
+
     def test_old_failures_expire(self):
         e = Escalator(judge())
         e.observe_call("browser_task", {}, False, "stopped", 0.0)

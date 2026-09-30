@@ -1341,6 +1341,13 @@ def focus_window(args: dict) -> ActionResult:
             clients = _with_programs(clients)
             ranked = _rank_windows(clients, needle, active_address, active_workspace)
             if not ranked:
+                # An assistant terminal's label ("Omarchy AI 0d592f0a", from
+                # its log) outlives its title once the shell renames it:
+                # journal 2026-09-27 13:36 and 09-28 15:43, both escalated.
+                from . import tile_logs
+                labelled = tile_logs.address_for_label(target)
+                ranked = [c for c in clients if labelled and c.get("address") == labelled]
+            if not ranked:
                 ranked = _jev_window(clients, target, active_workspace)
             if not ranked:
                 return ActionResult(False, f"no window matching '{target}' found")
@@ -1364,6 +1371,11 @@ def focus_window(args: dict) -> ActionResult:
         except (ValueError, AttributeError):
             pass
         time.sleep(0.04)
+    # Journal 2026-09-27 08:17 and 15:03: every focus of an assistant
+    # terminal "failed" while the screen was locked (the lock screen keeps
+    # focus), she retried with other names, and it escalated twice.
+    if _screen_locked():
+        return ActionResult(False, SCREEN_LOCKED)
     return ActionResult(False, f"focus dispatch returned but {address} is not verified active")
 
 

@@ -177,7 +177,7 @@ def describe_screen(
 
 def inspect_gateway_image(path: Path, question: str, config) -> str:
     """Inspect the actual saved image, without executing any model tools."""
-    from ..voice.omarchy import GatewayClient
+    from ..voice.omarchy import GatewayClient, GatewayError
 
     try:
         mime = _image_mime(path)
@@ -196,7 +196,16 @@ def inspect_gateway_image(path: Path, question: str, config) -> str:
             ],
             "max_tokens": 500,
         }
-        response = json.loads(client._request("/chat/completions", json.dumps(payload).encode(), "application/json"))
+        body = json.dumps(payload).encode()
+        try:
+            response = json.loads(client._request("/chat/completions", body, "application/json"))
+        except GatewayError as error:
+            # Gemini's transient "Unable to process input image. Please
+            # retry": 8 of 67 inspections 2026-09-24..27, successes seconds
+            # either side of each, and two escalations. Retry it once.
+            if "Unable to process input image" not in str(error):
+                raise
+            response = json.loads(client._request("/chat/completions", body, "application/json"))
         choices = response.get("choices") or []
         text = (choices[0].get("message", {}).get("content") or "").strip() if choices else ""
         if not text:

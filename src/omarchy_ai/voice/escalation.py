@@ -50,7 +50,10 @@ IGNORED_TOOLS = frozenset({
 # job coming back to her on purpose.
 _NOT_A_FAILURE = re.compile(
     r"^Not executed:|judged the request .* ambiguous|^Not run: Jev checked|^Not run: the screen is locked|^Input NOT sent"
-    r'|name one|does not exist|similar names|"status": "handoff"', re.S)
+    r'|name one|does not exist|similar names|"status": "handoff"'
+    # Waiting on the user, not failing: which TV (2026-09-27 02:06), and a
+    # sign-in only they can finish (2026-09-27 00:44, 10:24).
+    r"|ask the user which one|needs the user's password|needs a human", re.S)
 
 # One of these means the assistant lacks a capability, rather than that one
 # ordinary attempt happened to fail. Waiting for a second identical failure

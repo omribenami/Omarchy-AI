@@ -418,6 +418,18 @@ def address_for(query: str | None) -> str | None:
     return next((label.split()[0] for label, p in _live_transcripts() if p == path and label.startswith("0x")), None)
 
 
+def address_for_label(label: str) -> str | None:
+    """The window of an assistant terminal by its exact label ("Omarchy AI
+    0d592f0a"), which outlives its title once the shell renames it. Exact
+    only: a fuzzy guess would focus the wrong window."""
+    with _lock:
+        path = _aliases.get(label.strip().lower())
+        tracked = next((address for address, p in _tracked.items() if path is not None and p == path), None)
+    if path is None or tracked:
+        return tracked
+    return next((live.split()[0] for live, p in _live_transcripts() if p == path and live.startswith("0x")), None)
+
+
 def read_log(query: str | None, tail_chars: int = 4000) -> str:
     """What the read_tile_log tool actually calls. Real text, not a
     screenshot — strips the ANSI/OSC escape sequences script(1) faithfully
