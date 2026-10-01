@@ -19,6 +19,41 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.13.0] - 2026-09-30
+
+### Highlights
+
+- Routines and timed requests now really happen. Ask me to turn something on
+  at 6:30, or to set the volume every morning, and I do exactly that at that
+  time, even with no conversation open, then tell you it's done or what went
+  wrong.
+- If your computer was asleep when something was due, I tell you I missed it
+  instead of doing it hours late.
+- Changing the time of something I scheduled now moves it in one step, and I
+  only say a time has passed when it really has.
+- Every chat, typed or spoken, is saved as a conversation your phone can
+  reopen, and a task's approvals and results come back into the chat it
+  started in.
+- MyApi requests are faster and safer: I read right away, and anything that
+  sends, changes or deletes waits for your yes in that chat.
+
+### Fixes
+
+- An approval typed in one chat no longer answers another chat's request.
+- Approval requests nobody answers expire after a few hours, and saying
+  "approve" to a high-risk step sends the fingerprint prompt to your phone.
+- Gmail searches are several times faster, and a phone chat that reconnects
+  remembers what you were talking about.
+- A smart-home command that answers with an error now counts as failed.
+
+### Under the hood
+
+- A new scheduled-task kind, 'action', stores the exact tool calls when you
+  ask and runs them through the same tools a conversation uses, at most once,
+  with retries for anything but toggles.
+- The heartbeat sleeps until the next job is due instead of ticking every
+  minute.
+
 ## [0.12.2] - 2026-09-30
 
 ### Highlights
