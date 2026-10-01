@@ -8,6 +8,7 @@ into structured arguments. So no model ever does schedule arithmetic.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
 
 # (low, high) per standard 5-field crontab: minute hour dom month dow.
 _FIELDS = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
@@ -104,22 +105,75 @@ def next_run(schedule: dict, after: float) -> float | None:
     raise ValueError("Schedule needs at, every_minutes or cron")
 
 
+# A spoken time reaches the tool a few seconds after it was said: "at 17:34"
+# said at 17:33:55 arrives at 17:34:03. That is "now", not "already passed".
+PAST_GRACE_SECONDS = 120
+
+_CLOCK = re.compile(r"^(?:(today|tonight|tomorrow)\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?$")
+
+
+def _clock(text: str, now: float) -> float | None:
+    """'18:30', '6:30 pm', 'today 18:30', 'tomorrow 9am' -> epoch, or None
+    when `text` is not a bare clock time. A bare time is its next
+    occurrence; 'today' is today even when it has passed (the caller then
+    says so instead of silently moving it to tomorrow)."""
+    match = _CLOCK.match(text.strip().lower())
+    if not match:
+        return None
+    day, hour, minute, half = match.group(1), int(match.group(2)), int(match.group(3) or 0), match.group(4)
+    if match.group(3) is None and not half:
+        return None  # a lone number is not a time
+    if half:
+        if not 1 <= hour <= 12:
+            raise ValueError(f"Could not read the time {text!r}")
+        hour = hour % 12 + (12 if half.startswith("p") else 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Could not read the time {text!r}")
+    base = datetime.fromtimestamp(now)
+    moment = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if day == "tomorrow":
+        moment += timedelta(days=1)
+    elif day is None and moment.timestamp() <= now - PAST_GRACE_SECONDS:
+        moment += timedelta(days=1)
+    return moment.timestamp()
+
+
 def parse_at(text: str, now: float) -> float:
-    """Local ISO date-time ("2026-09-23T09:00", "2026-09-23 09:00") or a bare
-    "HH:MM" meaning its next occurrence."""
+    """Local ISO date-time ("2026-09-23T09:00", "2026-09-23 09:00"), or a
+    clock time ("18:30", "6:30 pm", "today 18:30", "tomorrow 09:00"). A bare
+    clock time means its next occurrence."""
     text = str(text).strip()
     try:
-        if len(text) <= 5 and ":" in text:
-            hour, minute = (int(v) for v in text.split(":"))
-            base = datetime.fromtimestamp(now)
-            moment = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if moment.timestamp() <= now:
-                moment += timedelta(days=1)
-            return moment.timestamp()
-        moment = datetime.fromisoformat(text)
+        clock = _clock(text, now)
+        if clock is not None:
+            return clock
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00") if text.endswith("Z") else text)
     except ValueError as exc:
         raise ValueError(f"Could not read the time {text!r}; use local ISO like 2026-09-23T09:00") from exc
-    return moment.timestamp()  # naive means local time, as spoken
+    return moment.timestamp()  # naive means local time, as spoken; an explicit offset is honoured
+
+
+def describe_when(epoch: float | None, now: float) -> str:
+    """'today 18:30 (in 57 min)', 'tomorrow 09:00 (in 15 h)', 'Tue 2026-10-06
+    16:30 (in 6 days)': what the assistant repeats back, so a wrong day is
+    heard at once."""
+    if epoch is None:
+        return "never"
+    moment, today = datetime.fromtimestamp(epoch), datetime.fromtimestamp(now).date()
+    days = (moment.date() - today).days
+    label = {0: "today", 1: "tomorrow", -1: "yesterday"}.get(days, moment.strftime("%a %Y-%m-%d"))
+    seconds = epoch - now
+    if seconds < 0:
+        rel = "overdue"
+    elif seconds < 90:
+        rel = "in under 2 min"
+    elif seconds < 5400:
+        rel = f"in {round(seconds / 60)} min"
+    elif seconds < 172800:
+        rel = f"in {seconds / 3600:.1f} h".replace(".0 h", " h")
+    else:
+        rel = f"in {round(seconds / 86400)} days"
+    return f"{label} {moment.strftime('%H:%M')} ({rel})"
 
 
 def describe(epoch: float | None) -> str:

@@ -33,6 +33,13 @@ log = logging.getLogger("omarchy_ai.voice.switchboard")
 
 MYAPI_WRITES = frozenset({"myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply"})
 
+
+def _writes(tool: str, args: dict | None) -> bool:
+    """A MyApi write now, or schedule_task carrying one for later."""
+    from ..execution.verified_input import writes_externally
+    return tool in MYAPI_WRITES or writes_externally(tool, args or {})
+
+
 # No side effects: these may start while Jev is still deciding, and their
 # result is dropped if Jev rejects the call.
 READ_ONLY = frozenset({
@@ -103,7 +110,8 @@ def _options(tool: str, ctx: Context) -> dict:
     return options
 
 
-def questions(tool: str, ctx: Context) -> dict:
+def questions(tool: str, ctx: Context, args: dict | None = None) -> dict:
+    writes = _writes(tool, args)
     result = {
         "route": choice(
             "The live model wants to make `call` for the user's latest `request` (earlier turns and the calls it "
@@ -126,7 +134,7 @@ def questions(tool: str, ctx: Context) -> dict:
              "not_asked": "The user did not ask for this.",
              "ambiguous": "The request does not say clearly what to act on."}),
     }
-    if tool in MYAPI_WRITES:
+    if writes:
         result["confirmed"] = boolean(
             "Did the user explicitly instruct or approve this exact external change? A direct command such as "
             "'send this email to X' is approval; a later clear yes after a read-back is also approval. Merely "
@@ -143,7 +151,7 @@ def state(tool: str, args: dict, ctx: Context) -> dict:
         "earlier_user_turns": [t[-200:] for t in ctx.earlier[-3:]],
         "fast_pass_route": ctx.hint,
         "calls_this_turn": [{"tool": n, "args": _short(a)} for n, a in ctx.calls[-6:]],
-        "call": {"tool": tool, "args": _short(args, 2_000 if tool in MYAPI_WRITES else 300),
+        "call": {"tool": tool, "args": _short(args, 2_000 if _writes(tool, args) else 300),
                  "what_it_does": ctx.description[:240]},
     }
 
@@ -166,7 +174,7 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
     route, p = answers["route"]["choice"], answers["route"]["p"]
     match, gap = answers["matches"]["p"], answers["gap"]["choice"]
     evidence = {"route": route, "p": round(p, 2), "matches": round(match, 2), "gap": gap}
-    if tool in MYAPI_WRITES:
+    if _writes(tool, args):
         confirmed = answers.get("confirmed", {}).get("p", 0)
         evidence["confirmed"] = round(confirmed, 2)
         if confirmed < 0.8:
@@ -239,7 +247,7 @@ class Switchboard:
                 return cached[1]
         started = time.monotonic()
         if not ctx.request.strip():
-            if tool in MYAPI_WRITES:
+            if _writes(tool, args):
                 verdict = Verdict("reject", evidence={"confirmation": "no user request"}, message=(
                     "MyApi action not run: there is no current user confirmation for this external change."))
             else:
@@ -255,11 +263,11 @@ class Switchboard:
             verdict = Verdict("execute", tool, dict(args or {}), evidence={"skipped": "relays the user's words to a task"})
         else:
             try:
-                answers = (self._jev or Jev()).ask(state(tool, args, ctx), questions(tool, ctx),
+                answers = (self._jev or Jev()).ask(state(tool, args, ctx), questions(tool, ctx, args),
                                                    timeout=TIMEOUT, retries=0, fail_fast=True)
                 verdict = decide(answers, tool, args, ctx)
             except (JevError, KeyError) as exc:
-                if tool in MYAPI_WRITES:
+                if _writes(tool, args):
                     log.warning("Switchboard unavailable, refusing %s: %s", tool, str(exc)[:160])
                     verdict = Verdict("reject", evidence={"unavailable": str(exc)[:120]}, message=(
                         "MyApi action not run: confirmation could not be verified because Jev is unavailable."))

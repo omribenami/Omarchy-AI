@@ -289,8 +289,13 @@ def build_session_config(config: Config) -> dict:
         "regularly, or to keep an eye on something ('tell me when the build finishes', 'let "
         "me know when Claude needs me', 'every morning at 9 ...'). That is a real monitoring "
         "mechanism: promise follow-up only after schedule_task succeeded, and repeat its "
-        "next_run. Use list_scheduled_tasks / cancel_scheduled_task to manage them. Current "
-        "local time: " + datetime.now().strftime("%A %Y-%m-%d %H:%M") + "."
+        "`when`. To do something at a time or on a routine (turn a device on at 18:30, set "
+        "the volume every morning), schedule kind 'action' with the exact tool call(s): it "
+        "runs unattended on time and the user is told the result. To change a task's time, "
+        "pass replace_id instead of cancelling first. Never tell the user a time has passed, "
+        "or that something is scheduled or changed, unless a schedule_task result just said "
+        "so. Use list_scheduled_tasks / cancel_scheduled_task to manage them. Current "
+        "local time when this conversation started: " + datetime.now().strftime("%A %Y-%m-%d %H:%M") + "."
     )
     voice_model = {"gemini": getattr(config, "gemini_model", None)}.get(config.provider) or getattr(config, "live_model", None)
     worker = getattr(config, "task_agent_model", None)

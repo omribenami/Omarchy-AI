@@ -669,21 +669,72 @@ def get_update_status(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(updates.update_status()))
 
 
+def _resolve_scheduled(request: str) -> tuple[dict | None, str]:
+    """({tool, args}, "") for a plain request, or (None, what to tell the
+    model). Resolved now, while the user can still hear a read-back: the
+    stored call is what runs, word for word, at the scheduled time."""
+    from . import catalog
+    from ..myapi import client as myapi_client
+    from ..voice.omarchy import GatewayClient
+    config = load_config()
+
+    def fill(tool, text, heard):
+        return catalog.fill_args(tool, text, heard,
+                                 lambda system, user: GatewayClient(config).complete_json(system, user, timeout=8))
+    myapi_on = bool(getattr(config, "myapi_enabled", False)) and myapi_client.is_connected()
+    pick = catalog.resolve({"request": request}, request, myapi_on=myapi_on, fill=fill)
+    if pick.run and pick.tool not in catalog.CORE | {"schedule_task"}:
+        return {"tool": pick.tool, "args": dict(pick.args)}, ""
+    return None, pick.message
+
+
 def schedule_task(args: dict) -> ActionResult:
-    from ..core import agenda
+    from ..core import agenda, schedule
+    args = dict(args or {})
+    kind = str(args.get("kind") or "").strip()
+    has_calls = args.get("steps") not in (None, "", []) or bool(args.get("tool"))
+    if kind == "action" and not has_calls:
+        request = str(args.get("request") or args.get("title") or "").strip()
+        step, why = _resolve_scheduled(request) if request else (None, "")
+        if step is None:
+            return ActionResult(False, "Task NOT scheduled: give the exact call as tool + args (or steps). "
+                                       + (why or "No request to resolve."))
+        args["steps"] = [step]
+    elif kind == "assistant" and not has_calls:
+        # 2026-09-30 17:33: "turn on <a device> at 18:30" became an
+        # 'assistant' task, which at 18:30 only shows "start a conversation".
+        # When one tool does the request, schedule that call instead.
+        request = str(args.get("request") or args.get("title") or "").strip()
+        try:
+            step, _ = _resolve_scheduled(request) if request else (None, "")
+        except Exception:  # noqa: BLE001 -- stays an assistant task
+            log.warning("schedule_task: could not resolve %r", request[:120], exc_info=True)
+            step = None
+        if step is not None:
+            args.update(kind="action", steps=[step])
     try:
         job = agenda.create(args)
     except ValueError as exc:
-        return ActionResult(False, f"Task NOT scheduled: {exc}")
+        return ActionResult(False, f"Task NOT scheduled: {exc}. Nothing changed; do not tell the user it was "
+                                   f"scheduled. It is now {schedule.describe(time.time())}.")
     agenda.tick()  # a watch's first look happens now, not a heartbeat later
-    return ActionResult(True, json.dumps({"scheduled": agenda.summary(job),
-        "note": "Runs in the background even when no conversation is active; results arrive as desktop "
-                "notifications and in the next conversation."}, ensure_ascii=False))
+    summary = agenda.summary(job)
+    note = ("Runs in the background even when no conversation is active; results arrive as desktop "
+            "notifications and in the next conversation.")
+    if job["kind"] == "action":
+        note = ("At that time these exact tool calls run unattended, and the user is told the result (done or "
+                "failed) by notification and by you. Read back what will happen and when (`when`).")
+    out = {"scheduled": summary, "now": schedule.describe(time.time()), "note": note}
+    if job.get("replaces"):
+        out["replaced"] = job["replaces"] + " (cancelled; this task takes its place)"
+    return ActionResult(True, json.dumps(out, ensure_ascii=False))
 
 
 def list_scheduled_tasks(args: dict) -> ActionResult:
-    from ..core import agenda
-    return ActionResult(True, json.dumps(agenda.list_jobs(bool(args.get("include_finished"))), ensure_ascii=False))
+    from ..core import agenda, schedule
+    return ActionResult(True, json.dumps({"now": schedule.describe(time.time()),
+                                          "tasks": agenda.list_jobs(bool(args.get("include_finished")))},
+                                         ensure_ascii=False))
 
 
 def show_tasks_hud(args: dict) -> ActionResult:

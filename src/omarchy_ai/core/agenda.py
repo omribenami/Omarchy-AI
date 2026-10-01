@@ -14,6 +14,11 @@ never generates text (docs.typesafe.ai), so:
   urgent is this?" (choice), "which of these lines is the evidence?" (choice
   over lines that really exist, i.e. extraction without generation).
   Desktop goals run through the existing Jev observe/act/verify loop.
+- An 'action' job is a list of exact tool calls (any tool the assistant has:
+  smart-home, MyApi, desktop, terminal, user tools), fixed when the user asks
+  for it and run unattended through the same run_action the conversation
+  uses. Its result -- done, failed, or missed -- is told to the user at once
+  (desktop + phone notification, and the assistant says it).
 - Anything that needs words, vision or open-ended reasoning becomes an inbox
   item for the live model's next conversation, announced there. The daemon
   never pretends Jev did work it cannot do.
@@ -45,7 +50,25 @@ log = logging.getLogger("omarchy_ai.core.agenda")
 
 JOBS_PATH = STATE_DIR / "agenda.json"
 INBOX_PATH = STATE_DIR / "agenda_inbox.jsonl"
-KINDS = ("remind", "watch", "desktop", "command", "assistant")
+KINDS = ("remind", "watch", "desktop", "command", "assistant", "action")
+MAX_STEPS = 10
+# Something that changes the world (an action, a desktop goal, a command)
+# runs on time or not at all: a device switched on at 3 a.m. because the
+# laptop was asleep at 18:30 is worse than a "missed" notice.
+EXACT_KINDS = ("action", "desktop", "command")
+LATE_GRACE_SECONDS = 15 * 60
+# A job whose run started but never finished (the daemon died mid-run) is
+# reported, never silently re-run: actions are at most once.
+STALE_RUN_SECONDS = 30 * 60
+# A failed step is retried, unless repeating it could undo it (a toggle).
+STEP_RETRY_DELAYS = (5.0, 20.0)
+_NOT_REPEATABLE = re.compile(r"toggle|play_pause|_next$|_prev$|type_text|press_key|terminal_type|gmail_send|"
+                             r"gmail_reply|myapi_write|myapi_execute|^myapi$|start_task|write_file|edit_file")
+# Tools that only make sense inside a live conversation, or would let a
+# schedule bypass a live approval.
+NOT_SCHEDULABLE = frozenset({"run_mission", "get_recent_actions", "task_respond", "unlock_screen",
+                             "submit_sudo_password", "terminal_sudo", "schedule_task", "run_scheduled_task_now",
+                             "use_tool"})
 MAX_ACTIVE = 50
 WATCH_DEFAULT_MINUTES = 2
 WATCH_DEFAULT_HOURS = 24
@@ -58,6 +81,9 @@ WATCH_THRESHOLD = 0.85
 
 _lock = threading.RLock()
 _running: set[str] = set()
+# Set whenever the agenda changes, so the heartbeat re-plans its sleep and a
+# job due in 40 s runs in 40 s, not at the next 60 s tick.
+changed = threading.Event()
 _pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="agenda")
 
 
@@ -86,6 +112,7 @@ def _save(jobs: list[dict]) -> None:
         stream.write(_redact(json.dumps(jobs, ensure_ascii=False, indent=1)))
         temp = Path(stream.name)
     temp.replace(JOBS_PATH)
+    changed.set()
 
 
 def _update(job_id: str, **changes) -> dict | None:
@@ -262,7 +289,13 @@ def _schedule_from(args: dict, kind: str, now: float) -> dict:
         raise ValueError("Say when: at, in_minutes, every_minutes or cron")
     key = given[0]
     if key == "at":
-        return {"at": schedule.parse_at(args["at"], now)}
+        at = schedule.parse_at(args["at"], now)
+        if at <= now:
+            if at < now - schedule.PAST_GRACE_SECONDS:
+                raise ValueError(f"{schedule.describe(at)} has already passed (it is now {schedule.describe(now)}). "
+                                 "Nothing was scheduled; ask the user which day they meant")
+            at = now  # said a moment ago: due now
+        return {"at": at}
     if key == "in_minutes":
         minutes = float(args["in_minutes"])
         if not 0 < minutes <= 60 * 24 * 366:
@@ -275,6 +308,74 @@ def _schedule_from(args: dict, kind: str, now: float) -> dict:
         return {"every_minutes": minutes}
     cron = schedule.Cron(str(args["cron"]))  # validates
     return {"cron": cron.expression}
+
+
+def _registry() -> dict[str, dict]:
+    """Every tool a scheduled action may call, by name, with its schema."""
+    from ..execution.tools import MYAPI_TOOLS, TOOLS
+    tools = {t["name"]: t for t in TOOLS + MYAPI_TOOLS}
+    try:
+        from ..execution import user_tools
+        tools.update({t["name"]: t for t in user_tools.schemas()})
+    except Exception:  # noqa: BLE001 -- built-in tools still schedule
+        log.warning("agenda: user tools unavailable", exc_info=True)
+    return {n: t for n, t in tools.items() if n not in NOT_SCHEDULABLE}
+
+
+def _arg_problems(tool: dict, args: dict) -> list[str]:
+    schema = tool.get("parameters") or {}
+    props = schema.get("properties") or {}
+    problems = [f"missing {k}" for k in schema.get("required") or [] if args.get(k) in (None, "")]
+    problems += [f"unknown parameter {k}" for k in args if props and k not in props]
+    for key, value in args.items():
+        options = (props.get(key) or {}).get("enum")
+        if options and value not in options:
+            problems.append(f"{key} must be one of {', '.join(map(str, options))}")
+    return problems
+
+
+def steps_from(args: dict) -> list[dict]:
+    """The exact calls an action runs: `steps` [{tool, args}], or one `tool` +
+    `args`. Validated against each tool's schema now, so a typo fails while
+    the user is still listening instead of at 18:30 with nobody there."""
+    raw = args.get("steps")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raise ValueError("steps must be a list of {tool, args}") from None
+    if raw in (None, "", []):
+        raw = [{"tool": args.get("tool"), "args": args.get("args")}] if args.get("tool") else []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("An action needs `tool` and `args` (or `steps`: a list of {tool, args}) -- the exact "
+                         "tool call(s) to make at that time")
+    if len(raw) > MAX_STEPS:
+        raise ValueError(f"An action can have at most {MAX_STEPS} steps")
+    registry = _registry()
+    steps = []
+    for number, step in enumerate(raw, 1):
+        if not isinstance(step, dict):
+            raise ValueError(f"step {number} must be an object {{tool, args}}")
+        name = str(step.get("tool") or step.get("name") or "").strip()
+        call = step.get("args") if step.get("args") is not None else step.get("arguments", {})
+        if isinstance(call, str):
+            try:
+                call = json.loads(call) if call.strip() else {}
+            except ValueError:
+                raise ValueError(f"step {number}: args must be a JSON object") from None
+        if not isinstance(call, dict):
+            raise ValueError(f"step {number}: args must be an object")
+        if name in NOT_SCHEDULABLE:
+            raise ValueError(f"step {number}: {name} cannot run unattended")
+        if name not in registry:
+            raise ValueError(f"step {number}: no tool named {name!r}")
+        problems = _arg_problems(registry[name], call)
+        if problems:
+            raise ValueError(f"step {number} ({name}): {'; '.join(problems)}")
+        steps.append({"tool": name, "args": call})
+    return steps
 
 
 def create(args: dict, now: float | None = None) -> dict:
@@ -321,14 +422,24 @@ def create(args: dict, now: float | None = None) -> dict:
         job["condition"] = _text(args, "condition", 500)
     elif kind == "assistant":
         job["request"] = _text(args, "request", 2000) or title
+    elif kind == "action":
+        job["steps"] = steps_from(args)
+        job["request"] = _text(args, "request", 2000) or title
     job["next_run"] = now if kind == "watch" and "every_minutes" in job["schedule"] else \
-        schedule.next_run(job["schedule"], now)
+        job["schedule"]["at"] if "at" in job["schedule"] else schedule.next_run(job["schedule"], now)
     if job["next_run"] is None:
-        raise ValueError("That time has already passed")
+        raise ValueError(f"That time has already passed (it is now {schedule.describe(now)})")
+    replace = _text(args, "replace_id", 40)
     with _lock:
         jobs = _load()
-        if sum(1 for j in jobs if j.get("status") == "active") >= MAX_ACTIVE:
+        old = next((j for j in jobs if j["id"] == replace), None) if replace else None
+        if replace and (old is None or old.get("status") != "active"):
+            raise ValueError(f"replace_id {replace!r} is not an active task; nothing was changed")
+        if sum(1 for j in jobs if j.get("status") == "active" and j is not old) >= MAX_ACTIVE:
             raise ValueError(f"Already {MAX_ACTIVE} active tasks; cancel some first")
+        if old is not None:  # one write: the new time exists the moment the old one stops
+            old.update(status="cancelled", next_run=None, replaced_by=job["id"])
+            job["replaces"] = old["id"]
         jobs.append(job)
         _save(jobs)
     _refresh_routines_hud()
@@ -337,6 +448,10 @@ def create(args: dict, now: float | None = None) -> dict:
 
 
 def cancel(job_id: str) -> dict | None:
+    with _lock:
+        current = next((j for j in _load() if j["id"] == job_id), None)
+    if not current or current.get("status") != "active":
+        return None
     job = _update(job_id, status="cancelled", next_run=None)
     if job:
         _refresh_routines_hud()
@@ -351,7 +466,11 @@ def summary(job: dict) -> dict:
     out["schedule"] = (f"once at {schedule.describe(sched['at'])}" if "at" in sched else
                        f"every {sched['every_minutes']:g} min" if "every_minutes" in sched else
                        f"cron {sched.get('cron')}")
+    if job.get("steps"):
+        out["steps"] = job["steps"]
     out["next_run"] = schedule.describe(job.get("next_run"))
+    if job.get("next_run") is not None and job.get("status") == "active":
+        out["when"] = schedule.describe_when(job["next_run"], time.time())
     if job.get("last_run"):
         out["last_run"] = schedule.describe(job["last_run"])
     return out
@@ -481,6 +600,84 @@ def _run_assistant(job, now, jev):
     _finish(job, now, "queued for the next conversation")
 
 
+def _failure(result) -> str | None:
+    """Why a finished call did not do its job, or None. A tool can exit 0 and
+    still report failure in its JSON: a smart-home command answered
+    {"answer": "Sorry, there are multiple devices called ...", "type": "error"}
+    (journal 2026-09-30 15:58) with ok=True."""
+    if not result.ok:
+        return result.message or "failed"
+    try:
+        payload = json.loads(result.message)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("ok") is False or payload.get("success") is False:
+        return str(payload.get("error") or payload.get("message") or result.message)
+    if str(payload.get("type") or "").lower() == "error" or str(payload.get("status") or "").lower() in (
+            "error", "failed", "failure"):
+        return str(payload.get("answer") or payload.get("error") or payload.get("message") or result.message)
+    if payload.get("error") and len(payload) <= 2:
+        return str(payload["error"])
+    return None
+
+
+def _brief(message: str, limit: int = 300) -> str:
+    """One readable line of a tool result for a notification."""
+    try:
+        payload = json.loads(message)
+    except (ValueError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("answer", "message", "result", "summary", "status"):
+            if isinstance(payload.get(key), str) and payload[key].strip():
+                return payload[key].strip()[:limit]
+    return " ".join(str(message).split())[:limit]
+
+
+def _call(step: dict):
+    from ..execution.actions import run_action
+    delays = () if _NOT_REPEATABLE.search(step["tool"]) else STEP_RETRY_DELAYS
+    attempt = 0
+    while True:
+        result = run_action(step["tool"], dict(step["args"]))
+        why = _failure(result)
+        if why is None or attempt >= len(delays):
+            return result, why, attempt + 1
+        log.warning("agenda: step %s failed (%s); retrying in %gs", step["tool"], why[:160], delays[attempt])
+        time.sleep(delays[attempt])
+        attempt += 1
+
+
+def _run_action(job, now, jev):
+    # At most once: the next run is committed before anything executes, so a
+    # crash mid-run can never repeat a step (STALE_RUN_SECONDS reports it).
+    _update(job["id"], started_at=now, next_run=schedule.next_run(job["schedule"], now))
+    results, failed = [], None
+    for number, step in enumerate(job["steps"], 1):
+        result, why, attempts = _call(step)
+        line = {"tool": step["tool"], "ok": why is None, "result": result.message[:600], "attempts": attempts}
+        results.append(line)
+        log.info("agenda: %s step %d/%d %s -> %s%s", job["id"], number, len(job["steps"]), step["tool"],
+                 "ok" if why is None else "FAILED: " + why[:200], f" after {attempts} tries" if attempts > 1 else "")
+        if why is not None:
+            failed = (number, step, why)
+            break  # later steps assumed this one worked
+    done = json.dumps(results, ensure_ascii=False)[:1100]
+    if failed is None:
+        said = _brief(results[-1]["result"]) if results else ""
+        notify("Done: " + job["title"], said or "Done.")
+        _inbox_add(job, "completed", f"Scheduled action done as asked: {job['request']}. Tool results: {done}")
+        _finish(job, now, "done: " + said, started_at=None)
+    else:
+        number, step, why = failed
+        notify("Failed: " + job["title"], f"{step['tool']}: {_brief(why, 250)}", urgent=True)
+        _inbox_add(job, "failed", f"Scheduled action FAILED at step {number} of {len(job['steps'])} "
+                   f"({step['tool']}): {why[:400]}. Request: {job['request']}. Tool results: {done}", urgent=True)
+        _finish(job, now, f"failed at step {number} ({step['tool']}): {why[:200]}", started_at=None)
+
+
 def _run_desktop(job, now, jev):
     from ..execution.desktop_jev import desktop_task
     result = desktop_task({"goal": job["goal"]})
@@ -563,12 +760,29 @@ def _run_watch(job, now, jev):
 
 
 RUNNERS = {"remind": _run_remind, "assistant": _run_assistant, "desktop": _run_desktop,
-           "command": _run_command_job, "watch": _run_watch}
+           "command": _run_command_job, "watch": _run_watch, "action": _run_action}
+
+
+def _missed(job: dict, now: float) -> bool:
+    """A world-changing job far past its time (asleep, daemon down) is
+    reported as missed and moved to its next occurrence, never run late."""
+    due_at = job.get("next_run")
+    if job.get("kind") not in EXACT_KINDS or due_at is None or now - due_at <= LATE_GRACE_SECONDS:
+        return False
+    when = schedule.describe(due_at)
+    notify("Missed: " + job["title"], f"It was due {when}; the assistant was not running then, so it was NOT done.",
+           urgent=True)
+    _inbox_add(job, "missed", f"NOT done: '{job['title']}' was due {when} but the computer was asleep or the "
+               "assistant was off. Ask the user whether to do it now.", urgent=True)
+    _finish(job, now, f"missed: due {when}, not run", done="at" in job.get("schedule", {}))
+    return True
 
 
 def run_job(job: dict, jev: Jev | None = None, now: float | None = None) -> None:
     now = time.time() if now is None else now
     try:
+        if _missed(job, now):
+            return
         RUNNERS[job["kind"]](job, now, jev or Jev())
     except Exception as exc:  # a broken job must never stop the heartbeat
         log.exception("agenda: job %s crashed", job.get("id"))
@@ -584,9 +798,33 @@ def due(now: float) -> list[dict]:
                 and j["next_run"] <= now and j["id"] not in _running]
 
 
+def _report_interrupted(now: float) -> None:
+    """An action whose run started and never finished: the daemon died
+    mid-run. Its steps may or may not have happened, so say so once."""
+    with _lock:
+        stale = [j for j in _load() if j.get("started_at") and j["id"] not in _running
+                 and now - j["started_at"] > STALE_RUN_SECONDS]
+    for job in stale:
+        notify("Interrupted: " + job["title"], "The assistant stopped while doing it; check whether it happened.",
+               urgent=True)
+        _inbox_add(job, "interrupted", f"'{job['title']}' started {schedule.describe(job['started_at'])} but the "
+                   "assistant stopped before it finished; it may be only partly done.", urgent=True)
+        _update(job["id"], started_at=None, last_result="interrupted")
+
+
+def seconds_until_next(now: float | None = None) -> float | None:
+    """Seconds until the earliest active job is due (0 if overdue)."""
+    now = time.time() if now is None else now
+    with _lock:
+        times = [j["next_run"] for j in _load() if j.get("status") == "active" and j.get("next_run") is not None
+                 and j["id"] not in _running]
+    return max(0.0, min(times) - now) if times else None
+
+
 def tick(now: float | None = None, jev: Jev | None = None, wait: bool = False) -> list[str]:
     """Start every due job in the background pool; returns their ids."""
     now = time.time() if now is None else now
+    _report_interrupted(now)
     started, futures = [], []
     for job in due(now):
         with _lock:

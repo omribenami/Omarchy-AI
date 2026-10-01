@@ -11,6 +11,19 @@ EXTERNAL_WRITE_TOOLS = frozenset({
 })
 
 
+def writes_externally(name: str, args: dict) -> bool:
+    """An external write now, or one scheduled to run unattended later
+    (schedule_task with such a step): both need the user's explicit yes."""
+    if name in EXTERNAL_WRITE_TOOLS:
+        return True
+    if name != "schedule_task" or not isinstance(args, dict):
+        return False
+    steps = args.get("steps")
+    steps = steps if isinstance(steps, list) else [steps] if isinstance(steps, dict) else []
+    names = [args.get("tool")] + [s.get("tool") or s.get("name") for s in steps if isinstance(s, dict)]
+    return any(n in EXTERNAL_WRITE_TOOLS for n in names)
+
+
 # Guards WHERE input lands (verified focus), never WHAT is typed. A former
 # "this looks like a conversational request" text heuristic was removed on
 # purpose: relaying the user's prompts into claude/codex terminals is the
@@ -78,7 +91,7 @@ class InputGuard:
             self._write_stage = "answered"
 
     def _external_write_allowed(self, name, args) -> ActionResult | None:
-        if name not in EXTERNAL_WRITE_TOOLS:
+        if not writes_externally(name, args):
             return None
         material = {"tool": name, "args": args}
         key = json.dumps(material, sort_keys=True, default=str)

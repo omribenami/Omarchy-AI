@@ -15,7 +15,7 @@ from ..core import alert_clips, updates
 from ..core.history import append_session
 from ..execution import catalog
 from ..execution.actions import run_action, ActionResult
-from ..execution.verified_input import InputGuard
+from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
 from .live import build_session_config, LiveSession
@@ -882,7 +882,7 @@ class GeminiLiveSession:
                 elif early is not None and name == tool:
                     action = early
                 else:
-                    if name in {"myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply"}:
+                    if writes_externally(name, args):
                         # The switchboard's dedicated `confirmed` judgment is
                         # semantic and multilingual. InputGuard still pins that
                         # approval to this exact payload before execution.

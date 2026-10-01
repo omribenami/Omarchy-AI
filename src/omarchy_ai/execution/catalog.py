@@ -177,6 +177,12 @@ def _normalize(args: dict, tools: dict[str, dict]) -> tuple[str, dict]:
     if set(given) == {"args"} and isinstance(given["args"], dict):
         given = dict(given["args"])
     props = ((tools.get(name) or {}).get("parameters") or {}).get("properties") or {}
+    # A tool with its own `args` parameter (schedule_task: the call to make
+    # later) sent flat: use_tool(name=schedule_task, kind=..., tool=..., args={the
+    # later call's arguments}). Those `args` belong to the tool, not to use_tool.
+    if "args" in props and given and not set(given) & set(props) and any(
+            k in props for k in args if k not in ("name", "args", "request")):
+        given = {"args": given}
     for key, value in args.items():
         if key not in ("name", "args", "request") and key in props:
             given.setdefault(key, value)

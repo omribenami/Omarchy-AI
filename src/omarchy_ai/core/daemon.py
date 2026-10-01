@@ -158,7 +158,14 @@ class OmaDaemon:
                     await asyncio.to_thread(conversations.sync_installs)  # a tool install to approve, in its chat
                 except Exception:
                     log.warning("Approval tidy failed", exc_info=True)
-                await asyncio.sleep(max(15, self.config.heartbeat_seconds))
+                # Sleep until the next job is due (exact to the second, not
+                # the next tick); a new or changed job wakes it early.
+                agenda.changed.clear()
+                wait = max(15, self.config.heartbeat_seconds)
+                until = agenda.seconds_until_next()
+                if until is not None:
+                    wait = min(wait, max(0.5, until + 0.2))
+                await asyncio.to_thread(agenda.changed.wait, wait)
         heart = asyncio.create_task(heartbeat()) if self.config.heartbeat_enabled else None
         async def handover():
             # Co-pilot: work started in the background while the user was
@@ -193,6 +200,7 @@ class OmaDaemon:
             handing.cancel()
             if heart is not None:
                 heart.cancel()
+                agenda.changed.set()  # release the heartbeat's waiting thread now, not after its timeout
             await asyncio.gather(update_checker, *([heart] if heart else []), return_exceptions=True)
             loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
