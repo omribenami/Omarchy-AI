@@ -227,6 +227,19 @@ class ShellTests(unittest.TestCase):
 
 # --------------------------------------------------------------- runtime
 class TaskRuntimeTests(RuntimeHarness):
+    def test_task_reports_progress_before_planning_and_dispatch(self):
+        events = []
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="finished"))
+        runtime = self.runtime([agent], ScriptedJev(directives=["FAIL"]))
+        runtime.listeners.append(lambda task, event: events.append((event, task.phase)))
+
+        runtime.start("do the thing", str(self.ws), background=False)
+
+        self.assertIn(("progress", "starting"), events)
+        self.assertIn(("progress", "plan"), events)
+        self.assertIn(("progress", "route"), events)
+        self.assertTrue(any(event == "progress" and phase == "system_agent:work" for event, phase in events))
+
     def test_diagnosis_task_certified_on_harness_evidence(self):
         def work(a, ctx):
             r = ctx.run_command("echo bluetooth-ok", a.workspace, 10)

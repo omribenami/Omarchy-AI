@@ -467,7 +467,12 @@ class TaskRuntime:
         cancel = self._cancel.setdefault(task.id, threading.Event())
         task.status = RUNNING
         task.owner = this_process()
+        task.phase = "starting"
         self.store.save(task)
+        # A task can spend noticeable time planning or selecting an executor.
+        # Tell every attached surface immediately, rather than making progress
+        # visibility depend on the first worker process having started.
+        self._emit(task, "progress")
         if task.status == CANCELLED:  # cancelled between launch and start
             return
         resumed_at = time.time()
@@ -502,6 +507,8 @@ class TaskRuntime:
     # ---------------------------------------------------------------- plan
     def _plan(self, task: Task) -> None:
         task.phase = "plan"
+        self.store.save(task)
+        self._emit(task, "progress")
         try:
             plan = self.planner.complete(PLAN_PROMPT, {"request": task.goal, "workspace": task.workspace}, timeout=45)
             task.objective = str(plan.get("objective") or task.goal)[:1000]
@@ -609,6 +616,8 @@ class TaskRuntime:
 
     def _route(self, task: Task) -> bool:
         task.phase = "route"
+        self.store.save(task)
+        self._emit(task, "progress")
         if not self._workers_ready(task):
             return False
         candidates = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
