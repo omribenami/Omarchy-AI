@@ -69,6 +69,9 @@ Reply with one JSON object:
 Criteria must be about the real outcome (the device works, the test passes, the file exists with X), not about
 effort. For a question the user wants answered, the criterion is that the answer is supported by evidence.
 Never add deliverables the user did not ask for (no reports, notes or saved files unless requested).
+Preserve the requested final deliverable as an acceptance criterion, not only its prerequisites.
+Do not add 'without manual intervention': authentication or approval can legitimately require the user.
+An existing skill is a procedure, not a missing executable tool. Read it before proposing implementation.
 Keep the user's own words for anything you are not sure of; an unknown term becomes a criterion that the worker
 finds out what it means, never a guess.
 An accepted task does not become complete merely because an existing tool is missing. Include the user's actual
@@ -429,6 +432,10 @@ class TaskRuntime:
             if missing_owner(t):
                 t.status = INTERRUPTED
                 t.owner = None
+                for step in t.steps:
+                    if step.get("outcome") == "running":
+                        step["outcome"] = "interrupted"
+                        step["finished_at"] = time.time()
                 t.add_note("The runtime restarted while this task was running; its last step may be incomplete.")
         for task in self.store.list(50):
             if missing_owner(task):
@@ -745,6 +752,10 @@ class TaskRuntime:
         context = {"objective": task.objective, "acceptance_criteria": task.plan, "earlier_steps": recent,
                    "evidence_observed_by_omarchy": harness, "files_modified_so_far": task.files_modified[-20:],
                    "notes": task.notes[-5:], "user_answers": task.answers[-3:]}
+        for previous in reversed(task.steps):
+            if previous.get("executor") == dispatch.get("executor") and previous.get("worker_checkpoint"):
+                context["worker_checkpoint"] = previous["worker_checkpoint"]
+                break
         if task.reviews:
             context["latest_review"] = task.reviews[-1]
         if task.unsandboxed and dispatch.get("executor") == task.agent:
@@ -1274,6 +1285,12 @@ class WorkContextImpl:
     def _stage(self, text: str) -> None:
         self.runtime._progress(self.task, text)
 
+    def checkpoint(self, history: list[dict], pending: dict | None) -> None:
+        """Save action outcomes, plus uncertain in-flight work, before a restart."""
+        step = next(s for s in self.task.steps if s["n"] == self.step)
+        step["worker_checkpoint"] = {"history": history[-20:], "pending": pending}
+        self.runtime.store.save(self.task)
+
     def run_command(self, command: str, cwd: str | None = None, timeout: float = 120, *, role: str = "") -> dict:
         from ..execution import passwords
         # A literal `sshpass -p SECRET` becomes `sshpass` before anything is
@@ -1566,7 +1583,8 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
 def _timeout_step(step: dict | None) -> bool:
     """Whether a worker exhausted its own assignment time, not task time."""
     return bool(step and step.get("outcome") == "blocked"
-                and "ran out of time for this assignment" in str(step.get("claim", "")).lower())
+                and ((step.get("meta") or {}).get("failure_kind") == "timeout"
+                     or "ran out of time for this assignment" in str(step.get("claim", "")).lower()))
 
 
 def _timeout_question(task: Task) -> bool:

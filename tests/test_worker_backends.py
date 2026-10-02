@@ -91,6 +91,35 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(self.worker().complete("SYS", "u"), {"from": "api"})
         run.assert_not_called()
 
+    def test_timeout_backend_is_skipped_until_cooldown_expires(self):
+        wm = self.worker()
+        with patch.object(llm, "_cli_complete", side_effect=[WorkerModelError("timed out"), {"ok": True}]) as cli:
+            self.assertEqual(wm.complete("s", "u"), {"ok": True})
+        self.assertEqual(cli.call_count, 2)
+        self.assertNotIn("claude", wm.backends())
+        with patch.object(llm.time, "time", return_value=llm._cooldown["claude"] + 1):
+            self.assertIn("claude", wm.backends())
+
+    def test_backend_fallback_shares_one_deadline(self):
+        wm = self.worker()
+        now = [0.0]
+        allowances = []
+
+        def fail(backend, system, content, tier, timeout):
+            allowances.append(timeout)
+            now[0] += timeout
+            raise WorkerModelError("timed out")
+
+        def api(system, user, timeout, retries):
+            allowances.append(timeout)
+            return {"ok": True}
+
+        wm._api_complete = api
+        with patch.object(llm.time, "monotonic", side_effect=lambda: now[0]), \
+                patch.object(llm, "_cli_complete", side_effect=fail):
+            self.assertEqual(wm.complete("s", "u", timeout=90), {"ok": True})
+        self.assertEqual(allowances, [30, 30, 30])
+
     def test_everything_failing_raises_with_every_reason(self):
         def broken(*a, **kw):
             raise WorkerModelError("gateway down")

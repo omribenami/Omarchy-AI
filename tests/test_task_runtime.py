@@ -822,6 +822,36 @@ class FakeCtx:
 
 
 class SystemAgentTests(unittest.TestCase):
+    def test_recovery_retains_results_and_warns_about_uncertain_actions(self):
+        assignment = self.assignment()
+        assignment.context["worker_checkpoint"] = {
+            "history": [{"n": 1, "action": "run", "result": [{"output": "saved artifact"}]}],
+            "pending": {"action": "assistant_tool", "name": "browser_task", "args": {"goal": "save draft"}},
+        }
+        model = FakeModel([{"action": "finish", "summary": "inspect first"}])
+        ctx = FakeCtx()
+        SystemAgent(model).run(assignment, ctx)
+        self.assertEqual(model.briefs[0]["recent_actions"][0]["result"][0]["output"], "saved artifact")
+        self.assertIn("outcome is unknown", model.briefs[0]["runtime_warnings"][0])
+        self.assertEqual(ctx.commands, [])
+
+    def test_checkpoint_surrounds_action_execution(self):
+        events = []
+
+        class Context(FakeCtx):
+            def checkpoint(self, history, pending):
+                events.append(("save", pending, len(history)))
+
+            def run_command(self, *args, **kwargs):
+                events.append(("run",))
+                return super().run_command(*args, **kwargs)
+
+        model = FakeModel([{"action": "run", "commands": ["true"]}, {"action": "finish"}])
+        SystemAgent(model).run(self.assignment(), Context())
+        self.assertEqual([e[0] for e in events], ["save", "run", "save"])
+        self.assertEqual(events[0][1]["commands"], ["true"])
+        self.assertEqual(events[-1], ("save", None, 1))
+
     def assignment(self):
         return Assignment(task_id="t", role="diagnose", goal="why", instructions="find out", workspace="/tmp")
 
@@ -854,6 +884,17 @@ class SystemAgentTests(unittest.TestCase):
         self.assertEqual(report.status, "blocked")
         self.assertIn("repeating", report.claim)
         self.assertTrue(any("three times" in w for b in model.briefs for w in b.get("runtime_warnings", [])))
+
+    def test_browser_repetition_returns_control_to_coordinator(self):
+        class Context(FakeCtx):
+            def action(self, name, args):
+                return {"ok": False, "message": "unchanged login screen"}
+
+        model = FakeModel([{"action": "assistant_tool", "name": "inspect_browser", "args": {}}] * 8)
+        report = SystemAgent(model).run(self.assignment(), Context())
+        self.assertEqual(report.status, "blocked")
+        self.assertEqual(report.meta["failure_kind"], "no_progress")
+        self.assertEqual(len(model.briefs), 5)
 
     def test_workflow_agent_uses_existing_browser_tool_not_shell_automation(self):
         class WorkflowCtx(FakeCtx):

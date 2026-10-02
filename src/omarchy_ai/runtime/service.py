@@ -389,15 +389,16 @@ def announce_to(session_getter, loop, wake=None) -> None:
     from ..core import agenda
 
     def listener(task, event):
+        # Progress already goes to the conversation card and task HUD through
+        # their own listener. Never inject a heartbeat into the live model.
+        if event not in _OUTCOMES or task.source == "cli":
+            return
         entry = _remember(task, event)
-        if entry is not None and wake is not None and event in WAKE_EVENTS:
+        if entry is None:
+            return  # duplicate outcome, including one delivered before restart
+        if wake is not None and event in WAKE_EVENTS:
             loop.call_soon_threadsafe(wake, entry)
             return
-        if entry is None:
-            detail = {"waiting_approval": f"needs approval: {json.dumps(task.pending_approval)}",
-                      "waiting_user": f"has a question: {task.question}"}.get(event, task.result)
-            entry = {"id": f"task-{task.id}-{event}-{len(task.steps)}", "title": f"Task {event.replace('_', ' ')}",
-                     "detail": f"Task {task.id} ({task.goal[:120]}) {detail}"}
         agenda.announce_to_calls(entry)  # a phone call hears it now too
         session = session_getter()
         if session is None or not hasattr(session, "announce"):

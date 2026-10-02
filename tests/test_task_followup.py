@@ -74,6 +74,21 @@ class FollowUpTests(RuntimeHarness):
         self.run_task("cli", session=None)
         self.assertEqual(agenda.briefing(), [])
 
+    def test_progress_is_visual_and_duplicate_results_are_not_spoken(self):
+        session = MagicMock()
+        runtime = self.runtime([], ScriptedJev())
+        loop = MagicMock()
+        loop.call_soon_threadsafe.side_effect = lambda fn, *args: fn(*args)
+        with patch.object(service, "get_runtime", return_value=runtime):
+            service.announce_to(lambda: session, loop)
+        task = Task(id="quiet", goal="g", workspace=str(self.ws), source="voice", result="done")
+        for _ in range(3):
+            runtime.listeners[-1](task, "progress")
+        session.announce.assert_not_called()
+        runtime.listeners[-1](task, "certified")
+        runtime.listeners[-1](task, "certified")
+        session.announce.assert_called_once()
+
     def test_newer_event_replaces_unheard_question_and_duplicates_are_dropped(self):
         agenda.task_result("t1", "g", "waiting_user", "question: which disk?")
         agenda.task_result("t1", "g", "certified", "done")
@@ -139,8 +154,8 @@ class PhoneCallTests(unittest.TestCase):
         thread.join(10)
         [text] = sent
         self.assertIn("why did it freeze", text)
-        self.assertIn("task_id t9", text)
-        self.assertIn("summary", text)
+        self.assertIn("Task t9", text)
+        self.assertIn("Do not ask whether they saw or heard", text)
         self.assertEqual(agenda._calls, {})
         self.assertFalse(agenda.announce_to_calls(entry), "no call open any more")
 

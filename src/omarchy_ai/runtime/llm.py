@@ -52,6 +52,7 @@ BACKENDS = ("claude", "codex", "api")
 CLAUDE_TIERS = ("sonnet", "opus")
 _LIMIT = re.compile(r"usage limit|rate.?limit|quota|limit reached|too many requests|credit balance|\b429\b", re.I)
 LIMIT_COOLDOWN = 3600
+FAILURE_COOLDOWN = 300
 _cooldown: dict[str, float] = {}
 _cooldown_lock = threading.Lock()
 _agents: dict = {}
@@ -132,13 +133,21 @@ class WorkerModel:
     def complete(self, system: str, user, *, timeout: float = 60, retries: int = 2) -> dict:
         content = user if isinstance(user, str) else json.dumps(user, ensure_ascii=False)
         errors = []
-        for backend in self.backends():
+        deadline = time.monotonic() + timeout
+        backends = self.backends()
+        for index, backend in enumerate(backends):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # Reserve time for fallback instead of granting every backend a
+            # fresh full timeout. All retries share this call's deadline.
+            allowance = remaining / (len(backends) - index)
             try:
                 if backend == "api":
-                    value = self._api_complete(system, user, timeout=timeout, retries=retries)
+                    value = self._api_complete(system, user, timeout=allowance, retries=retries)
                     self.last_used = f"api:{self._api_model()}"
                 else:
-                    value = _cli_complete(backend, system, content, TIER.get(), timeout)
+                    value = _cli_complete(backend, system, content, TIER.get(), allowance)
                     self.last_used = _cli_label(backend, TIER.get())
                 return value
             except WorkerModelError as exc:
@@ -148,6 +157,9 @@ class WorkerModel:
                         _cooldown[backend] = time.time() + LIMIT_COOLDOWN
                     log.warning("worker backend %s is out of quota; skipping it for an hour", backend)
                 else:
+                    if backend != "api":
+                        with _cooldown_lock:
+                            _cooldown[backend] = time.time() + FAILURE_COOLDOWN
                     log.warning("worker backend %s failed; trying the next: %s", backend, str(exc)[:200])
         raise WorkerModelError("; ".join(errors) or "no worker backend available")
 
@@ -158,14 +170,18 @@ class WorkerModel:
         last_error = ""
         swapped = False
         attempt = 0
+        deadline = time.monotonic() + timeout
         while attempt <= retries:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WorkerModelError(last_error or "worker deadline exhausted")
             model = self._api_model()
             payload = {"model": model, "max_tokens": self.max_tokens,
                        "response_format": {"type": "json_object"}, "messages": messages}
             if self._temperature_ok(model):
                 payload["temperature"] = 0
             try:
-                raw = transport(payload, timeout)
+                raw = transport(payload, remaining)
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 if not self._pinned and not swapped and _UNAVAILABLE.search(last_error):
@@ -175,7 +191,7 @@ class WorkerModel:
                     swapped = True
                     continue
                 if attempt < retries and _TRANSIENT.search(last_error):
-                    time.sleep(0.8 * 2 ** attempt)
+                    time.sleep(min(0.8 * 2 ** attempt, max(0, deadline - time.monotonic())))
                     attempt += 1
                     continue
                 raise WorkerModelError(last_error) from exc
@@ -224,8 +240,12 @@ _JSON_ONLY = "\n\nReply with only the JSON object."
 def _cli_complete(backend: str, system: str, content: str, tier: int, timeout: float) -> dict:
     """One JSON step from a CLI agent, with one schema retry."""
     prompt = content
+    deadline = time.monotonic() + timeout
     for attempt in range(2):
-        text = (_claude if backend == "claude" else _codex)(system, prompt, tier, timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise WorkerModelError(f"{backend} deadline exhausted")
+        text = (_claude if backend == "claude" else _codex)(system, prompt, tier, remaining)
         value = parse_json_object(text)
         if value is not None:
             return value

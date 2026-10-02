@@ -176,35 +176,48 @@ class SystemAgent(Executor):
 
     # ------------------------------------------------------------------
     def run(self, assignment: Assignment, ctx: WorkContext) -> Report:
-        history: list[dict] = []
+        saved = assignment.context.get("worker_checkpoint") or {}
+        history: list[dict] = list(saved.get("history") or [])[-20:]
         seen: dict[str, int] = {}
         errors: dict[str, int] = {}
         warnings: list[str] = []
         model_failures = 0
-        started = time.time()
+        started = time.monotonic()
+        if saved.get("pending"):
+            warnings.append("A restart interrupted this action; its outcome is unknown: "
+                            + json.dumps(saved["pending"], default=str)[:1200]
+                            + ". Inspect the real state before retrying any action that changes it.")
+        checkpoint = getattr(ctx, "checkpoint", None)
         replayed = self._replay_approved(assignment, ctx, history)
         if replayed is not None:
             return replayed
         for n in range(self.max_actions):
             if ctx.cancel_requested:
                 return Report(FAILED, claim="cancelled", findings=self._findings(history))
-            if time.time() - started > assignment.timeout:
-                return Report(BLOCKED, claim="ran out of time for this assignment", findings=self._findings(history))
+            remaining = assignment.timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                return Report(BLOCKED, claim="ran out of time for this assignment", findings=self._findings(history),
+                              meta={"failure_kind": "timeout", "history": self._compact(history)})
             brief = self._brief(assignment, history, warnings, remaining=self.max_actions - n)
             warnings = []
             try:
-                step = self.model.complete(SYSTEM_PROMPT, brief, timeout=90)
+                step = self.model.complete(SYSTEM_PROMPT, brief, timeout=min(90, remaining))
             except WorkerModelError as exc:
                 model_failures += 1
                 if model_failures >= 2:
                     return Report(FAILED, claim=f"worker model failed: {exc}", findings=self._findings(history))
                 continue
             step = normalize_step(step)
+            if time.monotonic() - started >= assignment.timeout:
+                return Report(BLOCKED, claim="ran out of time for this assignment", findings=self._findings(history),
+                              meta={"failure_kind": "timeout", "history": self._compact(history)})
             action = str(step.get("action") or "").strip().lower()
             thought = str(step.get("thought") or "")[:300]
             if action == "finish":
                 return self._finish(step, history)
             entry = {"n": n + 1, "action": action, "thought": thought}
+            if checkpoint:
+                checkpoint([self._bounded(e) for e in history[-20:]], step)
             if action == "run":
                 commands = step.get("commands") or ([step["command"]] if step.get("command") else [])
                 commands = [str(c) for c in commands if isinstance(c, str) and c.strip()][:MAX_BATCH]
@@ -212,10 +225,14 @@ class SystemAgent(Executor):
                     entry["result"] = {"error": "run needs a non-empty commands list"}
                     history.append(entry)
                     continue
-                timeout = _clamp(step.get("timeout"), 5, 1800, 120)
+                timeout = min(_clamp(step.get("timeout"), 5, 1800, 120),
+                              max(0.1, assignment.timeout - (time.monotonic() - started)))
                 results = []
                 for command in commands:
-                    result = ctx.run_command(command, step.get("cwd") or assignment.workspace, timeout)
+                    remaining = assignment.timeout - (time.monotonic() - started)
+                    if remaining <= 0 or ctx.cancel_requested:
+                        break
+                    result = ctx.run_command(command, step.get("cwd") or assignment.workspace, min(timeout, remaining))
                     results.append(result)
                     decision = result.get("decision")
                     if decision == "ask":
@@ -269,6 +286,19 @@ class SystemAgent(Executor):
                 entry["result"] = {"error": f"unknown action {action!r}; use run, find_tools, help, launch, "
                                             "desktop, screen, assistant_tool or finish"}
             history.append(entry)
+            if checkpoint:
+                checkpoint([self._bounded(e) for e in history[-20:]], None)
+            if action != "run":
+                # Browser and API loops need the same no-progress protection
+                # as shell commands. Only identical actions AND results count.
+                key = _fp(json.dumps({k: v for k, v in step.items() if k != "thought"}, sort_keys=True),
+                          json.dumps(entry.get("result"), sort_keys=True, default=str))
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] == 3:
+                    warnings.append("The same action returned the same result three times. Inspect state or change approach.")
+                if seen[key] >= 5:
+                    return Report(BLOCKED, claim="stopped: repeating the same action without progress",
+                                  findings=self._findings(history), meta={"failure_kind": "no_progress"})
         return Report(BLOCKED, claim="used every step of this assignment without finishing",
                       findings=self._findings(history), meta={"history": self._compact(history)})
 

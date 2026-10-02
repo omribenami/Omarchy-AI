@@ -151,7 +151,10 @@ class ControlPlane:
         if executors:
             questions["executor"] = choice(
                 "If the next step needs a worker, which one fits the remaining work best? Prefer a different worker "
-                "when the current one failed or is the wrong kind.", dict(executors))
+                "when the current one is the wrong kind. A model timeout is not a source-code defect: "
+                "choose according to the remaining task's capabilities, not merely the last failure. "
+                "Browser/account workflows still need browser/account tools; coding workers are for actual "
+                "implementation or code diagnosis.", dict(executors))
         answers = self._ask(task, brief(task), questions)
         if not answers:
             return self._fallback_direct(task, allowed), Choice(next(iter(executors), ""), None, fallback=True)
