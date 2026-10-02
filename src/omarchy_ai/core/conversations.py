@@ -319,9 +319,13 @@ def task_event(task, event: str) -> None:
     card = {"kind": kind, "task_id": task.id, "event": event}
     if kind == "approval":
         request = task.pending_approval or {}
-        card.update(text=f"Needs your approval: {request.get('subject', '')}", subject=str(request.get("subject", "")),
+        sudo = request.get("sudo_action")
+        text = (f"Sudo needed for: {request.get('task_summary', '')}\nAction: {sudo}" if sudo else
+                f"Needs your approval: {request.get('subject', '')}")
+        card.update(text=text, subject=str(request.get("subject", "")),
                     risk=request.get("risk", ""), reasons=list(request.get("reasons", []))[:5],
-                    fingerprint=request.get("fingerprint", ""))
+                    fingerprint=request.get("fingerprint", ""), task_summary=request.get("task_summary", ""),
+                    sudo_action=sudo or "")
     elif kind == "question":
         card.update(text=str(task.question or ""), question=str(task.question or ""))
     elif kind == "progress":

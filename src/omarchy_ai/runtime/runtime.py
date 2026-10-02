@@ -1190,9 +1190,13 @@ class WorkContextImpl:
         return decision
 
     def _request(self, decision, kind: str, subject: str) -> dict:
-        return {"fingerprint": decision.fingerprint, "kind": kind, "subject": subject[:600],
+        request = {"fingerprint": decision.fingerprint, "kind": kind, "subject": subject[:600],
                 "risk": decision.assessment.risk.name, "reasons": decision.assessment.reasons[:5],
                 "asked_at": time.time()}
+        if kind == "command" and re.match(r"\s*sudo\b", subject):
+            request["task_summary"] = (self.task.objective or self.task.goal)[:240]
+            request["sudo_action"] = subject[:600]
+        return request
 
     def run_command(self, command: str, cwd: str | None = None, timeout: float = 120, *, role: str = "") -> dict:
         from ..execution import passwords
@@ -1440,7 +1444,11 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
         return
     if event == "waiting_approval" and task.pending_approval:
         req = task.pending_approval
-        body = f"{task.goal[:120]}\n\n{req.get('risk')}: {req.get('subject', '')[:300]}\n{'; '.join(req.get('reasons', []))}"
+        if req.get("sudo_action"):
+            body = (f"Task: {req.get('task_summary', task.goal)[:240]}\n\n"
+                    f"Sudo action: {req['sudo_action'][:300]}\n{'; '.join(req.get('reasons', []))}")
+        else:
+            body = f"{task.goal[:120]}\n\n{req.get('risk')}: {req.get('subject', '')[:300]}\n{'; '.join(req.get('reasons', []))}"
         fingerprint = _flux_approval_available()
         if fingerprint:
             body += "\n\nOr approve it on your phone with your fingerprint (Flux)."

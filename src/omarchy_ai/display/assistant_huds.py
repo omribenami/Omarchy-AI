@@ -58,7 +58,8 @@ def approval_items() -> list[dict]:
         if task.status != WAITING_APPROVAL or not request:
             continue
         items.append({"id": task.id, "title": task.goal, "subject": request.get("subject", ""),
-                      "risk": request.get("risk", ""), "reasons": "; ".join(request.get("reasons", []))})
+                      "risk": request.get("risk", ""), "reasons": "; ".join(request.get("reasons", [])),
+                      "task_summary": request.get("task_summary", ""), "sudo_action": request.get("sudo_action", "")})
     return items
 
 
