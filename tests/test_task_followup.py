@@ -16,10 +16,9 @@ from test_task_runtime import FakeModel, RuntimeHarness, ScriptedJev, ScriptExec
 
 
 class FollowUpTests(RuntimeHarness):
-    def test_browser_account_job_is_recognized_as_a_workflow(self):
-        self.assertTrue(service._workflow_goal(
-            "Generate the October expense report in Concur, download bills, and attach the receipts in the browser."))
-        self.assertFalse(service._workflow_goal("Fix the failing Python unit test in this repository."))
+    def test_only_an_agent_named_in_the_goal_is_pinned(self):
+        self.assertEqual(service.named_agent("Use Codex to fix this")[0], "codex")
+        self.assertEqual(service.named_agent("Use the browser to finish this")[0], "")
 
     def setUp(self):
         super().setUp()

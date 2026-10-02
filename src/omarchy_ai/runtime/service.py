@@ -85,8 +85,7 @@ def _same_job(runtime, goal: str, jev=None):
     return next(t for t in candidates if t.id == answer["choice"])
 
 
-_AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE",
-           "workflow": "WORKFLOW_AGENT", "workflow_agent": "WORKFLOW_AGENT"}
+_AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE"}
 _NAMED = [(re.compile(r"(?i)(?<![\w-])codex(?![\w-])"), "codex"),
           (re.compile(r"(?i)(?<![\w-])claude(?:[ -]?code)?(?![\w-])"), "claude_code")]
 _UNSANDBOXED = re.compile(r"(?i)--?yolo\b|\byolo\b|dangerously|skip[- ]permissions|without (?:the |its )?sandbox|full access")
@@ -99,20 +98,6 @@ def named_agent(text: str) -> tuple[str, bool]:
         if pattern.search(text or ""):
             return agent, bool(_UNSANDBOXED.search(text))
     return "", False
-
-
-def _workflow_goal(goal: str) -> bool:
-    """Jobs that require Omarchy to coordinate browser and account tools.
-
-    The live model may nominate Claude/Codex while formulating a tool call.
-    That is not a user request for a coding agent, and must not bypass the
-    persistent browser/MyApi coordinator.
-    """
-    text = goal.lower()
-    browser = ("browser", "concur", "receipt", "expense report", "sign in", "login", "web site", "website")
-    accounts = ("gmail", "email", "bill", "invoice", "account", "download")
-    return sum(token in text for token in browser) >= 2 or (any(token in text for token in browser)
-                                                            and any(token in text for token in accounts))
 
 
 def start_task(args: dict) -> ActionResult:
@@ -128,21 +113,15 @@ def start_task(args: dict) -> ActionResult:
                                    "email, calendar or other MyApi work.")
     runtime = get_runtime()
     requested = str(args.get("agent") or "").strip().lower()
-    agent = _AGENTS.get(requested, "")
-    if args.get("agent") and not agent:
-        return ActionResult(False, f"agent must be one of: {', '.join(sorted(_AGENTS))}")
     unsandboxed = bool(args.get("unsandboxed"))
-    if not agent:
-        # An escalation brief quotes the user; honor an agent named there.
-        named, named_unsandboxed = named_agent(goal)
-        agent, unsandboxed = _AGENTS.get(named, ""), unsandboxed or named_unsandboxed
-    # Only words in the user's goal count as an explicit coding-agent choice.
-    # A model-added agent field is advisory, and browser/account workflows
-    # have a purpose-built coordinator that can combine the needed tools.
-    named, _ = named_agent(goal)
-    if _workflow_goal(goal) and agent in {"CLAUDE_CODE", "CODEX"} and not named:
-        log.info("routing workflow goal to WORKFLOW_AGENT instead of unsolicited %s", agent)
-        agent = "WORKFLOW_AGENT"
+    # Tool-call fields are produced by the live model, not a reliable record
+    # of the user's intent.  Pin only an agent the user explicitly named in
+    # the goal; every other task goes to Jev with all available capabilities.
+    named, named_unsandboxed = named_agent(goal)
+    agent = _AGENTS.get(named, "")
+    if requested and not agent:
+        log.info("ignoring model-suggested task agent %s; Jev will route", requested)
+    unsandboxed = unsandboxed and bool(agent) or named_unsandboxed
     existing = _same_job(runtime, goal)
     if existing is not None and agent and existing.agent != agent:
         # Same job, but the user wants it done by a named agent: a new task,
