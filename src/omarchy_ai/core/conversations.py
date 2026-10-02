@@ -411,6 +411,8 @@ def _card_status(card: dict, tasks) -> str:
 
 
 def _with_status(conv: dict, tasks) -> list[dict]:
+    from ..runtime.task import TERMINAL
+
     lines = [dict(line) for line in conv["lines"]]
     latest = {}
     for i, line in enumerate(lines):
@@ -422,6 +424,28 @@ def _with_status(conv: dict, tasks) -> list[dict]:
             if line.get("kind") == "confirm":
                 from . import pending_actions
                 line["outcome"] = (pending_actions.get((line.get("action") or {}).get("id")) or {}).get("outcome", "")
+    # Events are hints, not the source of truth: another runtime process or
+    # a restart can leave the conversation cache without the final event.
+    # Project persisted task state on every read, without rewriting history.
+    for task_id, index in latest.items():
+        if not task_id or task_id.startswith((ACTION, TOOL_INSTALL)):
+            continue
+        task = tasks(task_id)
+        if task is None or getattr(task, "conversation", "") != conv["id"]:
+            continue
+        last = lines[index]
+        if task.status in TERMINAL:
+            if last.get("kind") != "result" or last.get("event") != task.status:
+                lines.append({"role": "card", "kind": "result", "task_id": task_id,
+                              "event": task.status, "status": "done",
+                              "text": task.result or task.status,
+                              "at": getattr(task, "updated_at", conv["updated"])})
+        elif last.get("kind") == "progress":
+            if task.status == "waiting_user":
+                last.update(kind="question", event=task.status, status="waiting",
+                            text=task.question or "Waiting for your answer", question=task.question or "")
+            elif task.status in ("running", "pending"):
+                last["text"] = task_progress(task)
     return lines
 
 

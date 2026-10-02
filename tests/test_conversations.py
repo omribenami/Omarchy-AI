@@ -99,6 +99,35 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(conversations.get(cid, self.lookup)["lines"][-1]["text"],
                          "Step 2: Fetching October receipt")
 
+    def test_read_reconciles_missing_terminal_event_without_mutating_history(self):
+        cid = conversations.create("phone-text")
+        task = SimpleNamespace(id="t-ended", conversation=cid, status="running",
+                               phase="status:Choosing next action", steps=[], result="")
+        self.tasks[task.id] = task
+        conversations.task_event(task, "progress")
+        for status in ("certified", "unverified", "failed", "cancelled"):
+            task.status, task.result = status, "Final outcome"
+            for _ in range(2):
+                lines = conversations.get(cid, self.lookup)["lines"]
+                self.assertEqual(len(lines), 2)
+                self.assertEqual((lines[-1]["kind"], lines[-1]["event"], lines[-1]["text"]),
+                                 ("result", status, "Final outcome"))
+        self.assertEqual(len(conversations._load(cid)["lines"]), 1)
+
+    def test_read_refreshes_progress_from_persisted_task(self):
+        cid = conversations.create("phone-text")
+        task = SimpleNamespace(id="t-live", conversation=cid, status="running",
+                               phase="status:Choosing next action", steps=[], result="")
+        self.tasks[task.id] = task
+        conversations.task_event(task, "progress")
+        task.phase = "status:Verifying saved changes"
+        self.assertEqual(conversations.get(cid, self.lookup)["lines"][-1]["text"],
+                         "Verifying saved changes")
+        task.status, task.question = "waiting_user", "Which account?"
+        card = conversations.get(cid, self.lookup)["lines"][-1]
+        self.assertEqual((card["kind"], card["status"], card["text"]),
+                         ("question", "waiting", "Which account?"))
+
     def test_interrupted_task_explains_why_its_chat_stopped_moving(self):
         cid = conversations.create("phone-text")
         task = SimpleNamespace(id="t-interrupted", conversation=cid, status="interrupted", result="")
