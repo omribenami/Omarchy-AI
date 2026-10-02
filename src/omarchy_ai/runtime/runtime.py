@@ -436,6 +436,21 @@ class TaskRuntime:
                 if interrupted and interrupted.status == INTERRUPTED:
                     self._restart_recoveries.append(interrupted.id)
                     self._emit(interrupted, "interrupted")
+        # Older versions could turn an executor timeout into a user question.
+        # There is nothing a user can answer to fix that, and pressing
+        # "continue" merely runs the same timed-out assignment again. Repair
+        # the persisted state once and let normal recovery continue it.
+        for task in self.store.list(50):
+            if not _timeout_question(task):
+                continue
+
+            def resume_timeout(t: Task) -> None:
+                t.status, t.phase, t.question = INTERRUPTED, "interrupted", None
+                t.add_note("Automatically resuming: an executor timeout is not a question for the user.")
+
+            repaired = self.store.update(task.id, resume_timeout)
+            if repaired and repaired.status == INTERRUPTED:
+                self._restart_recoveries.append(repaired.id)
 
     def _launch(self, task: Task, background: bool) -> None:
         with self._lock:
@@ -844,6 +859,12 @@ class TaskRuntime:
     def _direct(self, task: Task) -> bool:
         task.phase = "direct"
         allowed = self._allowed_directives(task)
+        last = task.steps[-1] if task.steps else None
+        # A worker saying it ran out of its own assignment time is operational
+        # feedback, not information the user can supply. Keeping ASK_USER in
+        # the choice set caused an endless timeout -> Continue -> timeout loop.
+        if _timeout_step(last):
+            allowed = [directive for directive in allowed if directive != "ASK_USER"]
         # The test and review subagents are reached only through REQUEST_MORE_TESTS
         # and REQUEST_REVIEW (live run 2026-09-23: CONTINUE -> TEST_AGENT looped
         # nine times past the test-plan attempt limit).
@@ -874,6 +895,14 @@ class TaskRuntime:
             self._finish(task, FAILED, message)
             return False
         if d == "ASK_USER":
+            if _timeout_step(last):
+                # Be defensive if a decision backend returns a value outside
+                # its offered directives. The global task budget still gives
+                # the honest final stop condition if no worker can progress.
+                task.add_note("Ignored non-actionable executor timeout as a user question.")
+                name = pick.value if pick.value in executors else (last or {}).get("executor", "SYSTEM_AGENT")
+                task.next_dispatch = self._assignment(task, name, "CONTINUE")
+                return True
             question = (last or {}).get("claim") or task.goal
             self._ask_user(task, f"I need your input to continue: {question[:600]}")
             return False
@@ -1517,12 +1546,33 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
                    "Approve it on the desktop.", kind="approval", conversation=task.conversation)
         return
     body = f"{task.goal[:120]}\n\n{(task.question if event == 'waiting_user' else task.result)[:400]}"
+    # Notifications are delivery attempts, not task transitions. Store a
+    # stable fingerprint before delivery so a reconnect/restart cannot repeat
+    # an unchanged task question or outcome indefinitely. The step number
+    # means a later, genuinely new question is still shown.
+    fingerprint = hashlib.sha1(f"{event}\x1f{len(task.steps)}\x1f{body}".encode()).hexdigest()
+    if task.notifications.get(event) == fingerprint:
+        return
+    task.notifications[event] = fingerprint
+    runtime.store.save(task)
     _phone(title, body, conversation=task.conversation)
     try:
         subprocess.Popen(["notify-send", "-a", "Omarchy AI", "-u", "normal", title, body],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         pass
+
+
+def _timeout_step(step: dict | None) -> bool:
+    """Whether a worker exhausted its own assignment time, not task time."""
+    return bool(step and step.get("outcome") == "blocked"
+                and "ran out of time for this assignment" in str(step.get("claim", "")).lower())
+
+
+def _timeout_question(task: Task) -> bool:
+    return (task.status == WAITING_USER
+            and "ran out of time for this assignment" in str(task.question or "").lower()
+            and _timeout_step(task.steps[-1] if task.steps else None))
 
 
 def _phone(title: str, body: str, *, kind: str = "other", conversation: str = "") -> None:

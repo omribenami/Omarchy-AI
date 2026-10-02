@@ -80,6 +80,9 @@ class Task:
     pending_approval: dict | None = None                     # {"fingerprint", "kind", "subject", "risk", "reasons"}
     question: str | None = None                              # ASK_USER
     answers: list[str] = field(default_factory=list)
+    # Persisted notification fingerprints. A daemon restart must not make an
+    # unchanged approval, question, or terminal result look new again.
+    notifications: dict[str, str] = field(default_factory=dict)
     certification: dict = field(default_factory=dict)        # {"status", "p", "reason", "at"}
     result: str = ""                                         # short outcome for the user
     notes: list[str] = field(default_factory=list)           # runtime notes Jev should see (declines, rejections)

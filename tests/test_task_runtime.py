@@ -14,6 +14,7 @@ from omarchy_ai.runtime.executors.coding_agents import ClaudeCode, Codex, _VERDI
 from omarchy_ai.runtime.executors.base import Assignment
 from omarchy_ai.runtime.executors.system_agent import SystemAgent, WorkflowAgent
 from omarchy_ai.runtime.permissions import Assessment, Risk, Scope, classify, coding_agent_risk, decide, scrubbed_env
+from omarchy_ai.runtime import runtime as runtime_module
 from omarchy_ai.runtime.runtime import TaskRuntime
 from omarchy_ai.runtime.task import Task, TaskStore
 
@@ -262,9 +263,9 @@ class TaskRuntimeTests(RuntimeHarness):
         runtime.start("do the thing", str(self.ws), background=False)
 
         self.assertIn(("progress", "starting"), events)
-        self.assertIn(("progress", "plan"), events)
-        self.assertIn(("progress", "route"), events)
-        self.assertTrue(any(event == "progress" and phase == "system_agent:work" for event, phase in events))
+        self.assertIn(("progress", "status:Sending to Jev: planning"), events)
+        self.assertIn(("progress", "status:Sending to Jev: choosing tools"), events)
+        self.assertTrue(any(event == "progress" and phase == "status:System Agent" for event, phase in events))
 
     def test_diagnosis_task_certified_on_harness_evidence(self):
         def work(a, ctx):
@@ -605,6 +606,38 @@ class TaskRuntimeTests(RuntimeHarness):
         runtime.respond(task.id, answer="the Sony ones", background=False)
         self.assertEqual(answers, ["the Sony ones"])
         self.assertEqual(self.store.load(task.id).status, "certified")
+
+    def test_assignment_timeout_is_not_presented_as_a_question(self):
+        # A worker capacity timeout has no answer the user can provide. It
+        # must stay in the coordinator, rather than creating a Continue loop.
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report("blocked", claim="ran out of time for this assignment"))
+        jev = ScriptedJev(directives=["ASK_USER"])
+        runtime = self.runtime([agent], jev)
+        task = self.store.load(runtime.start("x", str(self.ws), background=False, max_steps=2).id)
+        self.assertNotEqual(task.status, "waiting_user")
+        self.assertNotIn("ASK_USER", jev.seen_allowed[0])
+
+    def test_restart_repairs_legacy_timeout_question_without_notifying(self):
+        task = Task(id="timed-out", goal="x", workspace=str(self.ws), status="waiting_user",
+                    question="I need your input to continue: ran out of time for this assignment")
+        step = task.add_step("SYSTEM_AGENT", "x")
+        task.finish_step(step, "blocked", "ran out of time for this assignment")
+        self.store.save(task)
+        runtime = self.runtime([], ScriptedJev())
+        repaired = self.store.load("timed-out")
+        self.assertEqual(repaired.status, "interrupted")
+        self.assertIsNone(repaired.question)
+        self.assertIn("timed-out", runtime._restart_recoveries)
+
+    def test_same_task_question_notified_once_across_retries(self):
+        task = Task(id="question", goal="x", workspace=str(self.ws), status="waiting_user", question="which file?")
+        runtime = self.runtime([], ScriptedJev())
+        with patch("omarchy_ai.runtime.runtime._phone") as phone, \
+                patch("omarchy_ai.runtime.runtime.subprocess.Popen"):
+            runtime_module._notify(runtime, task, "waiting_user")
+            runtime_module._notify(runtime, task, "waiting_user")
+        phone.assert_called_once()
+        self.assertTrue(self.store.load("question").notifications["waiting_user"])
 
     def test_interrupted_tasks_are_marked_on_restart(self):
         task = Task(id="t1", goal="g", workspace=str(self.ws), status="running")
