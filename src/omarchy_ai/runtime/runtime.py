@@ -366,8 +366,9 @@ class TaskRuntime:
                 t.result = "Cancelled by the user."
                 t.pending_approval = None
                 t.next_dispatch = None
-        self.store.update(task.id, mark)
+        task = self.store.update(task.id, mark) or task
         self._refresh_task_hud()
+        self._emit(task, "cancelled")
         return {"ok": True, "message": f"cancelled {task.id}"}
 
     def status(self, task_id: str | None = None) -> dict | None:
@@ -404,7 +405,9 @@ class TaskRuntime:
                 t.add_note("The runtime restarted while this task was running; its last step may be incomplete.")
         for task in self.store.list(50):
             if task.status in ACTIVE and not owner_alive(task.owner) and task.id not in self._threads:
-                self.store.update(task.id, mark)
+                interrupted = self.store.update(task.id, mark)
+                if interrupted and interrupted.status == INTERRUPTED:
+                    self._emit(interrupted, "interrupted")
 
     def _launch(self, task: Task, background: bool) -> None:
         with self._lock:
@@ -492,6 +495,7 @@ class TaskRuntime:
                 task.status = CANCELLED
                 task.result = task.result or "Cancelled by the user."
                 self.store.save(task)
+                self._emit(task, "cancelled")
                 return
             if len(task.steps) >= task.budget["max_steps"] or ops > task.budget["max_steps"] * 3:
                 return self._out_of_budget(task, "step budget")

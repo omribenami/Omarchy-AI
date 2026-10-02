@@ -296,7 +296,8 @@ class Transcript(list):
 # -- tasks -----------------------------------------------------------------
 
 _CARD_EVENTS = {"waiting_approval": "approval", "waiting_user": "question",
-                "certified": "result", "unverified": "result", "failed": "result", "progress": "progress"}
+                "certified": "result", "unverified": "result", "failed": "result",
+                "cancelled": "result", "interrupted": "result", "progress": "progress"}
 
 
 def task_progress(task) -> str:
@@ -331,7 +332,10 @@ def task_event(task, event: str) -> None:
     elif kind == "progress":
         card["text"] = task_progress(task)
     else:
-        card["text"] = str(task.result or event)
+        if event == "interrupted" and not task.result:
+            card["text"] = "Task paused: Omarchy AI restarted before this step finished. You can resume it."
+        else:
+            card["text"] = str(task.result or event)
     add_card(cid, card)
 
 

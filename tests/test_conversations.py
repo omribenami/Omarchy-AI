@@ -91,6 +91,14 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(card["kind"], "progress")
         self.assertIn("Still working", card["text"])
 
+    def test_interrupted_task_explains_why_its_chat_stopped_moving(self):
+        cid = conversations.create("phone-text")
+        task = SimpleNamespace(id="t-interrupted", conversation=cid, status="interrupted", result="")
+        conversations.task_event(task, "interrupted")
+        card = conversations.get(cid, self.lookup)["lines"][-1]
+        self.assertEqual(card["kind"], "result")
+        self.assertIn("restarted", card["text"])
+
     def test_a_task_without_a_conversation_adds_nothing(self):
         conversations.task_event(SimpleNamespace(id="t3", conversation="", status="failed", result="x"), "failed")
         self.assertEqual(conversations.summaries(self.lookup)["conversations"], [])

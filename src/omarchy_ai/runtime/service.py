@@ -32,6 +32,13 @@ def get_runtime():
             from .runtime import TaskRuntime
             _runtime = TaskRuntime()
             _runtime.listeners.append(conversations.task_event)  # its cards go back to the talk it came from
+            # TaskRuntime marks work interrupted during construction, before a
+            # conversation listener exists.  Replay that recovery state once
+            # so a restart cannot leave the originating chat looking frozen.
+            from .task import INTERRUPTED
+            for task in _runtime.store.list(50):
+                if task.status == INTERRUPTED and task.conversation:
+                    conversations.task_event(task, "interrupted")
         return _runtime
 
 
