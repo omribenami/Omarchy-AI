@@ -85,7 +85,8 @@ def _same_job(runtime, goal: str, jev=None):
     return next(t for t in candidates if t.id == answer["choice"])
 
 
-_AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE"}
+_AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE",
+           "workflow": "WORKFLOW_AGENT", "workflow_agent": "WORKFLOW_AGENT"}
 _NAMED = [(re.compile(r"(?i)(?<![\w-])codex(?![\w-])"), "codex"),
           (re.compile(r"(?i)(?<![\w-])claude(?:[ -]?code)?(?![\w-])"), "claude_code")]
 _UNSANDBOXED = re.compile(r"(?i)--?yolo\b|\byolo\b|dangerously|skip[- ]permissions|without (?:the |its )?sandbox|full access")
@@ -100,6 +101,20 @@ def named_agent(text: str) -> tuple[str, bool]:
     return "", False
 
 
+def _workflow_goal(goal: str) -> bool:
+    """Jobs that require Omarchy to coordinate browser and account tools.
+
+    The live model may nominate Claude/Codex while formulating a tool call.
+    That is not a user request for a coding agent, and must not bypass the
+    persistent browser/MyApi coordinator.
+    """
+    text = goal.lower()
+    browser = ("browser", "concur", "receipt", "expense report", "sign in", "login", "web site", "website")
+    accounts = ("gmail", "email", "bill", "invoice", "account", "download")
+    return sum(token in text for token in browser) >= 2 or (any(token in text for token in browser)
+                                                            and any(token in text for token in accounts))
+
+
 def start_task(args: dict) -> ActionResult:
     from ..config import load_config
     if not getattr(load_config(), "task_runtime_enabled", True):
@@ -112,7 +127,8 @@ def start_task(args: dict) -> ActionResult:
                                    "myapi tool (Jev runs it) -- call myapi with the request. Coding agents never do "
                                    "email, calendar or other MyApi work.")
     runtime = get_runtime()
-    agent = _AGENTS.get(str(args.get("agent") or "").strip().lower(), "")
+    requested = str(args.get("agent") or "").strip().lower()
+    agent = _AGENTS.get(requested, "")
     if args.get("agent") and not agent:
         return ActionResult(False, f"agent must be one of: {', '.join(sorted(_AGENTS))}")
     unsandboxed = bool(args.get("unsandboxed"))
@@ -120,6 +136,13 @@ def start_task(args: dict) -> ActionResult:
         # An escalation brief quotes the user; honor an agent named there.
         named, named_unsandboxed = named_agent(goal)
         agent, unsandboxed = _AGENTS.get(named, ""), unsandboxed or named_unsandboxed
+    # Only words in the user's goal count as an explicit coding-agent choice.
+    # A model-added agent field is advisory, and browser/account workflows
+    # have a purpose-built coordinator that can combine the needed tools.
+    named, _ = named_agent(goal)
+    if _workflow_goal(goal) and agent in {"CLAUDE_CODE", "CODEX"} and not named:
+        log.info("routing workflow goal to WORKFLOW_AGENT instead of unsolicited %s", agent)
+        agent = "WORKFLOW_AGENT"
     existing = _same_job(runtime, goal)
     if existing is not None and agent and existing.agent != agent:
         # Same job, but the user wants it done by a named agent: a new task,
@@ -186,7 +209,18 @@ def task_status(args: dict) -> ActionResult:
         # Compact: 2026-09-27 19:21 the full summaries were 22,254 chars, she
         # acted on none of it and never saw a waiting task's what_to_do.
         return ActionResult(True, json.dumps([_brief(t.summary()) for t in runtime.store.list(8)], ensure_ascii=False))
-    summary = runtime.status(args.get("task_id") or None)
+    requested_id = str(args.get("task_id") or "")
+    summary = runtime.status(requested_id or None)
+    if summary is None and requested_id:
+        # Speech models occasionally reverse the date portion of an id, while
+        # retaining its time/random suffix. Recover only when that suffix maps
+        # to exactly one task; never guess for a mutating task operation.
+        parts = requested_id.split("-")
+        suffix = "-".join(parts[-2:]) if len(parts) >= 3 else ""
+        matches = [task for task in runtime.store.list(50) if suffix and task.id.endswith(suffix)]
+        if len(matches) == 1:
+            log.warning("task_status repaired malformed task id %s -> %s", requested_id, matches[0].id)
+            summary = runtime.status(matches[0].id)
     if summary is None:
         return ActionResult(False, "No task found.")
     if summary.get("pending_approval"):

@@ -16,6 +16,11 @@ from test_task_runtime import FakeModel, RuntimeHarness, ScriptedJev, ScriptExec
 
 
 class FollowUpTests(RuntimeHarness):
+    def test_browser_account_job_is_recognized_as_a_workflow(self):
+        self.assertTrue(service._workflow_goal(
+            "Generate the October expense report in Concur, download bills, and attach the receipts in the browser."))
+        self.assertFalse(service._workflow_goal("Fix the failing Python unit test in this repository."))
+
     def setUp(self):
         super().setUp()
         patch.object(agenda, "INBOX_PATH", self.root / "inbox.jsonl").start()
