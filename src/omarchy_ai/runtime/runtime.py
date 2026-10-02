@@ -543,6 +543,13 @@ class TaskRuntime:
     def _workers_ready(self, task: Task) -> bool:
         """Codex/Claude Code first; the paid API worker only with the user's
         OK when neither can run. False while waiting for that OK."""
+        # WorkflowAgent is a first-party coordinator, not a fallback coding
+        # model. It owns mixed MyApi/browser jobs even when coding CLIs are
+        # unavailable, and it must be offered before this method asks the
+        # user to spend API-worker credit on a general system agent.
+        workflow = self.available().get("WORKFLOW_AGENT", {})
+        if workflow.get("available"):
+            return True
         ready = self._coding_ready()
         if task.agent and task.agent not in ready:
             ready = self._coding_ready(refresh=True)

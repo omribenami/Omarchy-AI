@@ -123,10 +123,19 @@ class ControlPlane:
             "needs_code_change": boolean(
                 "Will completing this goal require modifying source code files in a software repository?"),
         }
+        if "WORKFLOW_AGENT" in candidates:
+            questions["workflow"] = boolean(
+                "Does this goal require a persistent coordinator to carry out several dependent stages across the "
+                "user's connected services and/or a website (for example retrieve inputs from email or an account, "
+                "then complete a browser workflow)? This is not source-code work and not one self-contained browser action."
+            )
         answers = self._ask(task, brief(task), questions)
         if not answers:
             fallback = "SYSTEM_AGENT" if "SYSTEM_AGENT" in candidates else next(iter(candidates), "ASK_USER")
             return Choice(fallback, None, fallback=True), None
+        workflow = answers.get("workflow", {})
+        if workflow.get("p", 0) >= 0.8:
+            return Choice("WORKFLOW_AGENT", workflow["p"], {"workflow": workflow["p"]}), answers["needs_code_change"]["p"]
         pick = answers["executor"]
         return Choice(pick["choice"], pick["p"], pick["probabilities"]), answers["needs_code_change"]["p"]
 

@@ -8,11 +8,11 @@ from __future__ import annotations
 from .base import Assignment, Executor, Report, WorkContext
 from .coding_agents import ClaudeCode, Codex
 from .direct import DirectTool, InternalReviewer
-from .system_agent import SystemAgent, TestAgent
+from .system_agent import SystemAgent, TestAgent, WorkflowAgent
 
 
 def default_executors(model=None) -> dict[str, Executor]:
-    executors = [DirectTool(model), SystemAgent(model), TestAgent(model), InternalReviewer(model),
+    executors = [DirectTool(model), WorkflowAgent(model), SystemAgent(model), TestAgent(model), InternalReviewer(model),
                  ClaudeCode(), Codex()]
     return {e.name: e for e in executors}
 
@@ -32,4 +32,4 @@ def availability(executors: dict[str, Executor]) -> dict[str, dict]:
 
 
 __all__ = ["Assignment", "Executor", "Report", "WorkContext", "default_executors", "availability",
-           "ClaudeCode", "Codex", "DirectTool", "InternalReviewer", "SystemAgent", "TestAgent"]
+           "ClaudeCode", "Codex", "DirectTool", "InternalReviewer", "SystemAgent", "TestAgent", "WorkflowAgent"]

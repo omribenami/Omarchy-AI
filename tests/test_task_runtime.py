@@ -12,7 +12,7 @@ from omarchy_ai.runtime.control import MAX_BRIEF_CHARS, ControlPlane, brief
 from omarchy_ai.runtime.executors.base import DONE, NEEDS_APPROVAL, Executor, Report
 from omarchy_ai.runtime.executors.coding_agents import ClaudeCode, Codex, _VERDICT, build_prompt
 from omarchy_ai.runtime.executors.base import Assignment
-from omarchy_ai.runtime.executors.system_agent import SystemAgent
+from omarchy_ai.runtime.executors.system_agent import SystemAgent, WorkflowAgent
 from omarchy_ai.runtime.permissions import Assessment, Risk, Scope, classify, coding_agent_risk, decide, scrubbed_env
 from omarchy_ai.runtime.runtime import TaskRuntime
 from omarchy_ai.runtime.task import Task, TaskStore
@@ -782,6 +782,36 @@ class SystemAgentTests(unittest.TestCase):
         self.assertEqual(report.status, "blocked")
         self.assertIn("repeating", report.claim)
         self.assertTrue(any("three times" in w for b in model.briefs for w in b.get("runtime_warnings", [])))
+
+    def test_workflow_agent_uses_existing_browser_tool_not_shell_automation(self):
+        class WorkflowCtx(FakeCtx):
+            def __init__(self):
+                super().__init__()
+                self.tools = []
+
+            def action(self, name, args):
+                self.tools.append((name, args))
+                return {"ok": True, "decision": "allow", "message": "browser state observed"}
+
+        model = FakeModel([
+            {"action": "assistant_tool", "name": "browser_task", "args": {
+                "url": "https://example.com", "goal": "Open the report page", "steps": ["Open reports"]}},
+            {"action": "finish", "status": "done", "summary": "browser step completed"},
+        ])
+        ctx = WorkflowCtx()
+        report = WorkflowAgent(model).run(self.assignment(), ctx)
+        self.assertEqual(report.status, "done")
+        self.assertEqual(ctx.tools[0][0], "browser_task")
+
+
+class WorkflowRoutingTests(unittest.TestCase):
+    def test_multi_service_web_job_beats_coding_agent(self):
+        control = ControlPlane(Jev(lambda state, questions, timeout=8: jev_answer(
+            questions, {"executor": "CLAUDE_CODE", "needs_code_change": 0.1, "workflow": 0.95})))
+        task = Task(id="workflow", goal="Get receipts from Gmail, then create a draft in the website.", workspace="/tmp")
+        picked, needs_code = control.route(task, {"WORKFLOW_AGENT": "workflow", "CLAUDE_CODE": "coding"})
+        self.assertEqual(picked.value, "WORKFLOW_AGENT")
+        self.assertEqual(needs_code, 0.1)
 
 
 class CodingAgentTests(unittest.TestCase):

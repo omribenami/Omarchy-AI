@@ -68,6 +68,12 @@ Actions:
 - launch:     {"command": "<GUI app launch, e.g. omarchy-launch-or-focus spotify>"}  starts detached; never `run` a GUI app
 - desktop:    {"goal": "<native desktop goal: workspace, focus/move window, volume, brightness, theme, bar panel>"}
 - screen:     {"question": "<what to check on screen>"}      screenshot + vision, for GUI state you cannot query
+- assistant_tool: {"name": "<one allowed assistant capability>", "args": {...}}
+              Only for a workflow requiring connected services or the dedicated browser. Allowed names: browser_task
+              (url, goal, optional ordered steps), inspect_browser (no args), myapi (request),
+              myapi_gmail_search, myapi_gmail_search_attachments, myapi_gmail_download_attachment. Use browser_task
+              for web navigation and forms, never shell/CDP browser automation. Use MyApi only for account reads.
+              Never send, submit, publish, delete, or otherwise make an external change through this action.
 - finish:     {"status": "done|failed|blocked|needs_code_change|needs_user",
                "summary": "<what you did and found, concrete>", "findings": ["<fact with the command that showed it>", ...],
                "question": "<only for needs_user>", "test_commands": ["<commands that would verify the result>", ...]}
@@ -108,7 +114,11 @@ ROLE_NOTES = {
 }
 
 
-ACTIONS = ("run", "find_tools", "help", "launch", "desktop", "screen", "finish")
+WORKFLOW_TOOLS = frozenset({
+    "browser_task", "inspect_browser", "myapi", "myapi_gmail_search",
+    "myapi_gmail_search_attachments", "myapi_gmail_download_attachment",
+})
+ACTIONS = ("run", "find_tools", "help", "launch", "desktop", "screen", "assistant_tool", "finish")
 
 
 def normalize_step(step: dict) -> dict:
@@ -250,9 +260,14 @@ class SystemAgent(Executor):
                 entry["result"] = ctx.desktop(str(step.get("goal") or ""))
             elif action == "screen":
                 entry["result"] = ctx.screen(str(step.get("question") or ""))
+            elif action == "assistant_tool":
+                name = str(step.get("name") or "")
+                args = step.get("args") if isinstance(step.get("args"), dict) else {}
+                entry["result"] = (ctx.action(name, args) if name in WORKFLOW_TOOLS else
+                                   {"error": f"assistant_tool {name!r} is not allowed"})
             else:
                 entry["result"] = {"error": f"unknown action {action!r}; use run, find_tools, help, launch, "
-                                            "desktop, screen or finish"}
+                                            "desktop, screen, assistant_tool or finish"}
             history.append(entry)
         return Report(BLOCKED, claim="used every step of this assignment without finishing",
                       findings=self._findings(history), meta={"history": self._compact(history)})
@@ -344,6 +359,20 @@ class TestAgent(SystemAgent):
 
     def __init__(self, model: WorkerModel | None = None):
         super().__init__(model, max_actions=10, default_role=TEST)
+
+
+class WorkflowAgent(SystemAgent):
+    """Persistent coordinator for multi-stage service and browser workflows."""
+    name = "WORKFLOW_AGENT"
+    kind = "internal"
+    description = ("Omarchy's persistent workflow coordinator for multi-stage user jobs that combine connected "
+                   "services (email, cloud accounts, receipts) and browser work. It uses MyApi for account reads "
+                   "and the Jev browser for web steps, preserves state between stages, and waits only for a real "
+                   "approval or missing input. Not for source-code changes.")
+    roles = {WORK, DIAGNOSE, IMPLEMENT}
+
+    def __init__(self, model: WorkerModel | None = None):
+        super().__init__(model, max_actions=24, default_role=WORK)
 
 
 def _clamp(value, low, high, default):
