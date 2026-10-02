@@ -948,6 +948,11 @@ class TaskStatusTests(unittest.IsolatedAsyncioTestCase):
         s._working["c1"]["notes"] = s.MAX_PROGRESS_NOTES
         self.assertIsNone(s._status_due(now))
 
+    def test_flux_uses_the_live_indicator_instead_of_spoken_progress(self):
+        s, now = self.session(started_ago=40.0)
+        s.from_paired_phone = True
+        self.assertIsNone(s._status_due(now))
+
     async def test_prompts_her_once_as_a_turn(self):
         s, _ = self.session()
         session = SimpleNamespace(send_client_content=AsyncMock())

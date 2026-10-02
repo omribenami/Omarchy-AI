@@ -476,6 +476,11 @@ class GeminiLiveSession:
 
     def _status_due(self, now: float) -> tuple[str, str, dict] | None:
         """(call id, kind, entry) of a running task she should speak about now."""
+        # Flux renders the authoritative live task stage in the chat itself.
+        # Speaking periodic "still working" updates there is redundant and
+        # led the model to ask whether the user had seen each one.
+        if self.from_paired_phone:
+            return None
         if (self._running_blocking or not self._audio.empty() or self._display_state(now) == "speaking"
                 or now - max(self._last_user_speech, self._last_loud_at) < 1.0):
             return None
@@ -616,8 +621,8 @@ class GeminiLiveSession:
                 what = f"{entry.get('title')}: {entry.get('detail', '')[:500]}"
                 opener = ("You started this conversation yourself because a scheduled check finished. "
                           if self.proactive and not self._announced else "")
-                follow_up = ("Then ask whether they want a summary; if yes, call task_status with task_id "
-                             f"{entry.get('task_id')}." if entry.get("kind") == "task" else "Then ask if they got it.")
+                follow_up = ("Do not ask whether they saw or heard this update. The task chat already shows live "
+                             "progress; only ask a question when this result explicitly requires their decision.")
                 await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
                     f"[Heartbeat result, automatic] {opener}Tell the user now, briefly, in their language: {what}. "
                     f"{follow_up} If they do not answer, say nothing more."))]), turn_complete=True)

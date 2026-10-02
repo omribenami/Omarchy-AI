@@ -88,6 +88,7 @@ class TextChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.messages[1]["text"], "Two plus two is four.")
         self.assertEqual(len(self.connects), 1, "one Gemini session for the whole chat")
         self.assertIn("TEXT CHAT", self.connects[0]["system_instruction"])
+        self.assertIn("live stage indicator", self.connects[0]["system_instruction"])
         await self.until(lambda: self.pushed and self.pushed[-1]["messages"][-1]["text"].endswith("forty."))
         self.assertTrue(chat._adapter._audio.empty(), "her audio is drained, never played")
         chat.close()

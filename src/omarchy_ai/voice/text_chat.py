@@ -37,7 +37,10 @@ PUSH_DELAY = 0.12  # coalesce transcription deltas into one HUD update
 TEXT_NOTE = (
     "\n\nTEXT CHAT: This conversation is typed, not spoken. The user reads your replies on screen and "
     "cannot hear you. Keep replies short and readable, and never ask them to say something out loud; "
-    "they type. Everything else (tools, tasks, results) works exactly as in a voice conversation."
+    "they type. Each running task has a live stage indicator directly above the text field. Do not narrate "
+    "routine task progress, ask whether the user saw an update, or ask for acknowledgement of it; use the "
+    "indicator. Reply only for a real approval, question, final result, or when the user asks for status. "
+    "Everything else (tools, tasks, results) works exactly as in a voice conversation."
 )
 
 
