@@ -302,13 +302,16 @@ _CARD_EVENTS = {"waiting_approval": "approval", "waiting_user": "question",
 
 def task_progress(task) -> str:
     """One compact, shared status sentence for chat cards and the task HUD."""
+    phase = str(getattr(task, "phase", ""))
+    if phase.startswith("status:"):
+        return phase.removeprefix("status:").strip()
     step = (getattr(task, "steps", None) or [])[-1] if getattr(task, "steps", None) else None
     if step and step.get("outcome") == "running":
         return f"Still working: {step.get('executor', 'Omarchy')} is {step.get('role', 'working')} (step {step.get('n')})."
     if step and step.get("claim"):
         claim = " ".join(str(step["claim"]).split())
         return f"Progress: {claim[:360]}"
-    return f"Still working: {str(getattr(task, 'phase', 'working')).replace('_', ' ')}."
+    return f"Still working: {phase.replace('_', ' ')}."
 
 
 def task_event(task, event: str) -> None:

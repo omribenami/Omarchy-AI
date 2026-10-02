@@ -447,6 +447,12 @@ class TaskRuntime:
         if self.notify:
             _notify(self, task, event)
 
+    def _progress(self, task: Task, label: str) -> None:
+        """Publish one short, factual live-stage label to every task surface."""
+        task.phase = "status:" + " ".join(str(label).split())[:140]
+        self.store.save(task)
+        self._emit(task, "progress")
+
     def report_running_progress(self, every_seconds: float = 45) -> None:
         """Surface a bounded heartbeat from the authoritative task record.
 
@@ -523,9 +529,7 @@ class TaskRuntime:
 
     # ---------------------------------------------------------------- plan
     def _plan(self, task: Task) -> None:
-        task.phase = "plan"
-        self.store.save(task)
-        self._emit(task, "progress")
+        self._progress(task, "Sending to Jev: planning")
         try:
             plan = self.planner.complete(PLAN_PROMPT, {"request": task.goal, "workspace": task.workspace}, timeout=45)
             task.objective = str(plan.get("objective") or task.goal)[:1000]
@@ -632,9 +636,7 @@ class TaskRuntime:
         return False
 
     def _route(self, task: Task) -> bool:
-        task.phase = "route"
-        self.store.save(task)
-        self._emit(task, "progress")
+        self._progress(task, "Sending to Jev: choosing tools")
         if not self._workers_ready(task):
             return False
         candidates = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
@@ -652,6 +654,7 @@ class TaskRuntime:
         task.needs_code = needs_code
         task.add_decision("route", pick.value, pick.p, {"needs_code_change": needs_code, "fallback": pick.fallback,
                                                         "probabilities": pick.probabilities})
+        self._progress(task, f"Jev decision: {pick.value.replace('_', ' ')}")
         if pick.value == "ASK_USER":
             self._ask_user(task, "Before I start, can you tell me more precisely what you want done?")
             return False
@@ -737,8 +740,7 @@ class TaskRuntime:
         step["directive"] = dispatch.get("directive")
         tier = llm.TIER.set(task.model_tier)  # this task's escalation step, for every worker call below
         step["model"] = _model_of(executor)
-        self.store.save(task)
-        self._emit(task, "progress")
+        self._progress(task, f"Step {step['n']}: {name.replace('_', ' ').title()}")
         assignment = Assignment(task_id=task.id, role=dispatch["role"], goal=task.goal,
                                 instructions=dispatch["instructions"], workspace=task.workspace,
                                 context=self._context_for(task, dispatch), write_access=dispatch["write"],
@@ -1224,11 +1226,16 @@ class WorkContextImpl:
             request["sudo_action"] = subject[:600]
         return request
 
+    def _stage(self, text: str) -> None:
+        self.runtime._progress(self.task, f"Step {self.step}: {text}")
+
     def run_command(self, command: str, cwd: str | None = None, timeout: float = 120, *, role: str = "") -> dict:
         from ..execution import passwords
         # A literal `sshpass -p SECRET` becomes `sshpass` before anything is
         # classified, recorded or shown for approval; the harness supplies it.
         command = passwords.sanitize_command(command)
+        words = (split_commands(command) or [command])[0].split()
+        self._stage("Running " + " ".join(words[:2]))
         cwd = str(Path(cwd or self.task.workspace).expanduser())
         assessment = classify(command, cwd, self.scope)
         decision = self._decide("command", command, assessment)
@@ -1339,6 +1346,8 @@ class WorkContextImpl:
         return {"ok": result.ok, "text": result.message[:3000]}
 
     def action(self, name: str, args: dict) -> dict:
+        label = str(args.get("goal") or args.get("request") or args.get("url") or name).replace("\n", " ")
+        self._stage(label[:110])
         assessment = Assessment(_ACTION_RISK.get(name, Risk.NORMAL))
         subject = f"{name} {json.dumps(args, sort_keys=True)}"
         decision = self._decide("action", subject, assessment)

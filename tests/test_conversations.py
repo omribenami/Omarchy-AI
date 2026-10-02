@@ -91,6 +91,14 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(card["kind"], "progress")
         self.assertIn("Still working", card["text"])
 
+    def test_progress_event_uses_the_runtime_live_stage_when_available(self):
+        cid = conversations.create("phone-text")
+        task = SimpleNamespace(id="t-stage", conversation=cid, status="running",
+                               phase="status:Step 2: Fetching October receipt", steps=[])
+        conversations.task_event(task, "progress")
+        self.assertEqual(conversations.get(cid, self.lookup)["lines"][-1]["text"],
+                         "Step 2: Fetching October receipt")
+
     def test_interrupted_task_explains_why_its_chat_stopped_moving(self):
         cid = conversations.create("phone-text")
         task = SimpleNamespace(id="t-interrupted", conversation=cid, status="interrupted", result="")
