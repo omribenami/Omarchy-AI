@@ -390,6 +390,22 @@ class TaskRuntimeTests(RuntimeHarness):
         launch.assert_called_once()
         self.assertEqual(self.store.load("t-ask").answers, ["Yes, approved: go ahead."])
 
+    def test_answer_grants_bounded_continuation_after_budget_exhaustion(self):
+        runtime = self._asking()
+        task = self.store.load("t-ask")
+        task.budget.update(max_steps=1, max_seconds=60, used_seconds=60)
+        step = task.add_step("SYSTEM_AGENT", "work")
+        task.finish_step(step, "done", "partial result")
+        task.result = "old result"
+        self.store.save(task)
+        with patch.object(runtime, "_launch"):
+            self.assertTrue(runtime.respond(task.id, answer="continue with these corrections")["ok"])
+        resumed = self.store.load(task.id)
+        self.assertGreater(resumed.budget["max_steps"], len(resumed.steps))
+        self.assertGreater(resumed.budget["max_seconds"], resumed.budget["used_seconds"])
+        self.assertEqual(resumed.result, "")
+        self.assertIn("corrections", resumed.next_dispatch["context"]["user_answer"])
+
     def test_an_update_to_a_task_waiting_on_its_question_answers_it(self):
         # 2026-09-30: "yes, send it" was noted as an update, and the task kept waiting.
         runtime = self._asking()

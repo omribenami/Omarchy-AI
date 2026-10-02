@@ -212,6 +212,14 @@ class TaskRuntime:
             if task.next_dispatch:
                 task.next_dispatch.setdefault("context", {})["user_answer"] = answer[:2000]
             task.question = None
+        # A user answer authorizes another bounded work segment. Preserve
+        # cumulative accounting, but do not resume straight into an exhausted
+        # budget left by the work that preceded the question.
+        if len(task.steps) >= task.budget["max_steps"]:
+            task.budget["max_steps"] = len(task.steps) + int(_config("task_max_steps", 12))
+        if task.budget.get("used_seconds", 0) >= task.budget["max_seconds"]:
+            task.budget["max_seconds"] = task.budget["used_seconds"] + int(_config("task_max_minutes", 60)) * 60
+        task.result = ""
         self.store.save(task)
         self._refresh_task_hud()
         if task.status == CANCELLED:
