@@ -19,6 +19,7 @@ class AssistantHudsTest(unittest.TestCase):
             items = assistant_huds.task_items()
         self.assertEqual([item["id"] for item in items], ["one", "two"])
         self.assertEqual(items[1]["detail"], "Which?")
+        self.assertIn("Still working", items[0]["detail"])
 
     def test_routine_items_are_active_agenda_jobs(self):
         jobs = [{"id": "t-1", "title": "Morning", "kind": "assistant",

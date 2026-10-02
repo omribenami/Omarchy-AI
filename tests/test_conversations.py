@@ -81,6 +81,16 @@ class ConversationTests(unittest.TestCase):
         task.pending_approval = {"fingerprint": "fp2"}
         self.assertEqual(conversations.get(cid, self.lookup)["lines"][-1]["status"], "done")
 
+    def test_progress_event_adds_a_highlight_to_its_own_chat(self):
+        cid = conversations.create("phone-text")
+        task = SimpleNamespace(id="t-progress", conversation=cid, status="running", phase="browser:work",
+                               steps=[{"n": 2, "executor": "WORKFLOW_AGENT", "role": "work",
+                                       "outcome": "running", "claim": ""}])
+        conversations.task_event(task, "progress")
+        card = conversations.get(cid, self.lookup)["lines"][-1]
+        self.assertEqual(card["kind"], "progress")
+        self.assertIn("Still working", card["text"])
+
     def test_a_task_without_a_conversation_adds_nothing(self):
         conversations.task_event(SimpleNamespace(id="t3", conversation="", status="failed", result="x"), "failed")
         self.assertEqual(conversations.summaries(self.lookup)["conversations"], [])

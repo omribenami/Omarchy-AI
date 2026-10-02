@@ -296,7 +296,18 @@ class Transcript(list):
 # -- tasks -----------------------------------------------------------------
 
 _CARD_EVENTS = {"waiting_approval": "approval", "waiting_user": "question",
-                "certified": "result", "unverified": "result", "failed": "result"}
+                "certified": "result", "unverified": "result", "failed": "result", "progress": "progress"}
+
+
+def task_progress(task) -> str:
+    """One compact, shared status sentence for chat cards and the task HUD."""
+    step = (getattr(task, "steps", None) or [])[-1] if getattr(task, "steps", None) else None
+    if step and step.get("outcome") == "running":
+        return f"Still working: {step.get('executor', 'Omarchy')} is {step.get('role', 'working')} (step {step.get('n')})."
+    if step and step.get("claim"):
+        claim = " ".join(str(step["claim"]).split())
+        return f"Progress: {claim[:360]}"
+    return f"Still working: {str(getattr(task, 'phase', 'working')).replace('_', ' ')}."
 
 
 def task_event(task, event: str) -> None:
@@ -313,6 +324,8 @@ def task_event(task, event: str) -> None:
                     fingerprint=request.get("fingerprint", ""))
     elif kind == "question":
         card.update(text=str(task.question or ""), question=str(task.question or ""))
+    elif kind == "progress":
+        card["text"] = task_progress(task)
     else:
         card["text"] = str(task.result or event)
     add_card(cid, card)

@@ -36,13 +36,14 @@ def _ipc_async(method: str, payload: dict) -> None:
 
 def task_items() -> list[dict]:
     from ..runtime.task import ACTIVE, INTERRUPTED, WAITING_APPROVAL, WAITING_USER, TaskStore
+    from ..core.conversations import task_progress
 
     visible = ACTIVE | {INTERRUPTED, WAITING_APPROVAL, WAITING_USER}
     items = []
     for task in TaskStore().list(50):
         if task.status not in visible:
             continue
-        detail = task.question or (task.pending_approval or {}).get("subject") or task.phase
+        detail = task.question or (task.pending_approval or {}).get("subject") or task_progress(task)
         items.append({"id": task.id, "title": task.goal, "status": task.status, "detail": detail or ""})
     return items
 

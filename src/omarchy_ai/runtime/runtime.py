@@ -97,6 +97,7 @@ class TaskRuntime:
         self._cancel: dict[str, threading.Event] = {}
         self._availability: tuple[float, dict] | None = None
         self._prompting: set[str] = set()  # tasks whose fingerprint prompt is on the phone now
+        self._last_progress_notice: dict[str, float] = {}
         self._mark_interrupted()
 
     @staticmethod
@@ -431,6 +432,22 @@ class TaskRuntime:
         if self.notify:
             _notify(self, task, event)
 
+    def report_running_progress(self, every_seconds: float = 45) -> None:
+        """Surface a bounded heartbeat from the authoritative task record.
+
+        The chat and HUD receive the identical event.  This is deliberately
+        separate from executor output: a slow browser or coding step may have
+        no new text for a while, but the task owner is still alive.
+        """
+        now = time.time()
+        for task in self.store.list(50):
+            if task.status != RUNNING or not owner_alive(task.owner):
+                continue
+            if now - self._last_progress_notice.get(task.id, 0) < every_seconds:
+                continue
+            self._last_progress_notice[task.id] = now
+            self._emit(task, "progress")
+
     # -------------------------------------------------------------- driver
     def _drive(self, task_id: str) -> None:
         task = self.store.load(task_id)
@@ -695,6 +712,7 @@ class TaskRuntime:
         tier = llm.TIER.set(task.model_tier)  # this task's escalation step, for every worker call below
         step["model"] = _model_of(executor)
         self.store.save(task)
+        self._emit(task, "progress")
         assignment = Assignment(task_id=task.id, role=dispatch["role"], goal=task.goal,
                                 instructions=dispatch["instructions"], workspace=task.workspace,
                                 context=self._context_for(task, dispatch), write_access=dispatch["write"],
@@ -746,6 +764,7 @@ class TaskRuntime:
             return False
         task.next_dispatch = None
         self.store.save(task)
+        self._emit(task, "progress")
         return True
 
     # ------------------------------------------------------------- direct
