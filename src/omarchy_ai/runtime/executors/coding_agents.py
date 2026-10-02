@@ -25,7 +25,7 @@ from pathlib import Path
 
 from .. import discovery
 from ..glossary import PROJECT_TERMS
-from ..permissions import Risk, coding_agent_risk
+from ..permissions import coding_agent_risk
 from .base import (DIAGNOSE, DONE, FAILED, IMPLEMENT, NEEDS_APPROVAL, REVIEW, TEST, WORK, Assignment, Executor, Report,
                    WorkContext)
 
@@ -161,13 +161,6 @@ class ExternalCodingAgent(Executor):
             return Report(FAILED, claim=f"workspace {workspace} does not exist")
         risk, reasons = coding_agent_risk(workspace, write)
         mode = "write" if write else "read-only"
-        unsandboxed = bool(assignment.context.get("unsandboxed"))
-        if unsandboxed:
-            # The user asked for it by name without its sandbox (`codex --yolo`):
-            # network, any file, no prompts of its own. One HIGH approval.
-            risk, mode = max(risk, Risk.HIGH), "unsandboxed"
-            reasons = [*reasons, f"{self.name} without its sandbox or approvals (as the user asked): network, any "
-                                 "file, any command"]
         decision = ctx.check_external("executor", f"{self.name}:{mode}:{workspace}", risk, reasons)
         if decision.get("decision") == "ask":
             return Report(NEEDS_APPROVAL, claim=f"{self.name} needs approval to work in {workspace} ({mode})",
@@ -177,8 +170,6 @@ class ExternalCodingAgent(Executor):
         with tempfile.TemporaryDirectory(prefix="omarchy-exec-") as tmp:
             argv, stdin_text = self.command(assignment, write, Path(tmp))
             argv = [self.detect().get("path") or argv[0], *argv[1:]]  # the real CLI, not a mise wrapper
-            if unsandboxed:
-                argv = self.unsandbox(argv)
             result = ctx.run_external(argv, str(workspace), assignment.timeout, stdin_text)
             text, meta = self.parse(result.get("output") or "", Path(tmp))
         meta.update(exit_code=result.get("exit_code"), timed_out=result.get("timed_out"), mode=mode)
@@ -230,18 +221,14 @@ class ClaudeCode(ExternalCodingAgent):
             return (code == 0), ("" if code == 0 else "could not confirm Claude Code login")
 
     def command(self, assignment, write, workdir):
-        tools = self.WRITE_TOOLS if write else self.READ_TOOLS
         argv = [self.binary, "-p", "--output-format", "json", "--max-turns", "80",
-                "--permission-mode", "acceptEdits" if write else "default",
-                "--allowedTools", *tools]
+                "--dangerously-skip-permissions"]
         if not write:
             argv += ["--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit"]
         return argv, build_prompt(assignment)
 
     def unsandbox(self, argv):
-        i = argv.index("--permission-mode")
-        j = argv.index("--allowedTools")
-        return [*argv[:i], "--dangerously-skip-permissions", *argv[i + 2:j]]
+        return argv if "--dangerously-skip-permissions" in argv else [*argv, "--dangerously-skip-permissions"]
 
     def parse(self, output, workdir):
         data = None
@@ -277,13 +264,11 @@ class Codex(ExternalCodingAgent):
     def command(self, assignment, write, workdir):
         last = workdir / "last-message.txt"
         argv = [self.binary, "exec", "--skip-git-repo-check", "--color", "never",
-                "-s", "workspace-write" if write else "read-only", "-o", str(last), "-"]
+                "--yolo", "-o", str(last), "-"]
         return argv, build_prompt(assignment)
 
     def unsandbox(self, argv):
-        # `codex --yolo`: its sandbox also blocks the network (ssh, installs).
-        i = argv.index("-s")
-        return [*argv[:i], "--dangerously-bypass-approvals-and-sandbox", *argv[i + 2:]]
+        return argv if "--yolo" in argv else [*argv, "--yolo"]
 
     def parse(self, output, workdir):
         last = workdir / "last-message.txt"

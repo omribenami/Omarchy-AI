@@ -210,6 +210,7 @@ class GeminiLiveSession:
         # Switchboard (voice/switchboard.py): the fast pass's route for the
         # latest request, and the second pass that decides every tool call.
         self._route_hint = None  # {"route", "p", "request", "at"}
+        self._proactive_task_turn = ""  # latest request handed to Task Runtime by the fast route
         self._switchboard = switchboard.Switchboard()
         # Escalation (voice/escalation.py): repeated failures or giving up
         # hand the job to the Task Runtime without waiting for her to.
@@ -232,6 +233,9 @@ class GeminiLiveSession:
         self._audit_session = uuid.uuid4().hex
         self.on_connected = None
         self.on_message = None
+        # Session-scoped capabilities (for example phone-chat file sharing).
+        # They are declared only by that session and never enter the global action catalog.
+        self.extra_tools: dict[str, object] = {}
         self._echo = EchoCancellation()
         # Numeric diagnostics only: no microphone recording or speech text in
         # interruption logs. A short window captures noise just before barge-in.
@@ -392,6 +396,21 @@ class GeminiLiveSession:
             decision, route = await asyncio.to_thread(jev_fast.judge, text)
             if route:
                 self._route_hint = {**route, "request": text, "at": time.monotonic()}
+            # A whole job must not depend on Gemini remembering to make one
+            # particular tool call.  The old failure-only escalator could not
+            # see the common failure mode where she successfully fetched one
+            # input, said she was continuing, and then simply stopped.  A
+            # confident first-pass whole-task route is safe to hand off: the
+            # Task Runtime owns continuation and still enforces every approval
+            # boundary itself.
+            if (route and route.get("route") == "whole_task" and route.get("p", 0) >= 0.9
+                    and self._proactive_task_turn != text):
+                self._proactive_task_turn = text
+                groups, _ = self._user_turns()
+                goal = escalation.proactive_goal(groups)
+                await self._escalate(goal)
+                log.info("Jev fast path: %r -> proactive start_task route=%s", text[:120], route)
+                continue
             if decision is None:
                 log.info("Jev fast path: no fast command in %r route=%s (%.0fms)", text[:120], route,
                          (time.monotonic() - started) * 1000)
@@ -745,6 +764,7 @@ class GeminiLiveSession:
         if not task_id:
             log.warning("Escalation did not start a task: session=%s %s", self._audit_session, result.message[:300])
             return
+        self._escalator.observe_call("start_task", {"goal": goal}, True, result.message, time.monotonic())
         log.info("Escalated: session=%s task=%s%s", self._audit_session, task_id,
                  " (added to the task already doing this job)" if started.get("existing") else "")
         self._announcements.put_nowait({"notice": escalation.notice(task_id, bool(started.get("existing")))})
@@ -848,6 +868,8 @@ class GeminiLiveSession:
                 result = ActionResult(already["ok"], already["message"])
             elif redirect is not None:
                 result = redirect
+            elif call.name in self.extra_tools:
+                result = await asyncio.to_thread(self.extra_tools[call.name], dict(call.args or {}))
             elif call.name == "run_mission":
                 result = await self._run_mission(session, call.args or {})
             elif call.name == "get_recent_actions":

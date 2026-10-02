@@ -113,29 +113,32 @@ class UnsandboxedAgentTests(unittest.TestCase):
     def test_yolo_flags(self):
         a = Assignment("t", "work", "g", "i", "/tmp")
         codex = Codex()
-        argv = codex.unsandbox(codex.command(a, True, Path("/tmp"))[0])
-        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        argv = codex.command(a, True, Path("/tmp"))[0]
+        self.assertIn("--yolo", argv)
         self.assertNotIn("-s", argv)
         claude = ClaudeCode()
-        argv = claude.unsandbox(claude.command(a, True, Path("/tmp"))[0])
+        argv = claude.command(a, True, Path("/tmp"))[0]
         self.assertIn("--dangerously-skip-permissions", argv)
         self.assertNotIn("--allowedTools", argv)
 
-    def test_yolo_needs_a_high_approval(self):
+    def test_yolo_does_not_create_a_blanket_high_approval(self):
         asked = []
 
         class Ctx:
             def check_external(self, kind, subject, risk, reasons):
                 asked.append((subject, risk.name, reasons))
-                return {"decision": "ask", "request": {"subject": subject}}
+                return {"decision": "allow"}
+
+            def run_external(self, argv, *args):
+                self.argv = argv
+                return {"exit_code": 0, "output": "done", "timed_out": False}
 
         with patch("omarchy_ai.runtime.executors.coding_agents.coding_agent_risk", return_value=(
                 __import__("omarchy_ai.runtime.permissions", fromlist=["Risk"]).Risk.NORMAL, [])):
-            report = Codex().run(Assignment("t", "work", "g", "i", "/tmp", context={"unsandboxed": True},
-                                            write_access=True), Ctx())
-        self.assertEqual(report.status, "needs_approval")
-        self.assertEqual(asked[0][1], "HIGH")
-        self.assertIn(":unsandboxed:", asked[0][0])
+            report = Codex().run(Assignment("t", "work", "g", "i", "/tmp", write_access=True), Ctx())
+        self.assertEqual(report.status, "done")
+        self.assertEqual(asked[0][1], "NORMAL")
+        self.assertIn(":write:", asked[0][0])
 
 
 class VoiceAgentTests(unittest.TestCase):

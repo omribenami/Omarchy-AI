@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from omarchy_ai.phone import server, cast_audio
+from omarchy_ai.phone.gemini import _phone_message
 
 
 class PhoneBridgeTests(unittest.TestCase):
@@ -19,6 +20,14 @@ class PhoneBridgeTests(unittest.TestCase):
         status = {'BackendState': 'Running', 'Self': {'TailscaleIPs': ['100.64.0.1', 'fd7a::1'], 'DNSName': 'host.tail.ts.net.'}}
         with patch.object(server.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=json.dumps(status))):
             self.assertEqual(server._tailscale_address(), ('100.64.0.1', 'host.tail.ts.net'))
+
+    def test_companion_addresses_prefer_local_then_tailscale(self):
+        with patch.object(server, '_primary_lan_ip', return_value='192.0.2.20'), \
+                patch.object(server, '_tailscale_address', return_value=('100.64.0.1', 'host.tail.ts.net')):
+            self.assertEqual(server._bridge_addresses(), ['192.0.2.20', '100.64.0.1'])
+        with patch.object(server, '_primary_lan_ip', return_value='100.64.0.1'), \
+                patch.object(server, '_tailscale_address', return_value=('100.64.0.1', 'host.tail.ts.net')):
+            self.assertEqual(server._bridge_addresses(), ['100.64.0.1'])
 
     def test_pairing_prefers_tailnet_with_lan_fallback(self):
         for address in [('100.64.0.1', 'host.tail.ts.net'), (None, None)]:
@@ -62,17 +71,27 @@ class PhoneBridgeTests(unittest.TestCase):
                 cast_audio.send_pcm(packet)
 
     def test_phone_notification_context_is_separate_from_user_input(self):
-        from omarchy_ai.phone.gemini import _phone_message
         self.assertEqual(
             _phone_message(json.dumps({'type': 'omarchy.context', 'text': 'Build failed\nexit 1'})),
-            ('context', 'Build failed\nexit 1'),
+            ('context', 'Build failed\nexit 1', []),
         )
         self.assertEqual(
             _phone_message(json.dumps({'type': 'response.item.create', 'item': {
                 'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'why?'}],
             }})),
-            ('user', 'why?'),
+            ('user', 'why?', []),
         )
+
+    def test_phone_turn_carries_only_bounded_attachment_ids(self):
+        raw = json.dumps({'type': 'response.item.create', 'item': {
+            'type': 'message', 'role': 'user', 'content': [
+                {'type': 'input_text', 'text': 'what is this?'},
+                {'type': 'input_text', 'text': '[Attached file: photo.jpg (image/jpeg); stored on the desktop at /tmp/a]'},
+            ], 'attachments': ['a1', 'b2']}})
+        self.assertEqual(_phone_message(raw), ('user', 'what is this?', ['a1', 'b2']))
+        with self.assertRaises(ValueError):
+            _phone_message(json.dumps({'type': 'response.item.create', 'item': {
+                'type': 'message', 'role': 'user', 'content': [], 'attachments': ['x'] * 7}}))
         self.assertIsNone(_phone_message(json.dumps({'type': 'response.create'})))
 
 

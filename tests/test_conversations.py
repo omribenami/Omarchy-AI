@@ -103,6 +103,20 @@ class ConversationTests(unittest.TestCase):
         conversations.add_line(cid, "assistant", "Noted.")
         self.assertEqual(conversations.context(cid), "User: my colour is teal\nOmarchy: Noted.")
 
+    def test_chat_attachments_are_scoped_persisted_and_deleted_with_the_chat(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(conversations, "ATTACHMENTS_DIR", Path(tmp) / "files"):
+            cid = conversations.create("phone-text")
+            meta = conversations.store_attachment(cid, "../photo.png", "image/png", b"picture")
+            self.assertEqual(conversations.attachment(cid, meta["id"])[0].read_bytes(), b"picture")
+            conversations.add_line(cid, "user", "What is this?", [meta])
+            saved = conversations.get(cid, self.lookup)["lines"][-1]
+            self.assertEqual(saved["attachments"][0]["name"], "photo.png")
+            path, found = conversations.attachment(cid, meta["id"])
+            self.assertEqual((path.read_bytes(), found["mime"]), (b"picture", "image/png"))
+            self.assertIsNone(conversations.attachment("../../etc", meta["id"]))
+            self.assertTrue(conversations.delete(cid))
+            self.assertFalse(path.exists())
+
     def test_desktop_sessions_close_together_share_a_conversation(self):
         first = conversations.desktop()
         conversations.add_line(first, "user", "hi")

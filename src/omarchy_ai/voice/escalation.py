@@ -72,6 +72,26 @@ GIVE_UP_P = 0.8
 ASKS_WHY_P = 0.8
 
 
+def proactive_goal(user_turns: list[str]) -> str:
+    """Build a self-contained handoff for a newly recognized whole task.
+
+    The latest command is often only "give it a try" or "do that now".  A
+    background worker does not share the live model's hidden context, so give
+    it the recent user-authored requirements instead of inventing a summary.
+    """
+    turns = [" ".join(str(turn).split()) for turn in user_turns if str(turn).strip()]
+    latest = turns[-1] if turns else ""
+    context = "\n".join(f"- {turn[-700:]}" for turn in turns[-6:-1])
+    goal = (
+        "Continue this user-requested job autonomously until it is completed, or until a real approval or "
+        "missing input requires the user. Do not stop merely to report an intermediate successful step. "
+        "Respect all permission and confirmation gates, and report the verified result.\n\n"
+        + (f"Relevant earlier user requirements, oldest first:\n{context}\n\n" if context else "")
+        + f"Current request:\n{latest}"
+    )
+    return goal[:3900]
+
+
 def jev_judge(last_reply: str, latest: str) -> tuple[bool, bool]:
     """(she told the user she can't / it failed, the user asks her to find
     out why), judged in any language. Both False when Jev is unavailable:

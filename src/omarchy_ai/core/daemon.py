@@ -190,12 +190,18 @@ class OmaDaemon:
                 except Exception:
                     log.warning("handover check failed", exc_info=True)
         handing = asyncio.create_task(handover())
+        # A voice satellite in another room (voice/satellite.py): its own
+        # turns, beside the desktop conversation loop. None when not set up.
+        from ..voice import satellite as voice_satellite
+        satellite = await voice_satellite.start(self.config)
         from . import agenda
         agenda.listeners.append(lambda entry: loop.call_soon_threadsafe(self._on_agenda_result, entry))
         try:
             async with server:
                 await self._run_sessions()
         finally:
+            if satellite is not None:
+                await satellite.stop()
             update_checker.cancel()
             handing.cancel()
             if heart is not None:

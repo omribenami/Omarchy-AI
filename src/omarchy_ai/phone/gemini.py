@@ -55,7 +55,7 @@ def _end_previous_calls(timeout: float = 3.0) -> None:
 
 
 def _phone_message(raw):
-    """Return a validated (kind, text) data-channel message, or None."""
+    """Return a validated (kind, text, attachment ids) message, or None."""
     if not isinstance(raw, str) or len(raw) > 32768:
         raise ValueError('Message too large')
     message = json.loads(raw)
@@ -64,11 +64,18 @@ def _phone_message(raw):
         if not isinstance(text, str):
             raise ValueError('Invalid context')
         text = text.strip()
-        return ('context', text) if text else None
+        return ('context', text, []) if text else None
     item = message.get('item') or {}
     if message.get('type') == 'response.item.create' and item.get('type') == 'message' and item.get('role') == 'user':
-        text = '\n'.join(p.get('text', '') for p in item.get('content', []) if p.get('type') == 'input_text')
-        return ('user', text) if text else None
+        text = '\n'.join(
+            p.get('text', '') for p in item.get('content', [])
+            if p.get('type') == 'input_text' and not str(p.get('text', '')).startswith('[Attached file:')
+        )
+        attachments = item.get('attachments') or []
+        if (not isinstance(attachments, list) or len(attachments) > 6 or
+                any(not isinstance(value, str) or len(value) > 64 for value in attachments)):
+            raise ValueError('Invalid attachments')
+        return ('user', text, attachments) if text or attachments else None
     return None
 
 
@@ -126,6 +133,14 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
     if conversation:
         adapter._transcript = conversations.Transcript(conversation, adapter._transcript)
         conversations.CURRENT.set(conversation)
+        def share_file(args):
+            from ..execution.actions import ActionResult
+            try:
+                meta = conversations.share_file(conversation, str(args.get('path') or ''), str(args.get('label') or ''))
+                return ActionResult(True, f"Attached {meta['name']} to the chat.")
+            except (KeyError, OSError, ValueError) as exc:
+                return ActionResult(False, f"Could not attach file: {exc}")
+        adapter.extra_tools['share_file'] = share_file
     call = (asyncio.get_running_loop(), adapter, threading.Event())
     with _calls_lock:
         _calls.append(call)
@@ -222,7 +237,7 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
     async def send_text(session):
         told = False
         while True:
-            kind, text = await messages.get()
+            kind, text, attachment_ids = await messages.get()
             if kind == 'context':
                 await session.send_client_content(
                     turns={'role': 'user', 'parts': [{'text': '[Context from the phone (a notification, or this chat so far), not a request; use it to understand the next user message]\n' + text}]},
@@ -237,11 +252,31 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                     turns={'role': 'user', 'parts': [{'text': '[Context, not a request]' + TEXT_NOTE}]},
                     turn_complete=False)
                 told = True
-            adapter._transcript.append({'role': 'user', 'text': text})
+            attachment_meta = []
+            parts = []
+            for aid in attachment_ids:
+                found = conversations.attachment(conversation, aid)
+                if found is None:
+                    continue
+                path, meta = found
+                attachment_meta.append(meta)
+                mime = str(meta.get('mime') or 'application/octet-stream')
+                note = f"[Attached file: {meta.get('name')} ({mime}, {meta.get('size')} bytes); stored at {path}]"
+                if mime.startswith('text/'):
+                    content = path.read_text(errors='replace')
+                    parts.append({'text': note + '\n' + content[:200_000]})
+                elif mime.startswith('image/') or mime == 'application/pdf':
+                    parts.extend(({'text': note}, types.Part.from_bytes(data=path.read_bytes(), mime_type=mime)))
+                else:
+                    parts.append({'text': note})
+            display = text or ("Attached " + ", ".join(str(m.get('name')) for m in attachment_meta))
+            adapter._transcript.append({'role': 'user', 'text': display, 'attachments': attachment_meta})
             adapter._capture_password(text)  # a typed "pass: X" goes to the keyring too
             adapter._input_guard.heard_user()
             emit({'type': 'response.event', 'event': {'type': 'response.created'}})
-            await session.send_client_content(turns={'role': 'user', 'parts': [{'text': text}]}, turn_complete=True)
+            if text:
+                parts.insert(0, {'text': text})
+            await session.send_client_content(turns={'role': 'user', 'parts': parts}, turn_complete=True)
 
     async def watch_offer():
         # Reap abandoned HTTP requests and peers that never connect.
@@ -264,7 +299,19 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
         for index, model in enumerate(models):
             session_tasks = []
             try:
-                async with client.aio.live.connect(model=model, config=build_live_config(config)) as session:
+                live_config = build_live_config(config)
+                live_config['tools'][0]['function_declarations'].append({
+                    'name': 'share_file',
+                    'description': ('Attach one existing desktop file to this phone chat when the user asks you to send, '
+                                    'share, or give them that file. Use the exact absolute path. The phone gets a real '
+                                    'downloadable file card; never claim a file was sent without this tool succeeding.'),
+                    'parameters_json_schema': {'type': 'object', 'properties': {
+                        'path': {'type': 'string', 'description': 'Absolute path of the existing file on the desktop.'},
+                        'label': {'type': 'string', 'description': 'Optional short caption shown with the file.'},
+                    }, 'required': ['path']},
+                    'behavior': 'BLOCKING',
+                })
+                async with client.aio.live.connect(model=model, config=live_config) as session:
                     if not answer.done():
                         agenda.mark_briefed()  # this prompt carried the heartbeat's pending results
                         # Task results and heartbeat results arriving mid-call are said

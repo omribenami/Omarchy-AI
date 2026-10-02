@@ -23,8 +23,10 @@ import contextvars
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import secrets
+import shutil
 import threading
 import time
 
@@ -33,12 +35,15 @@ from ..config import STATE_DIR
 log = logging.getLogger(__name__)
 
 DIR = STATE_DIR / "conversations"
+ATTACHMENTS_DIR = STATE_DIR / "conversation_attachments"
 MAX_LINES = 2000
 MAX_LIST = 100
 CONTEXT_CHARS = 8000
 DESKTOP_GAP = 15 * 60      # a desktop voice session this soon after the last one continues it
 TITLE_AFTER = (2, 12, 40)  # (re)name at these line counts
 _SAVE_EVERY = 1.0
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_ATTACHMENTS_PER_TURN = 6
 
 # The conversation of the call whose tool is running (asyncio.to_thread copies it).
 CURRENT: contextvars.ContextVar[str] = contextvars.ContextVar("omarchy_conversation", default="")
@@ -111,19 +116,21 @@ def continue_or_create(cid, source: str) -> str:
     return cid if exists(cid) else create(source)
 
 
-def desktop() -> str:
+def desktop(source: str = "desktop-voice") -> str:
     """Desktop voice sessions come one wake word at a time: one soon after the
-    last goes on in its conversation instead of starting a new chat."""
-    latest = next((c for c in _summaries(empty=True) if c["source"] == "desktop-voice"), None)
+    last goes on in its conversation instead of starting a new chat. The same
+    for a voice satellite (source "satellite")."""
+    latest = next((c for c in _summaries(empty=True) if c["source"] == source), None)
     if latest and time.time() - latest["updated"] < DESKTOP_GAP:
         return latest["id"]
-    return create("desktop-voice")
+    return create(source)
 
 
-def add_line(cid: str, role: str, text: str) -> None:
+def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = None) -> None:
     """A piece of what was said. Pieces of one side's turn join one line."""
     text = str(text or "")
-    if not text:
+    attachments = [dict(item) for item in (attachments or []) if isinstance(item, dict)]
+    if not text and not attachments:
         return
     role = "user" if role == "user" else "assistant"
     with _lock:
@@ -132,10 +139,13 @@ def add_line(cid: str, role: str, text: str) -> None:
             return
         lines = conv["lines"]
         now = time.time()
-        if lines and lines[-1].get("role") == role:
+        if lines and lines[-1].get("role") == role and not attachments:
             lines[-1]["text"] += text
         else:
-            lines.append({"role": role, "text": text, "at": now})
+            line = {"role": role, "text": text, "at": now}
+            if attachments:
+                line["attachments"] = attachments[:MAX_ATTACHMENTS_PER_TURN]
+            lines.append(line)
             del lines[:-MAX_LINES]
         # Passwords never land here, as in the session history: the whole
         # line, since a spoken one comes split across fragments.
@@ -165,6 +175,73 @@ def add_card(cid: str, card: dict) -> None:
         _save(conv, force=True)
 
 
+def _safe_name(name: str) -> str:
+    name = Path(str(name or "file").replace("\0", "")).name.strip()
+    return name[:180] or "file"
+
+
+def store_attachment(cid: str, name: str, mime: str, body: bytes, *, role: str | None = None,
+                     text: str = "") -> dict:
+    """Keep one chat attachment under its conversation and return public metadata."""
+    if not exists(cid):
+        raise KeyError("no such conversation")
+    if not body:
+        raise ValueError("file is empty")
+    if len(body) > MAX_ATTACHMENT_BYTES:
+        raise ValueError("file is larger than 20 MB")
+    clean = _safe_name(name)
+    aid = secrets.token_hex(12)
+    folder = ATTACHMENTS_DIR / cid
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = folder / f"{aid}-{clean}"
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(body)
+    mime = str(mime or "application/octet-stream")[:120]
+    if not re.fullmatch(r"[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+", mime):
+        mime = "application/octet-stream"
+    meta = {"id": aid, "name": clean, "mime": mime,
+            "size": len(body), "url": f"/api/conversations/{cid}/attachments/{aid}", "path": str(target)}
+    with _lock:
+        conv = _load(cid)
+        if conv is None:
+            target.unlink(missing_ok=True)
+            raise KeyError("no such conversation")
+        conv.setdefault("attachments", []).append(meta)
+        _save(conv, force=True)
+    if role:
+        add_line(cid, role, text, [meta])
+    return meta
+
+
+def share_file(cid: str, path: str, label: str = "") -> dict:
+    """Copy a file explicitly selected by the assistant into a phone chat."""
+    from ..config import load_config
+    from ..execution.files import resolve_path
+    source = resolve_path(path, load_config(), must_exist=True)
+    if not source.is_file():
+        raise ValueError("file does not exist")
+    if source.stat().st_size > MAX_ATTACHMENT_BYTES:
+        raise ValueError("file is larger than 20 MB")
+    import mimetypes
+    meta = store_attachment(cid, source.name, mimetypes.guess_type(source.name)[0] or "application/octet-stream",
+                            source.read_bytes(), role="assistant", text=label.strip() or source.name)
+    return meta
+
+
+def attachment(cid: str, aid: str) -> tuple[Path, dict] | None:
+    conv = _load(cid)
+    if conv is None or not isinstance(aid, str):
+        return None
+    known = list(conv.get("attachments", []))
+    known.extend(meta for line in conv.get("lines", []) for meta in line.get("attachments", []))
+    for meta in known:
+        if meta.get("id") == aid:
+            path = ATTACHMENTS_DIR / cid / f"{aid}-{_safe_name(meta.get('name', 'file'))}"
+            return (path, dict(meta)) if path.is_file() else None
+    return None
+
+
 def delete(cid) -> bool:
     with _lock:
         if _load(cid) is None:
@@ -174,6 +251,7 @@ def delete(cid) -> bool:
             _path(cid).unlink()
         except OSError:
             return False
+        shutil.rmtree(ATTACHMENTS_DIR / cid, ignore_errors=True)
         return True
 
 
@@ -184,10 +262,17 @@ def context(cid: str) -> str:
         return ""
     out = []
     for line in conv["lines"]:
+        attached = ", ".join(
+            f"{item.get('name')} ({item.get('mime')}; desktop path {item.get('path')})"
+            for item in line.get("attachments", []) if isinstance(item, dict)
+        )
         if line.get("role") == "card":
             out.append(f"[Task {line.get('task_id')} {line.get('kind')}] {line.get('text', '')}")
         else:
-            out.append(f"{'User' if line['role'] == 'user' else 'Omarchy'}: {line['text'].strip()}")
+            text = line["text"].strip()
+            if attached:
+                text += f" [Attachments: {attached}]"
+            out.append(f"{'User' if line['role'] == 'user' else 'Omarchy'}: {text}")
     text = "\n".join(out)
     return text[-CONTEXT_CHARS:]
 
@@ -202,7 +287,7 @@ class Transcript(list):
     def append(self, item) -> None:
         super().append(item)
         if isinstance(item, dict):
-            add_line(self.conversation, item.get("role", ""), item.get("text", ""))
+            add_line(self.conversation, item.get("role", ""), item.get("text", ""), item.get("attachments"))
 
     def close(self) -> None:
         flush(self.conversation)

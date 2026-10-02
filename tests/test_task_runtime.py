@@ -380,13 +380,15 @@ class TaskRuntimeTests(RuntimeHarness):
             self.assertEqual(runtime.tidy_approvals(), ["t-home: no longer needs approval"])
         launch.assert_called_once()
         self.assertIn(f"executor:{subject}", self.store.load("t-home").grants)
-        # Still HIGH under today's rules: it keeps waiting.
+        # Blanket yolo approvals are obsolete now that coding agents always
+        # run non-interactively; reassess it as ordinary workspace writes.
         yolo = f"CODEX:unsandboxed:{Path.home()}"
         self.store.save(Task(id="t-yolo", goal="yolo", workspace=str(self.ws), status="waiting_approval",
                              pending_approval={"fingerprint": f"executor:{yolo}", "kind": "executor",
                                                "subject": yolo, "risk": "HIGH", "reasons": []}))
-        self.assertEqual(runtime.tidy_approvals(), [])
-        self.assertEqual(self.store.load("t-yolo").status, "waiting_approval")
+        with patch.object(runtime, "_launch") as launch:
+            self.assertEqual(runtime.tidy_approvals(), ["t-yolo: no longer needs approval"])
+        launch.assert_called_once()
 
     def test_phone_pin_channel_can_approve_high_risk(self):
         # The phone's approval card checks the PIN before calling respond
@@ -804,7 +806,8 @@ class CodingAgentTests(unittest.TestCase):
         self.assertIn("Edit", argv[argv.index("--disallowedTools") + 1:])
         self.assertIn("VERDICT", prompt)
         argv, prompt = Codex().command(a, write=True, workdir=Path("/tmp"))
-        self.assertEqual(argv[argv.index("-s") + 1], "workspace-write")
+        self.assertIn("--yolo", argv)
+        self.assertNotIn("-s", argv)
         self.assertIn("Do not commit", build_prompt(Assignment("t", "implement", "g", "i", "/tmp")))
 
     def test_verdict_grammar(self):

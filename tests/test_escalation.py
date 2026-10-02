@@ -23,6 +23,17 @@ def judge(gave_up=False, asks_why=False):
 
 
 class EscalatorTests(unittest.TestCase):
+    def test_proactive_goal_carries_prior_requirements_into_background_task(self):
+        goal = escalation.proactive_goal([
+            "Use the full carrier bill and half the other bill.",
+            "Never submit it; notify me when it is ready for review.",
+            "Now create this month's report.",
+        ])
+        self.assertIn("full carrier bill", goal)
+        self.assertIn("Never submit", goal)
+        self.assertIn("Current request:\nNow create", goal)
+        self.assertIn("until it is completed", goal)
+
     def test_two_failures_escalate_once_with_a_full_brief(self):
         # 2026-09-26 23:36-23:39: report_issue had no token, then browser_task stopped.
         e = Escalator(judge())

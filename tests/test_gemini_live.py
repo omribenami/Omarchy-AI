@@ -31,6 +31,48 @@ def tearDownModule():
 
 
 class GeminiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confident_whole_task_route_starts_runtime_without_model_nudge(self):
+        adapter = GeminiLiveSession(Config())
+        adapter._transcript = [
+            {"role": "user", "text": "Use the saved rules and stop before submission."},
+            {"role": "assistant", "text": "Understood."},
+            {"role": "user", "text": "Create this month's report now."},
+        ]
+        adapter._utterance = ["Create this month's report now."]
+        adapter._last_user_speech = time.monotonic() - 2
+
+        async def run_once():
+            with patch('omarchy_ai.voice.jev_fast.judge',
+                       return_value=(None, {"route": "whole_task", "p": 0.97})), \
+                    patch.object(adapter, '_escalate', new=AsyncMock()) as handoff:
+                worker = asyncio.create_task(adapter._fast_path())
+                for _ in range(100):
+                    if handoff.await_count:
+                        break
+                    await asyncio.sleep(.01)
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+                return handoff
+
+        handoff = await run_once()
+        handoff.assert_awaited_once()
+        goal = handoff.await_args.args[0]
+        self.assertIn("stop before submission", goal)
+        self.assertIn("Create this month's report now", goal)
+
+    async def test_non_whole_task_route_does_not_start_runtime(self):
+        adapter = GeminiLiveSession(Config())
+        adapter._utterance = ["Open the documentation page."]
+        adapter._last_user_speech = time.monotonic() - 2
+        with patch('omarchy_ai.voice.jev_fast.judge',
+                   return_value=(None, {"route": "web", "p": 0.99})), \
+                patch.object(adapter, '_escalate', new=AsyncMock()) as handoff:
+            worker = asyncio.create_task(adapter._fast_path())
+            await asyncio.sleep(.15)
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        handoff.assert_not_awaited()
+
     def test_tool_results_are_bounded_before_sending_to_gemini(self):
         message = "start" + "x" * 500_000 + "end"
         bounded = _bounded_tool_message(message)

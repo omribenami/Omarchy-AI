@@ -390,6 +390,34 @@ class Config:
     text_chat_mode: str = "keybinding"
     text_chat_idle_minutes: int = 10
 
+    # Voice satellite (voice/satellite.py, docs/voice-satellite.md): an
+    # ESPHome voice-assistant speaker that streams its microphone here, wakes
+    # on the wake word above and then holds a live conversation. Off until
+    # satellite_host is set. The key file holds the device's API encryption
+    # key (base64, mode 0600); the device fetches her speech from
+    # satellite_http_port on this machine. The conversation ends after
+    # satellite_silence_seconds without anyone speaking. satellite_mic_gain
+    # multiplies the device's microphone level; satellite_speech_rms is the
+    # level (after gain) that counts as the user speaking, for the stuck-turn
+    # guard. satellite_talk_channel picks the microphone channel sent to the
+    # model when the device sends two (1 = the second, noise-suppressed one
+    # on a Voice PE); the wake word always uses the first.
+    satellite_host: str | None = None
+    satellite_port: int = 6053
+    satellite_key_path: str = str(CONFIG_DIR / "satellite-key")
+    satellite_http_port: int = 8767
+    satellite_silence_seconds: int = 20
+    satellite_mic_gain: float = 1.0
+    satellite_speech_rms: float = 800.0
+    # A program of yours that shows what the satellite is doing somewhere
+    # else (a wall display, a light). It is started with the assistant and
+    # reads JSON lines on its standard input: {"state": "listening"},
+    # {"state": "speaking", "level": 0.42} (her voice level, 10 a second,
+    # timed to the speaker), {"state": "idle"}. The state is repeated every
+    # few seconds while a conversation is open.
+    satellite_state_command: str | None = None
+    satellite_talk_channel: int = 1
+
     # Phone bridge (src/omarchy_ai/phone/server.py) — a local HTTP server
     # letting a phone on the same LAN open a live conversation from a
     # browser page (WebRTC direct to OpenAI; this server only relays the

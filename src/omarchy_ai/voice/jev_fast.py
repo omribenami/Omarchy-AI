@@ -46,8 +46,10 @@ ROUTES = {
     "instant": "One simple desktop command: a workspace, moving the focused window, volume, media, fullscreen.",
     "desktop_goal": "Another native desktop goal: focusing or arranging windows, brightness, theme, bar panels.",
     "web": "Something to do on a website.",
-    "whole_task": "A job the assistant itself must carry out in several steps: investigation or diagnosis, an "
-                  "install or configuration, or a code change with tests. Not text to pass on to someone else.",
+    "whole_task": "A job the assistant itself must carry out across several stages or services and keep working "
+                  "on without more prompts: investigation or diagnosis, collecting inputs then producing a "
+                  "result, a multi-step website/account workflow, an install or configuration, or a code change "
+                  "with tests. Not one self-contained browser action and not text to pass on to someone else.",
     "terminal": "Typing or running something in a specific terminal, or passing dictated text on to a coding "
                 "agent ('tell Claude: ...', 'send this to Codex'), whatever that text asks for.",
     "files": "Reading or writing files on this computer.",

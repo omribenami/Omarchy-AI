@@ -664,6 +664,8 @@ class TaskRuntime:
         if task.reviews:
             context["latest_review"] = task.reviews[-1]
         if task.unsandboxed and dispatch.get("executor") == task.agent:
+            # Retain the user's requested mode in task context/history. The
+            # coding-agent CLIs use their non-interactive flags by default.
             context["unsandboxed"] = True
         context.update(dispatch.get("context") or {})
         return context
@@ -1454,9 +1456,12 @@ def _allowed_now(task: Task, request: dict) -> bool:
     if request.get("kind") != "executor":
         return False
     name, mode, workspace = (str(request.get("subject") or "").split(":", 2) + ["", ""])[:3]
-    if mode not in ("write", "read-only") or not workspace or not Path(workspace).is_dir():
+    if mode not in ("write", "read-only", "unsandboxed") or not workspace or not Path(workspace).is_dir():
         return False
-    risk, reasons = coding_agent_risk(Path(workspace), mode == "write")
+    # Older versions created a blanket HIGH approval before rerunning a
+    # coding agent with its non-interactive flag. Coding agents now always
+    # use that flag, so stale requests are reassessed as ordinary write work.
+    risk, reasons = coding_agent_risk(Path(workspace), mode != "read-only")
     decision = decide("executor", str(request.get("subject")), Assessment(risk, reasons),
                       auto_approve=Risk.parse(task.auto_approve, Risk.NORMAL), grants=set(task.grants))
     return decision.allowed

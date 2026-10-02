@@ -175,6 +175,11 @@ def _tailscale_address() -> tuple[str | None, str | None]:
         return None, None
 
 
+def _bridge_addresses() -> list[str]:
+    """Addresses a companion should try: local Wi-Fi, then Tailscale."""
+    return list(dict.fromkeys(ip for ip in (_primary_lan_ip(), _tailscale_address()[0]) if ip))
+
+
 def _ensure_self_signed_cert() -> tuple[str, str] | None:
     """(Re)generates a self-signed TLS cert/key each daemon start, valid
     for this machine's current LAN and Tailscale addresses.
@@ -247,9 +252,20 @@ def _relay_offer(config: Config, offer_sdp: str, conversation: str = "") -> str:
     if config.provider == "gemini":
         from .gemini import relay_offer
         return relay_offer(config, offer_sdp, conversation)
+    session_config = build_session_config(config)
+    session_config["delegation"]["responses"]["tools"].append({
+        "type": "function", "name": "share_file",
+        "description": ("Attach one existing desktop file to this phone chat when the user asks you to send, "
+                        "share, or give them that file. Use the exact absolute path and do not claim it was sent "
+                        "unless this tool succeeds."),
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "Absolute path of the existing desktop file."},
+            "label": {"type": "string", "description": "Optional short caption."},
+        }, "required": ["path"]},
+    })
     body = json.dumps(
         {
-            "session": build_session_config(config),
+            "session": session_config,
             "transport": {"type": "webrtc", "sdp": offer_sdp},
         }
     ).encode()
@@ -434,6 +450,22 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_attachment(self, path: Path, meta: dict) -> None:
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self._send_json(404, {"error": "attachment missing"})
+            return
+        filename = urllib.parse.quote(str(meta.get("name") or "file"), safe="")
+        self.send_response(200)
+        self.send_header("Content-Type", str(meta.get("mime") or "application/octet-stream"))
+        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{filename}")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _is_paired(self) -> bool:
         raw_cookie = self.headers.get("Cookie", "")
         # Temporary diagnostic — real user report ("still says not
@@ -476,11 +508,35 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_pair(urllib.parse.parse_qs(parsed.query))
             return
 
+        if path.startswith("/api/conversations/") and "/attachments/" in path:
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            from ..core import conversations
+            prefix, aid = path.rsplit("/attachments/", 1)
+            cid = prefix.removeprefix("/api/conversations/")
+            found = conversations.attachment(cid, aid)
+            if found is None:
+                self._send_json(404, {"error": "attachment not found"})
+            else:
+                self._send_attachment(*found)
+            return
+
         if path == "/api/conversations" or path.startswith("/api/conversations/"):
             if not self._is_paired():
                 self._send_json(403, {"error": "not paired"})
                 return
             self._send_json(*conversation_get(path, urllib.parse.parse_qs(parsed.query)))
+            return
+
+        if path == "/api/addresses":
+            # A paired phone reaches this computer on one address (often its
+            # VPN one) and hands the connection to a companion that is only
+            # on the home network (a watch): it needs the other addresses.
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            self._send_json(200, {"addresses": _bridge_addresses()})
             return
 
         if path == "/api/audio/status":
@@ -779,6 +835,28 @@ class _Handler(BaseHTTPRequestHandler):
             ok = conversations.delete(path[len("/api/conversations/"):-len("/delete")])
             self._send_json(200 if ok else 404, {"ok": ok})
             return
+        if path.startswith("/api/conversations/") and path.endswith("/attachments"):
+            if not self._is_paired():
+                self._send_json(403, {"error": "not paired"})
+                return
+            from ..core import conversations
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length <= 0 or length > conversations.MAX_ATTACHMENT_BYTES:
+                self._send_json(413, {"error": "attachment must be between 1 byte and 20 MB"})
+                return
+            cid = path[len("/api/conversations/"):-len("/attachments")]
+            try:
+                name = urllib.parse.unquote(self.headers.get("X-Omarchy-Filename", "file"))
+                meta = conversations.store_attachment(cid, name, self.headers.get("Content-Type", ""),
+                                                      self.rfile.read(length))
+            except KeyError:
+                self._send_json(404, {"error": "no such conversation"})
+                return
+            except (OSError, ValueError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(201, meta)
+            return
         if path == "/api/actions/respond":
             # Send or Cancel on a prepared MyApi action's card (execution/myapi_agent.py).
             if not self._is_paired():
@@ -862,6 +940,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "expected {\"name\": \"...\", \"arguments\": {...}}"})
             return
         log.info("phone bridge tool call: %s(%s)", name, args)
+        if name == "share_file":
+            from ..core import conversations
+            try:
+                meta = conversations.share_file(str(data.get("conversation_id") or ""),
+                                                str(args.get("path") or ""), str(args.get("label") or ""))
+            except (KeyError, OSError, ValueError) as exc:
+                self._send_json(200, {"ok": False, "message": f"Could not attach file: {exc}"})
+                return
+            self._send_json(200, {"ok": True, "message": f"Attached {meta['name']} to the chat."})
+            return
         if name == "get_recent_actions":
             # No per-session action log here (unlike LiveSession's
             # self._action_log) — the phone bridge has no session object
