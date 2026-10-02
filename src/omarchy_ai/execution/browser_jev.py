@@ -469,7 +469,11 @@ class _Progress:
                         "only that exact page itself completes it: not a results page, not a broader or "
                         "related page, not a page that only links to it. Is the page now open (`page.url`, "
                         "`page.title`) what completes `final_step`? `recent_actions` shows how the browser "
-                        "got here."}}
+                        "got here. For clicking a control, sending a sign-in link, saving, or another action, "
+                        "judge the resulting visible confirmation or changed state, not whether the original "
+                        "button is still present. A confirmation page can prove that action completed even "
+                        "though the overall workflow still needs another tool or user input. Do not infer "
+                        "success from a click alone; require visible evidence of its effect."}}
         return questions
 
     def read(self, answers: dict) -> None:
