@@ -372,6 +372,10 @@ class TaskRuntime:
         return {"ok": True, "message": f"cancelled {task.id}"}
 
     def status(self, task_id: str | None = None) -> dict | None:
+        # The JSON record survives a daemon restart; its "running" value
+        # does not prove a worker still exists.  Reconcile before presenting
+        # it as truth to chat, the phone, CLI, or HUD callers.
+        self._mark_interrupted()
         task = self._get(task_id, None)
         return task.summary() if task else None
 
@@ -395,16 +399,24 @@ class TaskRuntime:
         return self.store.latest(statuses)
 
     def _mark_interrupted(self) -> None:
-        # A task left "running" by a previous process was cut off mid-step.
-        # Only when its owning process is gone: the CLI and the daemon share the
-        # task files, and each must leave the other's live tasks alone.
+        # A task left "running" by a previous process, or a dead worker thread
+        # in this process, was cut off mid-step. The saved state alone is never
+        # enough to call it running.
+        def missing_owner(t: Task) -> bool:
+            if t.status != RUNNING or not owner_alive(t.owner):
+                return t.status == RUNNING
+            if t.owner and t.owner.get("pid") == os.getpid():
+                worker = self._threads.get(t.id)
+                return worker is None or not worker.is_alive()
+            return False
+
         def mark(t):
-            if t.status in ACTIVE and not owner_alive(t.owner):
+            if missing_owner(t):
                 t.status = INTERRUPTED
                 t.owner = None
                 t.add_note("The runtime restarted while this task was running; its last step may be incomplete.")
         for task in self.store.list(50):
-            if task.status in ACTIVE and not owner_alive(task.owner) and task.id not in self._threads:
+            if missing_owner(task):
                 interrupted = self.store.update(task.id, mark)
                 if interrupted and interrupted.status == INTERRUPTED:
                     self._emit(interrupted, "interrupted")
@@ -442,6 +454,7 @@ class TaskRuntime:
         separate from executor output: a slow browser or coding step may have
         no new text for a while, but the task owner is still alive.
         """
+        self._mark_interrupted()
         now = time.time()
         for task in self.store.list(50):
             if task.status != RUNNING or not owner_alive(task.owner):

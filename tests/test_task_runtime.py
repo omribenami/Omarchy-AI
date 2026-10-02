@@ -227,6 +227,19 @@ class ShellTests(unittest.TestCase):
 
 # --------------------------------------------------------------- runtime
 class TaskRuntimeTests(RuntimeHarness):
+    def test_status_reconciles_a_stale_running_record_before_reporting_it(self):
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE))], ScriptedJev())
+        task = Task(id="stale", goal="x", workspace=str(self.ws), status="running",
+                    owner={"pid": 99999999, "start": "gone"})
+        self.store.save(task)
+        events = []
+        runtime.listeners.append(lambda changed, event: events.append((changed.id, event)))
+
+        status = runtime.status(task.id)
+
+        self.assertEqual(status["status"], "interrupted")
+        self.assertEqual(events, [(task.id, "interrupted")])
+
     def test_task_reports_progress_before_planning_and_dispatch(self):
         events = []
         agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="finished"))
