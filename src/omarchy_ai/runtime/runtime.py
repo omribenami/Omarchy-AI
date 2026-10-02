@@ -876,6 +876,13 @@ class TaskRuntime:
         task.phase = "direct"
         allowed = self._allowed_directives(task)
         last = task.steps[-1] if task.steps else None
+        # Repeated completed assignments with sufficient harness evidence
+        # should be judged, not sent through another identical work loop.
+        # Certification remains Jev's decision and retains all evidence gates.
+        if ("CERTIFY" in allowed and len(task.steps) >= 2
+                and all(s.get("outcome") == "done" for s in task.steps[-2:])
+                and task.steps[-2].get("executor") == (last or {}).get("executor")):
+            return self._certify(task)
         # A worker saying it ran out of its own assignment time is operational
         # feedback, not information the user can supply. Keeping ASK_USER in
         # the choice set caused an endless timeout -> Continue -> timeout loop.
