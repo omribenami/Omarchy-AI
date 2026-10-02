@@ -756,7 +756,7 @@ class TaskRuntime:
         step["directive"] = dispatch.get("directive")
         tier = llm.TIER.set(task.model_tier)  # this task's escalation step, for every worker call below
         step["model"] = _model_of(executor)
-        self._progress(task, f"Step {step['n']}: {name.replace('_', ' ').title()}")
+        self._progress(task, name.replace("_", " ").title())
         assignment = Assignment(task_id=task.id, role=dispatch["role"], goal=task.goal,
                                 instructions=dispatch["instructions"], workspace=task.workspace,
                                 context=self._context_for(task, dispatch), write_access=dispatch["write"],
@@ -1243,7 +1243,7 @@ class WorkContextImpl:
         return request
 
     def _stage(self, text: str) -> None:
-        self.runtime._progress(self.task, f"Step {self.step}: {text}")
+        self.runtime._progress(self.task, text)
 
     def run_command(self, command: str, cwd: str | None = None, timeout: float = 120, *, role: str = "") -> dict:
         from ..execution import passwords
