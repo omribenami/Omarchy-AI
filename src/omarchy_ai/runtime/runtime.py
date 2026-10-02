@@ -98,6 +98,7 @@ class TaskRuntime:
         self._availability: tuple[float, dict] | None = None
         self._prompting: set[str] = set()  # tasks whose fingerprint prompt is on the phone now
         self._last_progress_notice: dict[str, float] = {}
+        self._restart_recoveries: list[str] = []
         self._mark_interrupted()
 
     @staticmethod
@@ -286,6 +287,20 @@ class TaskRuntime:
         self._launch(task, background)
         return {"ok": True, "message": f"resumed {task.id}", "task_id": task.id}
 
+    def recover_after_restart(self, task_ids: list[str] | None = None) -> list[str]:
+        """Continue work cut off by this daemon restart, never cancelled work."""
+        ids = task_ids if task_ids is not None else list(self._restart_recoveries)
+        recovered = []
+        for task_id in ids:
+            task = self.store.load(task_id)
+            if not task or task.status != INTERRUPTED:
+                continue
+            task.add_note("Resuming automatically after the Omarchy AI restart.")
+            self.store.save(task)
+            self._launch(task, background=True)
+            recovered.append(task.id)
+        return recovered
+
     def reassign(self, task_id: str | None, agent: str, *, unsandboxed: bool = False,
                  background: bool = True) -> dict:
         """Hand an open task to the agent the user names; every later work
@@ -419,6 +434,7 @@ class TaskRuntime:
             if missing_owner(task):
                 interrupted = self.store.update(task.id, mark)
                 if interrupted and interrupted.status == INTERRUPTED:
+                    self._restart_recoveries.append(interrupted.id)
                     self._emit(interrupted, "interrupted")
 
     def _launch(self, task: Task, background: bool) -> None:

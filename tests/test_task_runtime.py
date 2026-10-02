@@ -227,6 +227,19 @@ class ShellTests(unittest.TestCase):
 
 # --------------------------------------------------------------- runtime
 class TaskRuntimeTests(RuntimeHarness):
+    def test_restart_recovery_relaunches_interrupted_but_never_cancelled_work(self):
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE))], ScriptedJev())
+        interrupted = Task(id="interrupted", goal="x", workspace=str(self.ws), status="interrupted")
+        cancelled = Task(id="cancelled", goal="x", workspace=str(self.ws), status="cancelled")
+        self.store.save(interrupted)
+        self.store.save(cancelled)
+        launched = []
+        with patch.object(runtime, "_launch", side_effect=lambda task, background: launched.append((task.id, background))):
+            recovered = runtime.recover_after_restart([interrupted.id, cancelled.id])
+
+        self.assertEqual(recovered, [interrupted.id])
+        self.assertEqual(launched, [(interrupted.id, True)])
+
     def test_status_reconciles_a_stale_running_record_before_reporting_it(self):
         runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE))], ScriptedJev())
         task = Task(id="stale", goal="x", workspace=str(self.ws), status="running",
