@@ -209,6 +209,9 @@ class SystemAgent(Executor):
                               meta={"failure_kind": "timeout", "history": self._compact(history)})
             brief = self._brief(assignment, history, warnings, remaining=self.max_actions - n)
             warnings = []
+            stage = getattr(ctx, "_stage", None)
+            if stage:
+                stage("Choosing next action")
             try:
                 step = self.model.complete(SYSTEM_PROMPT, brief, timeout=min(90, remaining))
             except WorkerModelError as exc:
@@ -339,7 +342,7 @@ class SystemAgent(Executor):
                            "instructions": assignment.instructions,
                            "role_notes": ROLE_NOTES.get(assignment.role, ROLE_NOTES[WORK]),
                            "workspace": assignment.workspace},
-            "context_from_earlier_steps": assignment.context,
+            "context_from_earlier_steps": {k: v for k, v in assignment.context.items() if k != "worker_checkpoint"},
             "installed_tools": discovery.inventory(),
             "earlier_actions": [self._one_line(e) for e in older],
             "recent_actions": [self._bounded(e) for e in recent],
@@ -355,7 +358,7 @@ class SystemAgent(Executor):
         results = entry.get("result")
         for r in results if isinstance(results, list) else [results]:
             if isinstance(r, dict):
-                for key in ("output", "text"):
+                for key in ("output", "text", "message"):
                     if isinstance(r.get(key), str) and len(r[key]) > RESULT_CHARS:
                         r[key] = "…" + r[key][-RESULT_CHARS:]
         return entry
