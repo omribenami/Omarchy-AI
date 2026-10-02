@@ -822,6 +822,16 @@ class FakeCtx:
 
 
 class SystemAgentTests(unittest.TestCase):
+    def test_nested_named_tools_are_dispatched_through_the_allowlist(self):
+        from omarchy_ai.runtime.executors.system_agent import normalize_step
+        for raw in ({"action": {"name": "inspect_browser", "args": {}}},
+                    {"action": {"inspect_browser": {}}},
+                    {"action": "inspect_browser", "args": {}}):
+            step = normalize_step(raw)
+            self.assertEqual(step["action"], "assistant_tool")
+            self.assertEqual(step["name"], "inspect_browser")
+        self.assertNotEqual(normalize_step({"action": {"unapproved_tool": {}}})["action"], "assistant_tool")
+
     def test_recovery_retains_results_and_warns_about_uncertain_actions(self):
         assignment = self.assignment()
         assignment.context["worker_checkpoint"] = {

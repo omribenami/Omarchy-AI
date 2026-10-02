@@ -94,6 +94,11 @@ def diagnose(state: dict, stuck_on: str | None = None) -> list[str]:
     """Causes supported by what is on the page, most likely first."""
     host = urlparse(state.get("url") or "").hostname or "this site"
     causes = []
+    excerpt = str(state.get("excerpt") or "").lower()
+    if "passkey" in excerpt or "face, fingerprint, pin or security key" in excerpt:
+        causes.append("The page is waiting for passkey/security-key authentication in a device security window. "
+                      "Repeated web clicks cannot complete that prompt. Use another sign-in method offered by "
+                      "the site if appropriate; otherwise ask the user to complete the security prompt.")
     signed_out = (not state.get("signed_in_user") and bool(state.get("sign_in_prompts"))) or state.get("password_field")
     if signed_out:
         what = f"'{stuck_on}' and anything else that needs an account" if stuck_on else "actions that need an account"

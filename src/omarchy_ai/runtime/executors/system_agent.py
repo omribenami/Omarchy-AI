@@ -134,6 +134,11 @@ def normalize_step(step: dict) -> dict:
     action = step.get("action")
     if isinstance(action, dict):
         step = {k: v for k, v in step.items() if k != "action"}
+        if action.get("name") in WORKFLOW_TOOLS and isinstance(action.get("args", {}), dict):
+            return {**step, **action, "action": "assistant_tool"}
+        if len(action) == 1 and next(iter(action)) in WORKFLOW_TOOLS and isinstance(next(iter(action.values())), dict):
+            name, args = next(iter(action.items()))
+            return {**step, "action": "assistant_tool", "name": name, "args": args}
         if len(action) == 1 and next(iter(action)) in ACTIONS and isinstance(next(iter(action.values())), dict):
             name, fields = next(iter(action.items()))
             return {**step, **fields, "action": name}
@@ -144,7 +149,11 @@ def normalize_step(step: dict) -> dict:
         return {**step, "action": ""}
     if isinstance(action, str) and isinstance(step.get(action.strip().lower()), dict):
         name = action.strip().lower()
+        if name in WORKFLOW_TOOLS:
+            return {**step, "action": "assistant_tool", "name": name, "args": step[name]}
         return {**{k: v for k, v in step.items() if k != name}, **step[name], "action": name}
+    if action in WORKFLOW_TOOLS:
+        return {**step, "action": "assistant_tool", "name": action}
     return step
 
 

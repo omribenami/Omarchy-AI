@@ -204,6 +204,11 @@ class TaskRuntime:
             task.pending_approval = None
         else:
             task.answers.append(answer[:2000])
+            if not task.next_dispatch and task.steps:
+                # A coordinator question has no paused dispatch. Reconsidering
+                # the unchanged last report can ask the identical question
+                # forever; deliver the answer to a concrete continuation.
+                task.next_dispatch = self._assignment(task, task.steps[-1]["executor"], "CONTINUE")
             if task.next_dispatch:
                 task.next_dispatch.setdefault("context", {})["user_answer"] = answer[:2000]
             task.question = None
