@@ -19,6 +19,37 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.13.1] - 2026-10-03
+
+### Highlights
+
+- Longer jobs stay with you. I show what stage I'm in, in the chat and on
+  screen, including on your phone, and I pick the work back up if I restart.
+- If a job is interrupted or cancelled, I say so in the chat instead of
+  leaving it looking like it's still running.
+- Browser jobs are checked against what the page actually did, and I stop
+  repeating a step that isn't getting anywhere.
+- Pairing a phone is safer. The one-time pairing link stays off the command
+  line while the QR code is made, so another person on this computer cannot
+  read it from the process list.
+- A speaker in another room can wake me and hold a conversation, using the
+  same wake word as this computer, once you point me at it.
+
+### Fixes
+
+- Phone pairing no longer hands the redeem link to qrencode as an argument,
+  and a failure message cannot echo that link back.
+- A task that times out no longer keeps asking about the same timeout.
+- Admin approvals for a task are summarized instead of dumped in full.
+
+### Under the hood
+
+- A persistent task coordinator owns the work, routes unpinned jobs through
+  Jev, and gives an answered task a bounded chance to continue.
+- Recovery keeps a bounded record of what a worker already did, treats an
+  in-flight action as uncertain, and checks evidence before repeating a
+  finished assignment.
+
 ## [0.13.0] - 2026-09-30
 
 ### Highlights
