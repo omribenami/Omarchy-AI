@@ -596,13 +596,30 @@ def cmd_restart(_args: argparse.Namespace) -> dict:
     return {"restarted": True, "reason": "service restarted"}
 
 
+def _redact_pairing_secret(text: str, *secrets: str) -> str:
+    """Drop a redeemable pairing secret from a message that may be shown."""
+    redacted = text
+    for secret in secrets:
+        if secret:
+            redacted = redacted.replace(secret, "[redacted]")
+    return redacted
+
+
 def cmd_pair_phone(_args: argparse.Namespace) -> dict:
     """Mints a single-use, 5-minute pairing token and turns its URL into
     a QR PNG the panel can display directly. The daemon (a separate,
     long-running process) reads the token file this writes when a phone
     hits `GET /pair?token=...` — see phone/server.py's module docstring
     for why this is a shared file rather than a call between the two
-    processes."""
+    processes.
+
+    The URL is written to qrencode's stdin. `/proc/<pid>/cmdline` is
+    world-readable, so another local user could redeem a token that
+    appeared as an argument during its five-minute life. qrencode reads
+    stdin when no STRING is given; `-r -` would open a file named "-",
+    not the pipe. No trailing newline: every stdin byte is encoded, and
+    the URL the phone must open has none.
+    """
     cfg = load_config()
     if not cfg.phone_bridge_enabled:
         return {"error": "phone bridge is turned off — enable it above first"}
@@ -622,12 +639,15 @@ def cmd_pair_phone(_args: argparse.Namespace) -> dict:
             # High-contrast pair (bright green on near-black), so this
             # doesn't trade away real-world scannability for the look.
             f"--foreground={QR_FOREGROUND}", f"--background={QR_BACKGROUND}",
-            "-o", "-", info["url"],
+            "-o", "-",
         ],
+        input=info["url"].encode(),
         capture_output=True, check=False,
     )
     if proc.returncode != 0 or not proc.stdout:
-        return {"error": (proc.stderr or b"qrencode failed").decode(errors="replace").strip()}
+        detail = (proc.stderr or b"qrencode failed").decode(errors="replace").strip()
+        detail = _redact_pairing_secret(detail, info["url"], info["token"])
+        return {"error": detail or "qrencode failed"}
 
     return {
         "url": info["url"],
