@@ -19,6 +19,23 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.13.1] - 2026-10-03
+
+### Highlights
+
+- Pairing a phone keeps the pairing link off the command line, so another
+  person on this computer cannot read it while the QR code is showing.
+- Tasks show their progress in the chat and on the bar, including after a
+  restart, and a cancelled or interrupted task is reported instead of going
+  quiet.
+- A repeated timeout question stops, and a browser step counts only when the
+  page actually changed.
+
+### Fixes
+
+- The phone pairing QR is drawn from the link on standard input. If that
+  step fails, the message does not include the link.
+
 ## [0.13.0] - 2026-09-30
 
 ### Highlights
