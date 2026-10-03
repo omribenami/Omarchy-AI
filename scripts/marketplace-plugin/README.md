@@ -8,9 +8,10 @@ repository root. This monorepo's desktop UI is eight plugins under
 [Omarchy AI](https://github.com/omribenami/Omarchy-AI) assistant. Its README
 (`templates/README.md`) is that front door: the product pitch, features, and
 the demo videos from the Omarchy AI README. Catalog cards use the manifest
-`description` plus `preview.png`. The repository still contains one plugin,
-the settings bar widget `omarchy-ai.settings`. `omarchy plugin add` does not
-install the daemon. The plugin id stays `omarchy-ai.settings` so the live page
+`description` plus `preview.png`. The repository contains one plugin,
+`omarchy-ai.settings`. Enabling it installs the pinned assistant release,
+starts that assistant, and loads the settings panel. The plugin id stays
+`omarchy-ai.settings` so the live page
 <https://omarchyplugins.com/plugin.html?id=omarchy-ai.settings> keeps
 working.
 
@@ -122,14 +123,21 @@ suffix, and these maintainer notes:
 ```markdown
 The marketplace page is the front door for the full Omarchy-AI assistant.
 The listing README has the product features and demo videos. Catalog cards
-use the manifest description and preview.png. Install the assistant from
-https://github.com/omribenami/Omarchy-AI releases (`install.sh`).
-`omarchy plugin add` still installs only the settings bar widget and does
-not run the daemon. The panel resolves `omarchy-ai-settings` at runtime
-and, when the assistant is absent, explains that install. It does not
-depend on an install-time path rewrite. Standard installation can be
-requested for a listing commit that contains this lookup; this repository
-does not apply that marketplace label.
+use the manifest description and preview.png. `omarchy plugin add --enable`
+loads this one root plugin. Its service entry runs start-assistant.sh, which
+downloads the pinned Omarchy-AI release, checks the sha256 in that script,
+unpacks it, and starts the assistant. The panel resolves `omarchy-ai-settings`
+at runtime and does not need a path rewrite.
+
+This repository does not apply marketplace labels. Standard installation
+(`standard-installation-approved`) is still blocked for this listing.
+`scripts/plugin-verification.mjs` accepts that action only when the baseline
+outcome is `passed`, or when an existing review's only capability is
+`installer` (`securityBaselineEligibleForReviewedStandardInstallation`).
+The settings panel's sudo controls are the `privilege` capability, and
+starting the user service is `service-management`. Those are not a passing
+baseline and they are not installer-only. Do not mark this listing as
+standard install while that rule still rejects the snapshot.
 ```
 
 Later sync commits move the listing `main` ahead of the approved snapshot.

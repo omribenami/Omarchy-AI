@@ -58,10 +58,10 @@ loads them.
 ## Settings CLI path
 
 `omarchy-ai.settings` looks up `omarchy-ai-settings` when the panel opens
-(`resolve-settings.sh`: the user systemd unit from `install.sh`, `PATH`,
-or the known release directories). A marketplace install of that plugin
-does not need a path written into `Panel.qml`. If the assistant is not
-installed, the panel explains the Releases / `install.sh` install.
+(`resolve-settings.sh`: the user systemd unit, `PATH`, or the known
+release directories). A marketplace install does not need a path written
+into `Panel.qml`. Enabling the plugin runs `start-assistant.sh`, which
+installs the pinned release into those directories and starts the assistant.
 
 The other plugins that shell out to the same CLI (`omarchy-ai.myapi`,
 `omarchy-ai.tv-discovery`, `omarchy-ai.assistant-huds`,

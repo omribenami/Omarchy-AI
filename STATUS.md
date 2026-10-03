@@ -1,5 +1,24 @@
 # Status
 
+## 2026-10-03: enabling the marketplace plugin installs the assistant
+
+`omarchy plugin add --enable` of `omarchy-ai.settings` loads
+`AssistantService.qml`, which runs `start-assistant.sh`. That script
+downloads the pinned Omarchy-AI release, checks the sha256 in the script,
+unpacks it under the directory `resolve-settings.sh` already searches, and
+starts the user service. The panel still does not bake a helper path.
+
+The catalog Manual setup override is unchanged by this commit. A scanned
+listing of this tree is `review-required` with capabilities `privilege`
+(the panel's sudo controls) and `service-management` (this script's
+`systemctl --user` start). `securityBaselineOutcome` is `passed` only
+when both findings and capabilities are empty.
+`securityBaselineEligibleForReviewedStandardInstallation` accepts a
+reviewed snapshot only when the sole capability is `installer`.
+`scripts/plugin-verification.mjs` then returns
+`verification-standard-installation-evidence-required` for a
+`standard-installation-approved` request.
+
 ## 2026-09-29: first phone tests of Omarchy AI in Flux, fingerprint approvals live
 
 Released as 0.12.0 (Omarchy AI side). The Flux Android changes stay on the

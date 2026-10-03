@@ -603,7 +603,7 @@ Panel {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: "This bar widget is only the settings panel. It does not install the voice assistant, wake models, or the other desktop plugins."
+            text: "Enabling this plugin installs and starts the assistant. omarchy-ai-settings is not available yet, so setup is still running or it did not finish."
             color: Color.muted
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -612,7 +612,7 @@ Panel {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: "Install the full assistant from GitHub Releases, or from a source checkout with install.sh. Then reopen this panel."
+            text: "Reopen this panel when setup finishes. The log is start-assistant.log in the Omarchy-AI state directory."
             color: root.fg
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
