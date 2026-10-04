@@ -70,6 +70,7 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertIn("resolve-settings.sh", panel)
         self.assertIn("assistant_installed", panel)
         self.assertIn("https://github.com/omribenami/Omarchy-AI#installation", panel)
+        self.assertNotIn("selectByMouse", panel)
         self.assertIn("install.sh", panel)
         self.assertIn("does not install the voice assistant", panel)
         resolver = (SEED / "resolve-settings.sh").read_text()

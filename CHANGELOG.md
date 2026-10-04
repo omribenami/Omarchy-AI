@@ -19,6 +19,18 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.13.2] - 2026-10-03
+
+### Highlights
+
+- The Omarchy AI settings icon is back in the desktop bar after recent
+  Omarchy and Qt updates.
+
+### Fixes
+
+- Removed an obsolete QML text-selection property that prevented the entire
+  settings widget from loading.
+
 ## [0.13.1] - 2026-10-03
 
 ### Highlights
