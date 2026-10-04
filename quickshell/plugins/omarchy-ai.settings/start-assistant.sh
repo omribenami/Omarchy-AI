@@ -17,8 +17,8 @@
 # pin for tests. Production uses the defaults below.
 set -euo pipefail
 
-PINNED_VERSION="${OMARCHY_AI_ASSISTANT_VERSION:-0.13.1}"
-PINNED_SHA256="${OMARCHY_AI_ASSISTANT_SHA256:-44238a9887c6f16bd33ad7ce123974357f4d51a618d34826483ee3121652eb42}"
+PINNED_VERSION="${OMARCHY_AI_ASSISTANT_VERSION:-0.13.2}"
+PINNED_SHA256="${OMARCHY_AI_ASSISTANT_SHA256:-e41d406b0581e48623b27f1f7c442224522750016c881222ea71d0fa6de6fc97}"
 PINNED_URL="${OMARCHY_AI_ASSISTANT_URL:-https://github.com/omribenami/Omarchy-AI/releases/download/v${PINNED_VERSION}/omarchy-ai-${PINNED_VERSION}-linux-x86_64.tar.gz}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
