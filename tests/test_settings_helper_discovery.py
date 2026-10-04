@@ -19,8 +19,9 @@ PLUGIN = ROOT / "quickshell/plugins/omarchy-ai.settings"
 MISSING = {
     "assistant_installed": False,
     "error": (
-        "Omarchy-AI is not installed. Install the full assistant from "
-        "GitHub Releases or with install.sh, then reopen this panel."
+        "Omarchy-AI is not installed yet. Enabling the omarchy-ai.settings "
+        "plugin installs and starts the assistant. Reopen this panel when "
+        "that finishes."
     ),
 }
 
@@ -73,9 +74,9 @@ class SettingsHelperDiscoveryTests(unittest.TestCase):
         self.assertNotRegex(panel, r"@[A-Z0-9_]+@")
         self.assertIn('"/usr/bin/bash", root._localPath("resolve-settings.sh")', panel)
         self.assertIn("Omarchy-AI is not installed", panel)
-        self.assertIn("install.sh", panel)
+        self.assertIn("Enabling this plugin installs and starts the assistant", panel)
         self.assertIn("https://github.com/omribenami/Omarchy-AI#installation", panel)
-        self.assertIn("does not install the voice assistant", panel)
+        self.assertNotIn("does not install the voice assistant", panel)
 
     def test_missing_assistant_is_json_and_does_not_hang_or_install(self):
         with self._temp() as base:
@@ -213,6 +214,21 @@ class SettingsHelperDiscoveryTests(unittest.TestCase):
             write_cli(decoy, "home-decoy")
             result = run_resolver(env, "get")
             self.assertEqual(result.stdout, b"updated\n")
+
+    def test_print_path_reports_the_executable_without_running_it(self):
+        with self._temp() as base:
+            base = Path(base)
+            env = isolated_env(base)
+            missing = run_resolver(env, "--print-path")
+            self.assertEqual(missing.returncode, 1)
+            self.assertEqual(missing.stdout, b"")
+            chosen = base / "chosen"
+            write_cli(chosen, "should-not-run")
+            env["OMARCHY_AI_SETTINGS"] = str(chosen)
+            found = run_resolver(env, "--print-path")
+            self.assertEqual(found.returncode, 0, found.stderr)
+            self.assertEqual(found.stdout, f"{chosen}\n".encode())
+            self.assertNotIn(b"should-not-run", found.stdout)
 
     def test_directory_override_is_not_executed(self):
         with self._temp() as base:

@@ -2,18 +2,21 @@
   "schemaVersion": 1,
   "id": "omarchy-ai.settings",
   "name": "Omarchy-AI",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "Omri Ben Ami",
-  "description": "Self-hosted agentic voice assistant for the Omarchy desktop. Wake word, whole-machine tools, Task Runtime, phone and TV. This marketplace entry is the settings panel. Install the full assistant first; the widget alone does not run the daemon.",
+  "description": "Self-hosted agentic voice assistant for the Omarchy desktop. Wake word, whole-machine tools, Task Runtime, phone and TV, and settings. Enabling this plugin installs and starts the assistant.",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "service"
   ],
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "barWidget": "Panel.qml",
+    "service": "AssistantService.qml"
   },
+  "keepLoaded": true,
   "barWidget": {
     "displayName": "Omarchy-AI",
-    "description": "Self-hosted agentic voice assistant for Omarchy: wake word, overlays, Task Runtime, phone and TV, and settings. Install the full assistant first; this bar widget alone does not run the daemon.",
+    "description": "Self-hosted agentic voice assistant for Omarchy: wake word, overlays, Task Runtime, phone and TV, and settings. Enabling this plugin installs and starts the assistant.",
     "category": "System",
     "allowMultiple": false
   }
