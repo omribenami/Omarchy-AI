@@ -1451,24 +1451,55 @@ def battery_status(args: dict) -> ActionResult:
     return _run(["omarchy-battery-status"])
 
 
-# --- media (soft dependency on playerctl) ------------------------------------
+# --- media (MPRIS on the session bus, through systemd's busctl) --------------
 
-def _playerctl(*args: str) -> ActionResult:
-    if shutil.which("playerctl") is None:
-        return ActionResult(False, "playerctl is not installed")
-    return _run(["playerctl", *args])
+_MPRIS = "org.mpris.MediaPlayer2"
+# Real bug (2026-10-10): "stop the music" went to playerctl, which was not
+# installed, and the music was on a house speaker anyway. The message has to
+# tell the model to look at the other device instead of retrying this one.
+NO_MEDIA_PLAYER = (
+    "nothing is playing on this computer (no media player is running here); "
+    "if the music is on another device, control that device instead"
+)
+
+
+def _mpris_status(player: str) -> str:
+    r = _run(
+        ["busctl", "--user", "get-property", player, "/org/mpris/MediaPlayer2",
+         f"{_MPRIS}.Player", "PlaybackStatus"],
+        timeout=3,
+    )
+    parts = r.message.split('"')
+    return parts[1] if r.ok and len(parts) > 2 else ""
+
+
+def _mpris(method: str) -> ActionResult:
+    listed = _run(["busctl", "--user", "list", "--no-legend"], timeout=3)
+    if not listed.ok:
+        return listed
+    players = [line.split()[0] for line in listed.message.splitlines() if line.startswith(f"{_MPRIS}.")]
+    if not players:
+        return ActionResult(False, NO_MEDIA_PLAYER)
+    status = {player: _mpris_status(player) for player in players}
+    player = next(
+        (p for wanted in ("Playing", "Paused") for p in players if status[p] == wanted), players[0]
+    )
+    r = _run(["busctl", "--user", "call", player, "/org/mpris/MediaPlayer2", f"{_MPRIS}.Player", method], timeout=5)
+    if not r.ok:
+        return r
+    return ActionResult(True, f"{method} sent to {player.removeprefix(_MPRIS + '.')}")
 
 
 def media_play_pause(args: dict) -> ActionResult:
-    return _playerctl("play-pause")
+    return _mpris("PlayPause")
 
 
 def media_next(args: dict) -> ActionResult:
-    return _playerctl("next")
+    return _mpris("Next")
 
 
 def media_prev(args: dict) -> ActionResult:
-    return _playerctl("previous")
+    return _mpris("Previous")
 
 
 # --- Android TV casting -------------------------------------------------

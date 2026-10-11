@@ -13,7 +13,7 @@ import numpy as np
 from .. import myapi
 from ..core import alert_clips, updates
 from ..core.history import append_session
-from ..execution import catalog
+from ..execution import catalog, user_tools
 from ..execution.actions import run_action, ActionResult
 from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
@@ -821,6 +821,12 @@ class GeminiLiveSession:
             return unlock_screen_for_paired_phone()
         return run_action(name, args)
 
+    # The focused window is only a note in the action log, so it never holds
+    # a tool back for long. Real bug (2026-10-10): the compositor had died,
+    # hyprctl hung for its full 10s in front of every tool call, and a smart-home
+    # light took 11s. A user tool does not wait for it at all.
+    WINDOW_NOTE_SECONDS = 0.25
+
     MAX_OFFERS = 2  # per user turn: request -> parameters -> the real call needs at most two
 
     def _offer_result(self, pick: catalog.Resolution) -> ActionResult:
@@ -902,7 +908,10 @@ class GeminiLiveSession:
                 if verdict.action == "reroute":
                     name, args, prefix = verdict.tool, verdict.args, verdict.message + " "
                     ran = name
-                window = await asyncio.to_thread(LiveSession._current_window)
+                looking = asyncio.create_task(asyncio.to_thread(LiveSession._current_window))
+                if not user_tools.exists(name):
+                    # A desktop action can change the focus: note the window first.
+                    await asyncio.wait({looking}, timeout=self.WINDOW_NOTE_SECONDS)
                 if verdict.action in ("reject", "ask"):
                     action = None
                     result = ActionResult(False, verdict.message)
@@ -925,6 +934,7 @@ class GeminiLiveSession:
                     # Finish it before allowing the next conversation.
                     await action
                     raise
+                window = looking.result() if looking.done() and not looking.exception() else {}
                 if call.name == "read_file" and result.ok and "[assistant note] This file is a multi-step script" in result.message:
                     self._script_read_at = time.monotonic()
                     # The planner fills missing step details from the script itself.

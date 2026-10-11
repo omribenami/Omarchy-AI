@@ -511,7 +511,7 @@ TOOLS: list[dict] = [
     _tool("bluetooth_toggle", "Turn Bluetooth on if it's off, or off if it's on."),
     _tool("nightlight_toggle", "Turn the night light (warmer screen color) on or off."),
     _tool("battery_status", "Read the current battery charge percentage and charging state."),
-    _tool("media_play_pause", "Toggle play/pause on the current media player."),
+    _tool("media_play_pause", "Toggle play/pause on the media player running on this computer (not house speakers or TVs)."),
     _tool("media_next", "Skip to the next track."),
     _tool("media_prev", "Go back to the previous track."),
     _tool(

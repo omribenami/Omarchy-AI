@@ -81,6 +81,29 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bounded.endswith("end"))
         self.assertIn("tool result truncated", bounded)
 
+    async def test_a_hung_window_lookup_does_not_hold_a_tool_back(self):
+        # 2026-10-10: hyprctl hung 10s (dead compositor) in front of every
+        # tool call, so a smart-home light took 11s.
+        import threading
+        import time
+        for is_user_tool, limit in ((True, 0.2), (False, 1.0)):
+            release = threading.Event()
+            adapter = GeminiLiveSession(Config())
+            session = SimpleNamespace(send_tool_response=AsyncMock())
+            call = types.FunctionCall(id="fast", name="list_windows", args={})
+            with patch('omarchy_ai.voice.gemini_live.run_action', return_value=ActionResult(True, "done")), \
+                    patch('omarchy_ai.voice.gemini_live.user_tools.exists', return_value=is_user_tool), \
+                    patch('omarchy_ai.voice.gemini_live.LiveSession._current_window',
+                          side_effect=lambda: release.wait(10) and {}):
+                started = time.monotonic()
+                await adapter._run_call(session, call)
+                elapsed = time.monotonic() - started
+                release.set()
+            self.assertLess(elapsed, limit)
+            reply = session.send_tool_response.call_args.kwargs['function_responses']
+            self.assertEqual((reply.response['ok'], reply.response['message']), (True, "done"))
+            self.assertEqual(adapter._action_log[-1]["window"], {})
+
     async def test_oversized_action_result_is_bounded_on_live_session(self):
         adapter = GeminiLiveSession(Config())
         session = SimpleNamespace(send_tool_response=AsyncMock())

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from omarchy_ai.core import alert_clips, quota
+from omarchy_ai.phone import flux_notify
 
 
 # Real error text from this machine's logs (see core/quota.py).
@@ -41,6 +42,12 @@ class AlertTests(unittest.TestCase):
         p = patch.object(quota, "_run", side_effect=lambda argv, timeout=5: self.runs.append(argv))
         p.start()
         self.addCleanup(p.stop)
+        # Real bug (2026-10-10): only _run was stubbed, so every run of these
+        # tests sent "OpenAI credits used up" to the user's real phone.
+        self.phone = []
+        p = patch.object(flux_notify, "send", side_effect=lambda title, body="", **_: self.phone.append((title, body)))
+        p.start()
+        self.addCleanup(p.stop)
         self.addCleanup(setattr, quota, "speaker", None)
 
     def alert_now(self, provider, **kw):
@@ -57,6 +64,7 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(tools, ["omarchy-shell", "notify-send", "pw-play"])
         self.assertEqual(json.loads(self.runs[0][-1]), {"provider": "OpenAI", "message": "credits used up"})
         self.assertIn("-u", self.runs[1])
+        self.assertEqual([title for title, _ in self.phone], ["OpenAI credits used up"])
         # No French clip rendered on this machine yet: the shipped English one.
         self.assertTrue(self.runs[2][1].endswith("quota-openai-en.ogg"))
 
