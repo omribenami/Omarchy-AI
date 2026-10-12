@@ -1,9 +1,10 @@
 #!/usr/bin/bash
 # Find omarchy-ai-settings and exec it.
 #
-# Marketplace `omarchy plugin add` installs this bar widget only. It does
-# not run install.sh, so Panel.qml has no install-time path to rewrite.
-# This script is the lookup. It never downloads or installs the assistant.
+# Marketplace `omarchy plugin add --enable` loads this plugin, and
+# start-assistant.sh installs and starts the assistant. This script is
+# only the lookup. It never downloads or installs anything, and Panel.qml
+# has no install-time path to rewrite.
 #
 # Order:
 #   1. OMARCHY_AI_SETTINGS, when that is an executable file
@@ -220,13 +221,23 @@ locate() {
 }
 
 not_installed() {
-  printf '%s\n' '{"assistant_installed":false,"error":"Omarchy-AI is not installed. Install the full assistant from GitHub Releases or with install.sh, then reopen this panel."}'
+  printf '%s\n' '{"assistant_installed":false,"error":"Omarchy-AI is not installed yet. Enabling the omarchy-ai.settings plugin installs and starts the assistant. Reopen this panel when that finishes."}'
   exit 0
 }
 
 target=""
 # Discovery must not consume the helper's stdin. API keys and passwords
 # are waiting there for the real omarchy-ai-settings process.
+# --print-path is for start-assistant.sh. It prints the executable and
+# does not run it, so a missing assistant stays a non-zero status instead
+# of the panel's JSON object.
+if [[ "${1:-}" == "--print-path" ]]; then
+  if ! target=$(locate </dev/null); then
+    exit 1
+  fi
+  printf '%s\n' "$target"
+  exit 0
+fi
 if ! target=$(locate </dev/null); then
   not_installed
 fi

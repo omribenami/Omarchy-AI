@@ -43,12 +43,16 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertEqual(manifest["name"], "Omarchy-AI")
         self.assertEqual(manifest["name"], source["name"])
         self.assertNotIn("Settings", manifest["name"])
-        self.assertEqual(manifest["version"], "0.4.0")
+        self.assertEqual(manifest["version"], "0.5.0")
         self.assertEqual(manifest["version"], source["version"])
         self.assertEqual(manifest["barWidget"]["displayName"], "Omarchy-AI")
         self.assertNotIn("Settings", manifest["barWidget"]["displayName"])
-        self.assertEqual(manifest["kinds"], ["bar-widget"])
-        self.assertEqual(manifest["entryPoints"], {"barWidget": "Panel.qml"})
+        self.assertEqual(manifest["kinds"], ["bar-widget", "service"])
+        self.assertEqual(
+            manifest["entryPoints"],
+            {"barWidget": "Panel.qml", "service": "AssistantService.qml"},
+        )
+        self.assertTrue(manifest["keepLoaded"])
         self.assertEqual(manifest["author"], "Omri Ben Ami")
         for text in (manifest["description"], manifest["barWidget"]["description"]):
             lowered = text.lower()
@@ -56,8 +60,8 @@ class MarketplacePluginSyncTests(unittest.TestCase):
             self.assertTrue(lowered.startswith("self-hosted agentic voice assistant"))
             self.assertIn("wake word", lowered)
             self.assertIn("settings", lowered)
-            self.assertIn("full assistant", lowered)
-            self.assertIn("does not run the daemon", lowered)
+            self.assertIn("installs and starts", lowered)
+            self.assertNotIn("does not run the daemon", lowered)
         preview = SEED / "preview.png"
         self.assertTrue(preview.is_file())
         self.assertTrue(preview.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
@@ -71,8 +75,11 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertIn("assistant_installed", panel)
         self.assertIn("https://github.com/omribenami/Omarchy-AI#installation", panel)
         self.assertNotIn("selectByMouse", panel)
-        self.assertIn("install.sh", panel)
-        self.assertIn("does not install the voice assistant", panel)
+        self.assertIn("Enabling this plugin installs and starts the assistant", panel)
+        self.assertNotIn("does not install the voice assistant", panel)
+        service = (SEED / "AssistantService.qml").read_text()
+        self.assertIn('"/usr/bin/bash", root._localPath("start-assistant.sh")', service)
+        self.assertNotIn("StdioCollector", service)
         resolver = (SEED / "resolve-settings.sh").read_text()
         self.assertEqual(
             resolver,
@@ -83,18 +90,20 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         readme = (SEED / "README.md").read_text()
         self.assertTrue(readme.startswith("# Omarchy-AI\n"))
         self.assertLess(
-            readme.index("https://github.com/omribenami/Omarchy-AI#installation"),
+            readme.index("https://github.com/omribenami/Omarchy-AI"),
             readme.index("omarchy plugin add https://github.com/omribenami/omarchy-ai-plugin.git --enable"),
         )
-        self.assertIn("## Settings panel only", readme)
+        self.assertIn("## Install\n", readme)
         self.assertIn("omarchy plugin remove omarchy-ai.settings", readme)
         self.assertIn("omarchy bar move omarchy-ai.settings --section right", readme)
-        self.assertIn("does not run the daemon", readme)
+        self.assertIn("start-assistant.sh", readme)
+        self.assertIn("installs the pinned", readme)
         self.assertNotIn("@OMARCHY_AI_SETTINGS@", readme)
         self.assertNotIn("## Manual setup", readme)
         self.assertIn("## How the panel finds the assistant", readme)
         self.assertIn("resolve-settings.sh", readme)
-        self.assertIn("does not install Omarchy-AI", readme)
+        self.assertNotIn("does not install Omarchy-AI", readme)
+        self.assertNotIn("does not run the daemon", readme)
         self.assertNotIn("Omarchy AI Settings", readme)
         self.assertNotIn("Omarchy-AI. Settings", readme)
         self.assertNotIn("Omarchy-AI Settings", readme)
@@ -102,11 +111,15 @@ class MarketplacePluginSyncTests(unittest.TestCase):
         self.assertIn("Task Runtime", readme)
         self.assertLess(
             readme.index("https://github.com/user-attachments/assets/ea736181-9cf3-423a-b7d5-91a895fe6589"),
-            readme.index("## Install the full assistant"),
+            readme.index("## Install\n"),
         )
         self.assertIn("https://github.com/user-attachments/assets/7abed3fa-ed55-4835-b77a-4d0a1ab85f1f", readme)
         self.assertIn("https://github.com/user-attachments/assets/6d20a7b9-3806-4248-be12-83bdddf63f66", readme)
-        self.assertIn("omarchy plugin add` does not install the daemon", readme)
+        self.assertIn(
+            "omarchy plugin add https://github.com/omribenami/omarchy-ai-plugin.git --enable",
+            readme,
+        )
+        self.assertIn("starts the assistant", readme)
         license_text = (SEED / "LICENSE").read_text()
         self.assertIn("Copyright (c) 2026 Omri Ben-Ami", license_text)
         self.assertTrue(license_text.startswith("MIT License\n"))
