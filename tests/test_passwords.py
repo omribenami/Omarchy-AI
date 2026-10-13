@@ -2,6 +2,9 @@
 (real case 2026-09-27 18:55: a spoken SSH password was stored in plain text in
 conversation_history.jsonl, and she still could not SSH)."""
 import json
+import os
+import threading
+import time
 import secrets as _token
 import logging
 import tempfile
@@ -177,3 +180,65 @@ class RuntimeSshTests(RuntimeHarness):
         self.assertEqual(ssh[0][1]["SSH_ASKPASS_REQUIRE"], "force")
         self.assertEqual(self.stored, [SECRET])
         self.assertNotIn(SECRET, self.store.path(task.id).read_text())
+
+
+class KnownSecretsCacheTests(unittest.TestCase):
+    """2026-10-11: the list was re-read (1-3 s) inside whichever log call came first each minute."""
+
+    def settle(self):
+        """A background re-read from this test must not land in the next one."""
+        self.release.set()
+        deadline = time.monotonic() + 5
+        while passwords._refreshing and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def setUp(self):
+        self.state = (passwords._cache, passwords._loaded, passwords._refreshing)
+        passwords._cache, passwords._loaded, passwords._refreshing = (0.0, []), False, False
+        self.addCleanup(lambda: setattr(passwords, "_cache", self.state[0]))
+        self.addCleanup(lambda: setattr(passwords, "_loaded", self.state[1]))
+        self.addCleanup(lambda: setattr(passwords, "_refreshing", self.state[2]))
+        self.addCleanup(self.settle)
+        self.value = "first-" + os.urandom(6).hex()
+        self.release = threading.Event()
+        self.release.set()
+        self.reads = 0
+
+        def retrieve():
+            self.reads += 1
+            self.release.wait(5)
+            return self.value
+        for target, value in [(passwords.sudo_approval, ("retrieve", retrieve)),
+                              (passwords, ("spoken_password", lambda: None))]:
+            p = patch.object(target, value[0], value[1])
+            p.start()
+            self.addCleanup(p.stop)
+        p = patch("omarchy_ai.myapi.vault.revealed_values", return_value=[])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_first_read_waits_and_an_expired_one_does_not(self):
+        self.assertEqual(passwords.known_secrets(), [self.value])       # nothing may leak before the first read
+        first, self.value = self.value, "second-" + os.urandom(6).hex()
+        passwords._cache = (0.0, passwords._cache[1])                    # a minute later
+        self.release.clear()                                             # the re-read hangs
+        started = time.monotonic()
+        self.assertEqual(passwords.known_secrets(), [first])            # the old list, at once
+        self.assertEqual(passwords.known_secrets(), [first])            # and no second re-read meanwhile
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.release.set()
+        deadline = time.monotonic() + 3
+        while passwords.known_secrets() != [self.value] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(passwords.known_secrets(), [self.value])
+        self.assertEqual(self.reads, 2)
+
+    def test_a_password_just_stored_is_masked_at_once(self):
+        passwords.known_secrets()
+        new = "spoken-" + os.urandom(6).hex()
+        self.release.clear()                                             # the keyring is slow from here on
+        done = SimpleNamespace(returncode=0, stdout="")
+        with patch.object(passwords, "_run", return_value=done):
+            self.assertTrue(passwords.store_spoken(new))
+        self.assertEqual(passwords.redact(f"it is {new} ok"), "it is [password] ok")
+        self.release.set()

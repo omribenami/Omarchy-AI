@@ -23,22 +23,24 @@ import logging
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
+import sys
 import threading
 import time
 from typing import Callable
 
 from . import shell
-from .control import ControlPlane
+from .control import LIVE_GAPS, ControlPlane
 from .executors import Executor, default_executors
 from .executors.base import (BLOCKED, DIAGNOSE, DONE, FAILED as R_FAILED, IMPLEMENT, NEEDS_APPROVAL,
                              NEEDS_CODE_CHANGE, NEEDS_USER, REVIEW, TEST, WORK, Assignment, Report)
 from . import llm
 from .llm import WorkerModel, WorkerModelError
 from .permissions import _TOOLS_CLI, Assessment, Risk, Scope, classify, coding_agent_risk, decide, split_commands
-from .task import (ACTIVE, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, TERMINAL, UNVERIFIED,
+from .task import (ACTIVE, AWAITING_CONFIRMATION, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, TERMINAL, UNVERIFIED,
                    WAITING_APPROVAL, WAITING_USER, Task, TaskStore, new_id, owned_elsewhere, owner_alive,
-                   this_process)
+                   request_text, this_process)
 
 log = logging.getLogger(__name__)
 
@@ -51,8 +53,24 @@ API_WORKERS = {"SYSTEM_AGENT", "TEST_AGENT", "REVIEW_AGENT"}
 VALIDATED_P = 0.6          # Jev must think the test plan proves the behavior
 CERTIFY_P = 0.8            # Jev certification threshold
 MAX_CERT_REJECTIONS = 3
+# Completed steps after a refused certification that may add no evidence
+# before the answer is delivered unverified (_repeating_after_rejection).
+MAX_STEPS_WITHOUT_EVIDENCE = 2
 MAX_PLAN_ATTEMPTS = 2
 MAX_CONSECUTIVE_RETRIES = 2
+USER_ONLY_P = 0.8           # P(only the user can tell it worked) at which the user is asked instead
+CONFIRM_FLOOR_P = 0.4       # ... but not when Jev thinks it failed (the two that began this re-scored 0.51, 0.69)
+SIMULATED_P = 0.7           # P(only simulated evidence) that ends a live gap as "needs a live test"
+
+# What a refused certification is missing, in words for the user. Until
+# 2026-10-07 the result said "could not be verified: runtime_behavior".
+_MISSING = {
+    "tests": "no passing test or check ran after the last change",
+    "runtime_behavior": "the real behavior was not observed after the change",
+    "review": "the change was not independently reviewed, or the review found problems",
+    "unfixed_failure": "a failure or failing check is still unresolved",
+    "user_confirmation": "only you can confirm the outcome",
+}
 
 # Risk of the assistant's existing tools when a direct step calls them.
 _ACTION_RISK = {"list_windows": Risk.LOW, "list_bar_icons": Risk.LOW, "battery_status": Risk.LOW,
@@ -72,6 +90,8 @@ Never add deliverables the user did not ask for (no reports, notes or saved file
 Preserve the requested final deliverable as an acceptance criterion, not only its prerequisites.
 Do not add 'without manual intervention': authentication or approval can legitimately require the user.
 An existing skill is a procedure, not a missing executable tool. Read it before proposing implementation.
+Copy every link, file path and product, API or model name from the request into the objective exactly as written;
+never replace a named thing with a general one (a named API does not become "a suitable API").
 Keep the user's own words for anything you are not sure of; an unknown term becomes a criterion that the worker
 finds out what it means, never a guess.
 An accepted task does not become complete merely because an existing tool is missing. Include the user's actual
@@ -80,6 +100,21 @@ building and testing an approval-gated user tool with Claude Code or Codex, inst
 then resuming the same task to achieve and verify the original result.
 
 """ + PROJECT_TERMS
+
+
+PLAN_TIMEOUT = 90
+
+_LINK = re.compile(r"https?://[^\s<>\"'`)\]]+")
+
+
+def links(text: str, limit: int = 5) -> list[str]:
+    """The distinct links in `text`, in order, without trailing punctuation."""
+    found = []
+    for match in _LINK.findall(text or ""):
+        link = match.rstrip(".,;:!?")
+        if link not in found:
+            found.append(link)
+    return found[:limit]
 
 
 class TaskRuntime:
@@ -186,7 +221,9 @@ class TaskRuntime:
                 task.grants.append(request.get("fingerprint", ""))
                 task.add_note(f"User approved {request.get('kind')}: {request.get('subject')}")
                 if task.next_dispatch:
-                    task.next_dispatch.setdefault("context", {})["user_approved"] = request.get("subject")
+                    # The whole command, not the 600 characters shown for approval.
+                    task.next_dispatch.setdefault("context", {})["user_approved"] = (
+                        request.get("command") or request.get("subject"))
                     task.next_dispatch["context"]["user_approved_kind"] = request.get("kind")
                 if paused:
                     paused["outcome"] = "paused"
@@ -204,11 +241,16 @@ class TaskRuntime:
             task.pending_approval = None
         else:
             task.answers.append(answer[:2000])
-            if not task.next_dispatch and task.steps:
+            if task.certification.get("status") == AWAITING_CONFIRMATION:
+                pass  # the work is done: the answer is read in _confirmed, and no worker gets it
+            elif not task.next_dispatch and task.steps:
                 # A coordinator question has no paused dispatch. Reconsidering
                 # the unchanged last report can ask the identical question
                 # forever; deliver the answer to a concrete continuation.
-                task.next_dispatch = self._assignment(task, task.steps[-1]["executor"], "CONTINUE")
+                last = task.steps[-1]
+                coder = self._coder_after(task, last)
+                task.next_dispatch = (self._assignment(task, coder, "CHANGE_EXECUTOR") if coder
+                                      else self._assignment(task, last["executor"], "CONTINUE"))
             if task.next_dispatch:
                 task.next_dispatch.setdefault("context", {})["user_answer"] = answer[:2000]
             task.question = None
@@ -226,6 +268,17 @@ class TaskRuntime:
             return {"ok": False, "message": f"task {task.id} was cancelled"}
         self._launch(task, background)
         return {"ok": True, "message": f"resumed task {task.id}", "task": task.summary()}
+
+    def _coder_after(self, task: Task, last: dict) -> str | None:
+        """The coding agent that takes over when the last worker reported a
+        needed code change and the user then said go ahead. 2026-10-08: the
+        answer went back to the same general worker, which ran `codex` by hand
+        from a shell command, five approvals deep, and never changed a line."""
+        if task.agent or last.get("report_status") != NEEDS_CODE_CHANGE or last.get("executor") in CODING:
+            return None
+        ready = [n for n in self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task) if n in CODING]
+        picked = next((d.get("executor") for d in reversed(task.decisions) if d.get("kind") == "direct"), None)
+        return picked if picked in ready else (sorted(ready)[0] if ready else None)
 
     def ask_fingerprint(self, task_id: str, fingerprint: str | None = None) -> dict:
         """Send the Flux fingerprint prompt for a waiting approval now: from
@@ -548,6 +601,8 @@ class TaskRuntime:
         self._emit(task, "progress")
         if task.status == CANCELLED:  # cancelled between launch and start
             return
+        if task.certification.get("status") == AWAITING_CONFIRMATION and task.answers:
+            return self._confirmed(task)
         resumed_at = time.time()
         used = float(task.budget.get("used_seconds", 0))
         if not task.objective:
@@ -582,15 +637,27 @@ class TaskRuntime:
     def _plan(self, task: Task) -> None:
         self._progress(task, "Sending to Jev: planning")
         try:
-            plan = self.planner.complete(PLAN_PROMPT, {"request": task.goal, "workspace": task.workspace}, timeout=45)
+            # 90 s, shared by the backends (30 s each when all three are up).
+            # 2026-10-08 00:29: 45 s gave each 15 s. Measured on that request
+            # the same night: claude 10 s, codex 15 s, the API ladder 25-40 s
+            # (shorter requests: 6-7 s, 9-11 s, 8-19 s), so no fallback could
+            # finish. The call returns as soon as one backend answers.
+            plan = self.planner.complete(PLAN_PROMPT, {"request": task.goal, "workspace": task.workspace},
+                                         timeout=PLAN_TIMEOUT)
             task.objective = str(plan.get("objective") or task.goal)[:1000]
-            task.plan = [str(c)[:300] for c in (plan.get("acceptance_criteria") or []) if c][:5] or [task.goal[:300]]
+            # 2026-10-07: the user named an API by its docs link; the objective
+            # said "a vision-capable model" and the worker built on another API.
+            dropped = [u for u in links(task.goal) if u not in task.objective]
+            if dropped:
+                refs = " References from the request: " + " ".join(dropped)
+                task.objective = task.objective[:max(0, 1000 - len(refs))] + refs
+            task.plan = [str(c)[:300] for c in (plan.get("acceptance_criteria") or []) if c][:5] or [request_text(task.goal)[:300]]
             ideas = [str(i)[:300] for i in (plan.get("verification_ideas") or [])][:4]
             if ideas:
                 task.add_note("Verification ideas (planner): " + " | ".join(ideas))
         except WorkerModelError as exc:
             task.add_error(f"planner unavailable: {exc}")
-            task.objective, task.plan = task.goal[:1000], [task.goal[:300]]
+            task.objective, task.plan = task.goal[:1000], [request_text(task.goal)[:300]]
         self.store.save(task)
 
     # --------------------------------------------------------------- route
@@ -701,7 +768,17 @@ class TaskRuntime:
         if not candidates:
             self._finish(task, FAILED, "No executor is available (the worker model and coding agents are all unreachable).")
             return False
-        pick, needs_code = self.control.route(task, candidates)
+        # 2026-10-12 22:15: "start a 6-minute countdown to lock down the PCs" was
+        # judged too vague seven times in a row, each answer met with the same
+        # fixed question -- the user's whole sentence, three taps on Yes, one on
+        # No. It is asked once: after an answer a worker takes the job with
+        # that answer (it can ask something specific itself), and a no ends it.
+        answered = bool(task.answers) and not task.steps
+        if answered and self.control.declined(task):
+            task.add_decision("route", "CANCEL", None, {"declined_by_user": True})
+            self._finish(task, CANCELLED, "Cancelled: you said not to do it.")
+            return False
+        pick, needs_code = self.control.route(task, candidates, ask=not answered)
         task.needs_code = needs_code
         task.add_decision("route", pick.value, pick.p, {"needs_code_change": needs_code, "fallback": pick.fallback,
                                                         "probabilities": pick.probabilities})
@@ -750,7 +827,9 @@ class TaskRuntime:
             "first. If a reusable capability is genuinely absent, have Claude Code or Codex implement and test a "
             "narrow Omarchy user tool through the propose/install approval workflow, then resume this same task "
             "and finish its original acceptance criteria. Wait for a specific approval or user answer when needed; "
-            "do not turn a solvable capability gap into a final failure."
+            "do not turn a solvable capability gap into a final failure. Missing ACCESS is different: a key that "
+            "is not there, a 401/403, an account or project that may not use a model or endpoint, a login. That "
+            "is the user's to grant: ask them with the exact error, and do not rewrite their project around it."
         )
         timeout = float(_config("task_coding_agent_timeout", 1200)) if executor in CODING else 600.0
         return {"executor": executor, "role": role, "directive": directive, "instructions": instructions,
@@ -880,10 +959,35 @@ class TaskRuntime:
             task.certification["gate"] = reason
         return allowed
 
+    def _repeating_after_rejection(self, task: Task) -> bool:
+        """Jev refused to certify, and the work since then is done but has
+        added nothing a second certification could use.
+
+        Real task 2026-10-05 23:03 (a read-only question about a server):
+        the answer was there after one step, Jev scored it 0.73 with nothing
+        missing, and CERTIFY then waits for new harness evidence. A coding
+        agent that only reads never produces any, so CONTINUE was the one
+        directive left and the worker gave the same answer nine more times,
+        to the step budget, whose closing message does not carry the answer.
+        The same on 2026-10-02 (15 steps) and 2026-10-05 08:13 (8 steps)."""
+        rejected_at = task.budget.get("cert_rejected_at", 0)
+        if not rejected_at or any(e["at"] > rejected_at for e in task.evidence if e["source"] != "executor"):
+            return False
+        since = [s for s in task.steps if s.get("outcome") == "done" and (s.get("finished_at") or 0) > rejected_at]
+        return len(since) >= MAX_STEPS_WITHOUT_EVIDENCE
+
     def _direct(self, task: Task) -> bool:
         task.phase = "direct"
         allowed = self._allowed_directives(task)
         last = task.steps[-1] if task.steps else None
+        if self._repeating_after_rejection(task):
+            answer = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")), "")
+            p = task.certification.get("p")
+            self._finish(task, UNVERIFIED, (answer[:1500] + "\n\n" if answer else "")
+                         + "Not verified: Jev's confidence in this result was "
+                         + (f"{p:.2f}" if isinstance(p, (int, float)) else "too low")
+                         + f" (it certifies at {CERTIFY_P}), and repeating the work added no new evidence.")
+            return False
         # Repeated completed assignments with sufficient harness evidence
         # should be judged, not sent through another identical work loop.
         # Certification remains Jev's decision and retains all evidence gates.
@@ -1067,7 +1171,7 @@ class TaskRuntime:
         if not ok:
             task.add_note(f"Certification refused by the harness: {reason}")
             return True
-        p, gap = self.control.certify(task)
+        p, gap, simulated, user_only = self.control.certify(task)
         task.add_decision("certify", p is not None and p >= CERTIFY_P, p, {"gap": gap.value if gap else None})
         if p is None:
             self._finish(task, UNVERIFIED, "The work appears finished, but Jev was unavailable to certify it, so it "
@@ -1082,17 +1186,64 @@ class TaskRuntime:
         task.budget["cert_rejected_at"] = time.time()
         task.certification = {"status": "rejected", "p": p, "gap": gap.value if gap else None, "at": time.time()}
         task.add_note(f"Jev did not certify (p={p:.2f}); missing: {gap.value if gap else 'unknown'}")
+        missing = _MISSING.get(gap.value if gap else "", "the evidence was not enough to confirm it")
+        if gap and gap.value in LIVE_GAPS and (simulated or 0) >= SIMULATED_P:
+            # 2026-10-07: a drone script went back to the worker three times,
+            # twice, for a flight no worker can make. When all a worker can
+            # show is a simulation, another round only spends the budget.
+            task.certification["status"] = "needs_live_test"
+            claim = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")), "")
+            tests = self._tests_since_change(task)
+            checks = (f" and {sum(t['exit_code'] == 0 for t in tests)}/{len(tests)} checks pass" if tests else "")
+            self._finish(task, UNVERIFIED, f"The work is done{checks}, but it needs a live test by you: {missing}, "
+                                           "and the workers could only simulate that part."
+                                           + (f"\n\n{claim[:900]}" if claim else ""))
+            return False
+        if (p >= CONFIRM_FLOOR_P and not task.budget.get("confirmation_asked")
+                and ((gap and gap.value == "user_confirmation") or (user_only or 0) >= USER_ONLY_P)):
+            # 2026-10-12: a countdown spoken in another room, then two
+            # computers locked. Every call returned ok, and it ended unverified
+            # twice (0.73, 0.74): no command here can hear a speaker. More
+            # rounds add nothing; the user can settle it in a word, and a yes
+            # certifies it (so the skill it ran is brought up to date).
+            task.budget["confirmation_asked"] = time.time()
+            task.certification["status"] = AWAITING_CONFIRMATION
+            self._ask_user(task, "Did it work? Every step reported success, but I cannot check the result myself: "
+                                 + task.title[:300])
+            return False
         # A confident but wrong "done" never fails a step: the rejection is
         # the signal that the worker model was not up to it.
         last = next((s for s in reversed(task.steps) if s["executor"] in self.executors), None)
         if last and _escalates(self.executors[last["executor"]]):
             self._escalate(task, last)
         if task.cert_rejections >= MAX_CERT_REJECTIONS:
-            self._finish(task, UNVERIFIED, f"The work was done but could not be verified: "
-                                           f"{gap.value if gap else 'evidence was insufficient'}.")
+            self._finish(task, UNVERIFIED, f"The work was done but could not be verified: {missing}.")
             return False
         self.store.save(task)
         return True
+
+    def _confirmed(self, task: Task) -> None:
+        """The user answered "did it work?": their word is the evidence no
+        worker could get. Jev reads the answer; nothing is run again."""
+        answer = task.answers[-1]
+        verdict = self.control.confirmation(task)
+        task.add_decision("confirm", verdict, None)
+        claim = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")
+                      and s.get("role") not in (TEST, REVIEW)), "")
+        if verdict == "worked":
+            evidence = task.add_evidence("confirmation", f"The user confirmed it worked: {answer[:300]}", source="user",
+                                         ok=True)
+            task.certification = {"status": "certified", "p": task.certification.get("p"), "by": "user",
+                                  "at": time.time(), "evidence": [evidence["id"]]}
+            self._finish(task, CERTIFIED, self._done_message(task))
+        elif verdict == "did_not_work":
+            task.certification["status"] = "rejected"
+            self._finish(task, FAILED, f"You said it did not work: {answer[:300]}"
+                                       + (f"\n\nWhat was done: {claim[:900]}" if claim else ""))
+        else:
+            task.certification["status"] = "rejected"
+            self._finish(task, UNVERIFIED, (claim[:1200] + "\n\n" if claim else "")
+                         + "Not verified: only you can tell whether it worked, and your answer did not say.")
 
     def _done_message(self, task: Task) -> str:
         last = next((s for s in reversed(task.steps) if s["outcome"] == "done"), None)
@@ -1259,6 +1410,20 @@ class TaskRuntime:
                     models.record_outcome(used, status == CERTIFIED)
             except Exception:  # noqa: BLE001 -- bookkeeping must never fail a task
                 log.debug("could not record worker model outcome", exc_info=True)
+        jev = getattr(self.control, "jev", None)
+        if status == CERTIFIED and jev is not None:
+            # A verified job of several steps becomes a skill holding the exact
+            # commands that worked, or brings the one it carried out up to date
+            # (core/skills.py; 2026-10-12: the skill for such a job was saved
+            # only when the user asked, and as a paraphrase).
+            try:
+                from ..core import skills
+                learned = skills.learn_from_task(task, jev)
+                if learned:
+                    message = (f"{message[:1400]} {'Saved as' if learned['created'] else 'Updated'} skill "
+                               f"'{learned['skill']['name']}'.")
+            except Exception:  # noqa: BLE001 -- a skill not saved must never fail a task
+                log.warning("could not learn a skill from task %s", task.id, exc_info=True)
         task.status = status
         task.phase = "done"
         task.result = message[:1500]
@@ -1297,6 +1462,11 @@ class WorkContextImpl:
         request = {"fingerprint": decision.fingerprint, "kind": kind, "subject": subject[:600],
                 "risk": decision.assessment.risk.name, "reasons": decision.assessment.reasons[:5],
                 "asked_at": time.time()}
+        if kind == "command" and len(subject) > 600:
+            # 2026-10-08: a 744-character command was approved, replayed from the
+            # shortened subject, no longer matched its grant, was asked for again
+            # and then failed on its cut-off quote. The subject is for display.
+            request["command"] = subject
         if kind == "command" and re.match(r"\s*sudo\b", subject):
             request["task_summary"] = (self.task.objective or self.task.goal)[:240]
             request["sudo_action"] = subject[:600]
@@ -1339,6 +1509,9 @@ class WorkContextImpl:
                     "output": f"NEEDS USER APPROVAL ({assessment.risk.name}): {'; '.join(assessment.reasons)}"}
         stdin_text = None
         if assessment.risk >= Risk.HIGH and re.match(r"\s*sudo\s", command):
+            # The phone's fingerprint screen asks who runs this sudo and why.
+            from ..execution import approval_context
+            approval_context.note(f"Task: {request_text(self.task.goal)}")
             command, stdin_text = _sudo(command)
         event = self.runtime._cancel.get(self.task.id)
         run_as, env = passwords.ssh_env(command, shell._base_env())
@@ -1562,10 +1735,10 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
     if event == "waiting_approval" and task.pending_approval:
         req = task.pending_approval
         if req.get("sudo_action"):
-            body = (f"Task: {req.get('task_summary', task.goal)[:240]}\n\n"
+            body = (f"Task: {req.get('task_summary', request_text(task.goal))[:240]}\n\n"
                     f"Sudo action: {req['sudo_action'][:300]}\n{'; '.join(req.get('reasons', []))}")
         else:
-            body = f"{task.goal[:120]}\n\n{req.get('risk')}: {req.get('subject', '')[:300]}\n{'; '.join(req.get('reasons', []))}"
+            body = f"{request_text(task.goal)[:120]}\n\n{req.get('risk')}: {req.get('subject', '')[:300]}\n{'; '.join(req.get('reasons', []))}"
         fingerprint = _flux_approval_available()
         if fingerprint:
             body += "\n\nOr approve it on your phone with your fingerprint (Flux)."
@@ -1579,10 +1752,10 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
             threading.Thread(target=_fingerprint_prompt, args=(runtime, task, req.get("fingerprint")),
                              daemon=True).start()
         else:
-            _phone(title, f"{task.goal[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
+            _phone(title, f"{request_text(task.goal)[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
                    "Approve it on the desktop.", kind="approval", conversation=task.conversation)
         return
-    body = f"{task.goal[:120]}\n\n{(task.question if event == 'waiting_user' else task.result)[:400]}"
+    body = f"{request_text(task.goal)[:120]}\n\n{(task.question if event == 'waiting_user' else task.result)[:400]}"
     # Notifications are delivery attempts, not task transitions. Store a
     # stable fingerprint before delivery so a reconnect/restart cannot repeat
     # an unchanged task question or outcome indefinitely. The step number
@@ -1593,11 +1766,35 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
     task.notifications[event] = fingerprint
     runtime.store.save(task)
     _phone(title, body, conversation=task.conversation)
+    if event in TERMINAL:
+        threading.Thread(target=_finished_prompt, args=(task.id, title, body), daemon=True).start()
+        return
     try:
         subprocess.Popen(["notify-send", "-a", "Omarchy AI", "-u", "normal", title, body],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         pass
+
+
+def _finished_prompt(task_id: str, title: str, body: str) -> None:
+    """The finished task's notification; a click on it (the "default"
+    action) or on its Open button shows the whole task in a terminal."""
+    try:
+        proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "normal", "-A", "default=Open task",
+                               title, body], capture_output=True, text=True, timeout=3600)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if proc.stdout.strip() == "default":
+        _open_task(task_id)
+
+
+def _open_task(task_id: str) -> None:
+    show = shlex.join([sys.executable, "-m", "omarchy_ai.cli.task", "show", task_id])
+    try:
+        subprocess.Popen(["omarchy-launch-floating-terminal-with-presentation", show],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        log.warning("could not open task %s in a terminal", task_id, exc_info=True)
 
 
 def _timeout_step(step: dict | None) -> bool:
@@ -1648,6 +1845,25 @@ def _flux_approval_available() -> bool:
         return False
 
 
+def _fingerprint_fields(task: Task) -> tuple[str, str, str]:
+    """(the request, who asks, why) for the phone's fingerprint screen. Until
+    2026-10-05 every task showed "Omarchy AI <risk> step: <goal>", whatever
+    the step and whoever was doing it."""
+    request = task.pending_approval or {}
+    what = str(request.get("subject") or task.goal)
+    steps = getattr(task, "steps", None) or []
+    executor = str((getattr(task, "next_dispatch", None) or {}).get("executor")
+                   or (steps[-1].get("executor") if steps else "") or getattr(task, "agent", "")).upper()
+    if request.get("kind") == "rollback":
+        by = "jev"  # Jev directs a rollback itself
+    else:
+        by = "codex" if "CODEX" in executor else "claude" if "CLAUDE" in executor else "omarchy"
+    reasons = "; ".join(str(r) for r in request.get("reasons") or [])
+    risk = str(request.get("risk") or "").lower()
+    why = f"Task: {request_text(task.goal)}" + (f" ({risk} risk: {reasons})" if reasons else f" ({risk} risk)" if risk else "")
+    return what, by, why
+
+
 def _fingerprint_prompt(runtime: TaskRuntime, task: Task, fingerprint: str) -> None:
     """The phone enrolled in Flux shows the request, and only a fingerprint
     signature that the root-owned key verifies approves it: a human check
@@ -1655,7 +1871,7 @@ def _fingerprint_prompt(runtime: TaskRuntime, task: Task, fingerprint: str) -> N
     No answer leaves the task waiting for the other channels."""
     from ..execution import flux_approve
     request = task.pending_approval or {}
-    ok, reason = flux_approve.request(f"Omarchy AI {str(request.get('risk', '')).lower()} step: {task.goal}")
+    ok, reason = flux_approve.request(*_fingerprint_fields(task))
     log.info("task %s: fingerprint approval: %s", task.id, reason)
     if ok is None:
         return

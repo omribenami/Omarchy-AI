@@ -31,6 +31,8 @@ TASKS_DIR = STATE_DIR / "tasks"
 PENDING, RUNNING, WAITING_APPROVAL, WAITING_USER = "pending", "running", "waiting_approval", "waiting_user"
 CERTIFIED, UNVERIFIED, FAILED, CANCELLED, INTERRUPTED = "certified", "unverified", "failed", "cancelled", "interrupted"
 TERMINAL = {CERTIFIED, UNVERIFIED, FAILED, CANCELLED}
+# certification["status"] of a finished job that waits for the user to say whether it worked.
+AWAITING_CONFIRMATION = "awaiting_confirmation"
 ACTIVE = {PENDING, RUNNING}
 
 # Bounds keep the file (and every brief built from it) small.
@@ -47,6 +49,25 @@ def _clip(text, n: int = MAX_TEXT) -> str:
 def new_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
 
+
+
+def request_text(goal: str) -> str:
+    """The user's own request inside a goal the voice side wrapped for the
+    worker (voice/escalation.py). 2026-10-08: the phone's approval card, the
+    fingerprint prompt, the notification and the spoken result all titled a
+    drone job "Continue this user-requested job autonomously until it is
+    completed, or until a real approval or missing input requires the us"."""
+    goal = str(goal or "")
+    if goal.startswith("Continue this user-requested job") and "Current request:\n" in goal:
+        return goal.split("Current request:\n", 1)[1].split("\n\n", 1)[0].strip() or goal
+    if goal.startswith("Escalated from the voice assistant"):
+        said = goal.split("What the user said", 1)[-1].split("What the voice assistant tried", 1)[0]
+        turns = [line[2:].strip() for line in said.splitlines() if line.startswith("- ")]
+        return (turns[-1] if turns else "") or goal
+    if goal.startswith("Carry out the saved skill"):  # core/skills.py run_goal
+        from ..core import skills
+        return skills.request_of_goal(goal) or goal
+    return goal
 
 @dataclass
 class Task:
@@ -94,6 +115,11 @@ class Task:
     model_tier: int = 0                                      # worker-model escalation step (runtime/models.py)
     owner: dict | None = None                                # {"pid", "start"} of the process driving it now
     budget: dict = field(default_factory=lambda: {"max_steps": 12, "max_seconds": 3600})
+
+    @property
+    def title(self) -> str:
+        """What the user asked for, to show or say (never the handoff text around it)."""
+        return request_text(self.goal)
 
     # -- recording -------------------------------------------------------
     def touch(self) -> None:

@@ -50,6 +50,26 @@ READ_ONLY = frozenset({
     "inspect_browser",
 })
 
+
+
+def _reads(tool: str, args: dict | None) -> bool:
+    """A core read-only tool, or a lookup operation a user tool declares
+    (tool.json "read_operations"). 2026-10-08: after a smart-home user tool
+    refused "turn off the living room TV" (two devices with that name), her
+    three `list` calls to it were rejected as "the user did not ask for
+    this" (matches 0.24-0.27), so she never saw the candidates."""
+    if tool in READ_ONLY:
+        return True
+    operation = (args or {}).get("operation")
+    if not isinstance(operation, str):
+        return False
+    try:
+        from ..execution import user_tools
+        return operation in user_tools.read_operations(tool)
+    except ImportError:
+        return False
+
+
 # Code-owned reroutes: tool -> executors it may be handed to, and why.
 REROUTES = {
     "start_task": {"terminal_task", "terminal_type", "type_text", "open_terminal"},
@@ -93,6 +113,7 @@ class Context:
     hint: dict | None                 # the fast pass's route for this request
     calls: list[tuple[str, dict]]     # the model's calls since the request
     description: str = ""             # the tool's own description
+    failed: dict | None = None        # her last call, when it failed: {"tool", "args", "error"}
 
 
 def _options(tool: str, ctx: Context) -> dict:
@@ -121,7 +142,11 @@ def questions(tool: str, ctx: Context, args: dict | None = None) -> dict:
             "something works, asks for nothing: reject a call that acts on it. The request is speech recognition "
             "output and often garbled: read it with the earlier turns. A short request that only makes sense as "
             "a follow-up (e.g. 'No ssh to it' right after 'So you run it', really 'Now ssh to it') asks for that "
-            "follow-up; do not reject on a misheard word.", _options(tool, ctx)),
+            "follow-up; do not reject on a misheard word. If `failed_just_before` is given, the model's "
+            "previous call failed with that error and the user is still waiting for that job: a call that looks "
+            "up what is needed to recover, or does the same job on the right target, is a sensible step, even "
+            "when the latest request is only a short reply such as 'it is clear enough' or 'the first one'.",
+            _options(tool, ctx)),
         "matches": boolean(
             "Does `call` carry out what the user's latest `request` asks, or a sensible step toward it, with the "
             "right target and values (numbers, names, text)? Read the request as the user meant it given the "
@@ -146,7 +171,7 @@ def questions(tool: str, ctx: Context, args: dict | None = None) -> dict:
 
 
 def state(tool: str, args: dict, ctx: Context) -> dict:
-    return {
+    result = {
         "request": ctx.request[-600:],
         "earlier_user_turns": [t[-200:] for t in ctx.earlier[-3:]],
         "fast_pass_route": ctx.hint,
@@ -154,6 +179,10 @@ def state(tool: str, args: dict, ctx: Context) -> dict:
         "call": {"tool": tool, "args": _short(args, 2_000 if _writes(tool, args) else 300),
                  "what_it_does": ctx.description[:240]},
     }
+    if ctx.failed:
+        result["failed_just_before"] = {"tool": ctx.failed.get("tool"), "args": _short(ctx.failed.get("args") or {}, 120),
+                                        "error": str(ctx.failed.get("error") or "")[:300]}
+    return result
 
 
 def _short(args: dict, limit: int = 300) -> dict:
@@ -198,8 +227,9 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
         return Verdict("ask", evidence=evidence, message=(
             f"Not run: Jev judged the request {ctx.request[-200:]!r} ambiguous about what {tool} should act on. "
             "Ask the user one short question, then act."))
-    floor = READ_MISMATCH if tool in READ_ONLY else HARD_MISMATCH
-    if match < floor or (tool not in READ_ONLY and route == "reject" and p >= REJECT_P and match < REJECT_MATCH):
+    reads = _reads(tool, args)
+    floor = READ_MISMATCH if reads else HARD_MISMATCH
+    if match < floor or (not reads and route == "reject" and p >= REJECT_P and match < REJECT_MATCH):
         why = {"values": "the target or values are wrong", "tool": "it is the wrong kind of action",
                "not_asked": "the user did not ask for this", "ambiguous": "the request is ambiguous"}.get(gap, "it does not fit")
         return Verdict("reject", evidence=evidence, message=(
@@ -239,7 +269,7 @@ class Switchboard:
         self._lock = threading.Lock()
 
     def review(self, tool: str, args: dict, ctx: Context) -> Verdict:
-        key = json.dumps([tool, args, ctx.request], sort_keys=True, ensure_ascii=False, default=str)
+        key = json.dumps([tool, args, ctx.request, ctx.failed], sort_keys=True, ensure_ascii=False, default=str)
         now = time.monotonic()
         with self._lock:
             cached = self._cache.get(key)

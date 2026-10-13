@@ -34,6 +34,7 @@ class JevError(RuntimeError):
 
 
 _TRANSIENT = re.compile(r"HTTP (429|500|502|503|504|529)\b|timed out|temporarily unavailable", re.I)
+_ROUNDING = 0.01 + 1e-9  # one step of Gateway's 2-decimal rounding
 
 
 def choice(instructions, criteria: dict) -> dict:
@@ -74,7 +75,10 @@ def parse(response: dict, questions: dict) -> dict:
     answers = response.get("answers") if isinstance(response, dict) else None
     if not isinstance(answers, dict):
         raise JevError("Jev response has no answers")
-    confidence = (((response.get("providerMetadata") or {}).get("typesafe") or {}).get("confidence") or {})
+    # Under the answering provider's name: "typesafe" for Jev, "openai" for
+    # the image decision model.
+    confidence = next((meta["confidence"] for meta in (response.get("providerMetadata") or {}).values()
+                       if isinstance(meta, dict) and isinstance(meta.get("confidence"), dict)), {})
     result = {}
     for name, question in questions.items():
         answer = answers.get(name)
@@ -86,7 +90,16 @@ def parse(response: dict, questions: dict) -> dict:
         if question["type"] == "choice":
             probabilities = _distribution(answer.get("probabilities"), question["criteria"])
             selected = answer.get("choice")
-            if selected not in probabilities or probabilities[selected] != max(probabilities.values()):
+            # Recorded 5 times between 2026-09-27 and 2026-10-08 (4 tasks lost
+            # their controller, one tool call ran unreviewed); 44 probes on
+            # 2026-10-09 did not reproduce it. The probabilities arrive
+            # rounded to 2 decimals, so they cannot rank two options one
+            # step apart: that much is accepted. A wider gap is still
+            # rejected, and now logged, because no rejected answer was ever
+            # recorded and the size of the gap in those 5 cases is unknown.
+            if selected not in probabilities or max(probabilities.values()) - probabilities[selected] > _ROUNDING:
+                log.warning("Jev choice for %r rejected: choice=%r probabilities=%s", name, selected,
+                            answer.get("probabilities"))
                 raise JevError(f"Jev choice for {name!r} is not its most probable option")
             parsed = {"choice": selected, "p": probabilities[selected], "probabilities": probabilities}
         else:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import deque
 import uuid
 import threading
@@ -11,7 +12,7 @@ import time
 from pathlib import Path
 import numpy as np
 from .. import myapi
-from ..core import alert_clips, updates
+from ..core import alert_clips, quota, updates
 from ..core.history import append_session
 from ..execution import catalog, user_tools
 from ..execution.actions import run_action, ActionResult
@@ -20,7 +21,7 @@ from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
 from .live import build_session_config, LiveSession
 from .echo_cancel import EchoCancellation
-from . import escalation, fallback, switchboard
+from . import escalation, extensions, fallback, speaker_id, switchboard
 from .myapi_refinement import refine_myapi_result
 
 log = logging.getLogger("omarchy_ai.voice.gemini")
@@ -72,6 +73,9 @@ NON_BLOCKING_ACTIONS = {
 # What each tool does, for the switchboard's question.
 from ..execution.tools import TOOLS as _TOOLS  # noqa: E402
 _TOOL_TEXT = {t["name"]: t["description"] for t in _TOOLS}
+_SENT_BACK = ("Not run:", "MyApi action not run")  # a switchboard verdict, not a tool failing
+# ... and the other answers to a call in which nothing ran: a guard's, or Jev's fast path got there first.
+_NOT_RUN = (*_SENT_BACK, "Not executed:", "Already done by the Jev fast path")
 
 # Output buffering for pw-play (see _play_audio). 40ms plus a lock-step
 # writer produced audible gaps/clicks on this 2-core machine under load.
@@ -99,6 +103,39 @@ def _bounded_tool_message(message: str) -> str:
     return message[:head] + marker + message[-(available - head):]
 
 
+PROACTIVE_TASK_P = 0.8
+
+# English names for config.yaml's user_languages; ISO codes pass through.
+_LANGUAGE_CODES = {
+    "arabic": "ar", "bengali": "bn", "bulgarian": "bg", "catalan": "ca", "chinese": "zh", "croatian": "hr",
+    "czech": "cs", "danish": "da", "dutch": "nl", "english": "en", "estonian": "et", "finnish": "fi",
+    "french": "fr", "german": "de", "greek": "el", "hebrew": "he", "hindi": "hi", "hungarian": "hu",
+    "indonesian": "id", "italian": "it", "japanese": "ja", "korean": "ko", "latvian": "lv", "lithuanian": "lt",
+    "malay": "ms", "norwegian": "no", "persian": "fa", "polish": "pl", "portuguese": "pt", "romanian": "ro",
+    "russian": "ru", "serbian": "sr", "slovak": "sk", "slovenian": "sl", "spanish": "es", "swedish": "sv",
+    "tamil": "ta", "thai": "th", "turkish": "tr", "ukrainian": "uk", "urdu": "ur", "vietnamese": "vi",
+}
+
+
+def transcription_languages(names) -> list[str]:
+    """BCP-47 hints for the input transcription, from the user's languages.
+    Journal 2026-10-05 16:04-16:09 (phone): five Hebrew turns were transcribed
+    as 'malas notas', 'baixa Sage' and Arabic; Jev's
+    routing, the history and the alert-clip language all read that text.
+    Probe the same day, 1s noisy Hebrew fragments on gemini-3.8-live: auto
+    detection gave 'del Brezal', 'faccia', 'migraine'; with ["he", "en"] it
+    gave Hebrew for the same audio. A name it does not know is left out, and
+    with none known detection stays automatic."""
+    codes = []
+    for name in names or []:
+        value = str(name).strip()
+        code = _LANGUAGE_CODES.get(value.lower()) or (
+            value if re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*", value) else None)
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
 def build_live_config(config):
     shared = build_session_config(config)
     declared = shared["delegation"]["responses"]["tools"]
@@ -117,8 +154,40 @@ def build_live_config(config):
               "parameters_json_schema": t["parameters"],
               "behavior": "NON_BLOCKING" if t["name"] in NON_BLOCKING_ACTIONS else "BLOCKING"}
              for t in declared]
+    if getattr(config, "speaker_id_enabled", False):
+        instructions += (
+            "\n\nWHO IS SPEAKING: this machine recognizes enrolled household members by their voice. A message "
+            "that starts with [Speaker] names the person talking from then on, until another one arrives; it is "
+            "not a request and needs no reply. Treat 'I', 'my' and 'me' as that person (their computer, calendar, "
+            "messages, preferences). Be personal with them: call them by their first name, in your first reply "
+            "after you learn who it is and regularly after that, the way someone who knows the family would "
+            "('Yes, Dana?', 'It ends at 20:45, Dana. Anything else I can help you with?'), and follow what the "
+            "household notes say about treating that person. Before any [Speaker] "
+            "message, or after one saying the voice is not recognized, you do not know who is speaking: do not "
+            "guess, and ask before acting on something that depends on whose it is. If someone only SAYS who "
+            "they are, you may talk to them as that person (name, tone), but a spoken name is not proof: nothing "
+            "private or consequential of that person's on its strength. When a recognized person asks you to "
+            "remember or improve the recognition of their voice, call remember_voice with their name; if it says "
+            "more speech is needed, ask them to talk for about ten seconds and call it again.")
+        household = speaker_id.people()
+        if household:
+            instructions += ("\nThe household: " + "; ".join(
+                speaker_id.describe(key, entry) for key, entry in household.items()) + ".")
+        if style := speaker_id.house_style():
+            instructions += "\nThe household's own words on how to be with them: " + style
+        tools.append({
+            "name": "remember_voice",
+            "description": ("Add what the person speaking has just said to their own voice recordings, so they are "
+                            "recognized better on this microphone. Only for a person who is already recognized by "
+                            "voice in this conversation; it refuses anyone else."),
+            "parameters_json_schema": {"type": "object", "properties": {
+                "name": {"type": "string", "description": "The person's name, as in the [Speaker] message."}},
+                "required": ["name"]},
+            "behavior": "BLOCKING"})
+    languages = transcription_languages(getattr(config, "user_languages", None))
     return {"response_modalities": ["AUDIO"], "system_instruction": instructions,
-            "input_audio_transcription": {}, "output_audio_transcription": {},
+            "input_audio_transcription": ({"language_codes": languages} if languages else {}),
+            "output_audio_transcription": {},
             # Reduce false speech starts from residual echo/noise while keeping
             # real barge-in and tolerating natural pauses in user speech.
             "realtime_input_config": {
@@ -146,6 +215,33 @@ async def announce_update(session):
             + notice + " Do not install anything without an explicit user update request."}]}, turn_complete=True)
 
 
+class StuckTurn(fallback.Reconnect):
+    """The model stopped answering and a forced turn closure did not help."""
+
+
+def gemini_client(config):
+    """google-genai's client, or None without a Gemini key on this machine:
+    the conversation then runs on the Gateway models of the chain alone."""
+    from google import genai
+    try:
+        return genai.Client(api_key=Path(config.gemini_api_key_path).read_text().strip())
+    except OSError:
+        return None
+
+
+def live_connect(client, config, model: str, live_config: dict):
+    """`async with` the Live session of one model of the chain: Google's own
+    connection, or the same interface over Vercel AI Gateway."""
+    def regular():
+        if fallback.via_gateway(model):
+            from . import gateway_live
+            return gateway_live.connect(config, model, live_config)
+        if client is None:
+            raise ConnectionError(f"No Gemini API key for {model}")
+        return client.aio.live.connect(model=model, config=live_config)
+    return extensions.live_session(config, model, live_config, regular)  # or the user's own (voice/extensions.py)
+
+
 class GeminiLiveSession:
     # A conversation she started herself to report a heartbeat result ends
     # this long after she finished speaking if the user never answers; the
@@ -168,6 +264,8 @@ class GeminiLiveSession:
         self._seen = set()
         self._cancelled = set()
         self._pending_calls = set()
+        self._blocking_calls = set()  # pending calls the model must wait for (stuck-turn guard)
+        self._tool_done_at = 0.0
         self._interrupted_calls = set()
         self._state = "listening"
         self._level = 0.0
@@ -180,6 +278,7 @@ class GeminiLiveSession:
         self._last_user_speech = 0.0
         self.from_paired_phone = False  # set by phone/gemini.py; gates unlock_screen
         self._offers_turn, self._offers = 0.0, 0  # use_tool offers in this user turn (_offer_result)
+        self._refused_turn, self._refused = 0.0, {}  # calls Jev sent back in this user turn (_sent_back)
         self._awaiting_since = 0.0  # 0: no reply pending
         self._playback_until = 0.0  # monotonic time the queued speech finishes
         self._echo_levels = deque(maxlen=150)   # mic RMS while she speaks (~3s)
@@ -189,12 +288,22 @@ class GeminiLiveSession:
         self._barge_count = 0
         self._splice_armed = False   # user words transcribed, no reply yet
         self._splice_abort_rms = self.SPLICE_ABORT_RMS  # the phone bridge sets its own (phone/gemini.py)
+        self._voice_rms: float | None = None  # speech for speaker recognition; the satellite sets a lower one
         self._splice_until = 0.0
         self._loud_run = 0
         self._speech_levels = deque(maxlen=200)  # rms of loud-run frames, logged for calibration
         self._last_loud_at = 0.0
         self._spliced_at = 0.0
         self._force_close_at = 0.0
+        self._stalled_since = 0.0  # first splice since her last reply
+        self._forced_at = 0.0      # a forced closure still waiting for her reply
+        self._stall_restarts = 0
+        self._stalled_restart = False
+        self.restart_stalled = False   # set where the caller reconnects on StuckTurn (run(), phone/gemini.py)
+        self.ack_silent_work = False   # set where _say_clip is heard by the user (same two places)
+        self._silent_since = 0.0   # start of her first blocking call since the user's latest words
+        self._voices = speaker_id.Tracker() if getattr(config, "speaker_id_enabled", False) else None
+        self._silent_acked = False
         self._splices = 0
         self._working = {}  # background call id -> what/started/heard_at/noted/notes (_task_status)
         self._last_audio_at = 0.0
@@ -218,6 +327,15 @@ class GeminiLiveSession:
         self._escalation_check = None
         self._escalation_again = False
         self._gemini_inflight = []  # (tool, args, monotonic start) of Gemini's recent calls
+        # Unbacked-claim guard (voice/escalation.py): a reply that says it is
+        # being done when no tool that acts ran for the user's latest words.
+        self._executed = []        # (tool that ran, its args, monotonic time it returned)
+        self._claim_mark = -1      # where the user's latest words were when her turn last completed
+        self._claim_since = 0.0    # her completed turn before those words: what ran since is for them
+        self._claim_checked = -1   # the mark already judged, or answered by an automatic prompt
+        self._claim_check = None
+        self._claim_again = False
+        self._fast_judging = False  # the fast path is judging or running the latest utterance
         self._script_read_at = 0.0  # when read_file last returned a multi-step script
         self._generation = 0
         self._speaker = None
@@ -236,6 +354,8 @@ class GeminiLiveSession:
         # Session-scoped capabilities (for example phone-chat file sharing).
         # They are declared only by that session and never enter the global action catalog.
         self.extra_tools: dict[str, object] = {}
+        if self._voices is not None:
+            self.extra_tools["remember_voice"] = self._remember_voice
         self._echo = EchoCancellation()
         # Numeric diagnostics only: no microphone recording or speech text in
         # interruption logs. A short window captures noise just before barge-in.
@@ -272,6 +392,8 @@ class GeminiLiveSession:
                         if call.id not in self._seen:
                             self._seen.add(call.id)
                             self._pending_calls.add(call.id)
+                            if call.name not in NON_BLOCKING_ACTIONS:
+                                self._blocking_calls.add(call.id)
                             self._calls.put_nowait(call)
                 server = message.server_content
                 if not server:
@@ -293,6 +415,17 @@ class GeminiLiveSession:
                             self._capture_password()
                             self._splice_armed = True
                             self._input_guard.heard_user()
+                            try:
+                                taken = await extensions.heard(self, transcription.text)
+                            except fallback.Reconnect:
+                                # The extension took these words and wants a new connection.
+                                self._utterance = []
+                                if self.restart_stalled:
+                                    raise
+                                self._hangup.set()  # this conversation cannot reconnect: the next one will
+                                return
+                            if taken:
+                                self._utterance = []  # an extension took these words: none for the fast path
                 if server.interrupted or server.turn_complete:
                     self._replied()
                 if server.interrupted:
@@ -337,6 +470,7 @@ class GeminiLiveSession:
                 if server.turn_complete or server.interrupted:
                     self._awaiting_since = 0.0
                 if server.turn_complete:
+                    self._maybe_check_claim(bool(server.interrupted))  # reads the previous _last_turn_done_at
                     self._last_turn_done_at = time.monotonic()
                     self._turn_done.set()
                     self._maybe_escalate()
@@ -350,13 +484,13 @@ class GeminiLiveSession:
         while True:
             call = await self._calls.get()
             if call.id in self._cancelled:
-                self._pending_calls.discard(call.id)
+                self._call_done(call.id)
                 continue
             if call.id in self._interrupted_calls:
                 await session.send_tool_response(function_responses=types.FunctionResponse(
                     id=call.id, name=call.name, response={"ok": False,
                     "message": "Not executed: user interrupted before this action started. Wait for the current request."}))
-                self._pending_calls.discard(call.id)
+                self._call_done(call.id)
                 continue
             if call.name == "end_conversation":
                 await session.send_tool_response(function_responses=types.FunctionResponse(
@@ -385,12 +519,13 @@ class GeminiLiveSession:
         at once. Gemini still hears everything and answers as usual."""
         from . import jev_fast
         while True:
+            self._fast_judging = False
             await asyncio.sleep(0.1)
             if not self._utterance or self._utterance_checked:
                 continue
             if time.monotonic() - self._last_user_speech < self.USER_PAUSE_SECONDS:
                 continue
-            self._utterance_checked = True
+            self._utterance_checked = self._fast_judging = True  # until back at the top (_judge_claim waits)
             text = " ".join("".join(self._utterance).split())
             started = time.monotonic()
             decision, route = await asyncio.to_thread(jev_fast.judge, text)
@@ -403,17 +538,23 @@ class GeminiLiveSession:
             # confident first-pass whole-task route is safe to hand off: the
             # Task Runtime owns continuation and still enforces every approval
             # boundary itself.
-            if (route and route.get("route") == "whole_task" and route.get("p", 0) >= 0.9
+            # 0.9 handed off one request in ten days of journal (2026-09-25 to
+            # 10-05). Six scored 0.8-0.89 and five of those were whole jobs she
+            # then lost her way in step by step ("fix it all", the expense
+            # report twice, "do what I was supposed to do", ssh to the home
+            # server and find a folder); below 0.8 they are mostly single steps.
+            if (route and route.get("route") == "whole_task" and route.get("p", 0) >= PROACTIVE_TASK_P
                     and self._proactive_task_turn != text):
                 self._proactive_task_turn = text
                 groups, _ = self._user_turns()
                 goal = escalation.proactive_goal(groups)
-                await self._escalate(goal)
+                await self._escalate(goal, proactive=True)
                 log.info("Jev fast path: %r -> proactive start_task route=%s", text[:120], route)
                 continue
             if decision is None:
                 log.info("Jev fast path: no fast command in %r route=%s (%.0fms)", text[:120], route,
                          (time.monotonic() - started) * 1000)
+                await self._check_dispute()
                 continue
             tool, args, evidence = decision
             # Gemini sometimes gets there first (real: 00:40:40.57 Gemini vs
@@ -438,10 +579,17 @@ class GeminiLiveSession:
         done = self._jev_done
         if not done or time.monotonic() - done[2] > self.JEV_DEDUPE_SECONDS:
             return None
-        tool, args, _, message, text = done
-        if call.name != tool:
+        return self._jev_already_named(call.name, dict(call.args or {}))
+
+    def _jev_already_named(self, name: str, given: dict):
+        """_jev_already for a tool by name: a use_tool call is checked as the tool it resolved to."""
+        done = self._jev_done
+        if not done or time.monotonic() - done[2] > self.JEV_DEDUPE_SECONDS:
             return None
-        if dict(call.args or {}) == args:
+        tool, args, _, message, text = done
+        if name != tool:
+            return None
+        if given == args:
             return {"ok": True, "message": f"Already done by the Jev fast path: {message}. Just confirm it."}
         # Same tool, different arguments: the 2026-09-23 "asked for 4, got 5"
         # flip-flop. Jev followed the user's transcribed words.
@@ -498,6 +646,23 @@ class GeminiLiveSession:
                 return call_id, "progress", w
         return None
 
+    # Journal 2026-10-05 18:36:23-18:36:49 and 18:38:16-18:38:28 (phone): she
+    # answered a spoken request with three and then two BLOCKING terminal
+    # calls and not one word; the user kept asking whether she was there.
+    # The model cannot speak, or be prompted to, until a blocking call
+    # returns, so this is a pre-rendered clip (voice/fallback.py), once per
+    # silent stretch and only after words the user spoke aloud.
+    SILENT_WORK_HEARD_SECONDS = 30.0
+
+    def _silent_work_due(self, now: float) -> bool:
+        if (not self.ack_silent_work or self._silent_acked or not self._silent_since
+                or not self._running_blocking or not self._audio.empty()
+                or now - self._silent_since < self.ACK_AFTER_SECONDS):
+            return False
+        heard = max(self._last_user_speech, self._last_loud_at)
+        return (bool(heard) and self._last_audio_at < heard
+                and self._silent_since - heard < self.SILENT_WORK_HEARD_SECONDS)
+
     async def _task_status(self, session) -> None:
         """Say "heard you, on it" when a background task starts silently, and
         "still on it" while it runs long."""
@@ -505,6 +670,12 @@ class GeminiLiveSession:
         while not self._hangup.is_set():
             await asyncio.sleep(0.2)
             now = time.monotonic()
+            if self._silent_work_due(now):
+                self._silent_acked = True
+                log.info("Silent work acknowledged: session=%s after=%.1fs", self._audit_session,
+                         now - self._silent_since)
+                await self._say_clip("working")
+                continue
             due = self._status_due(now)
             if due is None:
                 continue
@@ -539,31 +710,66 @@ class GeminiLiveSession:
         failed minutes ago is skipped, and the user is told once."""
         models = fallback.chain(self.config)
         if models[0] != self.config.gemini_model:
-            log.warning("Gemini Live starting on fallback %s: %s failed recently", models[0], self.config.gemini_model)
-            if fallback.should_announce():
+            failed = fallback.is_down(self.config.gemini_model)  # else its key is not on this machine
+            log.warning("Voice conversation starting on %s: %s %s", models[0], self.config.gemini_model,
+                        "failed recently" if failed else "has no API key")
+            if failed and fallback.should_announce():
                 await self._say_clip("switching", self.config.gemini_model)
         return models
 
-    async def _fall_back(self, models: list[str], index: int, error: BaseException) -> bool:
-        """After models[index] failed: True to go on with the next model,
-        False to let the error end the conversation."""
-        if self._hangup.is_set() or not fallback.is_provider_failure(error):
-            return False
+    async def _fall_back(self, models: list[str], index: int, error: BaseException) -> int | None:
+        """After models[index] failed: the index of the model to go on with,
+        or None to let the error end the conversation."""
+        # A model that keeps stalling after MAX_STALL_RESTARTS reconnects is failing too.
+        if self._hangup.is_set() or not (isinstance(error, StuckTurn) or fallback.is_provider_failure(error)):
+            return None
         model = models[index]
         fallback.mark_down(model, error)
-        if index + 1 >= len(models):
+        if quota.is_quota_error(str(error)):
+            # The user still has to know, even though the conversation goes on.
+            quota.report("vercel" if fallback.via_gateway(model) else "gemini", f"{model}: {error}",
+                         user_initiated=True)
+        later = fallback.next_index(models, index, error)
+        if later is None:
             if len(models) > 1:
                 await self._say_clip("failed")
-            return False
-        log.warning("Gemini Live falling back: session=%s %s -> %s", self._audit_session, model, models[index + 1])
+            return None
+        log.warning("Voice model falling back: session=%s %s -> %s", self._audit_session, model, models[later])
         if model == self.config.gemini_model and fallback.should_announce():
             await self._say_clip("switching", model)
-        return True
+        self._stall_restarts = 0
+        self._reset_stall()
+        return later
 
     async def _carry_over(self, session) -> None:
-        text = fallback.carry_over(self._transcript)
+        stalled, self._stalled_restart = self._stalled_restart, False
+        text = fallback.carry_over(self._transcript, stalled)
         if text:
-            await session.send_client_content(turns={"role": "user", "parts": [{"text": text}]}, turn_complete=False)
+            # After a stall she owes the user an answer: that one is a turn of its own.
+            await session.send_client_content(turns={"role": "user", "parts": [{"text": text}]},
+                                              turn_complete=stalled)
+            if stalled:
+                self._awaiting_since = time.monotonic()
+
+    def _reset_stall(self) -> None:
+        self._stalled_since = self._forced_at = self._force_close_at = self._spliced_at = self._splice_until = 0.0
+        self._splice_armed = False
+
+    def _resume_stalled(self, error: BaseException) -> bool:
+        """After fallback.Reconnect (a stalled turn, or a session the
+        provider ended on schedule): True to connect to the same model
+        again and go on."""
+        if not isinstance(error, fallback.Reconnect) or self._hangup.is_set():
+            return False
+        stalled = isinstance(error, StuckTurn)
+        if stalled and self._stall_restarts >= self.MAX_STALL_RESTARTS:
+            return False  # _fall_back moves to the next model
+        self._stall_restarts += stalled
+        self._stalled_restart = stalled
+        self._reset_stall()
+        log.warning("Voice conversation reconnecting: session=%s stalled=%s restart=%d: %s", self._audit_session,
+                    stalled, self._stall_restarts, str(error)[:120])
+        return True
 
     def _idle(self) -> bool:
         now = time.monotonic()
@@ -588,6 +794,7 @@ class GeminiLiveSession:
                 await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
                     "[Automatic notice] Tell the user now, briefly, in their language, then carry on: "
                     + entry["notice"]))]), turn_complete=True)
+                self._claim_checked = self._user_mark()  # her next turn answers this, not the user
                 log.info("Automatic notice said: session=%s %r", self._audit_session, entry["notice"][:120])
                 continue
             if entry is not None and entry.get("outcome") == "waiting_approval" and not self._still_waiting(entry):
@@ -611,6 +818,7 @@ class GeminiLiveSession:
                     "actual diff) and files_modified in plain words; never guess the change. On their answer call "
                     f"task_respond with task_id {entry.get('task_id')} and approve true or false. It is also "
                     "waiting in the envelope at the top right of the screen."))]), turn_complete=True)
+                self._claim_checked = self._user_mark()
                 self._announced.append((entry.get("id"), time.monotonic()))
                 self._announcements_said.append(f"approval needed: {entry.get('title')}")
                 log.info("Approval announced: session=%s task=%s", self._audit_session, entry.get("task_id"))
@@ -626,6 +834,7 @@ class GeminiLiveSession:
                 await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
                     f"[Heartbeat result, automatic] {opener}Tell the user now, briefly, in their language: {what}. "
                     f"{follow_up} If they do not answer, say nothing more."))]), turn_complete=True)
+                self._claim_checked = self._user_mark()
                 self._announced.append((entry.get("id"), time.monotonic()))
                 self._announcements_said.append(what)
                 log.info("Heartbeat result announced: session=%s id=%s title=%r", self._audit_session,
@@ -731,6 +940,28 @@ class GeminiLiveSession:
             groups.append(" ".join("".join(current).split()))
         return groups, " ".join("".join(reply).split())
 
+    async def _check_dispute(self) -> None:
+        """The user says her result is wrong (voice/escalation.py): arm the
+        self-check for her next tool result, or hand the job over the second time."""
+        if not self._escalator.reviewable(time.monotonic()):
+            return
+        groups, _ = self._user_turns()
+        said, seen_user = [], False
+        for entry in reversed(self._transcript):  # what she said before the user's latest words
+            if entry["role"] == "user":
+                if said:
+                    break
+                seen_user = True
+            elif seen_user:
+                said.append(entry["text"])
+        reply = " ".join("".join(reversed(said)).split())
+        goal = await asyncio.to_thread(self._escalator.disputed, time.monotonic(), groups, reply)
+        if goal:
+            await self._escalate(goal)
+        elif self._escalator._review_note:
+            log.info("Self-check armed: session=%s the user disputes her result: %r", self._audit_session,
+                     (groups[-1] if groups else "")[:120])
+
     def _maybe_escalate(self) -> None:
         # due() may ask Jev (escalation.jev_judge): only with a failure on
         # record, off the event loop, one check at a time -- and a failure or
@@ -758,7 +989,112 @@ class GeminiLiveSession:
         finally:
             self._escalation_check = None
 
-    async def _escalate(self, goal: str) -> None:
+    def _user_mark(self) -> int:
+        """Where the user's latest words are in the transcript (-1: none yet)."""
+        return next((i for i in range(len(self._transcript) - 1, -1, -1) if self._transcript[i]["role"] == "user"), -1)
+
+    @staticmethod
+    def _task_running() -> bool:
+        """A background task of this conversation is at work: what she says
+        about it is not a claim with nothing behind it."""
+        try:
+            from ..core import conversations
+            from ..runtime.task import ACTIVE, TaskStore
+            cid = conversations.CURRENT.get()
+            return any(t.status in ACTIVE and t.source == "voice" and t.conversation == cid
+                       for t in TaskStore().list(20))
+        except Exception:  # noqa: BLE001 -- when unsure, let Jev judge the reply
+            return False
+
+    # Her words can be transcribed just after the turn that spoke them ends.
+    CLAIM_SETTLE_SECONDS = 0.4
+    # ... and the fast path may still be judging, or doing, what the user said.
+    CLAIM_FAST_WAIT_SECONDS = 6.0
+
+    def _maybe_check_claim(self, interrupted: bool = False) -> None:
+        # Called when her turn completes. 2026-10-12: "on it, starting the
+        # countdown" after only reading the skill, then "I'm making sure it is
+        # running" to a typed "I heard nothing": two complete turns, no call
+        # that acts, nothing running. Code finds such a turn; Jev reads it
+        # (escalation.jev_unbacked) off the event loop, one check at a time.
+        mark = self._user_mark()
+        if mark != self._claim_mark:
+            self._claim_mark, self._claim_since = mark, self._last_turn_done_at
+        if interrupted or mark < 0 or mark == self._claim_checked:
+            return
+        if self._claim_check is not None:
+            self._claim_again = True
+            return
+        self._claim_check = asyncio.create_task(self._check_claim())
+        self._bg_tasks.add(self._claim_check)
+        self._claim_check.add_done_callback(self._bg_tasks.discard)
+
+    async def _check_claim(self) -> None:
+        try:
+            while True:
+                self._claim_again = False
+                await self._judge_claim()
+                if not self._claim_again:
+                    return
+        finally:
+            self._claim_check = None
+
+    async def _judge_claim(self) -> None:
+        mark, since = self._claim_mark, self._claim_since
+        await asyncio.sleep(self.CLAIM_SETTLE_SECONDS)
+        fast, waited = getattr(self.config, "jev_fast_path", False), time.monotonic() + self.CLAIM_FAST_WAIT_SECONDS
+        while ((self._fast_judging or (fast and self._utterance and not self._utterance_checked))
+               and time.monotonic() < waited):
+            await asyncio.sleep(0.1)
+        if mark != self._user_mark() or mark == self._claim_checked:
+            return  # the user went on speaking, or an automatic prompt followed: not this turn
+        groups, reply = self._user_turns()
+        if (not groups or not reply or self._pending_calls or self._running_background or self._running_blocking
+                or self._working):
+            return  # nothing said, or a call still runs: the turn that reports it is the one to judge
+        self._claim_checked = mark  # each user turn is judged once
+        acted = [tool for tool, args, at in self._executed if at >= since and not switchboard._reads(tool, args)]
+        if (acted or (self._jev_done and self._jev_done[2] >= since) or self._fast_judging
+                or (self._proactive_task_turn and self._proactive_task_turn in groups[-1])
+                or not self._escalator.claimable(time.monotonic())):
+            return  # something that acts ran for these words, or the job was just handed over
+        if await asyncio.to_thread(self._task_running):
+            return
+        goal, evidence = await asyncio.to_thread(self._escalator.unbacked, time.monotonic(), groups, reply, since)
+        if not goal:
+            log.info("Unbacked claim: none in %r -> %r evidence=%s", groups[-1][:120], reply[:120], evidence)
+            return
+        log.info("Unbacked claim: %r -> %r with no tool that acts; handing it over evidence=%s", groups[-1][:120],
+                 reply[:120], evidence)
+        await self._escalate(goal, unbacked=True)
+
+    async def _read_skill_wanted(self, call, result: ActionResult, heard: str, asked: str,
+                                 request: str) -> ActionResult | None:
+        """She read a skill the user asked her to carry out: it is started
+        here (execution/actions.py run_skill) and she gets that result in
+        place of the text. 2026-10-12: given a skill's five steps as text, she
+        said "on it" and made no other call. None: leave her the text."""
+        from ..core import skills
+        try:
+            found = json.loads(result.message)
+        except ValueError:
+            return None
+        name = (found.get("skill") or found.get("name")) if isinstance(found, dict) else None
+        if not name:
+            return None
+        skill = {"name": name, "description": found.get("description", ""),
+                 "body": found.get("instructions") or found.get("body") or ""}
+        if not await asyncio.to_thread(skills.wants_run, heard or asked, skill, asked=asked if heard else ""):
+            return None
+        started = await asyncio.to_thread(run_action, "run_skill", {"name": name, "request": request})
+        log.info("Skill run: call=%s skill=%s request=%r -> ok=%s %r", call.id, name, request[:120], started.ok,
+                 started.message[:160])
+        if not started.ok:
+            return started
+        return ActionResult(True, f"The user asked for the skill '{name}' to be carried out, so it was started "
+                                  "instead of only read: " + started.message)
+
+    async def _escalate(self, goal: str, proactive: bool = False, unbacked: bool = False) -> None:
         log.info("Escalating to the Task Runtime: session=%s goal=%r", self._audit_session, goal[:600])
         result = await asyncio.to_thread(run_action, "start_task", {"goal": goal})
         try:
@@ -772,7 +1108,8 @@ class GeminiLiveSession:
         self._escalator.observe_call("start_task", {"goal": goal}, True, result.message, time.monotonic())
         log.info("Escalated: session=%s task=%s%s", self._audit_session, task_id,
                  " (added to the task already doing this job)" if started.get("existing") else "")
-        self._announcements.put_nowait({"notice": escalation.notice(task_id, bool(started.get("existing")))})
+        self._announcements.put_nowait({"notice": escalation.notice(task_id, bool(started.get("existing")), proactive,
+                                                                    unbacked)})
 
     def _switchboard_context(self) -> switchboard.Context:
         """The user's latest words, a few earlier turns, the fast pass's
@@ -786,8 +1123,14 @@ class GeminiLiveSession:
             hint = None
         since = self._last_user_speech
         calls = [(name, args) for name, args, at in self._gemini_inflight if at >= since]
+        # Her last call, when it failed (not one Jev itself sent back): what she
+        # does next is recovery, whatever the user's latest words were.
+        ran = [e for e in self._action_log[-6:] if not str(e.get("message", "")).startswith(_SENT_BACK)]
+        last = ran[-1] if ran else None
+        failed = ({"tool": last["action"], "args": last["args"], "error": last["message"]}
+                  if last and not last["ok"] and time.time() - last.get("ts", 0) < 180 else None)
         return switchboard.Context(request, groups[-4:-1], {k: hint[k] for k in ("route", "p")} if hint else None,
-                                   calls)
+                                   calls, failed=failed)
 
     async def _pick(self, call) -> catalog.Resolution:
         """use_tool: Jev picks the catalog tool (execution/catalog.py)."""
@@ -846,6 +1189,23 @@ class GeminiLiveSession:
                                    "use_tool(name=..., args={...}) with every required parameter inside `args`, "
                                    "or tell the user in one short sentence what you still need.")
 
+    MAX_SAME_REFUSAL = 2  # the same call, sent back twice: the third answer says stop
+
+    def _sent_back(self, name: str, args: dict, message: str) -> ActionResult:
+        """A call Jev sent back (reject or ask). Journal 2026-10-07 21:01: the
+        same terminal_task came back nine times in seven seconds, each time
+        with the same cached verdict and the same message."""
+        if self._refused_turn != self._last_user_speech:
+            self._refused_turn, self._refused = self._last_user_speech, {}
+        key = json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str)
+        self._refused[key] = self._refused.get(key, 0) + 1
+        if self._refused[key] <= self.MAX_SAME_REFUSAL:
+            return ActionResult(False, message)
+        return ActionResult(False, f"Not run: this exact {name} call was already sent back {self._refused[key] - 1} "
+                                   "times and will be sent back again. Stop sending it. Either make a different "
+                                   "call that does what the user asked, or tell the user in one short sentence "
+                                   "what you could not do and ask how they want to go on.")
+
     async def _review(self, call, name: str, args: dict) -> switchboard.Verdict:
         ctx = self._switchboard_context()
         ctx.description = _TOOL_TEXT.get(name) or catalog.catalog().get(name, {}).get("description", "")
@@ -869,9 +1229,12 @@ class GeminiLiveSession:
                 "started": time.monotonic(), "heard_at": self._last_user_speech, "noted": 0.0, "notes": 0}
         else:
             self._running_blocking += 1
+            if self._silent_since <= max(self._last_user_speech, self._last_loud_at):
+                # Her first call since the user's latest words.
+                self._silent_since, self._silent_acked = time.monotonic(), False
         if self._overlay:
             await asyncio.to_thread(watchdog.tool_call, call.name, call.args or {})
-        ran = call.name  # the tool that actually ran (a reroute changes it)
+        ran, ran_args = call.name, dict(call.args or {})  # the tool that actually ran (a reroute changes it)
         try:
             already = self._jev_already(call)
             redirect = self._mission_redirect(call)
@@ -887,6 +1250,12 @@ class GeminiLiveSession:
                 result = ActionResult(True, LiveSession._get_recent_actions(self, (call.args or {}).get("target")))
             elif call.name == "use_tool" and not (pick := await self._pick(call)).run:
                 result = self._offer_result(pick)
+            elif call.name == "use_tool" and (again := self._jev_already_named(pick.tool, dict(pick.args))) is not None:
+                ran = pick.tool
+                result = ActionResult(again["ok"], again["message"])
+            elif call.name == "use_tool" and pick.tool == "get_recent_actions":
+                ran = pick.tool
+                result = ActionResult(True, LiveSession._get_recent_actions(self, pick.args.get("target")))
             else:
                 tool, args = call.name, dict(call.args or {})
                 if call.name == "use_tool":
@@ -908,13 +1277,14 @@ class GeminiLiveSession:
                 if verdict.action == "reroute":
                     name, args, prefix = verdict.tool, verdict.args, verdict.message + " "
                     ran = name
+                ran_args = dict(args or {})
                 looking = asyncio.create_task(asyncio.to_thread(LiveSession._current_window))
                 if not user_tools.exists(name):
                     # A desktop action can change the focus: note the window first.
                     await asyncio.wait({looking}, timeout=self.WINDOW_NOTE_SECONDS)
                 if verdict.action in ("reject", "ask"):
                     action = None
-                    result = ActionResult(False, verdict.message)
+                    result = self._sent_back(tool, args, verdict.message)
                 elif early is not None and name == tool:
                     action = early
                 else:
@@ -939,11 +1309,21 @@ class GeminiLiveSession:
                     self._script_read_at = time.monotonic()
                     # The planner fills missing step details from the script itself.
                     self._script_text = result.message.split("\n\n[assistant note]", 1)[0]
-                if call.name == "close_window" and result.ok:
+                if ran == "close_window" and result.ok:
                     self._action_log = [e for e in self._action_log if e["window"] != window]
                 else:
                     self._action_log.append({"action": call.name, "args": call.args or {}, "ok": result.ok, "message": result.message, "call_id": call.id, "ts": time.time(), "window": window})
                     self._action_log = self._action_log[-100:]
+            if ran in ("find_skill", "load_skill") and result.ok:
+                # The user's own words say whether to carry it out. find_skill's
+                # request is those words with references resolved (the task's
+                # title); use_tool's only says which tool was wanted.
+                resolved = str(ran_args.get("request") or "")
+                asked = resolved or str((call.args or {}).get("request") or "")
+                heard = "" if original_request.startswith("(no user words:") else original_request
+                if (started := await self._read_skill_wanted(call, result, heard, asked,
+                                                             resolved or heard or asked)) is not None:
+                    ran, ran_args, result = "run_skill", {}, started
             message = result.message
             if result.ok and ran.startswith("myapi_"):
                 refinement_request = str((call.args or {}).get("request") or original_request)
@@ -968,9 +1348,16 @@ class GeminiLiveSession:
         log.info("Gemini action finished: session=%s call=%s name=%s ok=%s result_chars=%d message=%r",
                  self._audit_session, call.id, call.name, response["ok"],
                  len(response["message"]), response["message"][:1800])
-        self._escalator.observe_call(ran, dict(call.args or {}), response["ok"], response["message"],
-                                     time.monotonic())
+        if ran != "use_tool" and not response["message"].startswith(_NOT_RUN):
+            self._executed = self._executed[-20:] + [(ran, ran_args, time.monotonic())]
+        # A skill started is a task started: nothing else escalates the same job.
+        self._escalator.observe_call("start_task" if ran == "run_skill" and response["ok"] else ran,
+                                     dict(call.args or {}), response["ok"], response["message"], time.monotonic())
         self._maybe_escalate()
+        if call.name not in NON_BLOCKING_ACTIONS and (note := self._escalator.take_review_note(time.monotonic())):
+            # In the result she is reading now, not a prompt rule (see _SCRIPT_HINT).
+            response = {**response, "message": response["message"] + note}
+            log.info("Self-check delivered: session=%s call=%s", self._audit_session, call.id)
         if background:
             self._running_background -= 1
             self._working.pop(call.id, None)
@@ -996,11 +1383,11 @@ class GeminiLiveSession:
                 # background result can outlive it.
                 log.warning("Gemini tool response lost: session=%s call=%s: %s", self._audit_session, call.id,
                             str(exc)[:160])
-                self._pending_calls.discard(call.id)
+                self._call_done(call.id)
                 return
             log.info("Gemini tool response delivered: session=%s call=%s interrupted=%s",
                      self._audit_session, call.id, call.id in self._interrupted_calls)
-        self._pending_calls.discard(call.id)
+        self._call_done(call.id)
 
     # Self-interruption guard. Real session 2026-09-23 13:45: she was cut off
     # four times mid-sentence by her OWN voice leaking back through the mic
@@ -1042,7 +1429,25 @@ class GeminiLiveSession:
     SPLICE_SECONDS = 4.0
     SPLICE_ABORT_RMS = 3500.0
     SPLICE_ABORT_FRAMES = 3
+    # Journal 2026-10-05 16:04:52-16:05:02 (phone): she was inside an 8s
+    # terminal_read when a late transcript re-armed the guard. The model
+    # cannot speak until a blocking tool returns, so the 4s of silence
+    # covered whatever the user said next and the forced closure then cut
+    # in on her own answer ("Gemini interrupted"). A blocking call in
+    # flight is her reply: the guard waits for it, then counts from its end.
     FORCE_CLOSE_AFTER_SECONDS = 8.0
+    # Journal 2026-10-05 18:37:16-18:38:16 (phone): 60s without a reply. The
+    # user repeated themselves seven times and each repeat put the forced
+    # closure off again, so it ran once; on 2026-10-04 14:29 (65s) never.
+    # Once STALL_CAP_SECONDS have passed since the first unanswered splice,
+    # the closure goes out the next time the user stops, not 8s after.
+    # And the closure itself is often ignored: of 29 in eight days, 10 were
+    # answered within 4s, 3 after 8-10s, 16 after 18s+ or never. If none
+    # comes within RESTART_AFTER_SECONDS the connection is replaced and the
+    # transcript carried over (_resume_stalled), as for a failed model.
+    STALL_CAP_SECONDS = 10.0
+    RESTART_AFTER_SECONDS = 5.0
+    MAX_STALL_RESTARTS = 3
 
     def _capture_password(self, text: str | None = None) -> None:
         """A password the user states ("pass: X") goes to GNOME Keyring at
@@ -1055,6 +1460,12 @@ class GeminiLiveSession:
             self._password_seen = values[-1]
             threading.Thread(target=passwords.store_spoken, args=(values[-1],), daemon=True).start()
 
+    def _call_done(self, call_id) -> None:
+        self._pending_calls.discard(call_id)
+        if call_id in self._blocking_calls:
+            self._blocking_calls.discard(call_id)
+            self._tool_done_at = time.monotonic()
+
     def _replied(self) -> None:
         self._input_guard.assistant_replied()
         if self._spliced_at:
@@ -1063,6 +1474,7 @@ class GeminiLiveSession:
         self._splice_armed = False
         self._splice_until = 0.0
         self._force_close_at = 0.0
+        self._stalled_since = self._forced_at = 0.0
 
     def _splice(self, chunk: bytes, rms: float, now: float, speaking: bool) -> bytes | None:
         """Silence to send instead of this frame, if a stuck turn needs closing."""
@@ -1079,9 +1491,9 @@ class GeminiLiveSession:
                 return bytes(len(chunk))
             self._splice_until = 0.0
             return None
-        if not self._splice_armed or speaking or loud:
+        if not self._splice_armed or speaking or loud or self._blocking_calls:
             return None
-        last_words = max(self._last_user_speech, self._last_loud_at)
+        last_words = max(self._last_user_speech, self._last_loud_at, self._tool_done_at)
         if now - last_words < self.SPLICE_AFTER_SECONDS:
             return None
         levels = sorted(r for ts, r, _ in self._mic_levels if now - ts <= 1.0)
@@ -1096,16 +1508,85 @@ class GeminiLiveSession:
         self._splice_until = now + self.SPLICE_SECONDS
         self._spliced_at = now
         self._force_close_at = now
+        if not self._stalled_since:
+            self._stalled_since = now
+        elif now - self._stalled_since >= self.STALL_CAP_SECONDS:
+            self._force_close_at = now - self.FORCE_CLOSE_AFTER_SECONDS  # the user has stopped again: close now
         self._splices += 1
         return bytes(len(chunk))
+
+    def _remember_voice(self, args: dict) -> ActionResult:
+        """The recognized speaker adds a recording of themself (speaker_id.remember)."""
+        name = str(args.get("name") or "").strip()
+        if not name:
+            return ActionResult(False, "Whose voice? Pass the person's name.")
+        source = "phone" if self.from_paired_phone else "desk"
+        ok, message = speaker_id.remember(name, self._voices.recent(), source)
+        return ActionResult(ok, message)
+
+    async def _speaker_watch(self, session) -> None:
+        """Tell the model who is speaking when the voice is recognized, and
+        again when it becomes someone else (voice/speaker_id.py)."""
+        if self._voices is None:
+            return await asyncio.Event().wait()  # off: a worker that never ends, like the others
+        identifier = speaker_id.Identifier()
+        if not await asyncio.to_thread(identifier.ready):
+            log.warning("Speaker recognition is on but nobody is enrolled: run omarchy-ai-settings enroll-speakers")
+            return await asyncio.Event().wait()
+        # Said before anyone speaks: with nothing said, she named whoever the
+        # household notes made likely and claimed to recognize them (journal
+        # 2026-10-09 20:40: one person greeted by another's name, "of course I
+        # recognize you", no judgement made). Repeated once when the first judgement is nobody.
+        unknown = ("[Speaker] {}. You do not know who is speaking: do not call them by a household member's name "
+                   "and do not say you recognize them, unless they tell you who they are. "
+                   "This is context, not a request.")
+        if self._voices.speaker is None:
+            await session.send_client_content(turns={"role": "user", "parts": [{"text": unknown.format(
+                "Nobody's voice has been recognized in this conversation yet")}]}, turn_complete=False)
+        told_unknown = False
+        try:
+            while True:
+                await asyncio.sleep(0.25)
+                samples = self._voices.due()
+                if samples is None:
+                    continue
+                name, scores = await asyncio.to_thread(identifier.identify, samples)
+                log.info("Speaker recognition: session=%s speaker=%s scores=%s", self._audit_session, name,
+                         {k: round(v, 2) for k, v in scores.items()})
+                if name is None and self._voices.speaker is None and not told_unknown:
+                    told_unknown = True
+                    await session.send_client_content(turns={"role": "user", "parts": [{"text": unknown.format(
+                        "The voice speaking now is not recognized as anyone enrolled")}]}, turn_complete=False)
+                if name is None or name == self._voices.speaker:
+                    continue  # an unsure stretch changes nothing
+                self._voices.speaker = name
+                who = speaker_id.describe(name, (await asyncio.to_thread(speaker_id.people)).get(name))
+                await session.send_client_content(turns={"role": "user", "parts": [{"text": (
+                    f"[Speaker] The person speaking now, recognized by their voice: {who}. "
+                    "This is context, not a request.")}]}, turn_complete=False)
+        finally:
+            # For setting the speech level from what a conversation really held.
+            voices = self._voices
+            log.info("Speaker recognition heard: session=%s mic=%.1fs speech=%.1fs kept=%.1fs level=%.0f speaker=%s",
+                     self._audit_session, voices.heard / speaker_id.RATE, voices.loud / speaker_id.RATE,
+                     voices.kept / speaker_id.RATE, self._voice_rms or self._splice_abort_rms, voices.speaker)
 
     async def _stuck_turn_recovery(self, session) -> None:
         """Force-close a turn when even the silence splice did not unblock it."""
         from google.genai import types
         while True:
             await asyncio.sleep(0.1)
+            if self._forced_at and time.monotonic() - self._forced_at >= self.RESTART_AFTER_SECONDS:
+                # A pending call's result may still wake her, and a restart would lose it.
+                if not self._pending_calls:
+                    self._forced_at = 0.0
+                    if self.restart_stalled:
+                        raise StuckTurn("The voice model gave no reply to a forced turn closure")
             started = self._force_close_at
             if not started or time.monotonic() - started < self.FORCE_CLOSE_AFTER_SECONDS:
+                continue
+            if self._blocking_calls:
+                self._force_close_at = 0.0
                 continue
             # A text turn_complete is the only operation observed to unstick
             # the current Gemini Live regression after streamed silence did
@@ -1116,12 +1597,16 @@ class GeminiLiveSession:
                 "[Turn recovery] The user finished speaking. Respond to their preceding request now."))]),
                 turn_complete=True)
             self._forced_turn_closures += 1
+            self._forced_at = time.monotonic()
             log.warning("Stuck-turn guard: silence splice got no reply for %.1fs; forced turn closure",
                         self.FORCE_CLOSE_AFTER_SECONDS)
 
     def _gate(self, chunk: bytes, rms: float, now: float) -> list[bytes]:
         """Chunks to send for this mic frame (silence while she speaks)."""
         speaking = now < self._playback_until + self.ECHO_TAIL_SECONDS
+        if self._voices is not None:
+            # The user's own loud frames open an utterance; her echo is never a voice to recognize.
+            self._voices.add(chunk, rms >= (self._voice_rms or self._splice_abort_rms), echo=speaking)
         silence = self._splice(chunk, rms, now, speaking)
         if silence is not None:
             return [silence]
@@ -1265,8 +1750,7 @@ class GeminiLiveSession:
             await asyncio.sleep(0.1)
 
     async def run(self):
-        from google import genai
-        client = genai.Client(api_key=Path(self.config.gemini_api_key_path).read_text().strip())
+        client = gemini_client(self.config)
         self._loop = asyncio.get_running_loop()
         # Desktop voice talks show in the phone's conversation list too, and the
         # tasks started here report back into them (core/conversations.py).
@@ -1294,15 +1778,18 @@ class GeminiLiveSession:
             except OSError as exc:
                 log.warning("TV microphone socket unavailable; desktop microphone only: %s", exc)
             models = await self._start_models()
-            for index, model in enumerate(models):
+            self.restart_stalled = self.ack_silent_work = True
+            index = attempt = 0
+            while True:
+                model = models[index]
                 try:
-                    async with client.aio.live.connect(model=model, config=build_live_config(self.config)) as session:
+                    async with live_connect(client, self.config, model, build_live_config(self.config)) as session:
                         if mic is None:
                             argv = ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms"]
                             argv.extend(["--target", self._echo.source])
                             mic = await asyncio.create_subprocess_exec(*argv, "-a", "-", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
                         log.info("Gemini Live connected: %s; full-duplex tools enabled", model)
-                        if index:
+                        if attempt:
                             await self._carry_over(session)
                         else:
                             log.info("Gemini speech detection: start=LOW end=LOW prefix=300ms silence=600ms; real interruptions enabled")
@@ -1311,14 +1798,14 @@ class GeminiLiveSession:
                             await asyncio.to_thread(status_icon.set_live, True)
                         workers = [self._send_audio(session, mic), self._receive(session), self._play_audio(),
                                    self._tools(session), self._stuck_turn_recovery(session), self._task_status(session),
-                                   self._hangup.wait()]
+                                   self._speaker_watch(session), self._hangup.wait()]
                         if self.config.watchdog_enabled:
                             workers.append(self._visuals())
                         if self.config.jev_fast_path:
                             workers.append(self._fast_path())
                         workers.append(self._announcer(session))
                         tasks = [asyncio.create_task(worker) for worker in workers]
-                        if not index:
+                        if not attempt:
                             await announce_update(session)
                         done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds, return_when=asyncio.FIRST_COMPLETED)
                         for task in done:
@@ -1329,7 +1816,11 @@ class GeminiLiveSession:
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
                     tasks = []
-                    if not await self._fall_back(models, index, error):
+                    attempt += 1
+                    if self._resume_stalled(error):
+                        continue
+                    index = await self._fall_back(models, index, error)
+                    if index is None:
                         raise
         finally:
             log.info("Gemini session audio summary: session=%s interruptions=%d received_audio_bytes=%d submitted_audio_bytes=%d "
@@ -1357,7 +1848,8 @@ class GeminiLiveSession:
                 await self._echo.close()
             except Exception:
                 log.exception("Could not unload session echo cancellation")
-            await client.aio.aclose()
+            if client is not None:
+                await client.aio.aclose()
             await asyncio.to_thread(status_icon.set_live, False)
             if self._overlay:
                 self._overlay = False

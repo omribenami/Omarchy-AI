@@ -294,8 +294,10 @@ class OmaDaemon:
                 # 2026-09-19 12:04: Gemini's "1011 Resource has been exhausted"
                 # ended the conversation with no word to the user.
                 if self.config.provider == "gemini" and quota.is_quota_error(str(error)):
-                    quota.report("gemini", str(error), user_initiated=True)
-                    self._last_error = "Gemini quota used up."
+                    # The last model of the chain may be a Gateway one (voice/fallback.py).
+                    gateway = "Vercel AI Gateway" in str(error)
+                    quota.report("vercel" if gateway else "gemini", str(error), user_initiated=True)
+                    self._last_error = "Vercel AI Gateway credits used up." if gateway else "Gemini quota used up."
                 # Keep the selected provider; never silently switch credentials.
             finally:
                 from ..execution.browser_jev import cancel_browser_tasks

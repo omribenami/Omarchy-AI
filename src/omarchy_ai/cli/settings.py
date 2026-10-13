@@ -122,6 +122,7 @@ SETTABLE = (
     "omarchy_vision_model",
     "omarchy_stt_model",
     "omarchy_model_choice",
+    "speaker_id_enabled",
 )
 
 # A curated set of realtime voices this project has seen documented/used —
@@ -149,6 +150,16 @@ def _wake_models() -> list[dict]:
     ]
 
 
+def _voice_fallback(cfg: Config) -> list[dict]:
+    """The Gemini provider's models in the order they are tried, and which
+    key each one needs (voice/fallback.py). Presence checks only."""
+    from ..voice import fallback
+    return [{"model": model, "label": fallback.display_name(model),
+             "key": "Gateway key" if fallback.via_gateway(model) else "Gemini key",
+             "ready": fallback.key_path(cfg, model).is_file()}
+            for model in fallback.configured(cfg)]
+
+
 def _snapshot() -> dict:
     cfg = load_config()
     defaults = Config()
@@ -172,6 +183,7 @@ def _snapshot() -> dict:
         "api_key": _api_key_state(),
         "gemini_api_key": {"set": GEMINI_KEY_PATH.exists(), "path": str(GEMINI_KEY_PATH)},
         "vercel_gateway_api_key": {"set": VERCEL_GATEWAY_KEY_PATH.exists(), "path": str(VERCEL_GATEWAY_KEY_PATH)},
+        "voice_fallback": _voice_fallback(cfg),
         "github_issue_token": {"set": issues.has_token(), "path": str(issues.TOKEN_PATH)},
         "phone_bridge_paired_count": paired_count(),
         "myapi": _myapi_state(),
@@ -232,7 +244,7 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
             raise ValidationError("wake_threshold must be between 0 and 1")
         return f
 
-    if key in {"watchdog_enabled", "tasks_hud_on_call", "routines_hud_on_call"}:
+    if key in {"watchdog_enabled", "tasks_hud_on_call", "routines_hud_on_call", "speaker_id_enabled"}:
         if not isinstance(value, bool):
             raise ValidationError(f"{key} must be a boolean")
         return value
@@ -468,6 +480,19 @@ def cmd_set_vercel_gateway_api_key(_args: argparse.Namespace) -> dict:
         f.write(key + "\n")
     os.chmod(VERCEL_GATEWAY_KEY_PATH, 0o600)
     return _snapshot()
+
+
+def cmd_enroll_speakers(_args: argparse.Namespace) -> dict:
+    """Build the voices the assistant recognizes from the recordings in
+    ~/.config/omarchy-ai/speakers/<name>/*.wav (voice/speaker_id.py)."""
+    from ..voice import speaker_id
+    try:
+        result = speaker_id.enroll()
+    except Exception as exc:  # noqa: BLE001 -- the model download or a recording can fail
+        return {"error": f"could not enroll: {exc}"}
+    if not result["speakers"]:
+        return {"error": f"no recordings found: put WAV files in {speaker_id.SPEAKERS_DIR}/<name>/", **result}
+    return {"ok": True, **result}
 
 
 def cmd_set_github_issue_token(_args: argparse.Namespace) -> dict:
@@ -767,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("set-gemini-api-key")
     sub.add_parser("set-vercel-gateway-api-key")
     sub.add_parser("set-github-issue-token")
+    sub.add_parser("enroll-speakers")
     sub.add_parser("forget-github-issue-token")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
@@ -802,6 +828,7 @@ def main(argv: list[str] | None = None) -> int:
         "set-gemini-api-key": cmd_set_gemini_api_key,
         "set-vercel-gateway-api-key": cmd_set_vercel_gateway_api_key,
         "set-github-issue-token": cmd_set_github_issue_token,
+        "enroll-speakers": cmd_enroll_speakers,
         "forget-github-issue-token": cmd_forget_github_issue_token,
         "restart-status": cmd_restart_status,
         "pair-phone": cmd_pair_phone,

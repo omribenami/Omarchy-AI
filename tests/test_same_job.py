@@ -96,6 +96,9 @@ class SameJobTests(RuntimeHarness):
     def test_escalation_says_it_joined_the_task(self):
         self.assertIn("already working on this", escalation.notice("t-video", existing=True))
         self.assertIn("handed it to a background task", escalation.notice("t-video"))
+        # 2026-10-08: handed over at once, nothing had failed.
+        self.assertNotIn("fail", escalation.notice("t-drone", proactive=True))
+        self.assertNotIn("fail", escalation.notice("t-drone", existing=True, proactive=True))
 
 
 class GithubUploadInputTests(RuntimeHarness):

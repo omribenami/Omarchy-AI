@@ -97,6 +97,20 @@ class TextChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.archived[0][0], {"role": "user", "text": "What is 2 plus 2?"})
         self.assertEqual(agenda._calls, {}, "a closed chat no longer receives announcements")
 
+    async def test_a_note_shows_in_an_open_chat_as_its_own_kind_of_line(self):
+        from omarchy_ai.core import conversations
+        chat = self.chat(["Saved."])
+        conversations.add_note("", "Skill created: early")  # no chat open yet: nowhere to show it
+        chat.send("save that as a skill")
+        await self.until(lambda: chat.status == "ready" and len(chat.messages) == 2)
+        await asyncio.to_thread(conversations.add_note, "", "Skill created: water-plants")  # from a worker thread
+        conversations.add_note("20261012-000000-abcdef", "Skill created: elsewhere")  # another talk's
+        await self.until(lambda: self.pushed and self.pushed[-1]["messages"][-1]["role"] == "note")
+        self.assertEqual([(m["role"], m["text"]) for m in chat.messages][1:],
+                         [("assistant", "Saved."), ("note", "Skill created: water-plants")])
+        chat.close()
+        await self.until(lambda: chat._task.done())
+
     async def test_next_message_after_close_opens_a_new_session(self):
         chat = self.chat(["One.", "Two."])
         chat.send("first")

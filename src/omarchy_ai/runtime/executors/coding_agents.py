@@ -23,6 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from ...core.skills import COMMANDS_MARKER, reported_commands
 from .. import discovery
 from ..glossary import PROJECT_TERMS
 from ..permissions import coding_agent_risk
@@ -69,7 +70,10 @@ End your reply with a short report:
 SUMMARY: <what you changed and why>
 FILES CHANGED: <paths>
 TESTS RUN: <commands and results, or "none">
-RISKS: <anything unverified>"""
+RISKS: <anything unverified>
+""" + COMMANDS_MARKER + """
+<last: the exact shell commands that produced the result, one per line, in order; no exploring, no checks; leave it
+empty if none were needed. Never a credential's value: write a secret as you fetched it, e.g. $(command) or $VARIABLE>"""
 
 REVIEW_RULES = """You are an independent reviewer. Do NOT modify any file.
 Review the uncommitted changes in the workspace (git status / git diff) against the goal and acceptance criteria.
@@ -191,6 +195,10 @@ class ExternalCodingAgent(Executor):
         if assignment.role == REVIEW:
             found = _VERDICT.findall(text)
             verdict = found[-1].lower() if len(set(v.upper() for v in found)) == 1 else None
+        elif (commands := reported_commands(text)):
+            # From the whole output: the step's claim keeps only its first 2000
+            # characters, and this section comes last (core/skills.py).
+            meta["commands"] = commands
         return Report(DONE, claim=text, verdict=verdict, meta=meta)
 
 

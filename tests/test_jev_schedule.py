@@ -50,6 +50,17 @@ class JevParseTests(unittest.TestCase):
         with self.assertRaises(jev.JevError):
             jev.parse(gateway({"b": {"type": "boolean", "probability": 1.5}}), {"b": self.qs["b"]})
 
+    def test_choice_one_rounding_step_below_the_top_is_kept_and_a_wider_gap_is_logged(self):
+        qs = {"c": self.qs["c"]}
+        parsed = jev.parse(gateway({"c": {"type": "choice", "choice": "daily", "probabilities": {
+            "none": 0.34, "daily": 0.33, "weekdays": 0.33}}}), qs)
+        self.assertEqual((parsed["c"]["choice"], parsed["c"]["p"]), ("daily", 0.33))
+        with self.assertLogs("omarchy_ai.core.jev", "WARNING") as logs, self.assertRaises(jev.JevError):
+            jev.parse(gateway({"c": {"type": "choice", "choice": "daily", "probabilities": {
+                "none": 0.35, "daily": 0.33, "weekdays": 0.32}}}), qs)
+        self.assertIn("'daily'", logs.output[0])
+        self.assertIn("0.35", logs.output[0])
+
     def test_transport_failure_becomes_jev_error(self):
         def broken(state, questions, timeout):
             raise OSError("offline")

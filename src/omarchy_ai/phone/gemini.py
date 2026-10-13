@@ -16,11 +16,11 @@ import av
 import numpy as np
 from aiortc import AudioStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError
-from google import genai
 from google.genai import types
 
 from ..core.history import append_session
-from ..voice.gemini_live import GeminiLiveSession, build_live_config
+from ..voice import extensions
+from ..voice.gemini_live import GeminiLiveSession, build_live_config, gemini_client, live_connect
 
 log = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
     messages = asyncio.Queue(maxsize=32)
     channel = None
     tasks = []
-    client = genai.Client(api_key=Path(config.gemini_api_key_path).read_text().strip())
+    client = gemini_client(config)
     # Everything said or typed goes into the phone's conversation as it happens,
     # and the call's tasks report back into it (core/conversations.py).
     from ..core import conversations
@@ -243,6 +243,10 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                     turns={'role': 'user', 'parts': [{'text': '[Context from the phone (a notification, or this chat so far), not a request; use it to understand the next user message]\n' + text}]},
                     turn_complete=False)
                 continue
+            if text and await extensions.typed(adapter, text):
+                # One of the user's own extensions took it (voice/extensions.py).
+                emit({'type': 'response.event', 'event': {'type': 'response.completed'}})
+                continue
             if not told:
                 # Only Text mode types, and it plays no audio: tell her once
                 # so replies are written to be read (turn_complete=False adds
@@ -296,7 +300,10 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
         # stays up, only the Gemini connection moves to the next model.
         models = await adapter._start_models()
         peer_tasks = []
-        for index, model in enumerate(models):
+        adapter.restart_stalled = adapter.ack_silent_work = True
+        index = attempt = 0
+        while True:
+            model = models[index]
             session_tasks = []
             try:
                 live_config = build_live_config(config)
@@ -311,7 +318,7 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                     }, 'required': ['path']},
                     'behavior': 'BLOCKING',
                 })
-                async with client.aio.live.connect(model=model, config=live_config) as session:
+                async with live_connect(client, config, model, live_config) as session:
                     if not answer.done():
                         agenda.mark_briefed()  # this prompt carried the heartbeat's pending results
                         # Task results and heartbeat results arriving mid-call are said
@@ -326,7 +333,7 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                         peer_tasks = [asyncio.create_task(coro) for coro in (
                             watch_offer(), adapter._hangup.wait(),
                             *([adapter._fast_path()] if config.jev_fast_path else []))]
-                    if index:
+                    if attempt:
                         await adapter._carry_over(session)
                     elif earlier:
                         # A conversation reopened on the phone goes on where it stopped.
@@ -341,7 +348,8 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                         # 2026-09-28 08:52: three splices, no reply, the user unheard. Over
                         # 3 days 22 of 62 phone splices were never answered (desktop:
                         # 15 rescued by this forced closure, which the phone lacked).
-                        adapter._stuck_turn_recovery(session), adapter._task_status(session))]
+                        adapter._stuck_turn_recovery(session), adapter._task_status(session),
+                        adapter._speaker_watch(session))]
                     tasks = peer_tasks + session_tasks
                     done, _ = await asyncio.wait(tasks, timeout=config.max_session_seconds,
                                                  return_when=asyncio.FIRST_COMPLETED)
@@ -353,18 +361,23 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                     task.cancel()
                 await asyncio.gather(*session_tasks, return_exceptions=True)
                 tasks = list(peer_tasks)
-                if not await adapter._fall_back(models, index, error):
+                attempt += 1
+                if adapter._resume_stalled(error):
+                    continue
+                index = await adapter._fall_back(models, index, error)
+                if index is None:
                     raise
     except Exception as error:
         from ..core import quota
         out_of_quota = quota.is_quota_error(str(error))
         if out_of_quota:
-            quota.report("gemini", f"phone: {error}", user_initiated=True)
+            quota.report("vercel" if "Vercel AI Gateway" in str(error) else "gemini", f"phone: {error}",
+                         user_initiated=True)
         if not answer.done():
             answer.set_exception(error)
         else:
             log.exception('Phone Gemini session failed')
-            emit({'type': 'error', 'error': {'message': 'Gemini quota used up.' if out_of_quota
+            emit({'type': 'error', 'error': {'message': 'Voice model quota used up.' if out_of_quota
                                              else 'Gemini connection ended. Please reconnect.'}})
     finally:
         try:
@@ -375,7 +388,8 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             await peer.close()
-            await client.aio.aclose()
+            if client is not None:
+                await client.aio.aclose()
             await asyncio.to_thread(append_session, list(adapter._transcript), config.context_retention_hours)
             if conversation:
                 conversations.flush(conversation)

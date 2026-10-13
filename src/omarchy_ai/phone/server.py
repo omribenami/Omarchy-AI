@@ -289,14 +289,14 @@ def pending_approvals() -> dict:
     push/commit the change it would publish (runtime/service.py's
     change_preview, the same one the voice assistant explains from)."""
     from ..runtime.service import change_preview, get_runtime
-    from ..runtime.task import WAITING_APPROVAL
+    from ..runtime.task import WAITING_APPROVAL, request_text
     items = []
     get_runtime().tidy_approvals()  # never list one that expired or no longer needs asking
     for task in get_runtime().store.list(20):
         request = task.pending_approval
         if task.status != WAITING_APPROVAL or not request:
             continue
-        items.append({"task_id": task.id, "goal": task.goal[:600], "fingerprint": request.get("fingerprint"),
+        items.append({"task_id": task.id, "goal": request_text(task.goal)[:600], "fingerprint": request.get("fingerprint"),
                       "kind": request.get("kind"), "subject": str(request.get("subject", ""))[:2000],
                       "risk": request.get("risk"), "reasons": request.get("reasons", []),
                       "preview": change_preview(task.workspace)})
@@ -309,8 +309,8 @@ def pending_approvals() -> dict:
                       "risk": "ELEVATED", "reasons": [request["summary"][:300]], "preview": None})
     # A worker's question often is an approval in words ("approve sending this
     # email?", 2026-09-30), so the phone lists them beside the approvals.
-    from ..runtime.task import WAITING_USER
-    questions = [{"task_id": task.id, "goal": task.goal[:600], "question": str(task.question or "")[:3000]}
+    from ..runtime.task import WAITING_USER, request_text
+    questions = [{"task_id": task.id, "goal": request_text(task.goal)[:600], "question": str(task.question or "")[:3000]}
                  for task in get_runtime().store.list(20) if task.status == WAITING_USER and task.question]
     from ..execution import flux_approve
     return {"approvals": items, "questions": questions, "pin": approval_pin.status(),
@@ -393,7 +393,9 @@ def _install_request(task_id: str) -> dict | None:
 def _fingerprint_install(request: dict) -> None:
     """The fingerprint prompt for a waiting tool install; its signed answer decides it."""
     from ..execution import flux_approve, user_tools
-    ok, reason = flux_approve.request(f"Omarchy AI: install the assistant tool {request['name']}")
+    ok, reason = flux_approve.request(f"Install the assistant tool {request['name']}", by="omarchy",
+                                      why=str(request.get("description") or request.get("reason") or
+                                              "A new tool for the assistant is waiting for your approval."))
     log.info("phone bridge: tool install %s: fingerprint %s", request["name"], reason)
     if ok is not None:
         user_tools.decide_install(request["id"], ok, f"{'approved' if ok else 'declined'} with a fingerprint on the phone")
@@ -737,7 +739,7 @@ class _Handler(BaseHTTPRequestHandler):
             # Unpaired by definition: this is how a Flux phone becomes paired.
             self._handle_flux_pair()
             return
-        if path in ("/api/cast", "/api/cast/stop", "/api/ask", "/api/flux/setting"):
+        if path in ("/api/cast", "/api/cast/stop", "/api/ask", "/api/flux/setting", "/api/approvals/context"):
             if not self._is_paired():
                 self._send_json(403, {"error": "not paired"})
                 return
@@ -749,6 +751,21 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ValueError("not an object")
             except ValueError:
                 self._send_json(400, {"ok": False, "message": "bad request"})
+                return
+            if path == "/api/approvals/context":
+                # Flux's fingerprint screen asks what a `sudo` request is about
+                # (execution/approval_context.py): the command, who runs it, why.
+                from ..execution import approval_context
+                try:
+                    found = approval_context.sudo_context()
+                except Exception:  # noqa: BLE001 -- a description must never break an approval
+                    log.exception("phone bridge: approval context failed")
+                    found = None
+                # Answer first: the phone waits 1.5 s, and a log line can take 2 s
+                # (the redacting filter reads the keyring once a minute; the
+                # first two real requests, 2026-10-05 22:06 and 22:11, were lost to it).
+                self._send_json(200, found or {"found": False})
+                log.info("phone bridge: approval context: %s", {k: found[k] for k in ("by", "request")} if found else None)
                 return
             if path == "/api/flux/setting":
                 # Flux's Omarchy button beside a feature that config.toml keeps

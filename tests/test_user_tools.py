@@ -164,6 +164,18 @@ class InstallGateTests(unittest.TestCase):
             do_install.assert_not_called()
             self.assertIn("notify-send", notify.call_args.args[0])
 
+    def test_a_notification_that_cannot_be_shown_is_not_a_dismissal(self):
+        # 2026-10-09: no notification service (desktop session down), notify-send exit 1.
+        import subprocess
+        failed = lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "Failed to show notification")  # noqa: E731
+        with patch.object(self.user_tools.subprocess, "run", side_effect=failed), \
+                patch.object(self.user_tools, "INSTALL_REQUESTS", Path(TemporaryDirectory().name) / "requests.json"), \
+                patch.object(self.user_tools, "APPROVAL_SECONDS", 1), \
+                patch("sys.stdin.isatty", return_value=False):
+            approved, how = self.user_tools.user_approves_install("x")
+        self.assertFalse(approved)
+        self.assertIn("on the phone (the desktop could not show the request)", how)
+
     def test_no_answer_in_time_means_not_installed(self):
         import subprocess
         code, _, do_install = self._cli(notify_error=subprocess.TimeoutExpired("notify-send", 600))

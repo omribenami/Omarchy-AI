@@ -175,12 +175,14 @@ class Satellite:
         self._tasks: list[asyncio.Task] = []
         self._address = ""
         self._device_heard = 0.0            # last microphone audio or stream start from the device
+        self._subscribed = 0.0              # last time the device was asked for its voice assistant
         self._runs = 0                      # device runs seen: a late RUN_END must not end a newer one
         self._player = None                 # the device's media player entity key
         self._gain = float(config.satellite_mic_gain)
         self._talk_channel = int(config.satellite_talk_channel)
         self._diagnostics = os.environ.get("OMARCHY_AI_WAKE_DIAGNOSTICS") == "1"
         self._metrics = {"score": 0.0, "rms": 0.0}
+        self._talk_levels: list[float] = []  # frame rms of one conversation, for level_summary
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -248,7 +250,7 @@ class Satellite:
                 pass
         self._unsubscribe = self._client.subscribe_voice_assistant(
             handle_start=self._on_start, handle_stop=self._on_stop, handle_audio=self._on_audio)
-        self._device_heard = time.monotonic()
+        self._subscribed = time.monotonic()
 
     async def _stream_watch(self) -> None:
         """The device serves ONE voice-assistant client: the first to
@@ -268,6 +270,8 @@ class Satellite:
                 if warned:
                     log.info("voice satellite is streaming its microphone again")
                     warned = 0.0
+                continue
+            if now - self._subscribed < STREAM_QUIET_SECONDS:
                 continue
             if not warned or now - warned > 600:
                 log.warning("voice satellite is connected but sends no microphone audio; another client probably "
@@ -588,6 +592,8 @@ class Satellite:
                 rms = float(np.sqrt(np.mean(levels * levels)))
                 now = time.monotonic()
                 adapter._mic_levels.append((now, rms, int(np.max(np.abs(levels)))))
+                if now >= adapter._playback_until + adapter.ECHO_TAIL_SECONDS and len(self._talk_levels) < MAX_TALK_LEVELS:
+                    self._talk_levels.append(rms)  # the room and the user, not her own voice
                 # The session's stuck-turn guard, as on the desktop (its echo gate is off).
                 for part in adapter._gate(samples.tobytes(), rms, now):
                     await session.send_realtime_input(audio=types.Blob(data=part, mime_type="audio/pcm;rate=16000"))
@@ -617,10 +623,9 @@ class Satellite:
                 return
 
     async def _run_session(self, previous: asyncio.Task | None, run: int) -> None:
-        from google import genai
         from ..core import agenda, conversations
         from ..core.history import append_session
-        from .gemini_live import GeminiLiveSession, build_live_config
+        from .gemini_live import GeminiLiveSession, build_live_config, gemini_client, live_connect
 
         if previous is not None and not previous.done():
             await asyncio.gather(previous, return_exceptions=True)  # it saves the conversation this one continues
@@ -635,6 +640,7 @@ class Satellite:
         # (2026-09-30 22:24). With a floor of 0 every frame passes.
         adapter.BARGE_FLOOR_RMS = 0.0
         adapter._splice_abort_rms = float(self.config.satellite_speech_rms)
+        adapter._voice_rms = float(self.config.satellite_voice_rms or 0.4 * adapter._splice_abort_rms)
         self._adapter = adapter
         self._stream, self._spoke_until = None, 0.0
         tasks: list[asyncio.Task] = []
@@ -648,8 +654,8 @@ class Satellite:
             live_config = build_live_config(self.config)
             live_config["system_instruction"] += SATELLITE_NOTE
             built = time.monotonic()
-            client = genai.Client(api_key=Path(self.config.gemini_api_key_path).read_text().strip())
-            async with client.aio.live.connect(model=self.config.gemini_model, config=live_config) as session:
+            client = gemini_client(self.config)
+            async with live_connect(client, self.config, self.config.gemini_model, live_config) as session:
                 agenda.mark_briefed()  # this prompt carried the pending results
                 agenda.attach_call(adapter, asyncio.get_running_loop())
                 log.info("satellite conversation started: session=%s model=%s (conversation %.1fs, prompt %.1fs, "
@@ -657,7 +663,8 @@ class Satellite:
                          built - prepared, time.monotonic() - built)
                 workers = [self._send_audio(adapter, session), adapter._receive(session), adapter._tools(session),
                            adapter._announcer(session), adapter._stuck_turn_recovery(session),
-                           adapter._task_status(session), self._drain_audio(adapter), self._speech_watch(),
+                           adapter._task_status(session), adapter._speaker_watch(session),
+                           self._drain_audio(adapter), self._speech_watch(),
                            self._silence_watch(adapter, time.monotonic()), adapter._hangup.wait()]
                 if self.config.jev_fast_path:
                     workers.append(adapter._fast_path())
@@ -702,6 +709,28 @@ class Satellite:
                     self._phase = "idle"  # the device starts its stream again: _on_start
                 self._show("idle")
             log.info("satellite conversation ended: session=%s", adapter._audit_session)
+            log.info("satellite microphone levels: session=%s %s", adapter._audit_session,
+                     level_summary(self._talk_levels, adapter._voice_rms, adapter._splice_abort_rms))
+            self._talk_levels = []
+
+
+MAX_TALK_LEVELS = 200_000  # frames of one conversation kept for its level summary
+
+
+def level_summary(levels: list[float], voice_rms: float | None, speech_rms: float) -> str:
+    """What the microphone held while she was not speaking, for setting
+    satellite_voice_rms and satellite_speech_rms from real conversations:
+    the low percentiles are the room, the high ones the user's speech, and
+    the two shares say how much of it each configured level lets through."""
+    if not levels:
+        return "frames=0"
+    ordered = sorted(levels)
+    at = lambda q: ordered[min(len(ordered) - 1, int(q * len(ordered)))]  # noqa: E731
+    share = lambda level: 100 * sum(1 for v in ordered if v >= level) / len(ordered)  # noqa: E731
+    voice = voice_rms or speech_rms
+    return (f"frames={len(ordered)} " + " ".join(f"p{int(q * 100)}={at(q):.0f}" for q in (.1, .25, .5, .75, .9, .95, .99))
+            + f" max={ordered[-1]:.0f} at_or_above_voice_rms({voice:.0f})={share(voice):.1f}%"
+            + f" at_or_above_speech_rms({speech_rms:.0f})={share(speech_rms):.1f}%")
 
 
 async def start(config) -> Satellite | None:

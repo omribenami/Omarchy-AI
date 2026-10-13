@@ -98,6 +98,46 @@ class FluxApproveTests(unittest.TestCase):
         self.assertNotIn('\n', seen['service'])
         self.assertEqual(len(seen['nonce']), 64)
 
+    def ask(self, answer, **request):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        fluxd = FakeFluxd(folder.name, answer)
+        self.addCleanup(fluxd.close)
+        with patch.dict(os.environ, {'FLUX_SOCKET': fluxd.path}), patch.object(flux_approve, 'read_key', return_value=self.key):
+            return flux_approve.request(**request)
+
+    def test_who_asks_and_why_are_shown_and_signed(self):
+        # 2026-10-05: every approval looked the same on the phone.
+        seen = {}
+
+        def answer(params):
+            seen.update(params)
+            return {'state': 'approved', 'signature': self.sign(params)}
+        request = {'what': 'git push origin main', 'by': 'codex', 'why': 'Task: ship the fix\n(high risk)'}
+        ok, message = self.ask(answer, **request)
+        self.assertTrue(ok, message)
+        self.assertEqual((seen['service'], seen['tty'], seen['rhost']),
+                         ('git push origin main', 'by:codex', 'Task: ship the fix(high risk)'))
+        # A phone or fluxd that shows another requester or reason signs something else.
+        for change in ({'tty': 'by:you'}, {'rhost': 'harmless'}):
+            ok, message = self.ask(lambda p: {'state': 'approved', 'signature': self.sign(p, **change)}, **request)
+            self.assertIsNone(ok)
+
+    def test_a_task_names_its_step_its_worker_and_its_goal(self):
+        from types import SimpleNamespace
+        from omarchy_ai.runtime import runtime
+        task = SimpleNamespace(goal='ship the fix', agent='', steps=[{'executor': 'CODEX'}], next_dispatch=None,
+                               pending_approval={'subject': 'git push origin main', 'risk': 'HIGH',
+                                                 'reasons': ['publishes commits']})
+        self.assertEqual(runtime._fingerprint_fields(task),
+                         ('git push origin main', 'codex', 'Task: ship the fix (high risk: publishes commits)'))
+        task.next_dispatch = {'executor': 'CLAUDE_CODE'}
+        self.assertEqual(runtime._fingerprint_fields(task)[1], 'claude')
+        task.next_dispatch, task.steps = None, []
+        self.assertEqual(runtime._fingerprint_fields(task)[1], 'omarchy')
+        task.pending_approval = {'kind': 'rollback', 'subject': 'roll back 3 files'}
+        self.assertEqual(runtime._fingerprint_fields(task)[:2], ('roll back 3 files', 'jev'))
+
     def test_denied_on_the_phone(self):
         self.assertEqual(self.run_request(lambda p: {'state': 'denied'})[0], False)
 

@@ -16,9 +16,11 @@ import json
 import sys
 import time
 
+from ..runtime.task import request_text
+
 
 def _print_task(task, verbose: bool = False) -> None:
-    print(f"{task.id}  [{task.status}]  {task.goal[:100]}")
+    print(f"{task.id}  [{task.status}]  {request_text(task.goal)[:100]}")
     print(f"  workspace: {task.workspace}   phase: {task.phase}   steps: {len(task.steps)}")
     if task.objective:
         print(f"  objective: {task.objective}")
@@ -123,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "list":
         for task in runtime.store.list(20):
-            print(f"{task.id}  {task.status:17} {task.goal[:90]}")
+            print(f"{task.id}  {task.status:17} {request_text(task.goal)[:90]}")
         return 0
     if args.cmd == "show":
         task = runtime.store.load(args.id) if args.id else runtime.store.latest()

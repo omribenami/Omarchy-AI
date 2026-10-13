@@ -15,6 +15,29 @@ It escalates when, within FAILURE_WINDOW seconds:
 "Can't" and "why" are judged by Jev from the meaning, in any language (they
 were English and Hebrew regexes until 2026-09-28).
 
+Nothing failing is not the same as being right (journal 2026-10-05
+16:04-16:09, phone): asked to ssh to the home server and find a folder, she
+ran eleven finds and listings on THIS computer, every one ok=True, and told
+the user three times it was not there while they answered "are you sure that
+is the path?", "that cannot be, the folder exists for certain" and finally
+the server's address again. With no failure on record nothing above could
+fire. So when the user disputes a result she got from her own tool calls:
+- the first time, her next tool result carries a self-check listing those
+  calls (each says where it ran) and what to compare them against;
+- the second time within REVIEW_WINDOW, the job is escalated with those calls.
+
+Saying it is not doing it (2026-10-12): asked to start a saved procedure of
+five timed steps, she read it (load_skill), told the user "on it, starting
+the countdown" and made no other call. Nothing ran. Two minutes later the
+user wrote that nothing had been heard and she answered that she was making
+sure it was running, again without a call; earlier that day the same request
+got "I'll take care of it" and no call at all. No tool failed and no result
+was disputed, so nothing above could fire. So when a reply to the user's own
+words is complete and no tool that acts ran for them (none, or only ones
+that read), Jev judges two things: does her reply say she is doing, has
+started, will do or has done something, and did the user ask for something
+to be done or say it did not happen. Both -> the job is escalated.
+
 Then the session starts a task itself with a brief of what the user said and
 what was tried, and she tells the user it was handed over. Once per incident:
 the failures are cleared, and nothing escalates again for COOLDOWN seconds or
@@ -30,6 +53,9 @@ import sys
 FAILURE_WINDOW = 180.0
 COOLDOWN = 120.0
 FAILURES_TO_ESCALATE = 2
+REVIEW_WINDOW = 300.0
+REVIEW_NOTE_TTL = 120.0
+REVIEW_STEPS = 8
 
 # Calls whose failure is not the job failing: control flow, the escalation
 # target itself, and HUD cosmetics.
@@ -70,6 +96,9 @@ _CAPABILITY_GAP = re.compile(
 
 GIVE_UP_P = 0.8
 ASKS_WHY_P = 0.8
+DISPUTES_P = 0.8
+CLAIMS_P = 0.8
+ASKS_ACTION_P = 0.8
 
 
 def proactive_goal(user_turns: list[str]) -> str:
@@ -112,6 +141,66 @@ def jev_judge(last_reply: str, latest: str) -> tuple[bool, bool]:
     return answers["gave_up"]["p"] >= GIVE_UP_P, answers["asks_why"]["p"] >= ASKS_WHY_P
 
 
+def jev_disputes(last_reply: str, latest: str) -> bool:
+    """The user says her result is wrong, in any language. False when Jev is
+    unavailable: then she is simply not prompted to check herself."""
+    from ..core.jev import Jev, JevError, boolean
+    questions = {"disputes": boolean(
+        "Does the user's latest message tell the assistant that the result or answer it just gave is wrong or "
+        "cannot be right: that something it could not find does exist, that it looked in the wrong place or at "
+        "the wrong thing, or a doubt such as asking whether it is sure? Judge the meaning, in any language. A new "
+        "request, an ordinary follow-up question, a correction of the user's own earlier words, or thanks is not.")}
+    try:
+        answers = Jev().ask({"assistant_reply": last_reply[-400:], "user_latest_message": latest[-400:]}, questions,
+                            timeout=3, retries=0, fail_fast=True)
+    except JevError:
+        return False
+    return answers["disputes"]["p"] >= DISPUTES_P
+
+
+def jev_unbacked(last_reply: str, latest: str) -> tuple[bool, dict]:
+    """(her reply says an action is under way or done AND the user asked for
+    one, the two probabilities), judged in any language. False when Jev is
+    unavailable: then a reply with nothing behind it is not caught."""
+    from ..core.jev import Jev, JevError, boolean
+    questions = {
+        # Worded as one judgment. The first wording listed what counts (doing,
+        # started, will take care of, checking, completed) and what does not;
+        # replayed on the 2026-10-12 exchanges it scored the two replies that
+        # began this, "on it, I'll remind them every minute" and "on it,
+        # starting the countdown", 0.74 and 0.62: below the bar. This one
+        # scored them 0.92 and 0.95, and a clarifying question or "I couldn't
+        # connect" under 0.5. It also says yes to a plain answer (0.94 for a
+        # description of what a camera shows): asks_action is what rules
+        # those out (0.09 there).
+        "claims_action": boolean(
+            "Does the assistant's reply accept the user's request and say or imply that the assistant is carrying "
+            "it out, will carry it out, or has carried it out? Judge the meaning, in any language."),
+        "asks_action": boolean(
+            "Does the user's latest message ask for something to be done, or say that something that should have "
+            "happened did not? Judge the meaning, in any language. Chat, a question that can be answered by "
+            "talking, or thanks is not."),
+    }
+    try:
+        answers = Jev().ask({"assistant_reply": last_reply[-400:], "user_latest_message": latest[-400:]}, questions,
+                            timeout=3, retries=0, fail_fast=True)
+    except JevError as exc:
+        return False, {"unavailable": str(exc)[:120]}
+    claims, asks = answers["claims_action"]["p"], answers["asks_action"]["p"]
+    return claims >= CLAIMS_P and asks >= ASKS_ACTION_P, {"claims_action": claims, "asks_action": asks}
+
+
+def review_note(steps: list) -> str:
+    tried = "\n".join(f"- {s.tool}({_short(s.args)[:160]}) -> {' '.join(s.message.split())[:260]}" for s in steps)
+    return ("\n\n[assistant note, automatic self-check] The user says the result you gave is wrong, and none of "
+            "your steps reported an error, so one of your own assumptions is wrong. Before you answer or search "
+            "again, compare your steps below with the user's words: (1) the machine -- each result says WHERE IT "
+            "RUNS; is that the machine the user named? (2) the exact host, path and name the user gave, against "
+            "the ones you used; (3) whether the output you read belongs to the command you ran. Then tell the "
+            "user in one sentence what you got wrong and redo it correctly. Do not repeat a check that already "
+            f"came back empty. Your recent steps, oldest first:\n{tried}")
+
+
 @dataclass
 class Failure:
     tool: str
@@ -121,9 +210,14 @@ class Failure:
 
 
 class Escalator:
-    def __init__(self, judge=jev_judge):
+    def __init__(self, judge=jev_judge, disputes=jev_disputes, unbacked=jev_unbacked):
         self._judge = judge
+        self._disputes = disputes
+        self._unbacked = unbacked
         self._failures: list[Failure] = []
+        self._steps: list[Failure] = []  # her recent calls, failed or not
+        self._reviewed_at: float | None = None
+        self._review_note = ""
         self._last_escalation = -COOLDOWN
         self._own_task_at = -COOLDOWN
 
@@ -132,8 +226,12 @@ class Escalator:
             # She delegated herself: this incident is handled.
             self._own_task_at = now
             self._failures.clear()
+            self._steps.clear()
             return
-        if ok or tool in IGNORED_TOOLS or _NOT_A_FAILURE.search(message or ""):
+        if tool in IGNORED_TOOLS:
+            return
+        self._steps = [*self._steps, Failure(tool, dict(args or {}), message or "", now)][-REVIEW_STEPS:]
+        if ok or _NOT_A_FAILURE.search(message or ""):
             return
         self._failures.append(Failure(tool, dict(args or {}), message or "", now))
 
@@ -141,6 +239,57 @@ class Escalator:
         """A recent failure that could escalate (cheap; due() may call Jev)."""
         return (any(now - f.at <= FAILURE_WINDOW for f in self._failures)
                 and now - self._last_escalation >= COOLDOWN and now - self._own_task_at >= COOLDOWN)
+
+    def reviewable(self, now: float) -> bool:
+        """She has recent work a user could be disputing (cheap; disputed() calls Jev)."""
+        return (any(now - s.at <= REVIEW_WINDOW for s in self._steps)
+                and now - self._last_escalation >= COOLDOWN and now - self._own_task_at >= COOLDOWN)
+
+    def disputed(self, now: float, user_turns: list[str], last_reply: str) -> str | None:
+        """Ask Jev whether the user's latest words dispute her result. The
+        first dispute arms the self-check note; the second within
+        REVIEW_WINDOW returns the start_task goal. Run it off the event loop."""
+        steps = [s for s in self._steps if now - s.at <= REVIEW_WINDOW]
+        latest = user_turns[-1] if user_turns else ""
+        if not steps or not latest or not self.reviewable(now) or not self._disputes(last_reply, latest):
+            return None
+        if self._reviewed_at is not None and now - self._reviewed_at <= REVIEW_WINDOW:
+            goal = brief(user_turns, steps, last_reply, "the user said twice that her result is wrong",
+                         outcome="each reported success, but the user says the result is wrong")
+            self._steps, self._failures, self._reviewed_at, self._review_note = [], [], None, ""
+            self._last_escalation = now
+            return goal
+        self._reviewed_at, self._review_note = now, review_note(steps)
+        return None
+
+    def claimable(self, now: float) -> bool:
+        """Nothing was just handed over, by her or by an escalation (cheap; unbacked() calls Jev)."""
+        return now - self._last_escalation >= COOLDOWN and now - self._own_task_at >= COOLDOWN
+
+    def unbacked(self, now: float, user_turns: list[str], last_reply: str,
+                 since: float = 0.0) -> tuple[str | None, dict]:
+        """(the start_task goal, Jev's probabilities) when her reply tells the
+        user something is being done that no tool did. The caller has
+        established that no tool that acts ran since the user's latest words
+        (`since`); the calls that only read are listed in the brief. Run it
+        off the event loop."""
+        latest = user_turns[-1] if user_turns else ""
+        if not latest or not last_reply or not self.claimable(now):
+            return None, {}
+        claimed, evidence = self._unbacked(last_reply, latest)
+        if not claimed:
+            return None, evidence
+        goal = brief(user_turns, [s for s in self._steps if s.at >= since], last_reply,
+                     "she told the user it was being done, but no tool that does it ran",
+                     outcome="none of which carried it out")
+        self._failures = []
+        self._last_escalation = now
+        return goal, evidence
+
+    def take_review_note(self, now: float) -> str:
+        """The pending self-check, once, for the tool result she reads next."""
+        note, self._review_note = self._review_note, ""
+        return note if note and self._reviewed_at is not None and now - self._reviewed_at <= REVIEW_NOTE_TTL else ""
 
     def due(self, now: float, user_turns: list[str], last_reply: str) -> str | None:
         """The start_task goal if this is the moment to escalate, else None.
@@ -177,7 +326,8 @@ def _short(args: dict) -> str:
     return text[:400]
 
 
-def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reason: str) -> str:
+def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reason: str,
+          outcome: str = "which failed") -> str:
     said = "\n".join(f"- {t[-300:]}" for t in user_turns[-5:]) or "- (nothing transcribed)"
     tried = "\n".join(f"- {f.tool}({_short(f.args)}) -> {f.message[:300]}" for f in failures[-6:])
     goal = (
@@ -185,7 +335,8 @@ def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reaso
         "What the user said, oldest first. This is speech recognition: words are often misrecognized as words in "
         "other languages, so read it for meaning and use the earlier turns:\n"
         f"{said}\n\n"
-        f"What the voice assistant tried, which failed:\n{tried}\n\n"
+        + (f"What the voice assistant tried, {outcome}:\n{tried}\n\n" if tried else
+           "What the voice assistant tried: nothing. No tool was called for this request.\n\n")
         + (f"What she last told the user: {last_reply[-300:]}\n\n" if last_reply else "")
         + "Do the user's actual request end to end with whatever works on this machine: logged-in CLIs (gh is "
         "signed in to GitHub), logs, files, installed tools. Do not repeat the approach that already failed "
@@ -204,7 +355,19 @@ def brief(user_turns: list[str], failures: list[Failure], last_reply: str, reaso
     return goal[:3900]
 
 
-def notice(task_id: str, existing: bool = False) -> str:
+def notice(task_id: str, existing: bool = False, proactive: bool = False, unbacked: bool = False) -> str:
+    if unbacked:
+        doing = "already doing this job was given the request" if existing else "is doing it now"
+        return ("You told the user this was happening, but no tool ran, so nothing happened. Background task "
+                f"{task_id} {doing}. Say that in one sentence. Do not also do it yourself; its result, and any "
+                "approval or question it needs, will be announced.")
+    if proactive:
+        # 2026-10-08 20:22: a job handed over at once, before anything was
+        # tried, was announced as "This kept failing".
+        doing = "is already working on this; the new request was added to it" if existing else "is now working on this"
+        return (f"This is a job with several steps, so background task {task_id} {doing}. Say that in one "
+                "sentence. Do not do the job yourself as well; its result, and any approval or question it needs, "
+                "will be announced.")
     if existing:
         # 2026-09-27: each failure streak started one more task for the same job.
         return (f"Background task {task_id} is already working on this; what just failed was added to it instead of "

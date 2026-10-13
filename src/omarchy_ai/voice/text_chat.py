@@ -23,9 +23,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 import subprocess
 import time
+
+from . import extensions
 
 log = logging.getLogger("omarchy_ai.voice.text_chat")
 
@@ -56,9 +57,10 @@ def push_to_hud(state: dict) -> None:
 
 
 def _connect(config, live_config):
-    from google import genai
-    client = genai.Client(api_key=Path(config.gemini_api_key_path).read_text().strip())
-    return client, client.aio.live.connect(model=config.gemini_model, config=live_config)
+    # As a voice call connects, so one of the user's own extensions may hold it (voice/extensions.py).
+    from .gemini_live import gemini_client, live_connect
+    client = gemini_client(config)
+    return client, live_connect(client, config, config.gemini_model, live_config)
 
 
 class TextChat:
@@ -75,6 +77,12 @@ class TextChat:
         self._open_reply = False        # the last assistant message is still streaming
         self._push_pending = False
         self._last_activity = 0.0
+        self._loop: asyncio.AbstractEventLoop | None = None
+        # A skill saved from here is noted in the log (core/conversations.py
+        # add_note). This chat has no saved conversation, so its notes are the
+        # ones with no conversation id; they arrive on worker threads.
+        from ..core import conversations
+        conversations.NOTE_LISTENERS.append(self._on_note)
 
     # ------------------------------------------------------------------ API
     def send(self, text: str) -> dict:
@@ -87,6 +95,7 @@ class TextChat:
             return {"ok": False, "error": self.error}
         self._add("user", text[:MAX_TEXT])
         self._open_reply = False
+        self._loop = asyncio.get_running_loop()
         self._last_activity = time.monotonic()
         ending = self._adapter is not None and self._adapter._hangup.is_set()
         if self._task is None or self._task.done() or ending:
@@ -116,6 +125,16 @@ class TextChat:
     def _add(self, role: str, text: str) -> None:
         self.messages.append({"role": role, "text": text, "at": time.time()})
         del self.messages[:-MAX_MESSAGES]
+
+    def _on_note(self, cid: str, text: str) -> None:
+        if cid or self._loop is None or self._task is None or self._task.done():
+            return  # another talk's note, or no chat open to show it in
+
+        def show():
+            self._add("note", text)
+            self._open_reply = False  # her next words start a new line below it
+            self._schedule_push()
+        self._loop.call_soon_threadsafe(show)
 
     def _fail(self, message: str) -> None:
         self.status, self.error = "error", message
@@ -161,6 +180,12 @@ class TextChat:
     async def _sender(self, adapter, session, queue) -> None:
         while True:
             text = await queue.get()
+            if await extensions.typed(adapter, text):
+                # One of the user's own extensions took it; whatever it answered is already shown.
+                if self.status == "thinking":
+                    self.status = "ready"
+                self._schedule_push()
+                continue
             adapter._transcript.append({"role": "user", "text": text})
             adapter._capture_password(text)
             adapter._input_guard.heard_user()

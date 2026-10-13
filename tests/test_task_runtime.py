@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -41,13 +43,18 @@ class ScriptedJev:
     """Answers by question set: route / direct / validate / certify."""
 
     def __init__(self, route="SYSTEM_AGENT", directives=None, certified=0.95, validates=0.9, needs_code=0.1,
-                 executor=None):
-        self.route, self.directives = route, list(directives or [])
+                 executor=None, gap="none", simulated=0.1, declined=0.1, user_only=0.1, outcome="worked"):
+        self.route, self.directives, self.gap, self.simulated = route, list(directives or []), gap, simulated
+        self.declined, self.route_options = declined, []
+        self.user_only, self.outcome = user_only, outcome
         self.certified, self.validates, self.needs_code, self.executor = certified, validates, needs_code, executor
         self.seen_allowed = []
 
     def __call__(self, state, questions, timeout=8):
+        if "declined" in questions:
+            return jev_answer(questions, {"declined": self.declined})
         if "needs_code_change" in questions:
+            self.route_options.append(list(questions["executor"]["criteria"]))
             return jev_answer(questions, {"executor": self.route, "needs_code_change": self.needs_code})
         if "directive" in questions:
             allowed = list(questions["directive"]["criteria"])
@@ -59,7 +66,10 @@ class ScriptedJev:
         if "detects" in questions:
             return jev_answer(questions, {"detects": self.validates})
         if "certified" in questions:
-            return jev_answer(questions, {"certified": self.certified, "gap": "none"})
+            return jev_answer(questions, {"certified": self.certified, "gap": self.gap, "simulated": self.simulated,
+                                          "user_only": self.user_only})
+        if "outcome" in questions:
+            return jev_answer(questions, {"outcome": self.outcome})
         raise AssertionError(f"unexpected questions {list(questions)}")
 
 
@@ -90,6 +100,20 @@ def git_repo(path: Path):
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "init"], check=True)
 
 
+class TitleTests(unittest.TestCase):
+    def test_a_wrapped_goal_is_titled_by_the_users_own_request(self):
+        from omarchy_ai.runtime.task import request_text
+        from omarchy_ai.voice import escalation
+        wrapped = escalation.proactive_goal(["the drone is in the garage", "send the drone to find me"])
+        self.assertTrue(wrapped.startswith("Continue this user-requested job"))
+        self.assertEqual(request_text(wrapped), "send the drone to find me")
+        self.assertEqual(request_text(wrapped + "\n\nThe folder named is not on this computer."),
+                         "send the drone to find me")
+        brief = escalation.brief(["play jazz", "no, quieter"], [], "", "the user said twice that her result is wrong")
+        self.assertEqual(request_text(brief), "no, quieter")
+        self.assertEqual(request_text("fix the build"), "fix the build")
+
+
 class RuntimeHarness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -107,6 +131,14 @@ class RuntimeHarness(unittest.TestCase):
         hud = patch.object(TaskRuntime, "_refresh_task_hud")
         hud.start()
         self.addCleanup(hud.stop)
+        # No test runs a real sudo: with Flux's PAM helper on, even `sudo -n`
+        # asks the phone. From 2026-10-05 to 10-07 every run of this suite sent
+        # the user a fingerprint request for `true` with no reason.
+        for target, fake in (("omarchy_ai.runtime.runtime._sudo", lambda command: (command.split("sudo", 1)[1], None)),
+                             ("omarchy_ai.execution.approval_context.note", lambda *a, **kw: None)):
+            unsudo = patch(target, side_effect=fake)
+            unsudo.start()
+            self.addCleanup(unsudo.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -267,6 +299,25 @@ class TaskRuntimeTests(RuntimeHarness):
         self.assertIn(("progress", "status:Sending to Jev: choosing tools"), events)
         self.assertTrue(any(event == "progress" and phase == "status:System Agent" for event, phase in events))
 
+    def test_planner_budget_leaves_each_backend_time_to_answer(self):
+        # 2026-10-08 00:29: 45 s over three backends gave each 15 s; codex
+        # needed 15 s and the API 25-40 s for that request.
+        from omarchy_ai.runtime.llm import BACKENDS
+        from omarchy_ai.runtime.runtime import PLAN_TIMEOUT
+        planner = FakePlanner()
+        seen = []
+        planner.complete = lambda system, user, **kw: seen.append(kw) or FakePlanner().complete(system, user)
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="finished"))
+        runtime = self.runtime([agent], ScriptedJev(directives=["FAIL"]))
+        runtime.planner = planner
+
+        task = self.store.load(runtime.start("do the thing", str(self.ws), background=False).id)
+
+        self.assertEqual(seen[0], {"timeout": PLAN_TIMEOUT})
+        self.assertGreaterEqual(PLAN_TIMEOUT / len(BACKENDS), 30)
+        self.assertEqual(task.objective, "do the thing")
+        self.assertEqual(task.plan, ["the thing is done"])
+
     def test_diagnosis_task_certified_on_harness_evidence(self):
         def work(a, ctx):
             r = ctx.run_command("echo bluetooth-ok", a.workspace, 10)
@@ -281,8 +332,50 @@ class TaskRuntimeTests(RuntimeHarness):
         self.assertEqual(task.plan, ["the thing is done"])
         self.assertTrue(any(e["kind"] == "command" and e["ok"] for e in task.evidence))
         self.assertTrue(any(c["command"] == "echo bluetooth-ok" and c["exit_code"] == 0 for c in task.commands))
+
         self.assertEqual([d["kind"] for d in task.decisions][:1], ["route"])
         self.assertEqual(agent.calls[0].context["acceptance_criteria"], ["the thing is done"])
+    def two_step_task(self, jev, goal="water the plants every minute for five minutes"):
+        def work(a, ctx):
+            for command in ("echo valve-open", "echo valve-closed"):
+                self.assertEqual(ctx.run_command(command, a.workspace, 10)["exit_code"], 0)
+            return Report(DONE, claim="watered", findings=["echo valve-open"])
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], jev)
+        announced = []
+        runtime.listeners.append(lambda task, event: announced.append((event, task.result)))
+        task = runtime.start(goal, str(self.ws), background=False)
+        return self.store.load(task.id), announced
+
+    def test_a_certified_multi_step_task_is_saved_as_a_skill_and_says_so(self):
+        from omarchy_ai.core import skills
+
+        class LearningJev(ScriptedJev):
+            def __call__(self, state, questions, timeout=8):
+                if "worth" in questions:
+                    return jev_answer(questions, {})  # every boolean 0.9
+                return super().__call__(state, questions, timeout)
+        task, announced = self.two_step_task(LearningJev())
+        self.assertEqual(task.status, "certified", task.result)
+        skill = skills.load("water-the-plants-every-minute-for")
+        self.assertIn("echo valve-open\necho valve-closed", skill["body"])
+        self.assertIn(f"(task {task.id}, ", skill["body"])
+        self.assertTrue(task.result.endswith("Saved as skill 'water-the-plants-every-minute-for'."), task.result)
+        self.assertEqual(announced[-1], ("certified", task.result))  # the announcement carries it
+        # Carrying that skill out later brings it up to date, and says so.
+        again, _ = self.two_step_task(LearningJev(), goal=skills.run_goal(skill, "water them again"))
+        self.assertTrue(again.result.endswith("Updated skill 'water-the-plants-every-minute-for'."), again.result)
+        self.assertIn(f"(task {again.id}, ", skills.load(skill["name"])["body"])
+        self.assertEqual(len(skills.roster()), 1)
+
+    def test_learning_a_skill_can_never_fail_a_task(self):
+        from omarchy_ai.core import skills
+        task, _ = self.two_step_task(ScriptedJev())  # Jev has no answer to the skill questions
+        self.assertEqual(task.status, "certified", task.result)
+        self.assertNotIn("skill", task.result)
+        self.assertEqual(skills.roster(), [])
+        with patch.object(skills, "learn_from_task", side_effect=RuntimeError("disk full")):
+            task, _ = self.two_step_task(ScriptedJev())
+        self.assertEqual(task.status, "certified", task.result)
 
     def test_executor_claim_alone_never_certifies(self):
         agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="I fixed everything, trust me"))
@@ -316,6 +409,24 @@ class TaskRuntimeTests(RuntimeHarness):
         self.assertEqual(attempts, ["ask", "allow"])
         self.assertEqual(task.status, "certified", task.result)
         self.assertTrue((self.ws / "junk.txt").exists())  # -n: nothing deleted
+
+    def test_a_long_approved_command_is_replayed_whole(self):
+        # 2026-10-08: a 744-character command came back from approval cut at 600.
+        git_repo(self.ws)
+        command = "git clean -n # " + "x" * 700
+        seen = []
+
+        def work(a, ctx):
+            seen.append(a.context.get("user_approved"))
+            r = ctx.run_command(command, a.workspace, 10)
+            if r["decision"] == "ask":
+                return Report(NEEDS_APPROVAL, claim="need git clean", approval=r["request"])
+            return Report(DONE, claim="listed", findings=[r["output"]])
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], ScriptedJev())
+        task = self.store.load(runtime.start("clean up", str(self.ws), background=False).id)
+        self.assertEqual(len(task.pending_approval["subject"]), 600)
+        runtime.respond(task.id, approve=True, channel="cli", background=False)
+        self.assertEqual(seen, [None, command])
 
     def test_declined_command_resumes_without_it_and_is_never_asked_again(self):
         seen = []
@@ -599,6 +710,116 @@ class TaskRuntimeTests(RuntimeHarness):
         self.assertNotIn("CERTIFY", jev.seen_allowed[1])
         self.assertEqual(task.cert_rejections, 1)
 
+    def test_a_refused_answer_is_delivered_unverified_instead_of_repeated_to_the_budget(self):
+        # 2026-10-05 23:03: answered at step 1, refused at 0.73, then the same answer nine more times.
+        def work(a, ctx):
+            if not agent.calls[1:]:
+                ctx.run_command("true", a.workspace)          # the only harness evidence there will be
+            return Report(DONE, claim="Yes, it has the feature; the voice part is not switched on.")
+        agent = ScriptExecutor("SYSTEM_AGENT", work)
+        jev = ScriptedJev(certified=0.73, directives=["CERTIFY"] + ["CONTINUE"] * 20)
+        runtime = self.runtime([agent], jev)
+        task = self.store.load(runtime.start("does it recognize the speaker", str(self.ws), background=False).id)
+        self.assertEqual(task.status, "unverified")
+        self.assertEqual(len(agent.calls), 3)                 # the answer, then two tries that added nothing
+        self.assertTrue(task.result.startswith("Yes, it has the feature"))
+        self.assertIn("0.73", task.result)
+        self.assertEqual(task.cert_rejections, 1)
+
+    def test_new_evidence_after_a_refusal_earns_another_certification(self):
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: (ctx.run_command("true", a.workspace),
+                                                               Report(DONE, claim="ok"))[1])
+        jev = ScriptedJev(certified=0.5, directives=["CERTIFY"] + ["CONTINUE", "CERTIFY"] * 5)
+        runtime = self.runtime([agent], jev)
+        task = self.store.load(runtime.start("x", str(self.ws), background=False).id)
+        self.assertGreaterEqual(task.cert_rejections, 2)      # the step brought evidence: judged again
+        self.assertNotIn("repeating the work", task.result)
+
+    def test_a_gap_the_workers_can_only_simulate_ends_as_needs_a_live_test(self):
+        # 2026-10-07 21:00: a drone script, sent back three times for a flight no worker can make.
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: (ctx.run_command("true", a.workspace),
+                                                               Report(DONE, claim="The script now calls the API."))[1])
+        jev = ScriptedJev(certified=0.5, gap="runtime_behavior", simulated=0.9,
+                          directives=["CERTIFY"] + ["CONTINUE", "CERTIFY"] * 5)
+        task = self.store.load(self.runtime([agent], jev).start("x", str(self.ws), background=False).id)
+        self.assertEqual(task.status, "unverified")
+        self.assertEqual(len(agent.calls), 1)
+        self.assertEqual(task.cert_rejections, 1)
+        self.assertEqual(task.certification["status"], "needs_live_test")
+        self.assertIn("needs a live test by you", task.result)
+        self.assertIn("The script now calls the API.", task.result)
+        self.assertNotIn("runtime_behavior", task.result)
+
+    def confirmable(self, **jev):
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: (ctx.run_command("true", a.workspace),
+                                                               ctx.run_command("true", a.workspace),
+                                                               Report(DONE, claim="Announced it and closed the valve."))[2])
+        class LearningJev(ScriptedJev):
+            def __call__(self, state, questions, timeout=8):
+                if "worth" in questions:
+                    return jev_answer(questions, {})  # every boolean 0.9
+                return super().__call__(state, questions, timeout)
+        jev = LearningJev(certified=0.74, directives=["CERTIFY"] + ["CONTINUE", "CERTIFY"] * 5, **jev)
+        runtime = self.runtime([agent], jev)
+        return runtime, agent, runtime.start("announce it in the garden and close the valve", str(self.ws),
+                                             background=False, source="voice")
+
+    def test_a_result_only_the_user_can_judge_is_asked_and_their_yes_certifies_it(self):
+        runtime, agent, task = self.confirmable(gap="review", user_only=0.9)
+        waiting = self.store.load(task.id)
+        self.assertEqual((waiting.status, waiting.certification["status"]), ("waiting_user", "awaiting_confirmation"))
+        self.assertTrue(waiting.question.startswith("Did it work?"))
+        self.assertEqual(len(agent.calls), 1, "no further rounds: more work cannot hear a speaker")
+        from omarchy_ai.runtime import service
+        self.assertIsNone(service._same_job(runtime, "announce it in the garden and close the valve"),
+                          "the same request again is a new run")
+        runtime.respond(task.id, answer="yes it did", background=False)
+        done = self.store.load(task.id)
+        self.assertEqual((done.status, done.certification["status"], done.certification["by"]),
+                         ("certified", "certified", "user"))
+        self.assertEqual(len(agent.calls), 1, "nothing is run again")
+        self.assertEqual(done.evidence[-1]["source"], "user")
+        self.assertIn("Saved as skill", done.result)  # two commands that worked, now verified
+
+    def test_a_no_or_an_unclear_answer_to_did_it_work_ends_it_without_running_again(self):
+        for outcome, status, text in (("did_not_work", "failed", "You said it did not work: nothing was heard"),
+                                      ("unclear", "unverified", "your answer did not say")):
+            runtime, agent, task = self.confirmable(gap="user_confirmation", outcome=outcome)
+            runtime.respond(task.id, answer="nothing was heard", background=False)
+            done = self.store.load(task.id)
+            self.assertEqual(done.status, status)
+            self.assertIn(text, done.result)
+            self.assertEqual(len(agent.calls), 1)
+
+    def test_a_likely_failure_or_a_checkable_result_is_not_put_to_the_user(self):
+        for jev in ({"gap": "user_confirmation", "certified": 0.3}, {"gap": "tests", "user_only": 0.3}):
+            agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: (ctx.run_command("true", a.workspace),
+                                                                   Report(DONE, claim="done"))[1])
+            scripted = ScriptedJev(**{"certified": 0.74, "directives": ["CERTIFY"] + ["CONTINUE", "CERTIFY"] * 5, **jev})
+            task = self.store.load(self.runtime([agent], scripted).start("x", str(self.ws), background=False).id)
+            self.assertNotEqual(task.status, "waiting_user")
+
+    def test_a_gap_a_worker_can_observe_goes_back_to_the_worker(self):
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: (ctx.run_command("true", a.workspace),
+                                                               Report(DONE, claim="ok"))[1])
+        jev = ScriptedJev(certified=0.5, gap="runtime_behavior", simulated=0.2,
+                          directives=["CERTIFY"] + ["CONTINUE", "CERTIFY"] * 5)
+        task = self.store.load(self.runtime([agent], jev).start("x", str(self.ws), background=False).id)
+        self.assertGreaterEqual(len(agent.calls), 2)
+        self.assertGreaterEqual(task.cert_rejections, 2)
+        self.assertEqual(task.certification["status"], "rejected")
+        self.assertNotIn("live test", task.result)
+
+    def test_the_objective_keeps_the_links_of_the_request(self):
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: (ctx.run_command("true", a.workspace),
+                                                               Report(DONE, claim="ok"))[1])
+        runtime = self.runtime([agent], ScriptedJev())
+        task = self.store.load(runtime.start("use the new API (https://example.invalid/docs/decisions). Then test it.",
+                                             str(self.ws), background=False).id)
+        self.assertEqual(task.objective, "do the thing References from the request: "
+                                         "https://example.invalid/docs/decisions")
+        self.assertIn("https://example.invalid/docs/decisions", agent.calls[0].instructions)
+
     def test_step_budget(self):
         agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report("failed", claim="nope"))
         jev = ScriptedJev(directives=["RETRY"] * 20 + ["CONTINUE"] * 20)
@@ -622,6 +843,48 @@ class TaskRuntimeTests(RuntimeHarness):
         runtime.respond(task.id, answer="the Sony ones", background=False)
         self.assertEqual(answers, ["the Sony ones"])
         self.assertEqual(self.store.load(task.id).status, "certified")
+
+    def test_go_ahead_after_a_needed_code_change_goes_to_a_coding_agent(self):
+        # 2026-10-08: the worker said the project needed a code change, Jev asked
+        # the user, the user said go ahead -- and the same worker got the job back.
+        from omarchy_ai.runtime.executors.base import NEEDS_CODE_CHANGE
+
+        def coder_work(a, ctx):
+            ctx.run_command("true", a.workspace)
+            return Report(DONE, claim="changed the detector")
+        worker = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(NEEDS_CODE_CHANGE, claim="the detector needs a fallback"))
+        coder = ScriptExecutor("CODEX", coder_work, kind="coding")
+        runtime = self.runtime([worker, coder], ScriptedJev(directives=["ASK_USER"], executor="CODEX"))
+        task = runtime.start("make the drone fly", str(self.ws), background=False)
+        self.assertEqual(self.store.load(task.id).status, "waiting_user")
+        runtime.respond(task.id, answer="yes, go ahead", background=False)
+        self.assertEqual(len(worker.calls), 1)
+        self.assertEqual([(a.role, a.context.get("user_answer")) for a in coder.calls], [("implement", "yes, go ahead")])
+
+    def test_the_opening_question_is_asked_once_then_a_worker_takes_the_answer(self):
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="looked into it"))
+        jev = ScriptedJev(route="ASK_USER")
+        runtime = self.runtime([agent], jev)
+        task = runtime.start("start the countdown", str(self.ws), background=False)
+        self.assertEqual(self.store.load(task.id).status, "waiting_user")
+        self.assertEqual(agent.calls, [])
+        runtime.respond(task.id, answer="six minutes, then close the valve", background=False)
+        self.assertIn("ASK_USER", jev.route_options[0])
+        self.assertNotIn("ASK_USER", jev.route_options[1])  # answered once: a worker, not the question again
+        self.assertEqual(len(agent.calls), 1)
+        self.assertEqual(agent.calls[0].context["user_answers"], ["six minutes, then close the valve"])
+        self.assertNotEqual(self.store.load(task.id).status, "waiting_user")
+
+    def test_a_no_to_the_opening_question_cancels_the_task(self):
+        agent = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="looked into it"))
+        jev = ScriptedJev(route="ASK_USER", declined=0.95)
+        runtime = self.runtime([agent], jev)
+        task = runtime.start("start the countdown", str(self.ws), background=False)
+        runtime.respond(task.id, answer="No, not approved: do not do it.", background=False)
+        done = self.store.load(task.id)
+        self.assertEqual((done.status, done.result), ("cancelled", "Cancelled: you said not to do it."))
+        self.assertEqual(agent.calls, [])
+        self.assertEqual(len(jev.route_options), 1)
 
     def test_assignment_timeout_is_not_presented_as_a_question(self):
         # A worker capacity timeout has no answer the user can provide. It
@@ -654,6 +917,26 @@ class TaskRuntimeTests(RuntimeHarness):
             runtime_module._notify(runtime, task, "waiting_user")
         phone.assert_called_once()
         self.assertTrue(self.store.load("question").notifications["waiting_user"])
+
+    def test_clicking_a_finished_task_notification_opens_the_task(self):
+        runtime = self.runtime([], ScriptedJev())
+        for status, click, opened in (("certified", "default", True), ("failed", "default", True),
+                                      ("certified", "", False)):
+            task = Task(id=f"end-{status}-{click}", goal="x", workspace=str(self.ws), status=status, result="42")
+            done = threading.Event()
+            with patch("omarchy_ai.runtime.runtime._phone"), \
+                    patch("omarchy_ai.runtime.runtime.subprocess.run",
+                          return_value=SimpleNamespace(stdout=click + "\n")) as sent, \
+                    patch("omarchy_ai.runtime.runtime.subprocess.Popen",
+                          side_effect=lambda *a, **k: done.set()) as terminal:
+                runtime_module._notify(runtime, task, status)
+                self.assertEqual(done.wait(2 if opened else 0.3), opened)
+            argv = sent.call_args.args[0]
+            self.assertIn("default=Open task", argv)
+            self.assertEqual(argv[-1], "x\n\n42")
+            if opened:
+                self.assertEqual(terminal.call_args.args[0][0], "omarchy-launch-floating-terminal-with-presentation")
+                self.assertTrue(terminal.call_args.args[0][1].endswith(f"omarchy_ai.cli.task show {task.id}"))
 
     def test_interrupted_tasks_are_marked_on_restart(self):
         task = Task(id="t1", goal="g", workspace=str(self.ws), status="running")
@@ -774,6 +1057,67 @@ class ReviewRegressionTests(RuntimeHarness):
             result = service.start_task({"goal": "compress my video"})
         self.assertTrue(result.ok)
         self.assertEqual(started["workspace"], str(Path.home()))
+
+    def test_6b_voice_task_goal_gets_the_links_the_user_gave(self):
+        from omarchy_ai.core import conversations
+        from omarchy_ai.runtime import service
+        now = time.time()
+        conv = {"lines": [{"role": "user", "text": "old https://example.invalid/old", "at": now - 7200},
+                          {"role": "user", "text": "use these docs: https://example.invalid/docs/decisions.", "at": now},
+                          {"role": "assistant", "text": "see https://example.invalid/mine", "at": now},
+                          {"role": "user", "text": "and https://example.invalid/kept too", "at": now}]}
+        with patch.object(conversations, "_load", return_value=conv):
+            goal = service._with_user_links("Update the script, see https://example.invalid/kept", "20261007-000000-abc")
+        self.assertTrue(goal.endswith("(use the ones this job needs): https://example.invalid/docs/decisions"), goal)
+        self.assertEqual(service._with_user_links("no conversation", ""), "no conversation")
+
+    def test_6c_a_refused_start_says_it_did_not_start(self):
+        from omarchy_ai.core import conversations
+        from omarchy_ai.runtime import service
+
+        class FakeRuntime:
+            store = SimpleNamespace(list=lambda n: [])
+
+            def start(self, goal, workspace, source, **kw):
+                raise ValueError("unknown agent 'X'; known: CODEX")
+        cards = []
+        token = conversations.CURRENT.set("20261007-000000-abc")
+        self.addCleanup(conversations.CURRENT.reset, token)
+        with patch.object(service, "get_runtime", return_value=FakeRuntime()), \
+             patch.object(conversations, "_load", return_value=None), \
+             patch.object(conversations, "add_card", side_effect=lambda cid, card: cards.append((cid, card))), \
+             patch("omarchy_ai.config.load_config") as cfg:
+            cfg.return_value.task_runtime_enabled = True
+            result = service.start_task({"goal": "fix the automation", "workspace": "/srv/elsewhere/config"})
+        self.assertFalse(result.ok)
+        self.assertTrue(result.message.startswith("NOT STARTED: unknown agent 'X'"))
+        self.assertEqual(cards[0][0], "20261007-000000-abc")
+        self.assertEqual(cards[0][1]["event"], "failed")
+        self.assertIn("Task not started", cards[0][1]["text"])
+
+    def test_6d_a_job_in_a_folder_that_is_not_here_still_starts(self):
+        # 2026-10-07 20:56: two jobs given, the one on another machine was refused four times.
+        from omarchy_ai.runtime import service
+        started = []
+
+        class FakeRuntime:
+            store = SimpleNamespace(list=lambda n: [])
+
+            def start(self, goal, workspace, source, **kw):
+                started.append((goal, workspace))
+                return Task(id=f"v{len(started)}", goal=goal, workspace=workspace)
+        with patch.object(service, "get_runtime", return_value=FakeRuntime()), \
+             patch("omarchy_ai.config.load_config") as cfg:
+            cfg.return_value.task_runtime_enabled = True
+            remote = service.start_task({"goal": "fix the automation on the server", "workspace": "/srv/elsewhere/config"})
+            local = service.start_task({"goal": "update the drone script", "workspace": str(self.ws)})
+        self.assertTrue(remote.ok and local.ok)
+        self.assertEqual(started[0][1], str(Path.home()))
+        self.assertIn("/srv/elsewhere/config, does not exist on this computer", started[0][0])
+        self.assertIn("over ssh", started[0][0])
+        self.assertIn("workspace_note", json.loads(remote.message))
+        self.assertEqual(started[1], ("update the drone script", str(self.ws)))
+        self.assertNotIn("workspace_note", json.loads(local.message))
 
     def test_7_config_writes_ask_even_with_home_workspace(self):
         home = Path.home()
@@ -996,6 +1340,35 @@ class CodingAgentTests(unittest.TestCase):
             a = Assignment("t", "implement", "g", "i", tmp, write_access=True)
             report = Codex().run(a, Ctx())
         self.assertEqual(report.status, "needs_approval")
+
+    def test_the_commands_a_worker_reports_ride_on_the_step_not_on_the_clipped_claim(self):
+        from omarchy_ai.core.skills import COMMANDS_MARKER
+        from omarchy_ai.runtime.task import Task
+        output = "SUMMARY: " + "watered. " * 400 + f"\nRISKS: none\n{COMMANDS_MARKER}\nvalve open\nvalve close\n"
+
+        class Ctx:
+            cancel_requested = False
+
+            def check_external(self, kind, subject, risk, reasons):
+                return {"decision": "allow"}
+
+            def run_external(self, *a, **k):
+                return {"exit_code": 0, "timed_out": False, "output": output}
+
+        def run(role):
+            with tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(Codex, "detect", return_value={"path": "codex"}), \
+                    patch.object(Codex, "parse", side_effect=lambda out, workdir: (out, {})):
+                return Codex().run(Assignment("t", role, "g", "i", tmp, write_access=True), Ctx())
+        for role in ("work", "diagnose", "implement"):
+            self.assertIn(COMMANDS_MARKER, build_prompt(Assignment("t", role, "g", "i", "/tmp")), role)
+            self.assertEqual(run(role).meta["commands"], ["valve open", "valve close"], role)
+        for role in ("test", "review"):
+            self.assertNotIn(COMMANDS_MARKER, build_prompt(Assignment("t", role, "g", "i", "/tmp")), role)
+            self.assertNotIn("commands", run(role).meta, role)
+        task = Task(id="t", goal="g", workspace="/nowhere")
+        task.finish_step(task.add_step("CODEX", "i", "work"), "done", run("work").claim)
+        self.assertNotIn(COMMANDS_MARKER, task.steps[0]["claim"])  # cut off there: the claim keeps its start
 
 
 if __name__ == "__main__":

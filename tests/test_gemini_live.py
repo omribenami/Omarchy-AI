@@ -11,10 +11,11 @@ from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.voice.gemini_live import (
     MAX_TOOL_RESPONSE_CHARS,
     GeminiLiveSession,
+    StuckTurn,
     _bounded_tool_message,
     build_live_config,
 )
-from omarchy_ai.voice import switchboard
+from omarchy_ai.voice import fallback, switchboard
 
 # Dispatch tests below are about the pipeline, not Jev: the switchboard lets
 # every call run (its own policy is tested in test_switchboard.py).
@@ -59,6 +60,21 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         goal = handoff.await_args.args[0]
         self.assertIn("stop before submission", goal)
         self.assertIn("Create this month's report now", goal)
+
+    async def test_whole_task_route_hands_off_from_point_eight(self):
+        # Journal 2026-10-05 16:04:49: "ssh to the server and find it there" scored 0.81 and stayed with her.
+        for p, expected in ((0.81, 1), (0.79, 0)):
+            adapter = GeminiLiveSession(Config())
+            adapter._utterance = ["Connect to the server and find the folder there."]
+            adapter._last_user_speech = time.monotonic() - 2
+            with patch('omarchy_ai.voice.jev_fast.judge',
+                       return_value=(None, {"route": "whole_task", "p": p})), \
+                    patch.object(adapter, '_escalate', new=AsyncMock()) as handoff:
+                worker = asyncio.create_task(adapter._fast_path())
+                await asyncio.sleep(.2)
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+            self.assertEqual(handoff.await_count, expected, p)
 
     async def test_non_whole_task_route_does_not_start_runtime(self):
         adapter = GeminiLiveSession(Config())
@@ -424,6 +440,24 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Input NOT sent', responses[1]['message'])
         self.assertIn('Input NOT sent', adapter._action_log[-1]['message'])
         self.assertEqual(adapter._action_log[-1]['call_id'], '1')
+
+
+class SentBackTests(unittest.TestCase):
+    def test_the_same_refused_call_is_told_to_stop_the_third_time(self):
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        with patch("omarchy_ai.voice.gemini_live.LiveSession.__init__", return_value=None):
+            adapter = GeminiLiveSession(Config())
+        args = {"name": "cd", "command": "cat groups.yaml"}
+        first = adapter._sent_back("terminal_task", args, "Not run: Jev checked it")
+        adapter._sent_back("terminal_task", dict(reversed(args.items())), "Not run: Jev checked it")
+        third = adapter._sent_back("terminal_task", args, "Not run: Jev checked it")
+        self.assertEqual((first.ok, first.message), (False, "Not run: Jev checked it"))
+        self.assertIn("Stop sending it", third.message)
+        self.assertTrue(third.message.startswith("Not run:"))  # still a verdict, not a tool failure
+        other = adapter._sent_back("terminal_task", {"command": "ls"}, "Not run: other")
+        self.assertEqual(other.message, "Not run: other")
+        adapter._last_user_speech += 1  # the user spoke again: a new turn
+        self.assertEqual(adapter._sent_back("terminal_task", args, "Not run: again").message, "Not run: again")
 
 
 class OverlayStateTests(unittest.TestCase):
@@ -878,6 +912,19 @@ class StuckTurnGuardTests(unittest.TestCase):
         s._gate(self.frame(1), 1500.0, 105.0)
         self.assertEqual(s._splices, 0)
 
+    def test_no_splice_while_a_blocking_tool_call_is_running(self):
+        # Journal 2026-10-05 16:04:54: the guard fired inside an 8s terminal_read.
+        s = self.session()
+        s._blocking_calls.add("c1")
+        s._gate(self.frame(1), 80.0, 105.0)
+        self.assertEqual(s._splices, 0)
+        s._call_done("c1")
+        s._tool_done_at = 105.0  # she gets the same 2s to answer the result
+        s._gate(self.frame(2), 80.0, 106.0)
+        self.assertEqual(s._splices, 0)
+        s._gate(self.frame(3), 80.0, 107.1)
+        self.assertEqual(s._splices, 1)
+
     def test_user_talking_again_cancels_forced_turn_closure(self):
         s = self.session()
         s._gate(self.frame(1), 1500.0, 102.0)
@@ -885,6 +932,21 @@ class StuckTurnGuardTests(unittest.TestCase):
         for i in range(s.SPLICE_ABORT_FRAMES):
             s._gate(self.frame(i + 2), 5100.0, 102.02 + i * .02)
         self.assertEqual(s._force_close_at, 0.0)
+
+    def test_a_long_stall_closes_the_turn_as_soon_as_the_user_stops_again(self):
+        # Journal 2026-10-05 18:37:16-18:38:16: seven repeats, each put the closure off.
+        s = self.session()
+        s._gate(self.frame(1), 80.0, 102.0)                      # first unanswered splice
+        self.assertEqual(s._force_close_at, 102.0)
+        for i in range(s.SPLICE_ABORT_FRAMES):                   # "are you there?"
+            s._gate(self.frame(i + 2), 5100.0, 108.0 + i * .02)
+        self.assertEqual(s._force_close_at, 0.0)
+        at = 102.0 + s.STALL_CAP_SECONDS + 1
+        s._gate(self.frame(9), 80.0, at)                         # they stop: no second 8s wait
+        self.assertEqual(s._splices, 2)
+        self.assertEqual(s._force_close_at, at - s.FORCE_CLOSE_AFTER_SECONDS)
+        s._replied()
+        self.assertEqual(s._stalled_since, 0.0)
 
 
 class StuckTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -907,6 +969,20 @@ class StuckTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
+    async def test_no_forced_turn_closure_while_a_blocking_tool_call_is_running(self):
+        s = GeminiLiveSession(Config())
+        s.FORCE_CLOSE_AFTER_SECONDS = 0.0
+        s._force_close_at = time.monotonic()
+        s._blocking_calls.add("c1")
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        worker = asyncio.create_task(s._stuck_turn_recovery(session))
+        try:
+            await asyncio.sleep(.25)
+            session.send_client_content.assert_not_awaited()
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
     async def test_reply_cancels_forced_turn_closure(self):
         s = GeminiLiveSession(Config())
         s.FORCE_CLOSE_AFTER_SECONDS = 0.0
@@ -916,6 +992,104 @@ class StuckTurnRecoveryTests(unittest.IsolatedAsyncioTestCase):
         worker = asyncio.create_task(s._stuck_turn_recovery(session))
         try:
             await asyncio.sleep(.12)
+            session.send_client_content.assert_not_awaited()
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    async def recover(self, s, seconds=.3):
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        worker = asyncio.create_task(s._stuck_turn_recovery(session))
+        await asyncio.sleep(seconds)
+        worker.cancel()
+        return (await asyncio.gather(worker, return_exceptions=True))[0]
+
+    async def test_an_ignored_forced_closure_restarts_the_connection(self):
+        # 2026-10-05 18:37:24: forced closure, then 52s of nothing.
+        s = GeminiLiveSession(Config())
+        s.restart_stalled, s.RESTART_AFTER_SECONDS = True, 0.0
+        s._forced_at = s._stalled_since = time.monotonic()
+        s._transcript.append({"role": "user", "text": "Did you check?"})
+        error = await self.recover(s)
+        self.assertIsInstance(error, StuckTurn)
+        self.assertFalse(fallback.is_provider_failure(error))   # the same model, not the next one
+        self.assertTrue(s._resume_stalled(error))
+        self.assertEqual((s._stalled_since, s._forced_at, s._stall_restarts), (0.0, 0.0, 1))
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        await s._carry_over(session)
+        kwargs = session.send_client_content.call_args.kwargs
+        self.assertTrue(kwargs["turn_complete"])                 # she answers, the user is waiting
+        self.assertIn("user: Did you check?", kwargs["turns"]["parts"][0]["text"])
+        await s._carry_over(session)                             # a later model fallback is context only
+        self.assertFalse(session.send_client_content.call_args.kwargs["turn_complete"])
+
+    async def test_no_restart_after_a_reply_during_a_call_or_where_nobody_reconnects(self):
+        s = GeminiLiveSession(Config())
+        s.restart_stalled, s.RESTART_AFTER_SECONDS = True, 0.0
+        s._forced_at = time.monotonic()
+        s._replied()
+        self.assertIsInstance(await self.recover(s), asyncio.CancelledError)
+        s._forced_at = time.monotonic()
+        s._pending_calls.add("c1")                               # its result may still wake her
+        self.assertIsInstance(await self.recover(s), asyncio.CancelledError)
+        self.assertTrue(s._forced_at)
+        s._pending_calls.clear()
+        s.restart_stalled = False                                # the speaker has one connection
+        self.assertIsInstance(await self.recover(s), asyncio.CancelledError)
+        s.restart_stalled, s._stall_restarts = True, s.MAX_STALL_RESTARTS
+        s._forced_at = time.monotonic()
+        error = await self.recover(s)                            # too many: the next model's turn
+        self.assertIsInstance(error, StuckTurn)
+        self.assertFalse(s._resume_stalled(error))
+        self.assertFalse(s._resume_stalled(ValueError("bug")))
+
+
+class SilentWorkTests(unittest.IsolatedAsyncioTestCase):
+    """2026-10-05 18:36:23: three blocking terminal calls after a spoken
+    request and not a word from her."""
+
+    def session(self, **state):
+        s = GeminiLiveSession(Config())
+        now = time.monotonic()
+        s.ack_silent_work, s._running_blocking = True, 1
+        s._last_user_speech, s._silent_since = now - 4.0, now - 2.0
+        for key, value in state.items():
+            setattr(s, key, value)
+        return s, now
+
+    def test_blocking_work_without_a_word_is_acknowledged_once(self):
+        s, now = self.session()
+        self.assertTrue(s._silent_work_due(now))
+        s._silent_acked = True
+        self.assertFalse(s._silent_work_due(now))
+
+    def test_not_when_she_spoke_first_or_the_call_is_quick_or_over(self):
+        s, now = self.session()
+        s._last_audio_at = now - 3.0                             # "checking..." then the call
+        self.assertFalse(s._silent_work_due(now))
+        s, now = self.session()
+        s._silent_since = now - 0.5
+        self.assertFalse(s._silent_work_due(now))
+        s, now = self.session(_running_blocking=0)
+        self.assertFalse(s._silent_work_due(now))
+
+    def test_only_after_spoken_words_and_only_where_the_clip_is_heard(self):
+        s, now = self.session(_last_user_speech=0.0)             # typed chat, or her own heartbeat
+        self.assertFalse(s._silent_work_due(now))
+        s, now = self.session()
+        s._last_user_speech = now - 120.0
+        self.assertFalse(s._silent_work_due(now))
+        s, now = self.session(ack_silent_work=False)             # the speaker plays no clips
+        self.assertFalse(s._silent_work_due(now))
+
+    async def test_says_the_clip_instead_of_prompting_a_model_that_cannot_speak(self):
+        s, _ = self.session()
+        s._say_clip = AsyncMock()
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        worker = asyncio.create_task(s._task_status(session))
+        try:
+            await asyncio.sleep(.7)
+            s._say_clip.assert_awaited_once_with("working")
             session.send_client_content.assert_not_awaited()
         finally:
             worker.cancel()

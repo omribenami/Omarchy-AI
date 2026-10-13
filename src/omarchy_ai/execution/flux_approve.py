@@ -206,17 +206,24 @@ class Fluxd:
             self.sock.close()
 
 
-def request(what: str) -> tuple[bool | None, str]:
+def request(what: str, by: str = "omarchy", why: str = "") -> tuple[bool | None, str]:
     """Show `what` on the phone and wait for the fingerprint. (True, _) only
     for a valid signature over this request; (False, _) when the user denied
     it; (None, reason) when no answer could be had (no key, fluxd or phone
     unreachable, timeout, a bad signature), so the caller falls back to the
-    PIN or the desktop notification."""
+    PIN or the desktop notification.
+
+    `by` (claude, codex, omarchy or jev) and `why` are who asks and the
+    reason. They travel in the two signed fields a PAM login uses for its
+    terminal and remote host, which an approval of ours has no use for, as
+    "by:<who>" and the reason: the phone shows them, and its signature
+    covers them (the stock Flux app shows them as "Terminal" and "From")."""
     key = read_key()
     if key is None:
         return None, "no phone is enrolled for fingerprint approval"
     host, user = _clean(socket.gethostname()), _clean(getpass.getuser())
     service = _clean(what) or "Omarchy AI"
+    asker, reason = _clean("by:" + (by or "omarchy")), _clean(why)
     nonce, started = secrets.token_hex(32), int(time.time())
     try:
         fluxd = Fluxd(timeout=2)
@@ -224,7 +231,7 @@ def request(what: str) -> tuple[bool | None, str]:
         return None, f"fluxd is not reachable: {exc}"
     try:
         begun = fluxd.call("approve.request", {"device": key.device_id, "host": host, "user": user,
-                                               "service": service, "tty": "", "rhost": "",
+                                               "service": service, "tty": asker, "rhost": reason,
                                                "time": started, "nonce": nonce}, timeout=3)
         request_id, wait = begun.get("id"), min(max(int(begun.get("timeout") or 20), 5), _MAX_WAIT)
         if not request_id:
@@ -242,7 +249,7 @@ def request(what: str) -> tuple[bool | None, str]:
                 except ValueError:
                     return None, "the phone sent a malformed signature"
                 # Rebuilt from this process's own fields: nothing fluxd or the phone sent back.
-                signed = message(host, user, service, "", "", started, nonce)
+                signed = message(host, user, service, asker, reason, started, nonce)
                 if time.time() > started + wait + 3 or time.time() < started - _FUTURE:
                     return None, "the approval came too late"
                 if not verify(key.public, signed, signature):

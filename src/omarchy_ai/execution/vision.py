@@ -215,3 +215,27 @@ def inspect_gateway_image(path: Path, question: str, config) -> str:
     except Exception:
         log.exception("Gateway screenshot inspection failed")
         return "error: screenshot inspection failed; screen contents are unverified"
+
+
+def judge_image(path: Path, questions: dict, config, context: str = "") -> dict:
+    """Typed answers about one image, parsed like every other Jev answer
+    (core.jev.parse). Raises JevError; a judgment has no safe default.
+
+    For yes/no, choice and score questions only: the decision model returns
+    no text, so "describe what you see" stays with inspect_gateway_image.
+    """
+    from ..core import jev
+    from ..voice.omarchy import GatewayClient
+
+    mime = _image_mime(path)
+    if not mime:
+        raise jev.JevError(f"{path.name} is not a valid image")
+    parts = [{"type": "text", "text": context}] if context else []
+    parts.append({"type": "file", "mediaType": mime,
+                  "data": {"type": "data", "data": base64.b64encode(path.read_bytes()).decode("ascii")}})
+    client = GatewayClient(config)
+
+    def transport(_state, asked, timeout=20):
+        return client.decide_response(parts, asked, model=config.omarchy_image_decision_model, timeout=timeout)
+
+    return jev.Jev(transport).ask(context, questions, timeout=20, retries=1)

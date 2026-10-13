@@ -660,10 +660,15 @@ config and installs the systemd service. It never guesses or overwrites your
 API key.
 
 Then open the **Omarchy AI** settings panel on the right side of the bar,
-choose **OpenAI**, **Gemini** or **Gateway voice**, add that provider's key,
-and press **Apply saved changes**. For Jev desktop, browser and Task Runtime
-decisions, also save a **Jev / Vercel AI Gateway key** (this integration uses
-the Gateway key; it does not take a separate TypeSafe token). Keys are saved
+choose **OpenAI**, **Gemini** or **Gateway voice**, and save the
+**Vercel AI Gateway key**: the one key for Jev's desktop, browser and Task
+Runtime decisions (no separate TypeSafe token), the OpenAI backup voice, and
+the Gateway speech, text and vision models. Gemini Live and OpenAI Live also
+take their own provider key, because they connect to that provider directly.
+With Gemini selected, a failing voice model is replaced mid-conversation in
+this order: Gemini 3.8 Live, GPT Realtime 2 through the Gateway key, then
+the older Gemini Live models; a step whose key is missing is skipped. Press
+**Apply saved changes** when done. Keys are saved
 owner-only in `~/.config/omarchy-ai/key`, `gemini-key` and
 `vercel-ai-gateway-key`. To let it answer sudo prompts, enable **Sudo
 Access**; the password is kept in GNOME Keyring. New installs default to the

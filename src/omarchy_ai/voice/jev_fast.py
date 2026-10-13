@@ -46,6 +46,10 @@ ROUTES = {
     "instant": "One simple desktop command: a workspace, moving the focused window, volume, media, fullscreen.",
     "desktop_goal": "Another native desktop goal: focusing or arranging windows, brightness, theme, bar panels.",
     "web": "Something to do on a website.",
+    # 2026-10-12 18:44: "watch the driveway camera for the next 5 minutes" scored
+    # whole_task 0.99, so a background task ran its own loop beside the watch.
+    "watch": "Keeping watch on a camera, the screen or a terminal for a while and telling the user when "
+             "something happens there. One background watch does it; it is not a whole_task.",
     "whole_task": "A job the assistant itself must carry out across several stages or services and keep working "
                   "on without more prompts: investigation or diagnosis, collecting inputs then producing a "
                   "result, a multi-step website/account workflow, an install or configuration, or a code change "

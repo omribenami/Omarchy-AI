@@ -220,9 +220,12 @@ Item {
           delegate: Text {
             required property var modelData
             width: log.width
+            // A note (a skill was saved or updated) is an aside, not something said: smaller and faint.
+            readonly property bool note: modelData.role === "note"
             text: (modelData.role === "user" ? "> " : (modelData.role === "error" ? "! " : "")) + String(modelData.text || "")
-            color: modelData.role === "user" ? root.cyan : (modelData.role === "error" ? root.red : root.ink)
-            font.family: Style.font.family; font.pixelSize: Style.font.body
+            color: note ? root.faint : (modelData.role === "user" ? root.cyan : (modelData.role === "error" ? root.red : root.ink))
+            font.family: Style.font.family; font.pixelSize: note ? Style.font.caption : Style.font.body
+            font.italic: note
             wrapMode: Text.Wrap; textFormat: Text.PlainText
           }
         }

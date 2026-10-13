@@ -179,6 +179,19 @@ class GatewayClient:
         )
         return json.loads(response)
 
+    def decide_response(self, parts: list[dict], questions: dict, *, model: str, timeout: float = 20) -> dict:
+        """Typed answers about ordered state parts, which may include images
+        ({"type": "file", "mediaType": ..., "data": {"type": "data", "data":
+        <base64>}}). This is /decision-model, not /evaluation-model: the
+        older endpoint accepts such a list and reads it as text (2026-10-11:
+        a 4 KB PNG cost 4,258 tokens there and was judged blind; 703 here)."""
+        response = self._request(
+            "/ai/decision-model", json.dumps({"stateParts": parts, "questions": questions}).encode(),
+            "application/json", {"ai-decision-model-specification-version": "4", "ai-model-id": model},
+            timeout=timeout,
+        )
+        return json.loads(response)
+
     def evaluate_questions(self, state: str, questions: dict) -> dict:
         """Batch native desktop decisions through the evaluation protocol."""
         return self.evaluate_response(state, questions)["answers"]

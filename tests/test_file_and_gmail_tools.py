@@ -27,6 +27,10 @@ class LocalFileToolTests(unittest.TestCase):
         self.assertFalse(actions._looks_like_script("- a\n- b\n- c\n", "notes.md"))
         demo = "In workspace 5 only:\nAll narration in parallel.\n1. Intro\n2. Terminal\n3. Browser\n"
         self.assertTrue(actions._looks_like_script(demo, "/home/u/commercial_prompt.md"))
+        # Journal 2026-10-05 16:08:59: a feature inventory blocked her next find.
+        inventory = ("## Features\n" + "| Narration suppression | never spoken | none |\n" * 6
+                     + "- step one of the build\n- then the agent\n- finally the store\n")
+        self.assertFalse(actions._looks_like_script(inventory, "features.md"))
 
     def test_submit_sudo_password_never_returns_the_secret(self):
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")

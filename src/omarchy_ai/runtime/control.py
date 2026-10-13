@@ -42,6 +42,18 @@ DIRECTIVES = {
 }
 
 
+GAPS = {
+    "none": "Nothing is missing: the independent evidence covers every acceptance criterion.",
+    "tests": "The result has not been verified by passing tests or checks run after the last change.",
+    "runtime_behavior": "The real behavior (service running, device working, app state) was not observed after the change.",
+    "review": "Changed code has not been independently reviewed, or the review found problems.",
+    "unfixed_failure": "A failure, error or failing check is still unresolved.",
+    "user_confirmation": "Only the user can confirm the outcome (subjective or physical result).",
+}
+# The gaps that can be out of every worker's reach (a flight, a tap, a look).
+LIVE_GAPS = {"runtime_behavior", "user_confirmation"}
+
+
 @dataclass
 class Choice:
     value: str
@@ -96,6 +108,10 @@ def brief(task: Task, *, evidence_items: int = 14, steps: int = 8) -> str:
     return text[:MAX_BRIEF_CHARS]
 
 
+DECLINED_P = 0.8
+CONFIRMED_P = 0.7
+
+
 class ControlPlane:
     def __init__(self, jev: Jev | None = None):
         self.jev = jev or Jev()
@@ -109,10 +125,12 @@ class ControlPlane:
             return None
 
     # -- ROUTE -----------------------------------------------------------
-    def route(self, task: Task, candidates: dict[str, str]) -> tuple[Choice, float | None]:
-        """(executor or ASK_USER, P(needs code change))."""
+    def route(self, task: Task, candidates: dict[str, str], ask: bool = True) -> tuple[Choice, float | None]:
+        """(executor or ASK_USER, P(needs code change)). `ask` False: the
+        user was already asked once and answered, so a worker takes it."""
         criteria = dict(candidates)
-        criteria["ASK_USER"] = "The request is too ambiguous to act on safely without asking the user first."
+        if ask:
+            criteria["ASK_USER"] = "The request is too ambiguous to act on safely without asking the user first."
         questions = {
             "executor": choice(
                 "Which worker should take the FIRST step of this task? Judge by what the task actually requires "
@@ -138,6 +156,17 @@ class ControlPlane:
             return Choice("WORKFLOW_AGENT", workflow["p"], {"workflow": workflow["p"]}), answers["needs_code_change"]["p"]
         pick = answers["executor"]
         return Choice(pick["choice"], pick["p"], pick["probabilities"]), answers["needs_code_change"]["p"]
+
+    def declined(self, task: Task) -> bool:
+        """The user's answer to the opening question says not to do the task
+        after all. False when Jev is unavailable: the answer goes to a worker."""
+        state = json.dumps({"request": _clip(task.title, 600), "user_answer": _clip(task.answers[-1], 600)},
+                           ensure_ascii=False)
+        answers = self._ask(task, state, {"declined": boolean(
+            "Asked what exactly they want done, does the user's answer tell the assistant not to do the task after "
+            "all: no, stop, cancel, never mind, not approved? Judge the meaning, in any language. An answer that "
+            "says what they want, or tells it to go ahead, is not.")})
+        return bool(answers) and answers["declined"]["p"] >= DECLINED_P
 
     # -- DIRECT ----------------------------------------------------------
     def direct(self, task: Task, allowed: list[str], executors: dict[str, str]) -> tuple[Choice, Choice]:
@@ -190,24 +219,51 @@ class ControlPlane:
         return answers["detects"]["p"] if answers else None
 
     # -- CERTIFY ---------------------------------------------------------
-    def certify(self, task: Task) -> tuple[float | None, Choice | None]:
-        gaps = {
-            "none": "Nothing is missing: the independent evidence covers every acceptance criterion.",
-            "tests": "The result has not been verified by passing tests or checks run after the last change.",
-            "runtime_behavior": "The real behavior (service running, device working, app state) was not observed after the change.",
-            "review": "Changed code has not been independently reviewed, or the review found problems.",
-            "unfixed_failure": "A failure, error or failing check is still unresolved.",
-            "user_confirmation": "Only the user can confirm the outcome (subjective or physical result).",
-        }
+    def certify(self, task: Task) -> tuple[float | None, Choice | None, float | None, float | None]:
+        """(P(certified), the gap, P(the real behavior was only ever simulated),
+        P(only the user can tell whether it worked))."""
         answers = self._ask(task, brief(task, evidence_items=20), {
             "certified": boolean(
                 "Is EVERY acceptance criterion of the goal met right now? Use the UNTRUSTED executor claims only to "
                 "learn WHAT is being claimed (the answer given, the change made); decide whether it is TRUE from the "
                 "evidence observed by the harness (commands the harness ran, tests, diffs, independent reviews). "
                 "A claim contradicted or not supported by that evidence means no."),
-            "gap": choice("What is the most important thing still missing before this goal can be certified?", gaps),
+            "gap": choice("What is the most important thing still missing before this goal can be certified?", GAPS),
+            # 2026-10-07 21:00 and 21:11: a drone script, refused three times
+            # each for runtime_behavior that needs a flight. Probed on the live
+            # Jev over nine refused tasks: this wording scored the two drone
+            # tasks 0.92 and 0.85, a phone app 0.71 and the rest 0.07-0.44;
+            # "could a worker still obtain the evidence" scored all 0.57-0.78.
+            "simulated": boolean(
+                "Is the only evidence of the real behavior so far a simulation, mock, dry run or stubbed test, "
+                "with the real device or live service never exercised?"),
+            # 2026-10-12: a spoken countdown in another room that ended by
+            # locking two computers was refused twice at 0.73 and 0.74, the gap
+            # named "review" one time and "user_confirmation" the other. Probed
+            # on the live Jev over fifteen finished tasks: this wording scored
+            # those two 0.82 and 0.90, questions and investigations 0.10-0.57
+            # and code changes 0.25-0.45.
+            "user_only": boolean(
+                "Does part of this goal's outcome happen in the physical world or in the user's own perception (a "
+                "sound heard in a room, a device or another machine actually changing state, how something looks or "
+                "feels to them), so that only the user can tell whether it really worked?"),
         })
         if not answers:
-            return None, None
+            return None, None, None, None
         g = answers["gap"]
-        return answers["certified"]["p"], Choice(g["choice"], g["p"], g["probabilities"])
+        return (answers["certified"]["p"], Choice(g["choice"], g["p"], g["probabilities"]), answers["simulated"]["p"],
+                answers["user_only"]["p"])
+
+    def confirmation(self, task: Task) -> str:
+        """What the user answered when asked whether it worked: "worked",
+        "did_not_work" or "unclear" (also when Jev is unavailable)."""
+        state = json.dumps({"request": _clip(task.title, 400), "question_asked": "Did it work?",
+                            "user_answer": _clip(task.answers[-1], 600)}, ensure_ascii=False)
+        answers = self._ask(task, state, {"outcome": choice(
+            "The user was asked whether the finished job worked. What does their answer say? Judge the meaning, in "
+            "any language.", {"worked": "It worked: yes, approved, it did, thanks, all good.",
+                              "did_not_work": "It did not work, or only part of it did.",
+                              "unclear": "The answer does not say either way, or is about something else."})})
+        if not answers or answers["outcome"]["p"] < CONFIRMED_P:
+            return "unclear"
+        return answers["outcome"]["choice"]

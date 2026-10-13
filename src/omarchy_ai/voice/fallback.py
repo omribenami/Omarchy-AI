@@ -1,4 +1,4 @@
-"""Fall back to an older Gemini Live model when the default fails on Google's side.
+"""Fall back to another voice model when the default one fails.
 
 2026-09-28: gemini-3.8-live closed calls with "1011 Internal error
 encountered" at 08:35, 08:50 and 09:29, then failed every probe session
@@ -11,6 +11,14 @@ Now a provider failure moves the conversation to the next model in
 Config.gemini_fallback_models, carrying the recent transcript over. A failed
 model is skipped for DOWN_SECONDS so the next call does not hit it first.
 
+The chain crosses companies and keys (2026-10-05): the default Gemini model
+on the Gemini key, then an OpenAI realtime model on the Vercel AI Gateway
+key (voice/gateway_live.py; a model id with a "/" is a Gateway id), then
+the older Gemini models. So one company's outage, an exhausted quota or a
+missing key no longer ends the conversation: a model whose key file is
+absent is left out of the chain, and a quota error skips every model on the
+same key.
+
 The notices are pre-rendered clips in the user's language
 (core/alert_clips.py): a model that is failing cannot say that it is
 failing, and this machine has no local TTS engine.
@@ -22,6 +30,7 @@ import re
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from ..core import alert_clips
 from ..core.quota import is_quota_error
@@ -37,12 +46,24 @@ COMPANIES = {"gemini": "Google"}
 
 # Spoken text, in English; the clips are rendered from these strings (see
 # texts(): the "switching" one names the default model).
-SWITCHING = "The default model {model} is experiencing issues on {company}'s side, falling back to an older model."
+SWITCHING = "The default model {model} is experiencing issues on {company}'s side, switching to a backup model."
 FAILED = "Sorry, falling back did not fix the problem, please try a different provider."
+# Said when she starts working without a word (gemini_live._silent_work_due).
+WORKING = "On it, one moment."
 
 # Closed by the server for its own reasons, not ours: 1011 is "internal
 # error", 1006 an abnormal close, 503/UNAVAILABLE an overloaded backend.
-_FAILURE = re.compile(r"\b1011\b|\b1006\b|internal error|\b503\b|unavailable|deadline exceeded", re.I)
+# Since 2026-10-05 also what a different company's model can cure: a refused
+# or timed-out connection, a rejected key, other server-side codes.
+_FAILURE = re.compile(
+    r"\b1011\b|\b1006\b|\b1012\b|\b1013\b|\b1014\b|internal error|\b50[0234]\b|\b529\b|unavailable|"
+    r"deadline exceeded|overloaded|timed out|timeout|connect failed|connection (closed|refused|reset)|"
+    r"\b401\b|\b403\b|api key|unauthenticated|permission denied", re.I)
+
+
+class Reconnect(ConnectionError):
+    """This connection is over through no fault of the model: connect again
+    to the same model and carry the conversation over."""
 
 _lock = threading.Lock()
 _down: dict[str, float] = {}
@@ -50,34 +71,65 @@ _announced_at = -1e9
 
 
 def display_name(model: str) -> str:
-    """gemini-3.8-live -> Gemini 3.8 Live"""
-    return " ".join(part if part[:1].isdigit() else part.capitalize() for part in model.split("-"))
+    """gemini-3.8-live -> Gemini 3.8 Live; openai/gpt-realtime-2 -> GPT Realtime 2"""
+    return " ".join("GPT" if part == "gpt" else part if part[:1].isdigit() else part.capitalize()
+                    for part in model.rsplit("/", 1)[-1].split("-"))
 
 
 def company(model: str) -> str:
-    return COMPANIES.get(model.split("-", 1)[0], "the provider")
+    return COMPANIES.get(model.rsplit("/", 1)[-1].split("-", 1)[0], "the provider")
 
 
 def is_provider_failure(error: BaseException) -> bool:
-    text = str(error)
-    return bool(_FAILURE.search(text)) and not is_quota_error(text)
+    """Would another model get the user an answer? Out of quota counts: the
+    next model may be on another key (see same_key)."""
+    if isinstance(error, Reconnect):
+        return False
+    return bool(_FAILURE.search(str(error))) or is_quota_error(str(error)) or isinstance(error, (OSError, TimeoutError))
+
+
+def via_gateway(model: str) -> bool:
+    """"openai/gpt-realtime-2" is a Vercel AI Gateway id; "gemini-3.8-live" is Google's own."""
+    return "/" in model
+
+
+def key_path(config, model: str) -> Path:
+    return Path(config.vercel_gateway_api_key_path if via_gateway(model) else config.gemini_api_key_path)
+
+
+def configured(config) -> list[str]:
+    """Every model of the chain, in order, whatever its state."""
+    return list(dict.fromkeys([config.gemini_model, *config.gemini_fallback_models]))
+
+
+def is_down(model: str) -> bool:
+    with _lock:
+        return _down.get(model, -1e9) + DOWN_SECONDS > time.monotonic()
 
 
 def chain(config) -> list[str]:
-    """Models to try, in order, skipping ones that failed recently (all of
-    them if every one did)."""
-    models = list(dict.fromkeys([config.gemini_model, *config.gemini_fallback_models]))
-    now = time.monotonic()
-    with _lock:
-        up = [m for m in models if _down.get(m, -1e9) + DOWN_SECONDS <= now]
+    """Models to try, in order: those whose key is on this machine, skipping
+    ones that failed recently (all of them if every one did)."""
+    models = [m for m in configured(config) if key_path(config, m).is_file()] or configured(config)
+    up = [m for m in models if not is_down(m)]
     return up or models
 
 
 def mark_down(model: str, error: BaseException) -> None:
     with _lock:
         _down[model] = time.monotonic()
-    log.warning("Gemini model failed on the provider side, skipping it for %ds: model=%s error=%s",
+    log.warning("Voice model failed on the provider side, skipping it for %ds: model=%s error=%s",
                 DOWN_SECONDS, model, " ".join(str(error).split())[:200])
+
+
+def next_index(models: list[str], index: int, error: BaseException) -> int | None:
+    """The model to go on with after models[index] failed. Out of quota
+    skips the rest of that key too."""
+    for later in range(index + 1, len(models)):
+        if is_quota_error(str(error)) and via_gateway(models[later]) == via_gateway(models[index]):
+            continue
+        return later
+    return None
 
 
 def should_announce() -> bool:
@@ -95,13 +147,15 @@ def texts(model: str) -> dict[str, str]:
     generic one for a default model with no clip of its own, and "failed"."""
     return {f"fallback-switching-{model}": SWITCHING.format(model=display_name(model), company=company(model)),
             "fallback-switching": SWITCHING.replace(" {model}", "").format(company="the provider"),
-            "fallback-failed": FAILED}
+            "fallback-failed": FAILED, "working": WORKING}
 
 
 def clip(kind: str, model: str | None = None):
     """The notice in the user's language, else English; a "switching" clip
     for this model before the generic one."""
     stems = [f"fallback-{kind}-{model}", f"fallback-{kind}"] if kind == "switching" and model else [f"fallback-{kind}"]
+    if kind == "working":
+        stems = ["working"]
     return alert_clips.find(stems)
 
 
@@ -135,8 +189,17 @@ def pcm(kind: str, model: str | None = None, rate: int = 24000) -> bytes:
     return out
 
 
-def carry_over(transcript: list[dict]) -> str | None:
-    """Context for the fallback model: what was said before the switch."""
+STALLED = ("[Turn recovery] The voice connection stopped answering the user and was restarted just now. This is "
+           "the same conversation; the user heard nothing for a while and probably repeated themselves. If their "
+           "last message is still unanswered, answer or act on it now, and begin with a few spoken words so they "
+           "know you are on it. If you cannot tell what they last asked, say in one short sentence, in their "
+           "language, that you lost them for a moment and ask them to say it again. Do not greet.")
+
+
+def carry_over(transcript: list[dict], stalled: bool = False) -> str | None:
+    """Context for the fallback model: what was said before the switch.
+    `stalled`: the same model on a new connection after it stopped
+    answering (gemini_live.StuckTurn); the user has heard nothing."""
     # Live transcription arrives in fragments: one line per speaker turn.
     turns: list[list] = []
     for t in transcript:
@@ -148,6 +211,8 @@ def carry_over(transcript: list[dict]) -> str | None:
             turns.append([t.get("role"), t["text"]])
     text = "\n".join(f"{role}: {' '.join(said.split())}" for role, said in turns[-CARRY_OVER_TURNS:])
     text = text[-CARRY_OVER_CHARS:]
+    if stalled:
+        return STALLED + ("\nConversation so far:\n" + text if text else "")
     if not text:
         return None
     return ("[Context, not a request] The previous voice model connection failed and you are taking over this "

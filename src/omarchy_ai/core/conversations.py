@@ -175,6 +175,26 @@ def add_card(cid: str, card: dict) -> None:
         _save(conv, force=True)
 
 
+# A note is a small aside in a talk (a skill was saved or updated), shown
+# smaller and greyed out, never as something said. Views that keep their own
+# log (the desktop text chat has no conversation of its own) listen here.
+NOTE_LISTENERS: list = []
+
+
+def add_note(cid: str, text: str) -> None:
+    """`cid` may be "" for a talk with no saved conversation (desktop text chat)."""
+    text = " ".join(str(text or "").split())[:300]
+    if not text:
+        return
+    if cid:
+        add_card(cid, {"kind": "note", "text": text})
+    for listener in list(NOTE_LISTENERS):
+        try:
+            listener(cid, text)
+        except Exception:  # noqa: BLE001 -- a view that is gone must not lose the note for the others
+            log.debug("note listener failed", exc_info=True)
+
+
 def _safe_name(name: str) -> str:
     name = Path(str(name or "file").replace("\0", "")).name.strip()
     return name[:180] or "file"
@@ -266,7 +286,9 @@ def context(cid: str) -> str:
             f"{item.get('name')} ({item.get('mime')}; desktop path {item.get('path')})"
             for item in line.get("attachments", []) if isinstance(item, dict)
         )
-        if line.get("role") == "card":
+        if line.get("role") == "card" and line.get("kind") == "note":
+            out.append(f"[Note] {line.get('text', '')}")
+        elif line.get("role") == "card":
             out.append(f"[Task {line.get('task_id')} {line.get('kind')}] {line.get('text', '')}")
         else:
             text = line["text"].strip()
@@ -314,6 +336,23 @@ def task_progress(task) -> str:
     return f"Still working: {phase.replace('_', ' ')}."
 
 
+def _open_question(question: str) -> bool:
+    """The question cannot be answered with a yes or a no (Jev decides), so a
+    view offers a reply and no Yes/No buttons. 2026-10-12: "can you tell me
+    more precisely what you want done?" was answered three times with a tap
+    on Yes. False when Jev is unavailable: the buttons stay."""
+    if not question.strip():
+        return False
+    try:
+        from .jev import Jev, boolean
+        p = Jev().ask({"question": question[-600:]}, {"yes_no": boolean(
+            "Can this question be fully answered with just yes or no? Judge the meaning, in any language.")},
+            timeout=3, retries=0, fail_fast=True)["yes_no"]["p"]
+    except Exception:  # noqa: BLE001 -- the card is there either way
+        return False
+    return p < 0.5
+
+
 def task_event(task, event: str) -> None:
     """A task started in a conversation reports back into it as a card."""
     cid = getattr(task, "conversation", "")
@@ -331,7 +370,10 @@ def task_event(task, event: str) -> None:
                     fingerprint=request.get("fingerprint", ""), task_summary=request.get("task_summary", ""),
                     sudo_action=sudo or "")
     elif kind == "question":
-        card.update(text=str(task.question or ""), question=str(task.question or ""))
+        # "Did it work?" (runtime/runtime.py) is a yes or a no whatever follows it.
+        confirm = (getattr(task, "certification", None) or {}).get("status") == "awaiting_confirmation"
+        card.update(text=str(task.question or ""), question=str(task.question or ""),
+                    open=not confirm and _open_question(str(task.question or "")))
     elif kind == "progress":
         card["text"] = task_progress(task)
     else:
@@ -416,10 +458,12 @@ def _with_status(conv: dict, tasks) -> list[dict]:
     lines = [dict(line) for line in conv["lines"]]
     latest = {}
     for i, line in enumerate(lines):
-        if line.get("role") == "card":
+        if line.get("role") == "card" and line.get("kind") != "note":
             latest[line.get("task_id")] = i
     for i, line in enumerate(lines):
-        if line.get("role") == "card":
+        if line.get("kind") == "note":
+            line["status"] = "done"
+        elif line.get("role") == "card":
             line["status"] = _card_status(line, tasks) if latest.get(line.get("task_id")) == i else "done"
             if line.get("kind") == "confirm":
                 from . import pending_actions

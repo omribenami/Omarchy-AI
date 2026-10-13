@@ -53,6 +53,11 @@ CLAUDE_TIERS = ("sonnet", "opus")
 _LIMIT = re.compile(r"usage limit|rate.?limit|quota|limit reached|too many requests|credit balance|\b429\b", re.I)
 LIMIT_COOLDOWN = 3600
 FAILURE_COOLDOWN = 300
+# 2026-10-08 20:31: a step with ~25 s left gave claude 8 s. It answers in
+# 6-10 s at best (codex 9-15 s), so it timed out and the healthy CLI was then
+# benched for FAILURE_COOLDOWN. Below this a CLI is passed over, unpenalised,
+# and its share of the deadline goes to the backends after it.
+CLI_MIN_SECONDS = 15
 _cooldown: dict[str, float] = {}
 _cooldown_lock = threading.Lock()
 _agents: dict = {}
@@ -142,6 +147,9 @@ class WorkerModel:
             # Reserve time for fallback instead of granting every backend a
             # fresh full timeout. All retries share this call's deadline.
             allowance = remaining / (len(backends) - index)
+            if backend != "api" and allowance < CLI_MIN_SECONDS and index < len(backends) - 1:
+                errors.append(f"{backend}: skipped, {allowance:.0f}s is too short for it")
+                continue
             try:
                 if backend == "api":
                     value = self._api_complete(system, user, timeout=allowance, retries=retries)
@@ -228,6 +236,20 @@ def _cli_ready(name: str) -> bool:
         return False
 
 
+def _binary(name: str) -> str:
+    """The real CLI, not the mise wrapper of the same name. 2026-10-07 21:11
+    to 2026-10-08 00:29: four of five tasks started with "planner
+    unavailable". The executors had run the real binary since 2026-09-27
+    (coding_agents.real_binary); this module still ran bare `claude` and
+    `codex`, which under the service's PATH are ~/.local/bin wrappers whose
+    `mise x <tool> -- <tool>` finds the wrapper again and never returns. So
+    neither CLI answered a worker call in 120 s, whatever its allowance."""
+    try:
+        return _agent(name).detect().get("path") or name
+    except Exception:  # noqa: BLE001
+        return name
+
+
 def _cli_label(backend: str, tier: int) -> str:
     if backend == "claude":
         return f"claude-code:{CLAUDE_TIERS[min(max(tier, 0), len(CLAUDE_TIERS) - 1)]}"
@@ -268,7 +290,7 @@ def _claude(system: str, prompt: str, tier: int, timeout: float) -> str:
     with tempfile.TemporaryDirectory(prefix="omarchy-worker-") as tmp:
         # --tools "": no tool at all; --safe-mode: no CLAUDE.md, hooks, skills or
         # MCP servers from this machine leak into (or act from) the worker.
-        proc = _run(["claude", "-p", "--tools", "", "--safe-mode", "--no-session-persistence",
+        proc = _run([_binary("claude"), "-p", "--tools", "", "--safe-mode", "--no-session-persistence",
                      "--output-format", "json", "--model", model, "--system-prompt", system + _JSON_ONLY],
                     prompt, timeout, tmp)
     try:
@@ -282,7 +304,7 @@ def _claude(system: str, prompt: str, tier: int, timeout: float) -> str:
 
 def _codex(system: str, prompt: str, tier: int, timeout: float) -> str:
     with tempfile.TemporaryDirectory(prefix="omarchy-worker-") as tmp:
-        proc = _run(["codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
+        proc = _run([_binary("codex"), "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
                      "--color", "never", "-"],
                     system + "\n\nYou are only choosing the next step: do not run any command, read any file or "
                     "use any tool yourself." + _JSON_ONLY + "\n\n" + prompt, timeout, tmp)

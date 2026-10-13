@@ -234,7 +234,7 @@ class CertificationEscalationTests(unittest.TestCase):
         from omarchy_ai.runtime.task import Task
         runtime = TaskRuntime.__new__(TaskRuntime)
         runtime.executors = {"SYSTEM_AGENT": SimpleNamespace(model=SimpleNamespace(auto=True))}
-        runtime.control = SimpleNamespace(certify=lambda task: (0.3, None))
+        runtime.control = SimpleNamespace(certify=lambda task: (0.3, None, None, None))
         runtime.store = SimpleNamespace(save=lambda task: None)
         runtime._certification_gate = lambda task: (True, "")
         task = Task(id="t", goal="g", workspace="/tmp", steps=[{"n": 1, "executor": "SYSTEM_AGENT", "model": "s/small"}])

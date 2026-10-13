@@ -59,7 +59,7 @@ class InstallerTests(unittest.TestCase):
             )
             self.assertNotIn('old Settings panel', settings_panel)
             self.assertIn('value: root.selectedProvider', settings_panel)
-            self.assertIn('Jev / Vercel AI Gateway key', settings_panel)
+            self.assertIn('placeholderText: "Vercel AI Gateway key"', settings_panel)
             self.assertEqual(len(list((base / 'state/omarchy-ai/plugin-backups').glob('*/omarchy-ai.settings/Panel.qml'))), 1)
             commands = (base / 'commands').read_text()
             self.assertIn('bar move omarchy-ai.settings --section right', commands)

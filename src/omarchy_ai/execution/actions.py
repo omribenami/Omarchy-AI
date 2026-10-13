@@ -432,6 +432,12 @@ def _looks_like_script(text: str, path: str = "") -> bool:
     lines = [l.strip().lower() for l in text.splitlines() if l.strip()]
     numbered = sum(1 for l in lines if re.match(r"^(\d+[.)]|step \d+)", l))
     bullets = sum(1 for l in lines if l.startswith("- "))
+    # Journal 2026-10-05 16:08:59: a 204-line feature inventory (79 table
+    # rows, 49 bullets, the word "Narration" in one cell) was marked a script
+    # and her next find was refused. More table rows than steps is a
+    # reference document.
+    if sum(1 for l in lines if l.startswith("|")) > numbered + bullets:
+        return False
     cues = sum(w in text.lower() for w in ("narrat", "demonstrat", "step", "then ", "finally", "workspace"))
     return (numbered >= 3 and cues >= 1) or (numbered + bullets >= 3 and "narrat" in text.lower())
 
@@ -730,6 +736,16 @@ def schedule_task(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(out, ensure_ascii=False))
 
 
+def watch_camera(args: dict) -> ActionResult:
+    """A camera watch for the time frame the user gave (core/agenda.py judges
+    each frame); a missing time frame comes back as a question for the user."""
+    args = dict(args or {})
+    camera = str(args.get("camera") or "").strip()
+    return schedule_task({"kind": "watch", "camera": camera, "condition": args.get("condition"), "repeat": True,
+                          "title": args.get("title") or f"Watching the {camera} camera",
+                          "for_minutes": args.get("for_minutes"), "every_minutes": args.get("every_minutes")})
+
+
 def list_scheduled_tasks(args: dict) -> ActionResult:
     from ..core import agenda, schedule
     return ActionResult(True, json.dumps({"now": schedule.describe(time.time()),
@@ -787,6 +803,7 @@ def find_skill(args: dict) -> ActionResult:
         skill = skills.load(picked["skill"])
         picked["instructions"] = skill["body"] if skill else ""
         picked["description"] = skill.get("description", "") if skill else ""
+        picked["note"] = _SKILL_READ.format(name=picked["skill"])
     return ActionResult(True, json.dumps(picked, ensure_ascii=False))
 
 
@@ -795,17 +812,56 @@ def load_skill(args: dict) -> ActionResult:
     skill = skills.load(str(args.get("name") or ""))
     if not skill:
         return ActionResult(False, "no skill with that name")
-    return ActionResult(True, json.dumps(skill, ensure_ascii=False))
+    return ActionResult(True, json.dumps({**skill, "note": _SKILL_READ.format(name=skill["name"])},
+                                         ensure_ascii=False))
+
+
+# 2026-10-12: asked to start a saved procedure of five timed steps, she read
+# it with load_skill, said "on it" and made no other call; nothing ran, and
+# two minutes later she said she was making sure it was running.
+_SKILL_READ = ("This only read the skill: nothing has been run. To carry it out call run_skill(name='{name}', "
+               "request=<the user's request>); until that returns, do not tell the user it has started.")
+
+
+def run_skill(args: dict) -> ActionResult:
+    """Carry a saved skill out as a Task Runtime job, so that doing it never
+    depends on the live model following text it was handed."""
+    from ..core import skills
+    name, request = str(args.get("name") or "").strip(), " ".join(str(args.get("request") or "").split())
+    if name:
+        skill = skills.load(name)
+        if not skill:
+            return ActionResult(False, "no skill with that name; nothing was run")
+    elif request:
+        picked = skills.suggest(request[:4000])
+        skill = skills.load(picked["skill"]) if picked.get("skill") else None
+        if not skill:
+            return ActionResult(False, f"No saved skill fits this request ({picked.get('reason')}), so nothing was "
+                                       "run. Do it with your other tools or start_task.")
+    else:
+        return ActionResult(False, "run_skill needs the skill's name, or the user's request to pick one by")
+    from ..runtime.service import start_task
+    return start_task({"goal": skills.run_goal(skill, request)})
 
 
 def save_skill(args: dict) -> ActionResult:
     from ..core import skills
+    name, description, instructions = args.get("name", ""), args.get("description", ""), args.get("instructions", "")
     try:
-        skill, created = skills.save(args.get("name", ""), args.get("description", ""), args.get("instructions", ""))
+        # A new name is not always a new skill: Jev says whether a saved one
+        # already does this job, and then that one is rewritten instead.
+        asked, existing = skills.slug(name), skills.load(name)
+        if existing is None and (same := skills.existing_for(asked, description, instructions)):
+            existing = skills.load(same)
+        if existing is not None:
+            instructions = skills.merged(existing, instructions)
+        skill, created = skills.save(existing["name"] if existing else asked, description, instructions)
     except ValueError as exc:
         return ActionResult(False, f"Skill NOT saved: {exc}")
+    note = (f" It already did this job, so it was updated instead of creating '{asked}'; tell the user that."
+            if skill["name"] != asked else "")
     return ActionResult(True, f"{'created' if created else 'updated'} skill {skill['name']} "
-                              f"(revision {skill.get('revision')})")
+                              f"(revision {skill.get('revision')}).{note}")
 
 
 def list_skills(args: dict) -> ActionResult:
@@ -1196,6 +1252,10 @@ def terminal_task(args: dict) -> ActionResult:
     elif show in (None, "", "auto"):
         workbench.pending_handover.add(name)
     from . import passwords
+    machine = workbench.where(name)  # before the command: where it is about to run
+    if re.match(r"(sshpass\s+)?(ssh|mosh)\s", command):
+        machine += (f" Once it connects, commands for that machine go to terminal_task with name={name!r}; "
+                    "any other name runs on this computer.")
     # sshpass/ssh-copy-id: the harness answers the password prompt; a literal
     # `sshpass -p SECRET` never reaches the terminal or its scrollback.
     typed = workbench.send(name, passwords.ssh_terminal_command(command))
@@ -1204,14 +1264,18 @@ def terminal_task(args: dict) -> ActionResult:
     where = ("on the user's screen" if on_screen else
              "in the background because the user is working (it moves to their screen when they stop "
              "touching it for ~30s, or say terminal_show)")
-    return ActionResult(True, f"started {command!r} in assistant terminal {name!r}, {where}. Output is "
+    return ActionResult(True, f"started {command!r} in assistant terminal {name!r}, {where}.{machine} Output is "
                               "NOT verified yet: use terminal_read, or schedule_task watch with "
                               f"terminal={name!r} to be told when it finishes.")
 
 
 def terminal_read(args: dict) -> ActionResult:
     from . import workbench
-    return workbench.read(str(args.get("name") or ""), int(args.get("lines") or 120), settle=True)
+    name = str(args.get("name") or "")
+    result = workbench.read(name, int(args.get("lines") or 120), settle=True)
+    if not result.ok:
+        return result
+    return ActionResult(True, f"[{workbench.where(name).strip()}]\n{result.message}")
 
 
 def terminal_type(args: dict) -> ActionResult:
@@ -2658,6 +2722,7 @@ ACTIONS = {
     "get_update_status": get_update_status,
     "get_release_notes": get_release_notes,
     "schedule_task": schedule_task,
+    "watch_camera": watch_camera,
     "list_scheduled_tasks": list_scheduled_tasks,
     "show_tasks_hud": show_tasks_hud,
     "hide_tasks_hud": hide_tasks_hud,
@@ -2667,6 +2732,7 @@ ACTIONS = {
     "run_scheduled_task_now": run_scheduled_task_now,
     "find_skill": find_skill,
     "load_skill": load_skill,
+    "run_skill": run_skill,
     "save_skill": save_skill,
     "list_skills": list_skills,
     "delete_skill": delete_skill,

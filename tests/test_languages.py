@@ -29,6 +29,16 @@ class ConfiguredLanguageTests(unittest.TestCase):
         mine = build_live_config(Config(user_languages=["Français", "English"]))["system_instruction"]
         self.assertIn("MISHEARD SPEECH: The user speaks Français, English.", mine)
 
+    def test_transcription_is_told_the_users_languages_only_when_configured(self):
+        # Journal 2026-10-05: short turns in the user's language came back as three other languages.
+        from google.genai import types
+        self.assertEqual(build_live_config(Config())["input_audio_transcription"], {})
+        mine = build_live_config(Config(user_languages=["French", "english", "pt-BR", "Klingonese", "en"]))
+        self.assertEqual(mine["input_audio_transcription"], {"language_codes": ["fr", "en", "pt-BR"]})
+        types.LiveConnectConfig(**mine)
+        self.assertEqual(build_live_config(Config(user_languages=["Klingonese"]))["input_audio_transcription"], {})
+
+
 
 class NoPersonalLanguageInDefaultsTests(unittest.TestCase):
     def test_defaults_and_prompt_code_hold_no_hebrew(self):

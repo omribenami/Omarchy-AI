@@ -197,6 +197,39 @@ class UseToolDispatchTests(unittest.TestCase):
             asyncio.run(call())
         return run, session.send_tool_response.call_args.kwargs["function_responses"].response
 
+    def test_a_workspace_switch_through_use_tool_is_still_checked_against_the_fast_path(self):
+        # A switch that does arrive through use_tool is held to the 2026-09-23 "asked for 4, got 5" guard too.
+        import time
+        s = self.session(lambda *a, **k: self.fail("a call the session answers itself needs no review"))
+        s._jev_done = ("workspace_switch", {"number": 4}, time.monotonic(), "verified: now on workspace 4", "switch to 4")
+        run, response = self.dispatch(s, {"name": "workspace_switch", "args": {"number": 5}},
+                                      catalog.Resolution(True, "workspace_switch", {"number": 5}, evidence={"by": "name"}))
+        run.assert_not_called()
+        self.assertFalse(response["ok"])
+        self.assertIn("workspace 4", response["message"])
+        s._jev_done = ("workspace_switch", {"number": 4}, time.monotonic(), "verified: now on workspace 4", "switch to 4")
+        run, response = self.dispatch(s, {"name": "workspace_switch", "args": {"number": 4}},
+                                      catalog.Resolution(True, "workspace_switch", {"number": 4}, evidence={"by": "name"}))
+        run.assert_not_called()
+        self.assertIn("Already done", response["message"])
+
+    def test_recent_actions_through_use_tool_are_answered_by_the_session(self):
+        s = self.session(lambda *a, **k: self.fail("a call the session answers itself needs no review"))
+        s._action_log = [{"action": "volume_up", "args": {}, "ok": True, "message": "ok", "window": {}}]
+        run, response = self.dispatch(s, {"request": "what did you do"},
+                                      catalog.Resolution(True, "get_recent_actions", {}, picked=True, evidence={}))
+        run.assert_not_called()
+        self.assertTrue(response["ok"])
+        self.assertIn("volume_up", response["message"])
+
+    def test_the_moved_tools_are_catalog_tools(self):
+        for name in ("close_window", "hide_window_labels", "get_recent_actions"):
+            self.assertIn(name, catalog.catalog())
+            self.assertNotIn(name, {t["name"] for t in catalog.declared()})
+        self.assertIn("get_recent_actions(target)", catalog.signatures())
+        # Without its own declaration the model used desktop_task for a workspace switch.
+        self.assertIn("workspace_switch", {t["name"] for t in catalog.declared()})
+
     def test_jev_pick_runs_the_inner_tool_without_a_second_review(self):
         reviewed = []
         s = self.session(lambda tool, args, ctx: reviewed.append(tool))

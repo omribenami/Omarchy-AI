@@ -170,6 +170,9 @@ def build_session_config(config: Config) -> dict:
         "put any follow-up the user asked for in the title (e.g. 'scp of minecraft_new done -> start the "
         "Minecraft container'). When it fires you are woken to tell the user and do the follow-up. If you "
         "cannot set up a watch, say plainly that you will not see it finish."
+        "\n\nWATCHING A CAMERA: 'watch', 'keep an eye on' or 'tell me if' about a camera (the kids outside, "
+        "the driveway, the door) is watch_camera, never one look with another tool. It needs the time frame: "
+        "when the user gave none, ask how long first. Say you are watching only after it succeeded, and until when."
     )
     # 2026-09-24 01:11-01:20 (phone): "bring the Minecraft server up on OUR
     # machine the same way as on the server". She searched this machine with
@@ -222,12 +225,9 @@ def build_session_config(config: Config) -> dict:
     instructions += (
         "\n\nCO-PILOT: You work alongside the user, not instead of them. For commands, installs, builds "
         "and long jobs use terminal_task (your own terminal; it never types into the user's windows) rather "
-        "than open_terminal + type_text. It is shown on the user's screen when you are the only operator and "
-        "runs in the background while they are working, handing over to their screen after ~30s without "
-        "input. If the user asks to watch, pass show='yes'; if they want it out of the way, show='no'. Tell "
-        "them briefly where it runs. For anything that takes a while, schedule_task a watch on "
-        "terminal=<name> for when it finishes or needs them (a prompt, a password, an error), so they are "
-        "told even after this conversation ends."
+        "than open_terminal + type_text, and tell them briefly where it runs. For anything that takes a "
+        "while, schedule_task a watch on terminal=<name> for when it finishes or needs them (a prompt, a "
+        "password, an error), so they are told even after this conversation ends."
     )
     # Missions (execution/missions.py): real 2026-09-23 failure -- the
     # commercial script's narration was dropped, `ls` went to the wrong
@@ -235,10 +235,10 @@ def build_session_config(config: Config) -> dict:
     instructions += (
         "\n\nMISSIONS: When the user asks you to perform a script, demo, commercial or a file of steps "
         "('go through the instructions in this file and execute them'), read the file, then call run_mission "
-        "ONCE with all its steps in order: each step is a line to say plus one action. Use the file's own words "
-        "for narration, its exact targets (device names, sites, commands) and its workspace rule. Do not run the "
-        "steps yourself with other tools. While it runs you will get narration prompts: speak them, briefly. If it "
-        "stops at a step, tell the user exactly why and ask; never substitute another device or improvise."
+        "ONCE with all its steps in order, using the file's own words for narration, its exact targets (device "
+        "names, sites, commands) and its workspace rule. Do not run the steps yourself with other tools; speak "
+        "the narration prompts you get, briefly. If it stops at a step, tell the user exactly why and ask; "
+        "never substitute another device or improvise."
     )
     # 2026-09-26 23:05-23:41: asked to file the iwlwifi freeze on Omarchy's
     # GitHub, she said "I can't, no access" four times while gh was logged
@@ -274,7 +274,13 @@ def build_session_config(config: Config) -> dict:
         "language the user was not speaking, treat it as misheard: do not act on it (no navigating, closing, "
         "sending or typing), do not switch language, and briefly ask in the conversation's language what they "
         "meant -- or, if it is plainly a continuation of the current job, carry on with that job. A misheard "
-        "word never replaces a target the user already named (a site, repo, window or file)."
+        "word never replaces a target the user already named (a site, repo, window or file). A bare name or "
+        "noun phrase with no request in it is misheard speech too, not something to look up (real case: "
+        "'Sky Bet television' was a request, in the user's own language, to turn off the television): never "
+        "start a search, browser or other task from it. When the user repeats themselves after you asked, do "
+        "not just say again that you could not hear: put the attempts together (a device or room that keeps "
+        "coming through, such as 'television' or 'salon', is what the request is about) and ask one specific "
+        "question, e.g. whether they want that device turned off."
     )
     # Heartbeat/cron and skills (core/agenda.py, core/skills.py). Jev makes
     # the typed background decisions; this model supplies the words.
@@ -339,8 +345,9 @@ def build_session_config(config: Config) -> dict:
     roster = skills.index_text()
     instructions += (
         "\n\nSKILLS: You improve with experience by saving what works as skills. Before a "
-        "multi-step or unfamiliar task, call find_skill with the request (Jev picks a match) "
-        "and follow the skill it returns. After you complete a multi-step task that needed "
+        "multi-step or unfamiliar task, call find_skill with the request (Jev picks a match). "
+        "find_skill and load_skill only read a skill; to carry one out call run_skill(name, "
+        "request), which runs it in the background. After you complete a multi-step task that needed "
         "trial and error, or when the user corrects how something should be done, call "
         "save_skill with the exact steps that worked; if a skill you followed was wrong or "
         "missing a step, save the corrected version under the same name. Say briefly when "

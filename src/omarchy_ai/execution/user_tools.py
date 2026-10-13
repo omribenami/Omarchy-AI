@@ -91,6 +91,9 @@ def validate(folder: Path) -> tuple[dict | None, list[str]]:
     params = spec.get("parameters", {"type": "object", "properties": {}})
     if not isinstance(params, dict) or params.get("type") != "object" or not isinstance(params.get("properties", {}), dict):
         problems.append('parameters must be a JSON schema object: {"type": "object", "properties": {...}}')
+    reads = spec.get("read_operations", [])
+    if not isinstance(reads, list) or not all(isinstance(r, str) for r in reads):
+        problems.append('read_operations must be a list of `operation` values that only look things up')
     for part in ("run", "test"):
         path = folder / part
         if not path.is_file() or not path.stat().st_mode & 0o111:
@@ -181,7 +184,13 @@ def user_approves_install(name: str) -> tuple[bool, str]:
             proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical", "-A", "approve=Install",
                                    "-A", "deny=Don't install", f"Install assistant tool: {name}?", summary[:600]],
                                   capture_output=True, text=True, timeout=APPROVAL_SECONDS)
-            desktop["choice"] = proc.stdout.strip() or "dismissed"
+            # 2026-10-09: with the desktop session down nothing owned the
+            # notification service; notify-send failed at once, that counted as
+            # "dismissed", and the install was refused before the phone could answer.
+            desktop["choice"] = (proc.stdout.strip() or "dismissed") if proc.returncode == 0 else None
+            if proc.returncode:
+                log.warning("Install approval: no desktop notification (%s); waiting for the phone",
+                            proc.stderr.strip()[:160])
         except subprocess.TimeoutExpired:
             desktop["choice"] = "timeout"
         except FileNotFoundError:
@@ -202,7 +211,8 @@ def user_approves_install(name: str) -> tuple[bool, str]:
             if choice == "timeout":
                 break
             time.sleep(0.2)
-        return False, f"no answer within {APPROVAL_SECONDS // 60} minutes"
+        where = "on the phone (the desktop could not show the request)" if desktop.get("choice", 0) is None else ""
+        return False, " ".join(f"no answer {where} within {APPROVAL_SECONDS // 60} minutes".split())
     finally:
         _close_install_request(request)
 
@@ -318,6 +328,12 @@ def schemas() -> list[dict]:
     return [{"type": "function", "name": t["name"], "parameters": t["parameters"],
              "description": f"{t['description']} [a tool the assistant wrote; approved {t['approved_at']}]"}
             for t in installed()]
+
+
+def read_operations(name: str) -> frozenset[str]:
+    """`operation` values of an approved tool that change nothing (its
+    tool.json "read_operations"): the switchboard lets those through as reads."""
+    return frozenset(next((t.get("read_operations") or [] for t in installed() if t["name"] == name), []))
 
 
 def exists(name: str) -> bool:

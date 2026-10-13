@@ -20,6 +20,9 @@ from ..execution.actions import ActionResult
 
 log = logging.getLogger(__name__)
 
+_LINK_TURNS = 6          # the user's latest turns searched for links the goal lost
+_LINK_WINDOW = 30 * 60   # ... and how old one may be, in seconds
+
 _runtime = None
 _lock = threading.Lock()
 
@@ -63,6 +66,9 @@ def _job_text(goal: str) -> str:
         said = goal.split("What the user said", 1)[-1].split("What the voice assistant tried", 1)[0]
         turns = [line[2:] for line in said.splitlines() if line.startswith("- ")]
         return " / ".join(turns[-3:])[:400] or goal[:400]
+    from ..core import skills
+    if (name := skills.skill_of_goal(goal)):  # a skill being carried out: the request, not its steps
+        return f"{skills.request_of_goal(goal) or 'run it'} (saved skill {name})"[:400]
     return goal[:400]
 
 
@@ -71,8 +77,12 @@ def _same_job(runtime, goal: str, jev=None):
     from .task import ACTIVE, INTERRUPTED, WAITING_APPROVAL, WAITING_USER
     open_states = ACTIVE | {WAITING_APPROVAL, WAITING_USER, INTERRUPTED}
     cutoff = time.time() - SAME_JOB_HOURS * 3600
+    from .task import AWAITING_CONFIRMATION
+    # One that only waits to hear whether it worked has done its job: the
+    # same request again is a new run, not a nudge to that one.
     candidates = [t for t in runtime.store.list(20)
-                  if t.status in open_states and t.source == "voice" and t.updated_at >= cutoff]
+                  if t.status in open_states and t.source == "voice" and t.updated_at >= cutoff
+                  and t.certification.get("status") != AWAITING_CONFIRMATION]
     if not candidates:
         return None
     from ..core.jev import Jev, JevError, choice
@@ -91,6 +101,32 @@ def _same_job(runtime, goal: str, jev=None):
     if answer["choice"] == "new" or answer["p"] < SAME_JOB_P:
         return None
     return next(t for t in candidates if t.id == answer["choice"])
+
+
+SKILL_FITS_P = 0.7
+
+
+def _skill_for(goal: str, jev=None) -> str | None:
+    """The goal rewritten to carry out the saved skill that does this job, if
+    Jev finds one (core/skills.py suggest). 2026-10-12 22:15: a skill for
+    exactly this job was saved, the live model sent the request straight
+    here in its own words, and the task knew nothing of the skill's device
+    or steps. The bar is higher than find_skill's: there the model reads the
+    skill and may set it aside; here its steps go to a worker as the job."""
+    from ..core import skills
+    if skills.skill_of_goal(goal):
+        return None  # run_skill already built it
+    try:
+        request = _job_text(goal)
+        picked = skills.suggest(request, jev)
+        name = picked.get("skill")
+        fits = (picked.get("fits") or {}).get(name, 0)
+        skill = skills.load(name) if name and fits >= SKILL_FITS_P else None
+    except Exception as exc:  # noqa: BLE001 -- unsure: the task starts as it was asked
+        log.warning("skill check unavailable, starting the task as asked: %s", str(exc)[:160])
+        return None
+    log.info("start_task: skill for %r -> %s (fits=%s)", request[:120], name if skill else None, picked.get("fits"))
+    return skills.run_goal(skill, request) if skill else None
 
 
 _AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE"}
@@ -130,6 +166,9 @@ def start_task(args: dict) -> ActionResult:
     if requested and not agent:
         log.info("ignoring model-suggested task agent %s; Jev will route", requested)
     unsandboxed = unsandboxed and bool(agent) or named_unsandboxed
+    skill = _skill_for(goal)
+    if skill:
+        goal = skill
     existing = _same_job(runtime, goal)
     if existing is not None and agent and existing.agent != agent:
         # Same job, but the user wants it done by a named agent: a new task,
@@ -147,19 +186,72 @@ def start_task(args: dict) -> ActionResult:
                      "going the wrong way, correct it with task_respond(task_id, guidance=...), or cancel it and "
                      "start one with a better goal. If it waits for approval or an answer, say so."),
         }, ensure_ascii=False))
+    from ..core import conversations
+    cid = conversations.CURRENT.get()
+    workspace, elsewhere = _local_workspace(args.get("workspace"))
     try:
         # The daemon's own cwd is this project's checkout; a voice task must not
         # silently work (and checkpoint/roll back) inside it (code review 2026-09-23).
-        from ..core import conversations
-        task = runtime.start(goal, args.get("workspace") or str(Path.home()), source="voice", agent=agent,
-                             unsandboxed=unsandboxed, conversation=conversations.CURRENT.get())
+        task = runtime.start(_with_user_links(goal, cid) + elsewhere, workspace, source="voice",
+                             agent=agent, unsandboxed=unsandboxed, conversation=cid)
     except ValueError as exc:
-        return ActionResult(False, str(exc))
+        return _not_started(goal, str(exc), cid)
     return ActionResult(True, json.dumps({
         "task_id": task.id, "status": "started", "workspace": task.workspace, "agent": task.agent or "chosen by Jev",
+        **({"workspace_note": "The folder you named is not on this computer; the worker was told to find it or "
+                              "reach the machine it is on."} if elsewhere else {}),
         "note": ("Running in the background. Tell the user it has started; its result, any approval it needs and "
                  "any question will be announced. Do not claim it is done until task_status says certified."),
     }))
+
+
+def _with_user_links(goal: str, cid: str) -> str:
+    """The goal plus the links the user gave in this conversation that the
+    live model left out of it. 2026-10-07: the user pasted the docs of the
+    API to use; the goal the model wrote had no link, so no worker saw it."""
+    from ..core import conversations
+    from .runtime import links
+    conv = conversations._load(cid) if cid else None
+    said = [line for line in (conv or {}).get("lines", []) if line.get("role") == "user"][-_LINK_TURNS:]
+    recent = " ".join(str(line.get("text") or "") for line in said
+                      if time.time() - float(line.get("at") or 0) <= _LINK_WINDOW)
+    missing = [link for link in links(recent) if link not in goal]
+    if not missing:
+        return goal
+    extra = "\n\nLinks the user gave in this conversation (use the ones this job needs): " + " ".join(missing)
+    return goal[:max(0, 4000 - len(extra))] + extra
+
+
+def _local_workspace(named) -> tuple[str, str]:
+    """(the folder the task runs in, what to add to its goal about the one named).
+
+    2026-10-07 20:56: the user gave two jobs, one on this computer and one on
+    a home server. The live model started both, but the second
+    with the server's folder as workspace, four times; each start was refused
+    as "not a directory" and only one job ever ran. A folder that is not here
+    is information for the worker, not a reason to refuse the job."""
+    home = str(Path.home())
+    if not named:
+        return home, ""
+    path = Path(str(named)).expanduser()
+    if path.is_dir():
+        return str(path), ""
+    return home, (f"\n\nThe folder named for this job, {named}, does not exist on this computer. If the job is on "
+                  "another machine, work on that machine over ssh and treat this as the path there; if it is a local "
+                  "folder under another name, find it first.")
+
+
+def _not_started(goal: str, reason: str, cid: str) -> ActionResult:
+    """A refused start, said so that it cannot pass for a start. 2026-10-07
+    21:00: one of two tasks failed on its workspace and the user was told
+    "both are starting now"; nothing ever said that one had not."""
+    if cid:
+        from ..core import conversations
+        conversations.add_card(cid, {"kind": "result", "task_id": f"{conversations.ACTION}start-{time.time_ns():x}",
+                                     "event": "failed", "text": f"Task not started: {reason}\n{goal[:200]}"})
+    return ActionResult(False, f"NOT STARTED: {reason}. No task is running for this goal. Until a start_task "
+                               "call for it succeeds, tell the user plainly that this one did not start and why; "
+                               "never say it started or is running.")
 
 
 def _git(workspace: str, *argv: str) -> str:
@@ -369,7 +461,8 @@ def _remember(task, event):
     from ..core import agenda
     detail = {"waiting_approval": f"needs approval: {json.dumps(task.pending_approval)}",
               "waiting_user": f"question: {task.question}"}.get(event, task.result)
-    return agenda.task_result(task.id, task.goal, event,
+    from .task import request_text
+    return agenda.task_result(task.id, request_text(task.goal), event,
                               f"Task {task.id} {_OUTCOMES[event]}. {detail or ''}".strip())
 
 

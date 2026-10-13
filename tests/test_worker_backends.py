@@ -33,6 +33,7 @@ class BackendTests(unittest.TestCase):
         patch("omarchy_ai.config.load_config",
               return_value=SimpleNamespace(task_worker_backends=["claude", "codex", "api"], task_agent_model="auto")).start()
         patch.object(llm, "_cli_ready", return_value=True).start()
+        patch.object(llm, "_binary", side_effect=lambda name: name).start()
         self.addCleanup(patch.stopall)
         self.api_calls = []
 
@@ -55,6 +56,29 @@ class BackendTests(unittest.TestCase):
         self.assertIn("--safe-mode", argv)
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(json.loads(run.call_args.kwargs["input"]), {"goal": "g"})
+
+    def test_clis_run_the_real_binary_not_the_mise_wrapper(self):
+        # 2026-10-07 21:11 to 2026-10-08 00:29: bare `claude`/`codex` were mise
+        # wrappers that never returned under the service's PATH.
+        patch.stopall()
+        llm._agents.clear()
+        self.addCleanup(llm._agents.clear)
+        real = {"claude": "/opt/real/claude", "codex": "/opt/real/codex"}
+        agent = lambda name: SimpleNamespace(detect=lambda: {"authenticated": True, "path": real[name]})  # noqa: E731
+        replies = [claude_says("not json"), claude_says("still not json"),
+                   codex_events({"type": "agent_message", "text": '{"action": "finish"}'})]
+        with patch.object(llm, "_agent", side_effect=agent), \
+                patch.object(subprocess, "run", side_effect=replies) as run:
+            self.assertEqual(self.worker().complete("SYS", "u"), {"action": "finish"})
+        self.assertEqual([call.args[0][0] for call in run.call_args_list],
+                         ["/opt/real/claude", "/opt/real/claude", "/opt/real/codex"])
+
+    def test_an_undetected_cli_still_runs_by_name(self):
+        patch.stopall()
+        with patch.object(llm, "_agent", side_effect=OSError("no such agent")):
+            self.assertEqual(llm._binary("claude"), "claude")
+        with patch.object(llm, "_agent", return_value=SimpleNamespace(detect=lambda: {"path": None})):
+            self.assertEqual(llm._binary("codex"), "codex")
 
     def test_escalation_moves_claude_to_opus(self):
         token = llm.TIER.set(1)
@@ -119,6 +143,29 @@ class BackendTests(unittest.TestCase):
                 patch.object(llm, "_cli_complete", side_effect=fail):
             self.assertEqual(wm.complete("s", "u", timeout=90), {"ok": True})
         self.assertEqual(allowances, [30, 30, 30])
+
+    def test_cli_is_passed_over_unpenalised_when_its_share_of_the_deadline_is_too_short(self):
+        wm = self.worker()
+        allowances = []
+
+        def api(system, user, timeout, retries):
+            allowances.append(timeout)
+            return {"ok": True}
+
+        wm._api_complete = api
+        with patch.object(llm.time, "monotonic", return_value=0.0), patch.object(llm, "_cli_complete") as cli:
+            self.assertEqual(wm.complete("s", "u", timeout=25), {"ok": True})
+        cli.assert_not_called()
+        self.assertEqual(allowances, [25])
+        self.assertEqual(llm._cooldown, {})
+        self.assertEqual(wm.backends(), ["claude", "codex", "api"])
+
+    def test_short_deadline_still_tries_a_cli_that_is_the_last_backend(self):
+        wm = self.worker()
+        wm._order = ["claude"]
+        with patch.object(llm, "_cli_complete", return_value={"ok": True}) as cli:
+            self.assertEqual(wm.complete("s", "u", timeout=5), {"ok": True})
+        cli.assert_called_once()
 
     def test_everything_failing_raises_with_every_reason(self):
         def broken(*a, **kw):

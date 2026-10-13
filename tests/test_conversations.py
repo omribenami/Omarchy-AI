@@ -9,6 +9,8 @@ from unittest.mock import patch
 from omarchy_ai.core import conversations
 from omarchy_ai.phone import server
 
+OPEN_QUESTION = conversations._open_question  # before the conftest fixture swaps it
+
 
 class ConversationTests(unittest.TestCase):
     def setUp(self):
@@ -157,6 +159,45 @@ class ConversationTests(unittest.TestCase):
         conversations.add_line(cid, "user", "my colour is teal")
         conversations.add_line(cid, "assistant", "Noted.")
         self.assertEqual(conversations.context(cid), "User: my colour is teal\nOmarchy: Noted.")
+
+    def test_a_saved_skill_is_noted_in_the_talk_it_happened_in(self):
+        from omarchy_ai.core import skills
+        cid, other, heard = conversations.create("phone-text"), conversations.create("phone-text"), []
+        conversations.add_line(cid, "user", "save that as a skill")
+        with patch.object(conversations, "NOTE_LISTENERS", [lambda c, text: heard.append((c, text))]):
+            token = conversations.CURRENT.set(cid)
+            try:
+                skills.save("water-plants", "Water the plants for five minutes.", "1. Open the valve\n2. Close it")
+                skills.save("water-plants", "Water the plants for five minutes.", "1. Open the valve\n2. Wait\n3. Close it")
+            finally:
+                conversations.CURRENT.reset(token)
+            skills.save("feed-the-cat", "Fill the cat's bowl when it is empty.", "1. Open the feeder\n2. Fill the bowl", conversation="")
+        notes = [l for l in conversations.get(cid, self.lookup)["lines"] if l["role"] == "card"]
+        self.assertEqual([(n["kind"], n["text"], n["status"]) for n in notes],
+                         [("note", "Skill created: water-plants", "done"),
+                          ("note", "Skill updated: water-plants (revision 2)", "done")])
+        self.assertEqual(conversations.get(other, self.lookup)["lines"], [])
+        self.assertEqual(heard[-1], ("", "Skill created: feed-the-cat"))  # no saved talk: listeners only
+        self.assertIn("[Note] Skill created: water-plants", conversations.context(cid))
+
+    def test_an_open_question_is_marked_so_no_yes_or_no_is_offered(self):
+        from omarchy_ai.core import jev
+        asked = []
+
+        def gateway(state, questions, timeout=8):
+            asked.append(state)
+            return {"answers": {"yes_no": {"type": "boolean", "probability": 0.9 if "Shall" in state else 0.1}}}
+
+        def down(state, questions, timeout=8):
+            raise RuntimeError("HTTP 503")
+        fresh = OPEN_QUESTION  # the module's own function; a fixture swaps it out for every test
+        with patch.object(jev.Jev, "_client", lambda self: gateway):
+            self.assertTrue(fresh("Can you tell me more precisely what you want done?"))
+            self.assertFalse(fresh("Shall I restart the bar now?"))
+            self.assertFalse(fresh(" "))
+        with patch.object(jev.Jev, "_client", lambda self: down):
+            self.assertFalse(fresh("Which file?"))
+        self.assertEqual(len(asked), 2)
 
     def test_chat_attachments_are_scoped_persisted_and_deleted_with_the_chat(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(conversations, "ATTACHMENTS_DIR", Path(tmp) / "files"):

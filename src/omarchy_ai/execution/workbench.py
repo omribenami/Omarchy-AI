@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -153,6 +154,48 @@ def read(name: str, lines: int = 120, settle: bool = False) -> ActionResult:
     if settle and _busy(session):
         text += "\n[still running: read again later for the rest]"
     return ActionResult(code == 0, text[-6000:] or "(no output yet)")
+
+
+def _pane_pid(session: str) -> int | None:
+    out = _tmux("display-message", "-p", "-t", session, "#{pane_pid}")
+    try:
+        return int(out.stdout.strip())
+    except ValueError:
+        return None
+
+
+def remotes() -> dict[str, str]:
+    """Assistant terminals with an ssh session open in them -> its destination."""
+    from .actions import _process_children, _remote_session
+    children, found = None, {}
+    for name in sessions():
+        pid = _pane_pid(PREFIX + name)
+        if pid is None:
+            continue
+        children = children if children is not None else _process_children()
+        dest = _remote_session(pid, children)
+        if dest:
+            found[name] = dest
+    return found
+
+
+def where(name: str) -> str:
+    """Which machine a command typed into this terminal runs on, for tool
+    results. Journal 2026-10-05 16:04-16:09 (phone): asked to ssh to the home
+    server and find a folder there, she ran `ssh user@host` and `ls` under
+    one name, then gave every later command a new name. The ssh terminal
+    counts as busy, so each of those opened or reused a terminal on THIS
+    computer; eleven finds and listings searched the wrong machine while the
+    remote shell sat open, and she told the user the folder did not exist."""
+    actual, open_remotes = resolve(name), remotes()
+    if actual in open_remotes:
+        return (f" WHERE IT RUNS: REMOTE {open_remotes[actual]} (the ssh session open in assistant terminal "
+                f"{actual!r}), NOT on this computer.")
+    note = f" WHERE IT RUNS: this computer ({socket.gethostname()}), not a remote server."
+    for other, dest in sorted(open_remotes.items()):
+        note += (f" Assistant terminal {other!r} has an ssh session open to {dest}: a command meant for that "
+                 f"machine must go to terminal_task with name={other!r}.")
+    return note
 
 
 def submit_password(name: str, password: str) -> ActionResult:

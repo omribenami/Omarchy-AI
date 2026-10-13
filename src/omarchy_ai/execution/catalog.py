@@ -36,10 +36,16 @@ log = logging.getLogger(__name__)
 # the prompt tells it to take by default.
 CORE = frozenset({
     "type_text", "press_key", "read_tile_log", "list_windows", "focus_window", "describe_screen",
-    "list_files", "read_file", "terminal_task", "terminal_read", "workspace_switch", "close_window",
+    "list_files", "read_file", "terminal_task", "terminal_read", "workspace_switch",
     "browser_task", "desktop_task", "start_task", "task_status", "task_respond",
-    "show_window_labels", "hide_window_labels", "get_recent_actions", "run_mission",
+    "show_window_labels", "run_mission",
 })
+# In the catalog since 2026-10-11, to keep their declarations out of every
+# session's prompt: close_window, hide_window_labels and get_recent_actions
+# take no argument or one Jev can pick (the session still answers
+# get_recent_actions itself: voice/gemini_live.py _run_call). workspace_switch
+# stays declared: without it the model sent "switch to workspace 3" to
+# desktop_task, the slow background loop (probes that day, 2 of 2).
 
 # Declared directly when MyApi is connected (and still reachable through
 # use_tool). 2026-09-30 13:35: sending one email through use_tool failed four

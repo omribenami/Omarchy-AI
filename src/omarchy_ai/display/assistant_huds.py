@@ -35,7 +35,7 @@ def _ipc_async(method: str, payload: dict) -> None:
 
 
 def task_items() -> list[dict]:
-    from ..runtime.task import ACTIVE, INTERRUPTED, WAITING_APPROVAL, WAITING_USER, TaskStore
+    from ..runtime.task import ACTIVE, INTERRUPTED, WAITING_APPROVAL, WAITING_USER, TaskStore, request_text
     from ..core.conversations import task_progress
 
     visible = ACTIVE | {INTERRUPTED, WAITING_APPROVAL, WAITING_USER}
@@ -44,20 +44,20 @@ def task_items() -> list[dict]:
         if task.status not in visible:
             continue
         detail = task.question or (task.pending_approval or {}).get("subject") or task_progress(task)
-        items.append({"id": task.id, "title": task.goal, "status": task.status, "detail": detail or ""})
+        items.append({"id": task.id, "title": request_text(task.goal), "status": task.status, "detail": detail or ""})
     return items
 
 
 def approval_items() -> list[dict]:
     """Tasks paused for the user's approval: the floating envelope's rows."""
-    from ..runtime.task import WAITING_APPROVAL, TaskStore
+    from ..runtime.task import WAITING_APPROVAL, TaskStore, request_text
 
     items = []
     for task in TaskStore().list(50):
         request = task.pending_approval or {}
         if task.status != WAITING_APPROVAL or not request:
             continue
-        items.append({"id": task.id, "title": task.goal, "subject": request.get("subject", ""),
+        items.append({"id": task.id, "title": request_text(task.goal), "subject": request.get("subject", ""),
                       "risk": request.get("risk", ""), "reasons": "; ".join(request.get("reasons", [])),
                       "task_summary": request.get("task_summary", ""), "sudo_action": request.get("sudo_action", "")})
     return items

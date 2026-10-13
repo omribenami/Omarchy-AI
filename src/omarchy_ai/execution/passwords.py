@@ -61,6 +61,8 @@ _NOT_A_PASSWORD = {"for", "to", "as", "is", "the", "a", "an", "my", "your", "our
 
 _lock = threading.Lock()
 _cache: tuple[float, list[str]] = (0.0, [])
+_loaded = False      # the list was read at least once: later refreshes happen in the background
+_refreshing = False
 
 
 def _run(args: list[str], password: str | None = None):
@@ -85,7 +87,8 @@ def store_spoken(password: str) -> bool:
     except OSError:
         return False
     with _lock:
-        _cache = (0.0, [])
+        # Masked from this moment; the next read refreshes the rest.
+        _cache = (0.0, [*_cache[1], password])
     return result.returncode == 0
 
 
@@ -104,28 +107,51 @@ def ssh_password() -> str | None:
     return sudo_approval.retrieve()
 
 
+def _read_secrets() -> None:
+    global _cache, _loaded, _refreshing
+    try:
+        values = []
+        for getter in (sudo_approval.retrieve, spoken_password):
+            try:
+                value = getter()
+            except Exception:  # noqa: BLE001
+                value = None
+            if value and len(value) >= _MIN_SECRET:
+                values.append(value)
+        try:  # MyApi vault values a program was given (myapi/vault.py)
+            from ..myapi import vault
+            values += [v for v in vault.revealed_values() if len(v) >= _MIN_SECRET]
+        except Exception:  # noqa: BLE001
+            pass
+        with _lock:
+            _cache, _loaded = (time.monotonic(), values), True
+    finally:
+        with _lock:
+            _refreshing = False
+
+
 def known_secrets() -> list[str]:
-    """The saved passwords, cached briefly (redaction runs on every log line)."""
-    global _cache
+    """The saved passwords, cached briefly (redaction runs on every log line).
+
+    Only the first read waits. After that an expired list is still returned
+    at once and re-read in the background: reading it takes 1-3 s (the vault
+    values are fetched over the network), and it used to run inside whichever
+    log call came first each minute -- on the conversation's event loop, so a
+    phone call took 3.6-4.3 s to set up instead of 0.3 s (2026-10-11)."""
+    global _refreshing
     with _lock:
         if time.monotonic() - _cache[0] < _CACHE_SECONDS:
             return _cache[1]
-    values = []
-    for getter in (sudo_approval.retrieve, spoken_password):
-        try:
-            value = getter()
-        except Exception:  # noqa: BLE001
-            value = None
-        if value and len(value) >= _MIN_SECRET:
-            values.append(value)
-    try:  # MyApi vault values a program was given (myapi/vault.py)
-        from ..myapi import vault
-        values += [v for v in vault.revealed_values() if len(v) >= _MIN_SECRET]
-    except Exception:  # noqa: BLE001
-        pass
+        loaded, start = _loaded, not _refreshing
+        if start:
+            _refreshing = True
+    if not loaded:
+        if start:
+            _read_secrets()
+    elif start:
+        threading.Thread(target=_read_secrets, daemon=True, name="known-secrets").start()
     with _lock:
-        _cache = (time.monotonic(), values)
-    return values
+        return _cache[1]
 
 
 def _spoken_values(text: str) -> list[str]:

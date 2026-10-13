@@ -96,6 +96,14 @@ Rules:
 - A missing reusable capability is needs_code_change, not failed: report the exact interface the new user tool
   needs, so Claude Code or Codex can build/test it through `omarchy-ai-tool propose` and the approval-gated install.
   After installation the same task must use it to finish the original goal.
+- Missing access is the user's decision, not a defect to code around: an API key that is absent, HTTP 401/403,
+  "does not have access", a model or endpoint the account may not use, a login that is needed. Finish with
+  needs_user: quote the exact error, say which access is missing and where it is granted, and offer the workaround
+  as an option. Do not change the user's own project to avoid it unless they asked for that
+  (real case 2026-10-08: a drone would not fly because its key could not use one model; the worker spent five
+  approvals trying to have the project's detector rewritten instead of saying so).
+- Never start a coding agent (`codex`, `claude`) from `run` to change code: finish with needs_code_change and the
+  runtime hands the change to one, with review. A long instruction is never a shell argument.
 - Finish as soon as the assignment is answered. Be concrete: name the commands that proved each finding.
 """.replace("@PYTHON@", sys.executable) + "\n" + PROJECT_TERMS  # the daemon venv, where omarchy_ai is importable
 

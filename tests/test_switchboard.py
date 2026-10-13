@@ -48,6 +48,24 @@ class PolicyTests(unittest.TestCase):
         v = Switchboard(FakeJev("reject", 0.95, 0.01)).review("read_file", {"path": "/etc/x"}, ctx("volume up"))
         self.assertEqual(v.action, "reject")
 
+    def test_a_user_tools_declared_lookup_is_a_read(self):
+        # 2026-10-08: a user tool's `list` after a failed command, matches 0.24-0.27.
+        with patch("omarchy_ai.execution.user_tools.read_operations", return_value=frozenset({"list", "get"})):
+            board = Switchboard(FakeJev("reject", 0.93, 0.24, "not_asked"))
+            v = board.review("smart_home", {"operation": "list", "name": "tv"}, ctx("I think its clear enough"))
+            self.assertEqual(v.action, "execute")
+            v = board.review("smart_home", {"operation": "call", "name": "x"}, ctx("I think its clear enough"))
+            self.assertEqual(v.action, "reject")
+
+    def test_jev_sees_the_call_that_just_failed(self):
+        jev = FakeJev()
+        context = ctx("I think its clear enough")
+        context.failed = {"tool": "use_tool", "args": {"request": "turn off the TV"}, "error": "multiple devices"}
+        Switchboard(jev).review("smart_home", {"operation": "call"}, context)
+        self.assertEqual(jev.calls[0][0]["failed_just_before"]["error"], "multiple devices")
+        Switchboard(jev).review("volume_up", {}, ctx("louder"))
+        self.assertNotIn("failed_just_before", jev.calls[1][0])
+
     def test_a_multi_step_job_typed_into_a_terminal_goes_to_the_task_runtime(self):
         request = "find what is using port 8080 and stop it"
         v = Switchboard(FakeJev("start_task", 0.95)).review(
