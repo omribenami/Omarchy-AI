@@ -296,7 +296,7 @@ TV?" is a plain spoken back-and-forth (not a D8-style visual badge), and
 new-TV setup is an honest, human-in-the-loop guided flow, not a magic
 one-shot install.** Extends the single-hardcoded-IP `start_casting`/
 `stop_casting` built and confirmed live earlier the same day (`_TV_ADB_ADDR
-= "192.168.1.86:5555"`) with real auto-discovery, disambiguation, and
+= "192.0.2.86:5555"`) with real auto-discovery, disambiguation, and
 assisted receiver installation. Full live evidence trail in `STATUS.md`
 ("Casting: auto-discovery, TV disambiguation, assisted receiver install");
 this entry is the design reasoning.
@@ -304,14 +304,14 @@ this entry is the design reasoning.
 *Which mDNS service type indicates "a real cast target".* `avahi-browse -a
 -t` run live on this network surfaced two different Android-TV-adjacent
 service types, confirmed NOT interchangeable: `_androidtvremote2._tcp`
-(three real devices: "Living Room TV", "Idol TV", "Philips 4K A1" — the
+(three real devices: "Living Room TV", "Bedroom TV", "Den TV" — the
 protocol the official Android TV Remote/Google Home app uses, a strong
 signal the device is actually Android TV OS) versus `_googlecast._tcp` (a
 much broader "any Cast-capable device" set that, on this same live browse,
 also included plain Chromecasts and — concretely — a "Nest Audio" smart
 speaker, a "Google Home" smart speaker, and a "Google Nest Hub" smart
 display, none of which run Android TV OS or accept `adb install`). One
-`_googlecast._tcp` entry ("Idol TV") shares an IP with its
+`_googlecast._tcp` entry ("Bedroom TV") shares an IP with its
 `_androidtvremote2._tcp` counterpart, confirming they can name the same
 physical device, but the other three `_googlecast._tcp` entries have no
 `_androidtvremote2._tcp` match at all — real, live proof `_googlecast._tcp`
@@ -336,17 +336,17 @@ returns `ok=false` with the candidate names in the message instead of
 picking one, mirroring the "ask, don't guess" spirit of D8 without
 reusing its visual machinery, which doesn't apply here. Confirmed live
 against the real network: `list_cast_targets` returned exactly the two
-resolvable real devices (`Living Room TV`/192.168.1.191,
-`Idol TV`/192.168.1.203 — "Philips 4K A1" intermittently fails to
+resolvable real devices (`Living Room TV`/192.0.2.191,
+`Bedroom TV`/192.0.2.203 — "Den TV" intermittently fails to
 *resolve* to an address even though it's *seen*, a real avahi timeout
 against this specific device, not a parsing bug: confirmed by rerunning
 `avahi-browse -r -p -t _androidtvremote2._tcp` directly and seeing the
-identical "Failed to resolve service 'Philips 4K A1' ... Timeout reached"
+identical "Failed to resolve service 'Den TV' ... Timeout reached"
 on stderr); `start_casting` with no target and 2 real devices discovered
 returned the correct ambiguous-refusal message; with `target="idol"` it
 resolved to the single real match; with a nonexistent name it returned an
 honest "not found, available: ..." rather than falling back silently; with
-a raw IP (`192.168.1.86`, the already-paired TV, which isn't
+a raw IP (`192.0.2.86`, the already-paired TV, which isn't
 `_androidtvremote2._tcp`-discoverable at all) it passed the address
 through directly. Zero-discovery (mDNS having a bad moment, or
 `avahi-browse` itself unavailable) falls back to the one TV already
@@ -527,14 +527,14 @@ STATUS.md for the full frame-log evidence.
 
 *A third, independent root cause found during verification, not fixed
 here:* this machine's `ufw` only allows inbound TCP on the signaling port
-from one hardcoded IP (`192.168.1.86`, the original Phase 0 TV) —
+from one hardcoded IP (`192.0.2.86`, the original Phase 0 TV) —
 `/etc/ufw/user.rules`: `-A ufw-user-input -p tcp --dport 8765 -s
-192.168.1.86 -j ACCEPT`, almost certainly predating D10's multi-TV
+192.0.2.86 -j ACCEPT`, almost certainly predating D10's multi-TV
 discovery and never widened. `journalctl -k` showed real `[UFW BLOCK]`
 lines for Living Room TV's SYN packets to port 8765, including on the
 very first cast attempt of this session, before any of today's code
 changes loaded — proving this has silently sabotaged every cast to any
-TV other than 192.168.1.86 regardless of the signaling fix. Not fixable
+TV other than 192.0.2.86 regardless of the signaling fix. Not fixable
 by this session (no passwordless sudo); see STATUS.md for the exact
 one-line command the user needs to run.
 

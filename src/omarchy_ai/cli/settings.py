@@ -140,7 +140,7 @@ class ValidationError(Exception):
 def _wake_models() -> list[dict]:
     """Every *.onnx under WAKE_MODELS_DIR — same glob config.py's own
     default_factory uses, so this list always matches what the daemon
-    would auto-discover. Never hardcode model names (omachy/omri/roni are
+    would auto-discover. Never hardcode model names (they are
     just whatever happens to be installed today)."""
     if not WAKE_MODELS_DIR.is_dir():
         return []

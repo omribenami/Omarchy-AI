@@ -63,7 +63,7 @@ class ReceiverViewModel(application: Application) : AndroidViewModel(application
         private const val PREF_HOST = "signaling_host"
 
         // This desktop's own LAN IP at the time this was written (confirmed
-        // via `ip route get 192.168.1.86`, the paired TV) -- a reasonable
+        // via `ip route get 192.0.2.86`, the paired TV) -- a reasonable
         // first-run default; editable in the UI, and whatever is actually
         // used gets remembered above.
         private const val DEFAULT_HOST = "192.0.2.20"

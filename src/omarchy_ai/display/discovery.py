@@ -11,8 +11,8 @@ mDNS service, and they are NOT interchangeable for this project's purpose:
 - `_androidtvremote2._tcp` -- advertised by real Android TV OS devices (the
   protocol the official "Android TV Remote Control" / Google Home app uses
   to pair as a remote). Confirmed live: three real devices, each a genuine
-  Android TV box/projector -- "Living Room TV" (192.168.1.191), "Idol TV"
-  (192.168.1.203), "Philips 4K A1" (present but its resolve intermittently
+  Android TV box/projector -- "Living Room TV" (192.0.2.191), "Bedroom TV"
+  (192.0.2.203), "Den TV" (present but its resolve intermittently
   times out -- see `_run_avahi_browse`). This is the service type used
   here for cast targets: the closest real signal to "a device that could
   plausibly run our receiver app", even though the port it advertises
@@ -21,7 +21,7 @@ mDNS service, and they are NOT interchangeable for this project's purpose:
   Confirmed live to also include plain Chromecasts, Google Home/Nest smart
   speakers, and a Nest Hub smart display -- none of which run Android TV OS
   or can have an APK installed via adb. Concrete proof from the same live
-  browse: one _googlecast._tcp entry (friendly name "Idol TV") shares its
+  browse: one _googlecast._tcp entry (friendly name "Bedroom TV") shares its
   IP with an _androidtvremote2._tcp entry of the same name, but three more
   _googlecast._tcp entries ("Nest Audio", "Google Home", "Google Nest Hub")
   have no _androidtvremote2._tcp counterpart at all -- real evidence
@@ -47,13 +47,13 @@ step; see `install_receiver_on_tv` for the guided flow built around it.
 
 **A fourth service type, added after a real device was found invisible to
 the above:** the user's HY300Pro Android projector (`_TV_ADB_ADDR`,
-192.168.1.86 -- the very first TV this project ever paired, back in
+192.0.2.86 -- the very first TV this project ever paired, back in
 Phase 0) advertises none of the three service types above -- confirmed
 live, `avahi-browse -a -t` showed zero results for it under
 `_androidtvremote2._tcp`, `_adb-tls-pairing._tcp`, or `_adb-tls-connect
 ._tcp`. It DOES advertise plain `_adb._tcp` (Android's classic
 ADB-over-network service -- confirmed live: `avahi-browse -r -p -t
-_adb._tcp` -> `adb-52001089a69606f2054;_adb._tcp;...;192.168.1.86;5555`,
+_adb._tcp` -> `adb-<serial>;_adb._tcp;...;192.0.2.86;5555`,
 and a direct query against that address, `adb shell getprop
 ro.product.model`, returned `HY300Pro`, proving it really is the same
 device). This is common on non-GMS-certified/budget Android boxes and
@@ -76,18 +76,21 @@ import subprocess
 
 log = logging.getLogger("omarchy_ai.display.discovery")
 
-# The one TV that's been manually paired and proven working since Phase 0
-# (STATUS.md's "Hardware-dependent findings" -- adb tcpip 5555, not
-# Wireless Debugging). Lives here (not execution/actions.py, its original
-# home) so both actions.py and registry.py can depend on discovery.py
-# without a circular import between the two of them.
-TV_ADB_ADDR = "192.168.1.86:5555"
+def fallback_tv() -> str | None:
+    """The TV to try when none is discoverable: the user's own
+    `cast_fallback_address` (host:port, an ADB-over-network address they
+    paired by hand), or None. It was a constant holding one home's TV until
+    2026-10-13. Lives here so both actions.py and registry.py can depend on
+    discovery.py without a circular import between the two of them."""
+    from ..config import load_config
+    address = str(getattr(load_config(), "cast_fallback_address", None) or "").strip()
+    return address or None
 
 # `avahi-browse -r -p -t` resolves every currently-advertised instance of a
 # service type before terminating (the `-t` flag). A record that fails to
 # resolve still costs a real wait -- confirmed live, timing this exact
 # command against this network: ~5s wall-clock with one unresolvable
-# instance present ("Philips 4K A1", intermittently). The subprocess
+# instance present ("Den TV", intermittently). The subprocess
 # timeout below is set comfortably above that observed cost, not guessed.
 _BROWSE_TIMEOUT = 8.0
 

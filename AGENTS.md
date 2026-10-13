@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Core Python code lives under `src/omarchy_ai/`. Keep features within the existing domains: `voice/` for realtime audio, `execution/` for desktop actions, `display/` for casting, `phone/` for the mobile bridge, and `core/` for daemon state. Tests are in `tests/` and generally mirror behavior rather than package paths. Quickshell/QML plugins live in `quickshell/plugins/`; the Kotlin Android receiver is in `android-receiver/`. Operational assets and documentation belong in `systemd/`, `wake_models/`, `scripts/`, and `docs/`. Read `STATUS.md` and `docs/ADR-0001-architecture.md` before changing architecture or hardware integrations.
+Core Python code lives under `src/omarchy_ai/`. Keep features within the existing domains: `voice/` for realtime audio, `execution/` for desktop actions, `display/` for casting, `phone/` for the mobile bridge, and `core/` for daemon state. Tests are in `tests/` and generally mirror behavior rather than package paths. Quickshell/QML plugins live in `quickshell/plugins/`; the Kotlin Android receiver is in `android-receiver/`. Operational assets and documentation belong in `systemd/`, `wake_models/`, `scripts/`, and `docs/`. Read `docs/ADR-0001-architecture.md` before changing architecture or hardware integrations.
 
 ## Build, Test, and Development Commands
 

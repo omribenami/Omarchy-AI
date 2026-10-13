@@ -18,7 +18,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-39ff88.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-39ff88.svg)](pyproject.toml)
 [![Built for Omarchy](https://img.shields.io/badge/built%20for-Omarchy%20%2F%20Hyprland-39ff88.svg)](https://omarchy.org)
-[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha%2C%20daily%20driver-39ff88.svg)](STATUS.md)
+[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha%2C%20daily%20driver-39ff88.svg)](CHANGELOG.md)
 
 </div>
 
@@ -300,8 +300,7 @@ scripts/           install/build/publish, probes and the original spikes
   **Kotlin + Jetpack Compose** with `stream-webrtc-android` for the TV app.
 
 Every choice, including the dead ends, is in
-[`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md), and the
-full evidence trail of every bug is in [`STATUS.md`](STATUS.md).
+[`docs/ADR-0001-architecture.md`](docs/ADR-0001-architecture.md).
 
 ---
 
@@ -478,8 +477,8 @@ About 90 typed tools plus Omarchy's full command set:
 
 - **Wake word, keybinding or text.** A local wake word (`openWakeWord`)
   listens continuously and connects to a provider only when triggered: no
-  connection and no per-second billing outside a conversation. "omachy",
-  "omri" and "roni" ship; add your own `.onnx` models. **Super + `** starts
+  connection and no per-second billing outside a conversation. "omachy"
+  ships; add your own `.onnx` models. **Super + `** starts
   a voice conversation, **Super + Ctrl + `** a typed one in the chat HUD
   (it answers in text, silently).
 - **Three providers.** **Gemini Live** (full duplex, desktop and phone),
@@ -731,8 +730,8 @@ since argv is readable through `/proc/<pid>/cmdline`):
 echo -n "sk-..." | .venv/bin/omarchy-ai-settings set-api-key
 ```
 
-**4. Wake word:** "omachy" (default), "omri" and "roni" ship in
-[`wake_models/`](wake_models/) and are installed to
+**4. Wake word:** "omachy" ships in
+[`wake_models/`](wake_models/) and is installed to
 `~/.config/omarchy-ai/wake_models/`. Add or remove `.onnx` models there.
 
 **5. Enable and start the service:**
@@ -894,8 +893,7 @@ Documented honestly rather than papered over:
   cloned elsewhere. The daemon runs fine without the plugins (IPC calls just
   log a warning).
 
-See [`STATUS.md`](STATUS.md) for the full debugging history and
-[`docs/`](docs/) for the architecture decisions.
+See [`docs/`](docs/) for the architecture decisions.
 
 ## License
 

@@ -34,7 +34,7 @@ mkdir -p "$CONFIG_DIR"
 
 WAKE_MODELS_DIR="$CONFIG_DIR/wake_models"
 mkdir -p "$WAKE_MODELS_DIR"
-echo "==> Installing trained wake-word models (omachy/omri/roni)"
+echo "==> Installing the trained wake-word model (omachy)"
 cp -n wake_models/*.onnx "$WAKE_MODELS_DIR/" 2>/dev/null || true
 
 if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then

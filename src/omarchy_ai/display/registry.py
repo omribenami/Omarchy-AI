@@ -33,7 +33,7 @@ _last_refresh: float = 0.0
 
 
 def _fallback_address() -> str:
-    return discovery.TV_ADB_ADDR.split(":")[0]
+    return (discovery.fallback_tv() or "").split(":")[0]
 
 
 def refresh() -> list[dict]:
@@ -63,7 +63,7 @@ def refresh() -> list[dict]:
             dev["status"] = "offline"
 
     fallback_addr = _fallback_address()
-    if fallback_addr not in _devices:
+    if fallback_addr and fallback_addr not in _devices:
         _devices[fallback_addr] = {
             "name": "previously paired TV", "address": fallback_addr,
             "status": "unknown", "last_seen": 0.0,

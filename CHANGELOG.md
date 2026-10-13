@@ -60,6 +60,11 @@ Rules for every release:
   session interface, and personal voice extensions load from the config
   folder.
 - Phone approvals can show which command a sudo request is for.
+- The TV to cast to when none is found on the network is now your own
+  setting, `cast_fallback_address`, instead of an address in the source.
+- Only the "omachy" wake word ships. Wake-word models already installed
+  in your config folder stay where they are.
+- The development log is no longer part of the repository or the package.
 
 ## [0.13.2] - 2026-10-03
 

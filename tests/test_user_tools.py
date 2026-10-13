@@ -252,21 +252,21 @@ class PhoneInstallApprovalTests(unittest.TestCase):
             for _ in range(50):
                 items = [a for a in server.pending_approvals()["approvals"] if a["kind"] == "tool-install"]
                 if items:
-                    self.assertEqual(items[0]["subject"], "install tool home_assistant")
+                    self.assertEqual(items[0]["subject"], "install tool smart_home")
                     status, _ = server.respond_approval({"task_id": items[0]["task_id"],
                                                          "fingerprint": items[0]["fingerprint"], "approve": False})
                     self.assertEqual(status, 200)
                     return
                 time.sleep(0.1)
         with patch("sys.stdin.isatty", return_value=False), \
-                patch.object(user_tools, "approval_summary", return_value="installs home_assistant"), \
+                patch.object(user_tools, "approval_summary", return_value="installs smart_home"), \
                 patch.object(user_tools.subprocess, "run", side_effect=FileNotFoundError), \
                 patch("omarchy_ai.phone.flux_notify.send"), \
                 patch("omarchy_ai.runtime.service.get_runtime") as runtime:
             runtime.return_value.store.list.return_value = []
             answering = threading.Thread(target=phone)
             answering.start()
-            approved, how = user_tools.user_approves_install("home_assistant")
+            approved, how = user_tools.user_approves_install("smart_home")
             answering.join(5)
         self.assertEqual((approved, how), (False, "declined on the phone"))
         self.assertEqual(user_tools.pending_install_requests(), [])  # closed once answered

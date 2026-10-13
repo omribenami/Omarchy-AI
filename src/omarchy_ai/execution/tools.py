@@ -574,7 +574,7 @@ TOOLS: list[dict] = [
         "this when the user asks what TVs/casting targets are available, or "
         "right before asking 'which TV do you mean?' after start_casting "
         "comes back ambiguous — read the names out and let them answer by "
-        "name (e.g. 'the Living Room TV' or 'Idol TV'), then call "
+        "name (e.g. 'the Living Room TV' or 'Bedroom TV'), then call "
         "start_casting again with that name as target. This only finds "
         "TVs that already have the Android TV remote-control service "
         "running — a TV that's never been set up at all won't appear here; "

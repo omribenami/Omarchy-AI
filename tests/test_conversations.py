@@ -320,7 +320,7 @@ class ScopedApprovalTests(unittest.TestCase):
 
     def test_a_tool_install_is_a_card_and_yes_sends_the_fingerprint_prompt(self):
         from omarchy_ai.execution import user_tools
-        rid = user_tools._open_install_request("home_assistant", "installs home_assistant")
+        rid = user_tools._open_install_request("smart_home", "installs smart_home")
         with patch("omarchy_ai.phone.flux_notify.send") as notify, \
                 patch("omarchy_ai.execution.flux_approve.available", return_value=True):
             conversations.sync_installs()

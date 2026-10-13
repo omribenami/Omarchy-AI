@@ -46,7 +46,7 @@ _TIMEOUT = 10
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _VENV_PYTHON = str(_REPO_ROOT / ".venv" / "bin" / "python")
 # The last-known-TV fallback constant used to live here; moved to
-# display/discovery.py (TV_ADB_ADDR) so display/registry.py can use it
+# display/discovery.py (fallback_tv) so display/registry.py can use it
 # too without a circular import between registry.py and this file.
 _SIGNALING_PORT = 8765
 _APK_PATH = (
@@ -1665,8 +1665,11 @@ def _resolve_cast_target(target: str | None) -> tuple[str | None, ActionResult |
     # TV's remote-control service happens to be off.
     from ..display import discovery
 
-    log.info("no TVs currently online; falling back to last-known TV %s", discovery.TV_ADB_ADDR)
-    return discovery.TV_ADB_ADDR, None
+    fallback = discovery.fallback_tv()
+    if not fallback:
+        return None, ActionResult(False, "no TVs are currently discoverable on the network")
+    log.info("no TVs currently online; falling back to last-known TV %s", fallback)
+    return fallback, None
 
 
 def list_cast_targets(args: dict) -> ActionResult:

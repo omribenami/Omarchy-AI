@@ -122,6 +122,9 @@ class Config:
     # JSON list of camera names; `<command> snapshot <name> <file>` writes
     # the current frame (JPEG or PNG) to <file>. None: no camera watches.
     camera_snapshot_command: str | None = None
+    # A TV's ADB-over-network address (host:port) to cast to when none is
+    # discoverable on the network. None: casting then says so.
+    cast_fallback_address: str | None = None
     # Wake word (openWakeWord). See jarvisd's README for tuning notes —
     # same detector, same knobs. Custom-trained models (any number) load
     # simultaneously — anyone whose name is in this list wakes it, not
