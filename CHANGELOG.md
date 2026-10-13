@@ -19,6 +19,48 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.14.0] - 2026-10-13
+
+### Highlights
+
+- Skills now do the work. When you ask for something I have a saved skill
+  for, the job runs as that skill in the background, with your own numbers
+  and wording, instead of me only reading the steps.
+- I save skills on my own. When a background job with several steps is
+  verified, I keep the exact commands that worked as a skill, or bring the
+  skill it ran up to date. Jev decides whether it is worth keeping and
+  whether it is a new skill or one I already have, so there are no copies.
+- If I say I am doing something and nothing actually ran, that is caught
+  and the job is handed to a background task.
+- When only you can tell whether a job worked, such as an announcement in
+  another room, I ask "Did it work?" once it is done. Your yes verifies it.
+- A small grey note in the chat says when a skill was created or updated.
+- I can tell who is speaking. Enroll the people in your home and I will
+  know whose voice I am hearing, all on this computer.
+- I can watch a camera for a time frame you give me and tell you if what
+  you described happens.
+- If my voice model fails in the middle of a conversation, I carry on with
+  another one and tell you.
+
+### Fixes
+
+- A background job no longer asks "what do you want done?" over and over.
+  It asks once, then gets on with your answer; a no cancels it.
+- A question that needs words is no longer offered Yes and No on the phone.
+- A request with a different number, such as six minutes for a five-minute
+  skill, still finds the skill.
+
+### Under the hood
+
+- Coding workers end their report with the commands that produced the
+  result, so a skill can be saved from a job the harness did not observe.
+- `start_task` checks saved skills before starting, and `run_skill` is a
+  tool of its own.
+- A realtime voice model can run through Vercel AI Gateway behind the same
+  session interface, and personal voice extensions load from the config
+  folder.
+- Phone approvals can show which command a sudo request is for.
+
 ## [0.13.2] - 2026-10-03
 
 ### Highlights
