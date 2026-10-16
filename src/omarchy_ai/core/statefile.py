@@ -234,15 +234,17 @@ def _load_locked(path, default, load, expect):
     return data, text
 
 
-def read_doc(path: Path, default: Any, *, load: Callable[[str], Any], expect=None, version: int = 0) -> Any:
+def read_doc(path: Path, default: Any, *, load: Callable[[str], Any], expect=None, version: int = 0,
+             lock: Path | None = None) -> Any:
     """Read-only load. Takes no lock on the normal path (writes are atomic);
-    a file that does not parse is re-checked under the lock, then
-    quarantined. Never raises for missing or unreadable content."""
+    a file that does not parse is re-checked under the lock (the file's own,
+    or `lock` when one lock guards several files), then quarantined. Never
+    raises for missing or unreadable content."""
     path = Path(path)
     try:
         data, _ = _parse(path, load, expect)
     except (ValueError, UnicodeDecodeError):
-        with locked(path):  # it may have been replaced since; only a real corrupt file moves aside
+        with locked(lock or path):  # it may have been replaced since; only a real corrupt file moves aside
             data, _ = _load_locked(path, default, load, expect)
     except OSError:
         log.warning("state file %s could not be read", path, exc_info=True)
@@ -290,8 +292,9 @@ def locked_json(path: Path, default: Any = None, *, expect=None, dump: Callable[
                       version=version)
 
 
-def read_json(path: Path, default: Any = None, *, expect=None, version: int = 0) -> Any:
-    return read_doc(path, {} if default is None else default, load=json.loads, expect=expect, version=version)
+def read_json(path: Path, default: Any = None, *, expect=None, version: int = 0, lock: Path | None = None) -> Any:
+    return read_doc(path, {} if default is None else default, load=json.loads, expect=expect, version=version,
+                    lock=lock)
 
 
 def yaml_dump(data: Any) -> str:

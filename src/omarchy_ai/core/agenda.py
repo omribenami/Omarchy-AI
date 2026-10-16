@@ -37,13 +37,12 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
 
 from ..config import STATE_DIR
-from . import schedule
+from . import schedule, statefile
 from .jev import Jev, JevError, boolean, choice
 
 log = logging.getLogger("omarchy_ai.core.agenda")
@@ -60,6 +59,12 @@ LATE_GRACE_SECONDS = 15 * 60
 # A job whose run started but never finished (the daemon died mid-run) is
 # reported, never silently re-run: actions are at most once.
 STALE_RUN_SECONDS = 30 * 60
+# A run holds its job through `running_by` in agenda.json ({pid, start_time,
+# lease_until}), so the daemon and a CLI process never run one job twice at
+# once. The lease ends when the run does, or when its process is gone; one
+# held by another process that is still alive this long after it started is
+# taken as hung and no longer blocks the job's next run.
+LEASE_SECONDS = 2 * 3600
 # A failed step is retried, unless repeating it could undo it (a toggle).
 STEP_RETRY_DELAYS = (5.0, 20.0)
 _NOT_REPEATABLE = re.compile(r"toggle|play_pause|_next$|_prev$|type_text|press_key|terminal_type|gmail_send|"
@@ -94,8 +99,9 @@ EVIDENCE_LINES = 20
 WATCH_THRESHOLD = 0.85
 CONFIRM_DELAY_SECONDS = 1.5  # between a visual watch's frame and its confirming frame
 
+# In-memory state only (calls, briefed ids, motion listeners). The files
+# have their own cross-process locks (core/statefile.py).
 _lock = threading.RLock()
-_running: set[str] = set()
 # Set whenever the agenda changes, so the heartbeat re-plans its sleep and a
 # job due in 40 s runs in 40 s, not at the next 60 s tick.
 changed = threading.Event()
@@ -105,11 +111,15 @@ _pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="agenda")
 # ---------------------------------------------------------------- storage
 
 def _load() -> list[dict]:
-    try:
-        data = json.loads(JOBS_PATH.read_text())
-        return [j for j in data if isinstance(j, dict) and j.get("id")] if isinstance(data, list) else []
-    except (OSError, ValueError):
-        return []
+    """The jobs. A file that does not parse is kept aside (statefile), not lost."""
+    data = statefile.read_json(JOBS_PATH, [], expect=list)
+    return [j for j in data if isinstance(j, dict) and j.get("id")]
+
+
+def _jobs_locked():
+    """agenda.json under its cross-process lock: hold it around a _load()
+    that a _save() follows."""
+    return statefile.locked(JOBS_PATH)
 
 
 def _redact(text: str) -> str:
@@ -122,16 +132,13 @@ def _redact(text: str) -> str:
 
 
 def _save(jobs: list[dict]) -> None:
-    JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=JOBS_PATH.parent, delete=False) as stream:
-        stream.write(_redact(json.dumps(jobs, ensure_ascii=False, indent=1)))
-        temp = Path(stream.name)
-    temp.replace(JOBS_PATH)
+    with _jobs_locked():
+        statefile.atomic_write_text(JOBS_PATH, _redact(json.dumps(jobs, ensure_ascii=False, indent=1)))
     changed.set()
 
 
 def _update(job_id: str, **changes) -> dict | None:
-    with _lock:
+    with _jobs_locked():
         jobs = _load()
         for job in jobs:
             if job["id"] == job_id:
@@ -156,10 +163,7 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
              "delivered": False}
     if job.get("announce") and outcome == "reminded":
         entry["announce"] = job["announce"]  # also said there (core/daemon.py)
-    with _lock:
-        INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with INBOX_PATH.open("a") as stream:
-            stream.write(_redact(json.dumps(entry, ensure_ascii=False)) + "\n")
+    statefile.append_jsonl(INBOX_PATH, _redact(json.dumps(entry, ensure_ascii=False)))
     for listener in list(listeners):
         try:
             listener(dict(entry))
@@ -167,18 +171,8 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
             log.warning("agenda: result listener failed", exc_info=True)
 
 
-def _inbox_read() -> list[dict]:
-    try:
-        lines = INBOX_PATH.read_text().splitlines()
-    except OSError:
-        return []
-    entries = []
-    for line in lines:
-        try:
-            entries.append(json.loads(line))
-        except ValueError:
-            continue
-    return entries
+def _inbox_read(bad: list[str] | None = None) -> list[dict]:
+    return [e for e in statefile.read_jsonl(INBOX_PATH, bad) if isinstance(e, dict)]
 
 
 def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | None:
@@ -191,7 +185,7 @@ def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | No
     older one (a question that was since answered is no longer news), and
     the same outcome is never queued twice. Returns None for a duplicate."""
     job_id = f"task-{task_id}"
-    with _lock:
+    with statefile.locked(INBOX_PATH):  # the duplicate check and the append are one step
         entries = _inbox_read()
         if any(e.get("job_id") == job_id and e.get("outcome") == outcome and e.get("detail") == detail[:1500]
                for e in entries):
@@ -200,9 +194,7 @@ def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | No
         entry = {"id": uuid.uuid4().hex[:10], "job_id": job_id, "task_id": task_id, "title": goal[:160],
                  "kind": "task", "outcome": outcome, "detail": detail[:1500], "urgent": False, "at": time.time(),
                  "delivered": False}
-        INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with INBOX_PATH.open("a") as stream:
-            stream.write(_redact(json.dumps(entry, ensure_ascii=False)) + "\n")
+        statefile.append_jsonl(INBOX_PATH, _redact(json.dumps(entry, ensure_ascii=False)))
     mark_delivered(stale)
     return dict(entry)
 
@@ -274,11 +266,12 @@ def mark_briefed() -> None:
 
 
 def mark_delivered(ids) -> None:
-    with _lock:
-        ids = set(ids)
-        if not ids:
-            return
-        entries = _inbox_read()
+    ids = set(ids)
+    if not ids:
+        return
+    with statefile.locked(INBOX_PATH):
+        bad: list[str] = []
+        entries = _inbox_read(bad)
         cutoff = time.time() - 86400
         kept = []
         for e in entries:
@@ -286,7 +279,8 @@ def mark_delivered(ids) -> None:
                 e["delivered"] = True
             if not e.get("delivered") or e.get("at", 0) >= cutoff:
                 kept.append(e)
-        INBOX_PATH.write_text(_redact("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in kept)))
+        statefile.rewrite_jsonl(INBOX_PATH, _redact("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in kept)),
+                                bad)
 
 
 # ---------------------------------------------------------------- creation
@@ -485,7 +479,7 @@ def create(args: dict, now: float | None = None) -> dict:
     if who.person:  # who asked: their phones get it, and it runs as them (run_job)
         job["requester"], job["requester_how"] = who.person, who.how
     replace = _text(args, "replace_id", 40)
-    with _lock:
+    with _jobs_locked():
         jobs = _load()
         old = next((j for j in jobs if j["id"] == replace), None) if replace else None
         if replace and (old is None or old.get("status") != "active"):
@@ -503,8 +497,7 @@ def create(args: dict, now: float | None = None) -> dict:
 
 
 def cancel(job_id: str) -> dict | None:
-    with _lock:
-        current = next((j for j in _load() if j["id"] == job_id), None)
+    current = next((j for j in _load() if j["id"] == job_id), None)
     if not current or current.get("status") != "active":
         return None
     job = _update(job_id, status="cancelled", next_run=None)
@@ -914,36 +907,88 @@ def run_job(job: dict, jev: Jev | None = None, now: float | None = None) -> None
         _finish(job, now, f"crashed: {type(exc).__name__}: {exc}")
     finally:
         identities.reset_current(token)
-        with _lock:
-            _running.discard(job["id"])
+        _release(job["id"])
+
+
+# ---------------------------------------------------------------- leases
+
+def _lease_held(job: dict) -> bool:
+    """A live process is running this job now (its `running_by` lease)."""
+    lease = job.get("running_by")
+    if not isinstance(lease, dict) or not lease.get("pid"):
+        return False
+    from ..runtime.task import owner_alive
+    if not owner_alive({"pid": lease["pid"], "start": lease.get("start_time")}):
+        return False  # its process is gone (crash, restart): nothing is running it
+    if lease["pid"] == os.getpid():
+        return True  # this process's run; it ends the lease when it ends
+    try:
+        return time.time() < float(lease.get("lease_until") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def _claim(job_id: str, due_by: float | None = None) -> dict | None:
+    """Take the lease on an active job, atomically across processes. None if
+    another live run holds it, or (with `due_by`) if it is no longer due
+    because someone else already ran it."""
+    from ..runtime.task import this_process
+    with _jobs_locked():
+        jobs = _load()
+        job = next((j for j in jobs if j["id"] == job_id and j.get("status") == "active"), None)
+        if job is None or _lease_held(job):
+            return None
+        if due_by is not None and (job.get("next_run") is None or job["next_run"] > due_by):
+            return None
+        me = this_process()
+        job["running_by"] = {"pid": me["pid"], "start_time": me["start"], "lease_until": time.time() + LEASE_SECONDS}
+        _save(jobs)
+        return dict(job)
+
+
+def _release(job_id: str) -> None:
+    """End this process's lease on a job (another's is left alone)."""
+    with _jobs_locked():
+        jobs = _load()
+        job = next((j for j in jobs if j["id"] == job_id), None)
+        lease = job.get("running_by") if job else None
+        if isinstance(lease, dict) and lease.get("pid") == os.getpid():
+            job.pop("running_by")
+            _save(jobs)
 
 
 def due(now: float) -> list[dict]:
-    with _lock:
-        return [j for j in _load() if j.get("status") == "active" and j.get("next_run") is not None
-                and j["next_run"] <= now and j["id"] not in _running]
+    return [j for j in _load() if j.get("status") == "active" and j.get("next_run") is not None
+            and j["next_run"] <= now and not _lease_held(j)]
 
 
 def _report_interrupted(now: float) -> None:
     """An action whose run started and never finished: the daemon died
-    mid-run. Its steps may or may not have happened, so say so once."""
-    with _lock:
-        stale = [j for j in _load() if j.get("started_at") and j["id"] not in _running
+    mid-run. Its steps may or may not have happened, so say so once. The
+    run is cleared under the file lock first, so two processes never both
+    report it."""
+    with _jobs_locked():
+        jobs = _load()
+        stale = [j for j in jobs if j.get("started_at") and not _lease_held(j)
                  and now - j["started_at"] > STALE_RUN_SECONDS]
+        if stale:
+            reported = [dict(j) for j in stale]
+            for job in stale:
+                job.update(started_at=None, last_result="interrupted")
+            _save(jobs)
+            stale = reported
     for job in stale:
         notify("Interrupted: " + job["title"], "The assistant stopped while doing it; check whether it happened.",
                urgent=True)
         _inbox_add(job, "interrupted", f"'{job['title']}' started {schedule.describe(job['started_at'])} but the "
                    "assistant stopped before it finished; it may be only partly done.", urgent=True)
-        _update(job["id"], started_at=None, last_result="interrupted")
 
 
 def seconds_until_next(now: float | None = None) -> float | None:
     """Seconds until the earliest active job is due (0 if overdue)."""
     now = time.time() if now is None else now
-    with _lock:
-        times = [j["next_run"] for j in _load() if j.get("status") == "active" and j.get("next_run") is not None
-                 and j["id"] not in _running]
+    times = [j["next_run"] for j in _load() if j.get("status") == "active" and j.get("next_run") is not None
+             and not _lease_held(j)]
     return max(0.0, min(times) - now) if times else None
 
 
@@ -962,9 +1007,8 @@ class _MotionListener(threading.Thread):
             process.terminate()
 
     def _job(self) -> dict | None:
-        with _lock:
-            return next((j for j in _load() if j["id"] == self.job_id and j.get("status") == "active"
-                         and j.get("trigger") == "motion" and j.get("camera")), None)
+        return next((j for j in _load() if j["id"] == self.job_id and j.get("status") == "active"
+                     and j.get("trigger") == "motion" and j.get("camera")), None)
 
     def run(self) -> None:
         from ..config import load_config
@@ -1021,12 +1065,11 @@ def tick(now: float | None = None, jev: Jev | None = None, wait: bool = False) -
     _sync_motion()
     started, futures = [], []
     for job in due(now):
-        with _lock:
-            if job["id"] in _running:
-                continue
-            _running.add(job["id"])
+        claimed = _claim(job["id"], due_by=now)  # another process may have taken or run it since
+        if claimed is None:
+            continue
         started.append(job["id"])
-        futures.append(_pool.submit(run_job, job, jev, now))
+        futures.append(_pool.submit(run_job, claimed, jev, now))
     if wait:
         for future in futures:
             future.result()
@@ -1034,10 +1077,8 @@ def tick(now: float | None = None, jev: Jev | None = None, wait: bool = False) -
 
 
 def run_now(job_id: str) -> dict | None:
-    with _lock:
-        job = next((j for j in _load() if j["id"] == job_id and j.get("status") == "active"), None)
-        if not job or job_id in _running:
-            return job
-        _running.add(job_id)
+    job = _claim(job_id)
+    if job is None:  # not active, or a run of it is going on now
+        return next((j for j in _load() if j["id"] == job_id and j.get("status") == "active"), None)
     run_job(job)
     return next((j for j in _load() if j["id"] == job_id), None)
