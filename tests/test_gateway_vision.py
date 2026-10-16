@@ -129,7 +129,7 @@ class GatewayVisionTests(unittest.TestCase):
         cfg = SimpleNamespace(vercel_gateway_api_key_path=str(key), omarchy_jev_model="typesafe-ai/jev")
         with patch("omarchy_ai.config.load_config", return_value=cfg), \
                 patch("omarchy_ai.execution.vision._capture", return_value=self.image), \
-                patch("omarchy_ai.execution.actions._screen_context", return_value="Focused: kitty"), \
+                patch("omarchy_ai.execution.actions.desktop._screen_context", return_value="Focused: kitty"), \
                 patch("omarchy_ai.execution.vision.look", return_value="error: unavailable") as look:
             result = screenshot({})
         self.assertFalse(result.ok)
@@ -156,8 +156,8 @@ class GatewayVisionTests(unittest.TestCase):
         cfg = SimpleNamespace(vercel_gateway_api_key_path=str(key), omarchy_jev_model="typesafe-ai/jev")
         with patch("omarchy_ai.config.load_config", return_value=cfg), \
                 patch("omarchy_ai.execution.vision._capture", return_value=self.image), \
-                patch("omarchy_ai.execution.actions._screen_context", return_value="Focused: browser"), \
-                patch("omarchy_ai.execution.actions._terminal_text_hint", return_value=""), \
+                patch("omarchy_ai.execution.actions.desktop._screen_context", return_value="Focused: browser"), \
+                patch("omarchy_ai.execution.actions.desktop._terminal_text_hint", return_value=""), \
                 patch("omarchy_ai.execution.vision.look", return_value="typed answers") as look:
             result = describe_screen({"question": "How many cars?"})
         self.assertTrue(result.ok)

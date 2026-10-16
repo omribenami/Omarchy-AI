@@ -16,11 +16,11 @@ class UnlockScreenTests(unittest.TestCase):
         def run(argv, **kwargs):
             runs.append((argv, kwargs.get("input")))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch.object(actions, "_screen_locked", side_effect=lambda: next(states)), \
+        with patch.object(actions.desktop, "_screen_locked", side_effect=lambda: next(states)), \
                 patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
-                patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=enabled)), \
+                patch.object(actions.desktop, "load_config", return_value=SimpleNamespace(sudo_access_enabled=enabled)), \
                 patch.object(actions.sudo_approval, "retrieve", return_value=password), \
-                patch.object(actions, "_hyprctl_dispatch", return_value=ActionResult(True, "ok")), \
+                patch.object(actions.desktop, "_hyprctl_dispatch", return_value=ActionResult(True, "ok")), \
                 patch.object(actions.time, "sleep"), \
                 patch.object(actions.subprocess, "run", side_effect=run):
             return actions.unlock_screen_for_paired_phone(), runs
@@ -87,9 +87,9 @@ class LockedScreenKeyboardTests(unittest.TestCase):
         def run(argv, **kwargs):
             runs.append(argv)
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        with patch.object(actions, "_screen_locked", return_value=locked), \
+        with patch.object(actions.desktop, "_screen_locked", return_value=locked), \
                 patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
-                patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
+                patch.object(actions.desktop, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
                 patch.object(actions.sudo_approval, "retrieve", return_value="pw"), \
                 patch.object(actions.subprocess, "run", side_effect=run):
             return getattr(actions, name)(args), [argv for argv in runs if argv[0] in ("wtype", "wl-copy")]
@@ -111,8 +111,8 @@ class LockedScreenKeyboardTests(unittest.TestCase):
     def test_lock_state_falls_back_to_the_compositor(self):
         codes = {0: True, 1: False, 2: None}
         for code, expected in codes.items():
-            with patch.object(actions, "_run", return_value=ActionResult(False, "no IPC")), \
-                    patch.object(actions, "_desktop_env", return_value={}), \
+            with patch.object(actions.desktop, "_run", return_value=ActionResult(False, "no IPC")), \
+                    patch.object(actions.desktop, "_desktop_env", return_value={}), \
                     patch.object(actions.subprocess, "run", return_value=SimpleNamespace(returncode=code)):
                 self.assertIs(actions._screen_locked(), expected, code)
 
