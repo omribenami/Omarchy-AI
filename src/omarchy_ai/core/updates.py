@@ -194,6 +194,8 @@ def candidates_from_dist(commit, entries):
 def _dist_candidates():
     # Historical bundles committed under dist/ before Release assets existed.
     # Both files are pinned to one commit, same as the original updater.
+    # main no longer tracks dist/, so the listing 404s and this adds nothing;
+    # those bundles (<= 0.4.0) never outranked a Release asset anyway.
     payload = _json(API + "/commits/main")
     commit = payload.get("sha") if isinstance(payload, dict) else None
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):

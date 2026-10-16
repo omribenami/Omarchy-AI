@@ -35,9 +35,10 @@ Full capture implementation lives in scripts/wlr_screencopy_capture.py
 (shared with spike_cast_sender.py's real appsrc-fed video branch); see
 that module's docstring for the protocol flow and import-path details.
 
-Run standalone: `.venv/bin/python scripts/spike_cast_wlr_screencopy.py
---duration 35`. Prints frame counts in 4s windows (same cadence as
-Android's EglRenderer log, for direct comparison) and a final summary.
+Run standalone: `PYTHONPATH=scripts .venv/bin/python
+experiments/spike_cast_wlr_screencopy.py --duration 35`. Prints frame
+counts in 4s windows (same cadence as Android's EglRenderer log, for
+direct comparison) and a final summary.
 Exits non-zero if a stall (no frames for --stall-timeout seconds) is
 detected -- the exact failure mode this is trying to avoid.
 """

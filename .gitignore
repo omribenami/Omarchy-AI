@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 dist/
+# Raw demo captures stay local; README uses the compressed docs/media/ copies.
+docs/media/original/
 *.egg-info/
 
 # Android (once the receiver toolchain is set up)

@@ -28,7 +28,7 @@ private const val TAG = "SignalingClient"
  * The sender side (`scripts/spike_cast_sender.py`, GStreamer's webrtcbin)
  * only ever emits `sdpMLineIndex` + `candidate` for ICE, no `sdpMid` --
  * `onIceCandidate` below tolerates that (defaults to an empty string, same
- * as `scripts/spike_cast_receiver.py`'s Python-side webrtcbin counterpart
+ * as `experiments/spike_cast_receiver.py`'s Python-side webrtcbin counterpart
  * does).
  */
 class SignalingClient(private val url: String, private val listener: Listener) {

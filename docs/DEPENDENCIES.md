@@ -48,7 +48,7 @@ another Omarchy machine, not assume identical to this one:
 - `xdg-desktop-portal` + `xdg-desktop-portal-hyprland` — ScreenCast portal
 - `avahi-daemon` — mDNS/DNS-SD
 - `python-gobject` (`gi`) — PyGObject; needed for the `webrtcbin`/GStreamer
-  Python bindings used in `scripts/spike_live_webrtc.py` and (once it
+  Python bindings used in `experiments/spike_live_webrtc.py` and (once it
   exists) `src/omarchy_ai/voice`. **Not pip-installable in the normal sense** — it's
   a system package tied to the installed GObject-introspection typelibs, so
   Omarchy AI's own venv must be created with `--system-site-packages` against the

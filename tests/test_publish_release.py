@@ -244,6 +244,7 @@ class MyApiPublishTests(unittest.TestCase):
             ("A", "dist/omarchy-ai-0.3.11-linux-x86_64.tar.gz"),
             ("A", "dist/omarchy-ai-0.3.11-linux-x86_64.tar.gz.sha256"),
             ("M", "src/omarchy_ai/core/updates.py"),
+            ("D", "dist/omarchy-ai-0.4.0-linux-x86_64.tar.gz"),
         ]
         self.assertEqual(self.mod.release_archive_paths(changes), [
             "dist/omarchy-ai-0.3.11-linux-x86_64.tar.gz",

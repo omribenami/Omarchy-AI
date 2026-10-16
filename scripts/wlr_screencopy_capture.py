@@ -1,5 +1,5 @@
 """Shared wlr-screencopy-unstable-v1 capture core, used by both
-scripts/spike_cast_wlr_screencopy.py (standalone proof of concept) and
+experiments/spike_cast_wlr_screencopy.py (standalone proof of concept) and
 scripts/spike_cast_sender.py (the real appsrc-fed video branch).
 
 See spike_cast_wlr_screencopy.py's module docstring for the full "why":

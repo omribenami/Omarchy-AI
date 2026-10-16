@@ -59,7 +59,7 @@ internal fun CastConnectionState.isStreaming(): Boolean =
  * `scripts/spike_cast_sender.py`, and eventually the real
  * `src/omarchy_ai/display/encoder.py`) via [SignalingClient]. This is a
  * one-for-one Kotlin/`org.webrtc` port of
- * `scripts/spike_cast_receiver.py`'s webrtcbin logic: connect signaling as
+ * `experiments/spike_cast_receiver.py`'s webrtcbin logic: connect signaling as
  * "viewer" -> receive an offer -> setRemoteDescription -> createAnswer ->
  * setLocalDescription -> send the answer -> exchange ICE candidates ->
  * render the remote video track. Unlike the Python spike (which routes
