@@ -19,6 +19,40 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [0.15.0] - 2026-10-16
+
+### Highlights
+
+- I understand screenshots, camera views and pictures from your phone through
+  one consistent image system. When I look for something specific, I tell you
+  what I found and how sure I am.
+- A camera watch now waits for a second frame to agree before it alerts you,
+  reducing false alarms from a single unclear image.
+- I make better choices about how to handle a request because I know whether
+  it came from your phone, this computer or a speaker in another room.
+- People in your home can have their own voice, phone and connected-service
+  access. You can add them in the new People section of the settings.
+- Saved skills use the details from what you ask now. A skill that only partly
+  matches is treated as helpful reference instead of being run as-is.
+
+### Fixes
+
+- Starting a background program no longer leaves its task waiting until a
+  timeout.
+- Checking downloaded data with a script no longer looks like remote code
+  execution unless the downloaded content is actually being run.
+- Repeated checks on a task with no new progress now stop quickly instead of
+  continuing to ask for the same status.
+
+### Under the hood
+
+- Tool selection compares the proposed action with a short list of better
+  matches and stops weakly supported actions before they run.
+- Screenshots, camera frames and phone attachments now share the same image
+  decision path, with typed questions and confidence for each answer.
+- Requests carry their channel, room and person through conversations, saved
+  skills and background tasks.
+
 ## [0.14.0] - 2026-10-13
 
 ### Highlights
