@@ -1,5 +1,5 @@
 """The gpt-live-1 WebRTC client: one conversational session per call to
-`run()`. Refactored from scripts/spike_live_aiortc.py, which proved out
+`run()`. Refactored from experiments/spike_live_aiortc.py, which proved out
 every piece of this against the real API — see STATUS.md for the full
 debugging trail (session schema, audio format/volume/jitter fixes).
 

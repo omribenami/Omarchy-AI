@@ -789,8 +789,9 @@ it if setup or startup fails. Progress is in
 reported rather than prompting for sudo from a background session. Android
 receiver updates are separate.
 
-Historical bundles under [`dist/`](dist/) stay in the version list; the
-highest version wins. Integrity is the SHA-256 file shipped as a Release asset
+Only Release assets are offered: the 0.2.0-0.4.0 bundles once committed
+under `dist/` are no longer tracked on `main` (they stay in git history),
+and the highest version wins. Integrity is the SHA-256 file shipped as a Release asset
 (not a separate publisher signature).
 
 **Issue reporting.** With a GitHub token configured, a failed self-update
