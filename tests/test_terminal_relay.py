@@ -36,8 +36,8 @@ class TypeTextTests(unittest.TestCase):
                 return ActionResult(True, json.dumps({"class": window_class}))
             return ActionResult(True, "")
         with patch.object(actions.shutil, "which", return_value="/usr/bin/x"), \
-                patch.object(actions, "_screen_locked", return_value=False), \
-                patch.object(actions, "_run", side_effect=fake_run), \
+                patch.object(actions.desktop, "_screen_locked", return_value=False), \
+                patch.object(actions.desktop, "_run", side_effect=fake_run), \
                 patch.object(actions.subprocess, "run") as copy:
             copy.return_value.returncode = 0
             result = actions.type_text({"text": text})
