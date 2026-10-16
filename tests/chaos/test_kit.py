@@ -1,4 +1,5 @@
 """Self-tests of the fault-injection kit: crashpoints, the restart harness, the fake MyApi."""
+
 import json
 import tempfile
 import unittest
@@ -32,7 +33,10 @@ class CrashpointTest(unittest.TestCase):
         self.assertEqual(caught.exception.name, "chaos.here")
 
     def test_spec_parsing(self):
-        self.assertEqual(crashpoints.parse(" a=raise, b ,c=exit,"), {"a": "raise", "b": "exit", "c": "exit"})
+        self.assertEqual(
+            crashpoints.parse(" a=raise, b ,c=exit,"),
+            {"a": "raise", "b": "exit", "c": "exit"},
+        )
         for bad in ("a=explode", "=raise"):
             with self.assertRaises(ValueError):
                 crashpoints.parse(bad)
@@ -51,16 +55,23 @@ class HarnessTest(unittest.TestCase):
 
     def test_child_refuses_to_run_with_state_outside_the_root(self):
         elsewhere = Path(tempfile.mkdtemp(prefix="omarchy-chaos-elsewhere-"))
-        self.addCleanup(lambda: __import__("shutil").rmtree(elsewhere, ignore_errors=True))
+        self.addCleanup(
+            lambda: __import__("shutil").rmtree(elsewhere, ignore_errors=True)
+        )
         env = self.h.env
-        with mock.patch.object(self.h, "env", lambda *a: {**env(*a), "XDG_STATE_HOME": str(elsewhere)}):
+        with mock.patch.object(
+            self.h, "env", lambda *a: {**env(*a), "XDG_STATE_HOME": str(elsewhere)}
+        ):
             with self.assertRaises(RuntimeError):
                 self.h.run("chaos.targets:decide_action")
         self.assertEqual(list(elsewhere.iterdir()), [])
 
     def test_exit_between_claim_and_finish_leaves_the_action_running(self):
-        crashed, after = self.h.crash_then_restart("chaos.targets:decide_action", "chaos.after_claim",
-                                                   restart="chaos.targets:pending_snapshot")
+        crashed, after = self.h.crash_then_restart(
+            "chaos.targets:decide_action",
+            "chaos.after_claim",
+            restart="chaos.targets:pending_snapshot",
+        )
         self.assertEqual(crashed.crashed_at, "chaos.after_claim")
         self.assertIsNone(crashed.result)
         self.assertTrue(after.ok, after.stderr)
@@ -69,8 +80,12 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(self.h.state("pending_actions.json"), after.result)
 
     def test_raise_mode_runs_finally_blocks_before_dying(self):
-        crashed, after = self.h.crash_then_restart("chaos.targets:decide_action", "chaos.before_finish",
-                                                   mode="raise", restart="chaos.targets:pending_snapshot")
+        crashed, after = self.h.crash_then_restart(
+            "chaos.targets:decide_action",
+            "chaos.before_finish",
+            mode="raise",
+            restart="chaos.targets:pending_snapshot",
+        )
         self.assertEqual(crashed.crashed_at, "chaos.before_finish")
         (action,) = after.result.values()
         self.assertEqual(action["status"], "done")
@@ -79,22 +94,34 @@ class HarnessTest(unittest.TestCase):
         run = self.h.run("chaos.targets:decide_action")
         self.assertTrue(run.ok, run.stderr)
         self.assertIsNone(run.crashed_at)
-        self.assertEqual(self.h.state("pending_actions.json")[run.result]["status"], "done")
+        self.assertEqual(
+            self.h.state("pending_actions.json")[run.result]["status"], "done"
+        )
 
     def test_crash_that_never_fires_fails_loudly(self):
         with self.assertRaises(AssertionError):
-            self.h.crash_then_restart("chaos.targets:decide_action", "chaos.not_on_this_path")
+            self.h.crash_then_restart(
+                "chaos.targets:decide_action", "chaos.not_on_this_path"
+            )
 
     def test_restart_sees_agenda_job_saved_before_the_crash(self):
-        crashed, after = self.h.crash_then_restart("chaos.targets:add_reminder", "chaos.after_agenda_create",
-                                                   args=("stretch",), restart="chaos.targets:agenda_snapshot")
+        crashed, after = self.h.crash_then_restart(
+            "chaos.targets:add_reminder",
+            "chaos.after_agenda_create",
+            args=("stretch",),
+            restart="chaos.targets:agenda_snapshot",
+        )
         self.assertEqual(crashed.crashed_at, "chaos.after_agenda_create")
         self.assertEqual([j["title"] for j in after.result], ["stretch"])
 
     def test_child_reaches_the_fake_myapi_and_its_write_survives_the_crash(self):
         with FakeMyApi() as fake:
-            crashed = self.h.run("chaos.targets:myapi_send", "hello", crashpoints="chaos.after_dispatch",
-                                 myapi_url=fake.url)
+            crashed = self.h.run(
+                "chaos.targets:myapi_send",
+                "hello",
+                crashpoints="chaos.after_dispatch",
+                myapi_url=fake.url,
+            )
             self.assertEqual(crashed.crashed_at, "chaos.after_dispatch", crashed.stderr)
             (write,) = fake.writes
             self.assertEqual(write.service, "gmail")
@@ -118,17 +145,28 @@ class FakeMyApiTest(unittest.TestCase):
     def test_records_writes_with_their_idempotency_key(self):
         key = uuid.uuid4().hex
         request = urllib.request.Request(
-            self.fake.url + "/services/gmail/execute", method="POST",
-            data=json.dumps({"method": "GMAIL_SEND_EMAIL", "params": {"arguments": {}}}).encode(),
-            headers={"Content-Type": "application/json", "Idempotency-Key": key})
+            self.fake.url + "/services/gmail/execute",
+            method="POST",
+            data=json.dumps(
+                {"method": "GMAIL_SEND_EMAIL", "params": {"arguments": {}}}
+            ).encode(),
+            headers={"Content-Type": "application/json", "Idempotency-Key": key},
+        )
         with urllib.request.urlopen(request, timeout=5) as response:
             self.assertEqual(response.status, 200)
         (write,) = self.fake.writes
-        self.assertEqual((write.idempotency_key, write.service, write.path), (key, "gmail", "/services/gmail/execute"))
+        self.assertEqual(
+            (write.idempotency_key, write.service, write.path),
+            (key, "gmail", "/services/gmail/execute"),
+        )
 
     def test_reads_are_recorded_but_are_not_writes(self):
-        self.client.call_service("gmail", "/gmail/v1/users/me/messages", "GET", query={"q": "x"})
-        self.client.call_service("gmail", "/gmail/v1/users/me/messages/send", "POST", body={"raw": "y"})
+        self.client.call_service(
+            "gmail", "/gmail/v1/users/me/messages", "GET", query={"q": "x"}
+        )
+        self.client.call_service(
+            "gmail", "/gmail/v1/users/me/messages/send", "POST", body={"raw": "y"}
+        )
         self.assertEqual(len(self.fake.requests), 2)
         (write,) = self.fake.writes
         self.assertEqual(write.body["method"], "POST")
@@ -145,15 +183,27 @@ class FakeMyApiTest(unittest.TestCase):
 
     def test_hang_until_released(self):
         self.fake.hang(match="/execute")
-        with mock.patch("omarchy_ai.myapi.client._TIMEOUT", 0.5), self.assertRaises(MyApiError):
-            self.client.request("POST", "/services/gmail/execute", body={"method": "GMAIL_SEND_EMAIL"})
+        with (
+            mock.patch("omarchy_ai.myapi.client._TIMEOUT", 0.5),
+            self.assertRaises(MyApiError),
+        ):
+            self.client.request(
+                "POST", "/services/gmail/execute", body={"method": "GMAIL_SEND_EMAIL"}
+            )
         self.assertEqual(len(self.fake.writes), 1)  # received, though never answered
         self.fake.release()
-        self.assertEqual(self.client.request("POST", "/services/gmail/execute", body={}), {"ok": True, "data": {}})
+        self.assertEqual(
+            self.client.request("POST", "/services/gmail/execute", body={}),
+            {"ok": True, "data": {}},
+        )
 
     def test_succeed_with_a_canned_answer(self):
-        self.fake.succeed({"data": [{"id": "notion", "status": "connected"}]}, match="/services")
-        self.assertEqual(self.client.request("GET", "/services")["data"][0]["id"], "notion")
+        self.fake.succeed(
+            {"data": [{"id": "notion", "status": "connected"}]}, match="/services"
+        )
+        self.assertEqual(
+            self.client.request("GET", "/services")["data"][0]["id"], "notion"
+        )
 
 
 if __name__ == "__main__":

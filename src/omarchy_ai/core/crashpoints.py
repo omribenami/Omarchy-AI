@@ -15,6 +15,7 @@ empty dict. A chaos test arms points with a comma-separated spec:
 A bare name means `exit`. The spec is read once at import; tests running
 in-process use arm() to change it.
 """
+
 from __future__ import annotations
 
 import os
@@ -50,7 +51,11 @@ _armed: dict[str, str] = parse(os.environ.get(ENV, ""))
 def arm(spec: str | dict[str, str] = "") -> None:
     """Replace the armed points (a spec string or {name: mode}); empty disarms all."""
     global _armed
-    _armed = parse(spec) if isinstance(spec, str) else parse(",".join(f"{k}={v}" for k, v in spec.items()))
+    _armed = (
+        parse(spec)
+        if isinstance(spec, str)
+        else parse(",".join(f"{k}={v}" for k, v in spec.items()))
+    )
 
 
 def crashpoint(name: str) -> None:

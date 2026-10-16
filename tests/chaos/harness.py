@@ -15,6 +15,7 @@ under one temp root, and a minimal environment (no display, no D-Bus, no
 audio server). The child refuses to run unless omarchy_ai.config resolves
 every directory inside that root, so nothing can reach the user's files.
 """
+
 from __future__ import annotations
 
 import json
@@ -68,7 +69,13 @@ class ChaosHarness:
         self.state_home = self.root / "state"
         self.cache_home = self.root / "cache"
         self.runtime_dir = self.root / "runtime"
-        for d in (self.home, self.config_home, self.state_home, self.cache_home, self.runtime_dir):
+        for d in (
+            self.home,
+            self.config_home,
+            self.state_home,
+            self.cache_home,
+            self.runtime_dir,
+        ):
             d.mkdir(parents=True, exist_ok=True)
         self.runtime_dir.chmod(0o700)
 
@@ -83,30 +90,44 @@ class ChaosHarness:
 
     def env(self, crashpoints: str = "", myapi_url: str | None = None) -> dict:
         env = {k: os.environ[k] for k in _KEEP_ENV if k in os.environ}
-        env.update({
-            "HOME": str(self.home),
-            "XDG_CONFIG_HOME": str(self.config_home),
-            "XDG_STATE_HOME": str(self.state_home),
-            "XDG_CACHE_HOME": str(self.cache_home),
-            "XDG_RUNTIME_DIR": str(self.runtime_dir),
-            "XDG_DATA_HOME": str(self.home / ".local" / "share"),
-            "PYTHONPATH": os.pathsep.join((str(SRC_DIR), str(TESTS_DIR))),
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "OMARCHY_CHAOS_ROOT": str(self.root),
-            CRASHPOINTS_ENV: crashpoints,
-        })
+        env.update(
+            {
+                "HOME": str(self.home),
+                "XDG_CONFIG_HOME": str(self.config_home),
+                "XDG_STATE_HOME": str(self.state_home),
+                "XDG_CACHE_HOME": str(self.cache_home),
+                "XDG_RUNTIME_DIR": str(self.runtime_dir),
+                "XDG_DATA_HOME": str(self.home / ".local" / "share"),
+                "PYTHONPATH": os.pathsep.join((str(SRC_DIR), str(TESTS_DIR))),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "OMARCHY_CHAOS_ROOT": str(self.root),
+                CRASHPOINTS_ENV: crashpoints,
+            }
+        )
         if myapi_url:
             env["OMARCHY_CHAOS_MYAPI_URL"] = myapi_url
         return env
 
-    def run(self, target: str, *args, crashpoints: str = "", myapi_url: str | None = None,
-            timeout: float = 30, **kwargs) -> ChildRun:
+    def run(
+        self,
+        target: str,
+        *args,
+        crashpoints: str = "",
+        myapi_url: str | None = None,
+        timeout: float = 30,
+        **kwargs,
+    ) -> ChildRun:
         """Run target(*args, **kwargs) in a fresh child; crashpoints is an OMARCHY_CRASHPOINTS spec."""
         payload = json.dumps({"args": list(args), "kwargs": kwargs})
         proc = subprocess.Popen(
-            [sys.executable, str(CHILD), target, payload], cwd=self.root,
-            env=self.env(crashpoints, myapi_url), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            [sys.executable, str(CHILD), target, payload],
+            cwd=self.root,
+            env=self.env(crashpoints, myapi_url),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
             timed_out = False
@@ -117,23 +138,45 @@ class ChaosHarness:
         result = None
         for line in stdout.splitlines():
             if line.startswith(RESULT_PREFIX):
-                result = json.loads(line[len(RESULT_PREFIX):])
+                result = json.loads(line[len(RESULT_PREFIX) :])
         if proc.returncode == ISOLATION_EXIT_CODE:
-            raise RuntimeError(f"chaos child refused to run outside its temp root:\n{stderr}")
+            raise RuntimeError(
+                f"chaos child refused to run outside its temp root:\n{stderr}"
+            )
         return ChildRun(proc.returncode, stdout, stderr, result, timed_out)
 
-    def crash_then_restart(self, target: str, crashpoint: str, *, mode: str = "exit",
-                           restart: str | None = None, args: tuple = (), restart_args: tuple = (),
-                           myapi_url: str | None = None, timeout: float = 30) -> tuple[ChildRun, ChildRun]:
+    def crash_then_restart(
+        self,
+        target: str,
+        crashpoint: str,
+        *,
+        mode: str = "exit",
+        restart: str | None = None,
+        args: tuple = (),
+        restart_args: tuple = (),
+        myapi_url: str | None = None,
+        timeout: float = 30,
+    ) -> tuple[ChildRun, ChildRun]:
         """Run target with one crashpoint armed, then run restart (default: target again) unarmed
         against the same state. Fails loudly if the first run did not die at that point."""
-        crashed = self.run(target, *args, crashpoints=f"{crashpoint}={mode}", myapi_url=myapi_url,
-                           timeout=timeout)
+        crashed = self.run(
+            target,
+            *args,
+            crashpoints=f"{crashpoint}={mode}",
+            myapi_url=myapi_url,
+            timeout=timeout,
+        )
         if crashed.crashed_at != crashpoint:
-            raise AssertionError(f"expected a crash at {crashpoint}, got exit {crashed.returncode}:\n"
-                                 f"{crashed.stderr[-2000:]}")
-        after = self.run(restart or target, *(restart_args if restart else args), myapi_url=myapi_url,
-                         timeout=timeout)
+            raise AssertionError(
+                f"expected a crash at {crashpoint}, got exit {crashed.returncode}:\n"
+                f"{crashed.stderr[-2000:]}"
+            )
+        after = self.run(
+            restart or target,
+            *(restart_args if restart else args),
+            myapi_url=myapi_url,
+            timeout=timeout,
+        )
         return crashed, after
 
     def state(self, name: str, default: object = None) -> object:

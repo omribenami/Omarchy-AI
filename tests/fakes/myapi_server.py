@@ -13,6 +13,7 @@ or hang. Signatures are not checked.
 A request is a write when it can change something: POST .../execute,
 POST .../proxy whose proxied method is not GET, and any PUT/PATCH/DELETE.
 """
+
 from __future__ import annotations
 
 import base64
@@ -25,7 +26,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 
 API_PREFIX = "/api/v1"
 
@@ -34,8 +40,12 @@ def fake_identity() -> dict:
     """An identity file's contents with a key made now (never a stored secret)."""
     key = Ed25519PrivateKey.generate()
     return {
-        "private_key": base64.b64encode(key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode(),
-        "public_key": base64.b64encode(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode(),
+        "private_key": base64.b64encode(
+            key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        ).decode(),
+        "public_key": base64.b64encode(
+            key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        ).decode(),
         "key_fingerprint": secrets.token_hex(8),
         "scope": "full",
         "account": None,
@@ -46,7 +56,7 @@ def fake_identity() -> dict:
 @dataclass
 class Received:
     method: str
-    path: str                      # without the /api/v1 prefix
+    path: str  # without the /api/v1 prefix
     query: dict
     headers: dict
     body: object
@@ -55,13 +65,15 @@ class Received:
 
     @property
     def idempotency_key(self) -> str | None:
-        return next((v for k, v in self.headers.items() if k.lower() == "idempotency-key"), None)
+        return next(
+            (v for k, v in self.headers.items() if k.lower() == "idempotency-key"), None
+        )
 
 
 @dataclass
 class _Rule:
     match: str | None
-    mode: str                      # succeed | fail | hang
+    mode: str  # succeed | fail | hang
     status: int = 200
     payload: object = None
     released: threading.Event = field(default_factory=threading.Event)
@@ -76,15 +88,33 @@ def _is_write(method: str, path: str, body: object) -> bool:
     if parts[2] == "execute":
         return True
     if parts[2] == "proxy":
-        return str((body or {}).get("method") or "GET").upper() != "GET" if isinstance(body, dict) else True
+        return (
+            str((body or {}).get("method") or "GET").upper() != "GET"
+            if isinstance(body, dict)
+            else True
+        )
     return False
 
 
 def _default_payload(method: str, path: str) -> object:
     parts = path.strip("/").split("/")
     if method == "GET" and parts == ["services"]:
-        return {"data": [{"id": "gmail", "name": "gmail", "category": "email", "status": "connected"}]}
-    if method == "GET" and len(parts) == 3 and parts[0] == "services" and parts[2] == "methods":
+        return {
+            "data": [
+                {
+                    "id": "gmail",
+                    "name": "gmail",
+                    "category": "email",
+                    "status": "connected",
+                }
+            ]
+        }
+    if (
+        method == "GET"
+        and len(parts) == 3
+        and parts[0] == "services"
+        and parts[2] == "methods"
+    ):
         return {"data": []}
     return {"ok": True, "data": {}}
 
@@ -107,7 +137,9 @@ class FakeMyApi:
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
-        self._thread = threading.Thread(target=self._server.serve_forever, name="fake-myapi", daemon=True)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, name="fake-myapi", daemon=True
+        )
         self._thread.start()
 
     @property
@@ -126,8 +158,17 @@ class FakeMyApi:
         """Answer 200 with payload (default: a plausible empty answer). match is a path substring."""
         self._add(_Rule(match, "succeed", 200, payload))
 
-    def fail(self, status: int = 500, payload: object = None, match: str | None = None) -> None:
-        self._add(_Rule(match, "fail", status, payload if payload is not None else {"error": f"fake HTTP {status}"}))
+    def fail(
+        self, status: int = 500, payload: object = None, match: str | None = None
+    ) -> None:
+        self._add(
+            _Rule(
+                match,
+                "fail",
+                status,
+                payload if payload is not None else {"error": f"fake HTTP {status}"},
+            )
+        )
 
     def hang(self, match: str | None = None) -> None:
         """Hold matching requests open, unanswered, until release() or close()."""
@@ -169,11 +210,22 @@ class FakeMyApi:
 
     def _rule_for(self, path: str) -> _Rule | None:
         with self._lock:
-            return next((r for r in reversed(self._rules) if r.match is None or r.match in path), None)
+            return next(
+                (
+                    r
+                    for r in reversed(self._rules)
+                    if r.match is None or r.match in path
+                ),
+                None,
+            )
 
     def _serve(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urllib.parse.urlsplit(handler.path)
-        path = parsed.path[len(API_PREFIX):] if parsed.path.startswith(API_PREFIX) else parsed.path
+        path = (
+            parsed.path[len(API_PREFIX) :]
+            if parsed.path.startswith(API_PREFIX)
+            else parsed.path
+        )
         length = int(handler.headers.get("Content-Length") or 0)
         raw = handler.rfile.read(length) if length else b""
         try:
@@ -182,9 +234,15 @@ class FakeMyApi:
             body = raw.decode(errors="replace")
         parts = path.strip("/").split("/")
         method = handler.command
-        record = Received(method, path, dict(urllib.parse.parse_qsl(parsed.query)), dict(handler.headers.items()),
-                          body, parts[1] if len(parts) > 1 and parts[0] == "services" else None,
-                          _is_write(method, path, body))
+        record = Received(
+            method,
+            path,
+            dict(urllib.parse.parse_qsl(parsed.query)),
+            dict(handler.headers.items()),
+            body,
+            parts[1] if len(parts) > 1 and parts[0] == "services" else None,
+            _is_write(method, path, body),
+        )
         with self._lock:
             self.requests.append(record)
         rule = self._rule_for(path)
@@ -192,7 +250,11 @@ class FakeMyApi:
             rule.released.wait()
             rule = self._rule_for(path)
         status = rule.status if rule else 200
-        payload = rule.payload if rule and rule.payload is not None else _default_payload(method, path)
+        payload = (
+            rule.payload
+            if rule and rule.payload is not None
+            else _default_payload(method, path)
+        )
         data = json.dumps(payload).encode()
         try:
             handler.send_response(status)
