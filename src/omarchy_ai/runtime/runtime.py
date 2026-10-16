@@ -42,8 +42,6 @@ from .task import (ACTIVE, AWAITING_CONFIRMATION, CANCELLED, CERTIFIED, FAILED, 
                    WAITING_APPROVAL, WAITING_USER, Task, TaskStore, new_id, owned_elsewhere, owner_alive,
                    request_text, this_process)
 
-log = logging.getLogger(__name__)
-
 from .planning import (  # noqa: F401 -- re-exported
     PlanningMixin,
     API_WORKERS,
@@ -81,6 +79,8 @@ from .directing import (  # noqa: F401 -- re-exported
     MAX_CONSECUTIVE_RETRIES,
     MAX_STEPS_WITHOUT_EVIDENCE,
 )
+
+log = logging.getLogger(__name__)
 
 # Risk of the assistant's existing tools when a direct step calls them.
 _ACTION_RISK = {"list_windows": Risk.LOW, "list_bar_icons": Risk.LOW, "battery_status": Risk.LOW,
