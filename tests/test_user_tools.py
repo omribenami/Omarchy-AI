@@ -112,6 +112,8 @@ class ToolApprovalPolicyTests(unittest.TestCase):
                         "omarchy-ai-tool check /tmp/t"):
             self.assertEqual(self.decide(command, auto="NORMAL")[1].behavior, "allow", command)
 
+    # The tools directory follows XDG_CONFIG_HOME, which the test run redirects.
+    @patch.object(permissions, "_TOOLS_DIR", Path("~/.config/omarchy-ai/tools").expanduser())
     def test_writing_into_installed_tools_directly_is_high(self):
         for command in ("cp run ~/.config/omarchy-ai/tools/wifi_health/run",
                         "echo {} > ~/.config/omarchy-ai/tools/approvals.json"):

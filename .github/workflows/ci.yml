@@ -1,0 +1,67 @@
+# Lint, type-check and test every push to main and every pull request.
+#
+# The gates start where the code already passes (see [tool.ruff] and
+# [tool.mypy] in pyproject.toml for the debt lists to shrink). Tests marked
+# `live` or `hardware` are skipped here (tests/conftest.py skips them when
+# CI is set); everything else runs, with coverage.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check the lockfile
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Ruff check
+        run: uv run --frozen ruff check
+
+      - name: Ruff format
+        run: uv run --frozen ruff format --check
+
+      - name: Mypy
+        run: uv run --frozen mypy
+
+      - name: Python tests
+        run: |
+          uv run --frozen coverage run -m pytest -ra -m "not live and not hardware"
+          uv run --frozen coverage report
+
+      - name: Phone page tests
+        run: node --test tests/phone_text.test.cjs
