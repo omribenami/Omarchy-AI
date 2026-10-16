@@ -31,6 +31,7 @@ import threading
 import time
 
 from ..config import STATE_DIR
+from . import statefile
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ def _path(cid: str) -> Path:
     return DIR / f"{cid}.json"
 
 
+def _dir_locked():
+    """One cross-process lock for every conversation file (core/statefile.py):
+    a lock file per talk would outlive the talk it guards."""
+    return statefile.locked(DIR)
+
+
 def _valid(cid) -> bool:
     return isinstance(cid, str) and 8 <= len(cid) <= 40 and cid.replace("-", "").isalnum()
 
@@ -68,9 +75,9 @@ def _load(cid: str) -> dict | None:
     with _lock:
         if cid in _cache:
             return _cache[cid]
-        try:
-            data = json.loads(_path(cid).read_text())
-        except (OSError, ValueError):
+        # A file that does not parse is kept aside as <id>.json.corrupt-<ts>.
+        data = statefile.read_json(_path(cid), {}, expect=dict, lock=DIR)
+        if not data:
             return None
         _cache[cid] = data
         return data
@@ -84,10 +91,8 @@ def _save(conv: dict, force: bool = False) -> None:
             return
         conv.pop("_unsaved", None)
         _dirty[conv["id"]] = now
-        DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _path(conv["id"]).with_suffix(".tmp")
-        tmp.write_text(json.dumps(conv, ensure_ascii=False))
-        os.replace(tmp, _path(conv["id"]))
+        with _dir_locked():
+            statefile.atomic_write_text(_path(conv["id"]), json.dumps(conv, ensure_ascii=False))
 
 
 def flush(cid: str | None = None) -> None:
@@ -268,7 +273,8 @@ def delete(cid) -> bool:
             return False
         _cache.pop(cid, None)
         try:
-            _path(cid).unlink()
+            with _dir_locked():
+                _path(cid).unlink()
         except OSError:
             return False
         shutil.rmtree(ATTACHMENTS_DIR / cid, ignore_errors=True)
