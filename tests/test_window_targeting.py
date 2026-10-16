@@ -42,8 +42,8 @@ class WindowRankingTests(unittest.TestCase):
                 return ActionResult(True, json.dumps({"address": "0xa" if run.calls == 1 else "0xc"}))
             return ActionResult(True)
         run.calls = 0
-        with patch.object(actions, "_run", side_effect=run), \
-                patch.object(actions, "_hyprctl_dispatch", return_value=ActionResult(True)):
+        with patch.object(actions.windows, "_run", side_effect=run), \
+                patch.object(actions.windows, "_hyprctl_dispatch", return_value=ActionResult(True)):
             result = actions.focus_window({"target": "Tello JEV"})
         self.assertTrue(result.ok)
         self.assertIn("workspace 5", result.message)
@@ -57,8 +57,8 @@ class WindowRankingTests(unittest.TestCase):
             if argv[:2] == ["hyprctl", "activewindow"]:
                 return ActionResult(True, json.dumps({"address": "0xc"}))
             return ActionResult(True)
-        with patch.object(actions, "_run", side_effect=run), \
-                patch.object(actions, "_hyprctl_dispatch", return_value=ActionResult(True)) as dispatch:
+        with patch.object(actions.windows, "_run", side_effect=run), \
+                patch.object(actions.windows, "_hyprctl_dispatch", return_value=ActionResult(True)) as dispatch:
             self.assertTrue(actions.focus_window({"target": "the focused terminal"}).ok)
         self.assertIn("address:0xc", dispatch.call_args.args[0])
 
@@ -76,28 +76,28 @@ class WindowRankingTests(unittest.TestCase):
 
     def test_focus_on_a_locked_screen_says_so_instead_of_failing(self):
         # 2026-09-27 08:17: the lock screen kept focus, she retried, it escalated.
-        with patch.object(actions, "_run", side_effect=self._focus_run("0xlock")), \
-                patch.object(actions, "_hyprctl_dispatch", return_value=ActionResult(True)), \
-                patch.object(actions, "_screen_locked", return_value=True), \
+        with patch.object(actions.windows, "_run", side_effect=self._focus_run("0xlock")), \
+                patch.object(actions.windows, "_hyprctl_dispatch", return_value=ActionResult(True)), \
+                patch.object(actions.windows, "_screen_locked", return_value=True), \
                 patch.object(actions.time, "sleep"):
             result = actions.focus_window({"target": "0xc"})
         self.assertFalse(result.ok)
         self.assertEqual(result.message, actions.SCREEN_LOCKED)
 
     def test_unverified_focus_on_an_unlocked_screen_is_still_a_failure(self):
-        with patch.object(actions, "_run", side_effect=self._focus_run("0xa")), \
-                patch.object(actions, "_hyprctl_dispatch", return_value=ActionResult(True)), \
-                patch.object(actions, "_screen_locked", return_value=False), \
+        with patch.object(actions.windows, "_run", side_effect=self._focus_run("0xa")), \
+                patch.object(actions.windows, "_hyprctl_dispatch", return_value=ActionResult(True)), \
+                patch.object(actions.windows, "_screen_locked", return_value=False), \
                 patch.object(actions.time, "sleep"):
             result = actions.focus_window({"target": "0xc"})
         self.assertIn("not verified active", result.message)
 
     def test_assistant_terminal_label_finds_its_renamed_window(self):
         # 2026-09-27 13:36: "Omarchy AI 0d592f0a" was titled user@desktop:~/tello-jev-mission.
-        with patch.object(actions, "_run", side_effect=self._focus_run("0xd")), \
-                patch.object(actions, "_hyprctl_dispatch", return_value=ActionResult(True)) as dispatch, \
+        with patch.object(actions.windows, "_run", side_effect=self._focus_run("0xd")), \
+                patch.object(actions.windows, "_hyprctl_dispatch", return_value=ActionResult(True)) as dispatch, \
                 patch("omarchy_ai.execution.tile_logs.address_for_label", return_value="0xd"), \
-                patch.object(actions, "_jev_window", return_value=[]) as jev:
+                patch.object(actions.windows, "_jev_window", return_value=[]) as jev:
             result = actions.focus_window({"target": "Omarchy AI 0d592f0a"})
         self.assertTrue(result.ok)
         self.assertIn("address:0xd", dispatch.call_args.args[0])
@@ -176,9 +176,9 @@ class MoveWindowTests(unittest.TestCase):
         def dispatch(lua, classic):
             dispatched.append(lua)
             return ActionResult(True)
-        with patch.object(actions, "_run", side_effect=run), \
-                patch.object(actions, "_hyprctl_dispatch", side_effect=dispatch), \
-                patch.object(actions, "_with_programs", side_effect=lambda c: c):
+        with patch.object(actions.windows, "_run", side_effect=run), \
+                patch.object(actions.windows, "_hyprctl_dispatch", side_effect=dispatch), \
+                patch.object(actions.windows, "_with_programs", side_effect=lambda c: c):
             return actions.move_window_to_workspace(args), dispatched
 
     def test_focused_window_moves_silently_and_is_verified(self):

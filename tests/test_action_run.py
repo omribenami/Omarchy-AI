@@ -24,7 +24,7 @@ class RunTests(unittest.TestCase):
         return str(path)
 
     def run_script(self, body: str, timeout: float = 10):
-        with patch.object(actions, "_desktop_env", return_value=dict(os.environ)):
+        with patch.object(actions.base, "_desktop_env", return_value=dict(os.environ)):
             started = time.monotonic()
             result = actions._run([self.script(body)], timeout=timeout)
             return result, time.monotonic() - started
@@ -42,7 +42,7 @@ class RunTests(unittest.TestCase):
 
     def test_a_real_timeout_and_a_missing_program(self):
         path = self.script("sleep 30\n")
-        with patch.object(actions, "_desktop_env", return_value=dict(os.environ)):
+        with patch.object(actions.base, "_desktop_env", return_value=dict(os.environ)):
             started = time.monotonic()
             result = actions._run([path], timeout=0.5)
             self.assertLess(time.monotonic() - started, 3)

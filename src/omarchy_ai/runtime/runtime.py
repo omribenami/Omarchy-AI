@@ -42,84 +42,52 @@ from .task import (ACTIVE, AWAITING_CONFIRMATION, CANCELLED, CERTIFIED, FAILED, 
                    WAITING_APPROVAL, WAITING_USER, Task, TaskStore, new_id, owned_elsewhere, owner_alive,
                    request_text, this_process)
 
+from .planning import (  # noqa: F401 -- re-exported
+    PlanningMixin,
+    API_WORKERS,
+    CODING,
+    PLAN_PROMPT,
+    PLAN_TIMEOUT,
+    PROJECT_TERMS,
+    _LINK,
+    _escalates,
+    _model_of,
+    links,
+)
+from .recovery import (  # noqa: F401 -- re-exported
+    RecoveryMixin,
+    _ARTIFACT,
+    _OBJECT_ID,
+    _timeout_question,
+    _timeout_step,
+)
+from .certify import (  # noqa: F401 -- re-exported
+    CertifyMixin,
+    CERTIFY_P,
+    CONFIRM_FLOOR_P,
+    CONFIRM_MINUTES,
+    MAX_CERT_REJECTIONS,
+    MAX_PLAN_ATTEMPTS,
+    NO_ANSWER_IS_YES,
+    SIMULATED_P,
+    USER_ONLY_P,
+    VALIDATED_P,
+    _MISSING,
+)
+from .directing import (  # noqa: F401 -- re-exported
+    DirectingMixin,
+    MAX_CONSECUTIVE_RETRIES,
+    MAX_STEPS_WITHOUT_EVIDENCE,
+)
+
 log = logging.getLogger(__name__)
-
-CODING = {"CLAUDE_CODE", "CODEX"}
-# Workers that spend the paid API worker model. The user's rule (2026-09-27,
-# "I'm paying API credit for nothing"): Codex or Claude Code do the work; the
-# API workers run only when both cannot (not installed, logged out, usage
-# limit reached), and only after the user approves it for that task.
-API_WORKERS = {"SYSTEM_AGENT", "TEST_AGENT", "REVIEW_AGENT"}
-VALIDATED_P = 0.6          # Jev must think the test plan proves the behavior
-CERTIFY_P = 0.8            # Jev certification threshold
-MAX_CERT_REJECTIONS = 3
-# Completed steps after a refused certification that may add no evidence
-# before the answer is delivered unverified (_repeating_after_rejection).
-MAX_STEPS_WITHOUT_EVIDENCE = 2
-MAX_PLAN_ATTEMPTS = 2
-MAX_CONSECUTIVE_RETRIES = 2
-USER_ONLY_P = 0.8           # P(only the user can tell it worked) at which the user is asked instead
-CONFIRM_MINUTES = 10        # "Did it work?" unanswered this long counts as a yes (the user's rule, 2026-10-13)
-NO_ANSWER_IS_YES = "(no answer: taken as a yes)"
-CONFIRM_FLOOR_P = 0.4       # ... but not when Jev thinks it failed (the two that began this re-scored 0.51, 0.69)
-SIMULATED_P = 0.7           # P(only simulated evidence) that ends a live gap as "needs a live test"
-
-# What a refused certification is missing, in words for the user. Until
-# 2026-10-07 the result said "could not be verified: runtime_behavior".
-_MISSING = {
-    "tests": "no passing test or check ran after the last change",
-    "runtime_behavior": "the real behavior was not observed after the change",
-    "review": "the change was not independently reviewed, or the review found problems",
-    "unfixed_failure": "a failure or failing check is still unresolved",
-    "user_confirmation": "only you can confirm the outcome",
-}
 
 # Risk of the assistant's existing tools when a direct step calls them.
 _ACTION_RISK = {"list_windows": Risk.LOW, "list_bar_icons": Risk.LOW, "battery_status": Risk.LOW,
                 "list_cast_targets": Risk.LOW, "screenshot": Risk.LOW}
 
-from .glossary import PROJECT_TERMS  # noqa: E402
 
-PLAN_PROMPT = """You turn a user's request to Omarchy AI (a voice/desktop assistant on an Arch Linux + Hyprland
-machine) into a task objective with checkable acceptance criteria. Do not solve the task.
-Reply with one JSON object:
-{"objective": "<one or two sentences: what must be true when done>",
- "acceptance_criteria": ["<observable, checkable condition>", ... 1 to 5 items],
- "verification_ideas": ["<how someone other than the worker could check it on this machine>", ...]}
-Criteria must be about the real outcome (the device works, the test passes, the file exists with X), not about
-effort. For a question the user wants answered, the criterion is that the answer is supported by evidence.
-Never add deliverables the user did not ask for (no reports, notes or saved files unless requested).
-Preserve the requested final deliverable as an acceptance criterion, not only its prerequisites.
-Do not add 'without manual intervention': authentication or approval can legitimately require the user.
-An existing skill is a procedure, not a missing executable tool. Read it before proposing implementation.
-Copy every link, file path and product, API or model name from the request into the objective exactly as written;
-never replace a named thing with a general one (a named API does not become "a suitable API").
-Keep the user's own words for anything you are not sure of; an unknown term becomes a criterion that the worker
-finds out what it means, never a guess.
-An accepted task does not become complete merely because an existing tool is missing. Include the user's actual
-end result as a criterion. If achieving it requires a reusable capability Omarchy lacks, the plan must include
-building and testing an approval-gated user tool with Claude Code or Codex, installing it only after approval, and
-then resuming the same task to achieve and verify the original result.
-
-""" + PROJECT_TERMS
-
-
-PLAN_TIMEOUT = 90
-
-_LINK = re.compile(r"https?://[^\s<>\"'`)\]]+")
-
-
-def links(text: str, limit: int = 5) -> list[str]:
-    """The distinct links in `text`, in order, without trailing punctuation."""
-    found = []
-    for match in _LINK.findall(text or ""):
-        link = match.rstrip(".,;:!?")
-        if link not in found:
-            found.append(link)
-    return found[:limit]
-
-
-class TaskRuntime:
+class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
     def __init__(self, *, store: TaskStore | None = None, executors: dict[str, Executor] | None = None,
                  control: ControlPlane | None = None, planner: WorkerModel | None = None,
                  auto_approve: str | None = None, notify: bool = True, run_action=None, desktop_task=None):
@@ -364,34 +332,6 @@ class TaskRuntime:
             self._refresh_task_hud()
         return done
 
-    def resume(self, task_id: str | None, background: bool = True) -> dict:
-        """Continue an interrupted task (its process died mid-step)."""
-        self._mark_interrupted()
-        task = self._get(task_id, {INTERRUPTED})
-        if task is None:
-            current = self.store.load(task_id) if task_id else None
-            if current and current.status in (WAITING_APPROVAL, WAITING_USER):
-                return {"ok": False, "message": f"task is {current.status}; approve/deny or answer it instead"}
-            if current:
-                return {"ok": False, "message": f"task {current.id} is {current.status}, not interrupted"}
-            return {"ok": False, "message": "no interrupted task"}
-        self._launch(task, background)
-        return {"ok": True, "message": f"resumed {task.id}", "task_id": task.id}
-
-    def recover_after_restart(self, task_ids: list[str] | None = None) -> list[str]:
-        """Continue work cut off by this daemon restart, never cancelled work."""
-        ids = task_ids if task_ids is not None else list(self._restart_recoveries)
-        recovered = []
-        for task_id in ids:
-            task = self.store.load(task_id)
-            if not task or task.status != INTERRUPTED:
-                continue
-            task.add_note("Resuming automatically after the Omarchy AI restart.")
-            self.store.save(task)
-            self._launch(task, background=True)
-            recovered.append(task.id)
-        return recovered
-
     def reassign(self, task_id: str | None, agent: str, *, unsandboxed: bool = False,
                  background: bool = True) -> dict:
         """Hand an open task to the agent the user names; every later work
@@ -503,49 +443,6 @@ class TaskRuntime:
             task = self.store.load(task_id)
             return task if task and (statuses is None or task.status in statuses) else None
         return self.store.latest(statuses)
-
-    def _mark_interrupted(self) -> None:
-        # A task left "running" by a previous process, or a dead worker thread
-        # in this process, was cut off mid-step. The saved state alone is never
-        # enough to call it running.
-        def missing_owner(t: Task) -> bool:
-            if t.status != RUNNING or not owner_alive(t.owner):
-                return t.status == RUNNING
-            if t.owner and t.owner.get("pid") == os.getpid():
-                worker = self._threads.get(t.id)
-                return worker is None or not worker.is_alive()
-            return False
-
-        def mark(t):
-            if missing_owner(t):
-                t.status = INTERRUPTED
-                t.owner = None
-                for step in t.steps:
-                    if step.get("outcome") == "running":
-                        step["outcome"] = "interrupted"
-                        step["finished_at"] = time.time()
-                t.add_note("The runtime restarted while this task was running; its last step may be incomplete.")
-        for task in self.store.list(50):
-            if missing_owner(task):
-                interrupted = self.store.update(task.id, mark)
-                if interrupted and interrupted.status == INTERRUPTED:
-                    self._restart_recoveries.append(interrupted.id)
-                    self._emit(interrupted, "interrupted")
-        # Older versions could turn an executor timeout into a user question.
-        # There is nothing a user can answer to fix that, and pressing
-        # "continue" merely runs the same timed-out assignment again. Repair
-        # the persisted state once and let normal recovery continue it.
-        for task in self.store.list(50):
-            if not _timeout_question(task):
-                continue
-
-            def resume_timeout(t: Task) -> None:
-                t.status, t.phase, t.question = INTERRUPTED, "interrupted", None
-                t.add_note("Automatically resuming: an executor timeout is not a question for the user.")
-
-            repaired = self.store.update(task.id, resume_timeout)
-            if repaired and repaired.status == INTERRUPTED:
-                self._restart_recoveries.append(repaired.id)
 
     def _launch(self, task: Task, background: bool) -> None:
         with self._lock:
@@ -659,162 +556,12 @@ class TaskRuntime:
             if not self._direct(task):
                 return
 
-    # ---------------------------------------------------------------- plan
-    def _plan(self, task: Task) -> None:
-        self._progress(task, "Sending to Jev: planning")
-        try:
-            # 90 s, shared by the backends (30 s each when all three are up).
-            # 2026-10-08 00:29: 45 s gave each 15 s. Measured on that request
-            # the same night: claude 10 s, codex 15 s, the API ladder 25-40 s
-            # (shorter requests: 6-7 s, 9-11 s, 8-19 s), so no fallback could
-            # finish. The call returns as soon as one backend answers.
-            plan = self.planner.complete(PLAN_PROMPT, {"request": task.goal, "workspace": task.workspace},
-                                         timeout=PLAN_TIMEOUT)
-            task.objective = str(plan.get("objective") or task.goal)[:1000]
-            # 2026-10-07: the user named an API by its docs link; the objective
-            # said "a vision-capable model" and the worker built on another API.
-            dropped = [u for u in links(task.goal) if u not in task.objective]
-            if dropped:
-                refs = " References from the request: " + " ".join(dropped)
-                task.objective = task.objective[:max(0, 1000 - len(refs))] + refs
-            task.plan = [str(c)[:300] for c in (plan.get("acceptance_criteria") or []) if c][:5] or [request_text(task.goal)[:300]]
-            ideas = [str(i)[:300] for i in (plan.get("verification_ideas") or [])][:4]
-            if ideas:
-                task.add_note("Verification ideas (planner): " + " | ".join(ideas))
-        except WorkerModelError as exc:
-            task.add_error(f"planner unavailable: {exc}")
-            task.objective, task.plan = task.goal[:1000], [request_text(task.goal)[:300]]
-        self.store.save(task)
-
-    # --------------------------------------------------------------- route
-    def _candidates(self, *, roles: set[str] | None = None, exclude: set[str] = frozenset(),
-                    task: Task | None = None) -> dict[str, str]:
-        if task is not None:
-            exclude = set(exclude) | (CODING - set(self._coding_ready()))
-            if not self._api_allowed(task):
-                exclude |= API_WORKERS
-        out = {}
-        for name, info in self.available().items():
-            executor = self.executors[name]
-            if not info["available"] or name in exclude:
-                continue
-            if roles is not None and not (executor.roles & roles):
-                continue
-            out[name] = executor.description
-        return out
-
-    def _coding_ready(self, refresh: bool = False) -> list[str]:
-        """Checked live, not from the 5-minute cache: an agent that just hit
-        its usage limit must stop being chosen at once."""
-        ready = []
-        for name in sorted(CODING & set(self.executors)):
-            executor = self.executors[name]
-            detect = getattr(executor, "detect", None)
-            if refresh and detect:
-                detect(force=True)  # a cached failure may be a one-off slow start
-            try:
-                ok, _ = executor.available()
-            except Exception:  # noqa: BLE001
-                ok = False
-            if ok:
-                ready.append(name)
-        if refresh:
-            self.available(refresh=True)
-        return ready
-
     def _api_allowed(self, task: Task) -> bool:
         if str(_config("task_api_worker", "fallback")).lower() == "always":
             return True
         if self._coding_ready():
             return False
         return f"api-worker:{task.id}" in task.grants
-
-    def _workers_ready(self, task: Task) -> bool:
-        """Codex/Claude Code first; the paid API worker only with the user's
-        OK when neither can run. False while waiting for that OK."""
-        # WorkflowAgent is a first-party coordinator, not a fallback coding
-        # model. It owns mixed MyApi/browser jobs even when coding CLIs are
-        # unavailable, and it must be offered before this method asks the
-        # user to spend API-worker credit on a general system agent.
-        workflow = self.available().get("WORKFLOW_AGENT", {})
-        if workflow.get("available"):
-            return True
-        ready = self._coding_ready()
-        if task.agent and task.agent not in ready:
-            ready = self._coding_ready(refresh=True)
-        if task.agent and task.agent not in ready:
-            reason = self.executors[task.agent].available()[1] or "it is not available"
-            other = next((n for n in ready if n != task.agent), None)
-            if other:
-                task.add_note(f"{task.agent} cannot run ({reason}); {other} continues the task.")
-                task.agent = other
-                self.store.save(task)
-                return True
-            if f"api-worker:{task.id}" not in task.grants:
-                return self._request_api(task, f"{task.agent}: {reason}")
-            task.add_note(f"{task.agent} cannot run ({reason}); the approved API worker continues.")
-            task.agent, task.unsandboxed = "", False
-            self.store.save(task)
-            return True
-        if not ready and not self._api_allowed(task):
-            why = "; ".join(f"{n}: {self.executors[n].available()[1] or 'unavailable'}"
-                            for n in sorted(CODING & set(self.executors))) or "no coding agent is set up"
-            return self._request_api(task, why)
-        return True
-
-    def _request_api(self, task: Task, why: str) -> bool:
-        if not self.available().get("SYSTEM_AGENT", {}).get("available"):
-            self._finish(task, FAILED, f"No worker can run: {why}; the API worker is unavailable too.")
-            return False
-        model = _model_of(self.executors["SYSTEM_AGENT"]) or "the API worker model"
-        subject = f"use the paid API worker ({model}) for this task, because Codex and Claude Code can't run"
-        assessment = Assessment(Risk.ELEVATED, [why[:300], "spends API credit"])
-        # Always asked (never auto-approved): the grant is this exact fingerprint.
-        task.pending_approval = {"fingerprint": f"api-worker:{task.id}", "kind": "api", "subject": subject,
-                                 "risk": "ELEVATED", "reasons": assessment.reasons, "asked_at": time.time()}
-        task.next_dispatch = None
-        task.status, task.phase = WAITING_APPROVAL, "waiting_approval"
-        task.add_note(f"Waiting for approval to use the API worker: {why[:300]}")
-        self.store.save(task)
-        self._emit(task, "waiting_approval")
-        return False
-
-    def _route(self, task: Task) -> bool:
-        self._progress(task, "Sending to Jev: choosing tools")
-        if not self._workers_ready(task):
-            return False
-        candidates = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
-        if task.agent:
-            # The user named the worker (2026-09-27: "open codex --yolo and ask
-            # him ..." ran on qwen, then grok). No routing.
-            task.add_decision("route", task.agent, 1.0, {"requested_by_user": True})
-            task.next_dispatch = self._assignment(task, task.agent, "ROUTE")
-            self.store.save(task)
-            return True
-        if not candidates:
-            self._finish(task, FAILED, "No executor is available (the worker model and coding agents are all unreachable).")
-            return False
-        # 2026-10-12 22:15: "start a 6-minute countdown to lock down the PCs" was
-        # judged too vague seven times in a row, each answer met with the same
-        # fixed question -- the user's whole sentence, three taps on Yes, one on
-        # No. It is asked once: after an answer a worker takes the job with
-        # that answer (it can ask something specific itself), and a no ends it.
-        answered = bool(task.answers) and not task.steps
-        if answered and self.control.declined(task):
-            task.add_decision("route", "CANCEL", None, {"declined_by_user": True})
-            self._finish(task, CANCELLED, "Cancelled: you said not to do it.")
-            return False
-        pick, needs_code = self.control.route(task, candidates, ask=not answered)
-        task.needs_code = needs_code
-        task.add_decision("route", pick.value, pick.p, {"needs_code_change": needs_code, "fallback": pick.fallback,
-                                                        "probabilities": pick.probabilities})
-        self._progress(task, f"Jev decision: {pick.value.replace('_', ' ')}")
-        if pick.value == "ASK_USER":
-            self._ask_user(task, "Before I start, can you tell me more precisely what you want done?")
-            return False
-        task.next_dispatch = self._assignment(task, pick.value, "ROUTE")
-        self.store.save(task)
-        return True
 
     # ------------------------------------------------------------ dispatch
     def _assignment(self, task: Task, executor: str, directive: str, last: dict | None = None) -> dict:
@@ -955,158 +702,6 @@ class TaskRuntime:
         self._emit(task, "progress")
         return True
 
-    # ------------------------------------------------------------- direct
-    def _allowed_directives(self, task: Task) -> list[str]:
-        last = task.steps[-1] if task.steps else None
-        allowed = ["CONTINUE", "SPAWN_SUBAGENT", "ASK_USER", "FAIL"]
-        if len(self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)) > 1:
-            allowed.append("CHANGE_EXECUTOR")
-        if last and last["outcome"] in ("failed", "blocked") and self._consecutive(task) <= MAX_CONSECUTIVE_RETRIES:
-            allowed.append("RETRY")
-        changed = bool(task.files_modified)
-        if changed and self._reviewers(task) and not self._reviewed_since_change(task):
-            allowed.append("REQUEST_REVIEW")
-        validated = (task.test_plan.get("validated") or 0) >= VALIDATED_P
-        if validated and not self._tests_since_change(task):
-            allowed.append("RUN_TESTS")
-        if not validated and task.test_plan.get("attempts", 0) < MAX_PLAN_ATTEMPTS and self._tester(task):
-            allowed.append("REQUEST_MORE_TESTS")
-        if changed and task.checkpoints:
-            allowed.append("ROLLBACK")
-        ok, reason = self._certification_gate(task)
-        rejected_at = task.budget.get("cert_rejected_at", 0)
-        if ok and rejected_at and not any(e["at"] > rejected_at for e in task.evidence if e["source"] != "executor"):
-            # Live run 2026-09-23: after a rejection Jev picked CERTIFY again three
-            # times on unchanged evidence. Asking again needs new evidence first.
-            ok, reason = False, "certification was refused and no new evidence has been gathered since"
-        if ok:
-            allowed.append("CERTIFY")
-        else:
-            task.certification["gate"] = reason
-        return allowed
-
-    def _repeating_after_rejection(self, task: Task) -> bool:
-        """Jev refused to certify, and the work since then is done but has
-        added nothing a second certification could use.
-
-        Real task 2026-10-05 23:03 (a read-only question about a server):
-        the answer was there after one step, Jev scored it 0.73 with nothing
-        missing, and CERTIFY then waits for new harness evidence. A coding
-        agent that only reads never produces any, so CONTINUE was the one
-        directive left and the worker gave the same answer nine more times,
-        to the step budget, whose closing message does not carry the answer.
-        The same on 2026-10-02 (15 steps) and 2026-10-05 08:13 (8 steps)."""
-        rejected_at = task.budget.get("cert_rejected_at", 0)
-        if not rejected_at or any(e["at"] > rejected_at for e in task.evidence if e["source"] != "executor"):
-            return False
-        since = [s for s in task.steps if s.get("outcome") == "done" and (s.get("finished_at") or 0) > rejected_at]
-        return len(since) >= MAX_STEPS_WITHOUT_EVIDENCE
-
-    def _direct(self, task: Task) -> bool:
-        task.phase = "direct"
-        allowed = self._allowed_directives(task)
-        last = task.steps[-1] if task.steps else None
-        if self._repeating_after_rejection(task):
-            answer = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")), "")
-            p = task.certification.get("p")
-            self._finish(task, UNVERIFIED, (answer[:1500] + "\n\n" if answer else "")
-                         + "Not verified: Jev's confidence in this result was "
-                         + (f"{p:.2f}" if isinstance(p, (int, float)) else "too low")
-                         + f" (it certifies at {CERTIFY_P}), and repeating the work added no new evidence.")
-            return False
-        # Repeated completed assignments with sufficient harness evidence
-        # should be judged, not sent through another identical work loop.
-        # Certification remains Jev's decision and retains all evidence gates.
-        if ("CERTIFY" in allowed and len(task.steps) >= 2
-                and all(s.get("outcome") == "done" for s in task.steps[-2:])
-                and task.steps[-2].get("executor") == (last or {}).get("executor")):
-            return self._certify(task)
-        # A worker saying it ran out of its own assignment time is operational
-        # feedback, not information the user can supply. Keeping ASK_USER in
-        # the choice set caused an endless timeout -> Continue -> timeout loop.
-        if _timeout_step(last):
-            allowed = [directive for directive in allowed if directive != "ASK_USER"]
-        # The test and review subagents are reached only through REQUEST_MORE_TESTS
-        # and REQUEST_REVIEW (live run 2026-09-23: CONTINUE -> TEST_AGENT looped
-        # nine times past the test-plan attempt limit).
-        if not self._workers_ready(task):
-            return False
-        executors = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
-        if task.agent:
-            executors = {k: v for k, v in executors.items() if k == task.agent}
-            allowed = [d for d in allowed if d != "CHANGE_EXECUTOR"]
-        directive, pick = self.control.direct(task, allowed, executors)
-        task.add_decision("direct", directive.value, directive.p,
-                          {"executor": pick.value, "executor_p": pick.p, "allowed": allowed, "fallback": directive.fallback})
-        self.store.save(task)
-        d = directive.value
-        last = task.steps[-1] if task.steps else None
-        if d == "FAIL":
-            # Say why it failed; a worker's claim is only its claim. 2026-09-27
-            # 20:43 the user heard "failed. I could not complete this.
-            # Implemented and verified the connection" -- Codex's own words.
-            done = [s for s in task.steps if s["outcome"] not in ("waiting_approval", "paused", "declined")]
-            ok, gap = self._certification_gate(task)
-            why = gap if not ok else "Jev judged that the acceptance criteria are not met"
-            unmet = "; ".join(task.plan[:3])
-            message = f"I could not complete this: {why}. It had to achieve: {unmet[:400]}."
-            if done and done[-1].get("claim"):
-                message += (f" The last worker ({done[-1]['executor']}) reported this, NOT verified: "
-                            f"{done[-1]['claim'][:400]}")
-            self._finish(task, FAILED, message)
-            return False
-        if d == "ASK_USER":
-            if _timeout_step(last):
-                # Be defensive if a decision backend returns a value outside
-                # its offered directives. The global task budget still gives
-                # the honest final stop condition if no worker can progress.
-                task.add_note("Ignored non-actionable executor timeout as a user question.")
-                name = pick.value if pick.value in executors else (last or {}).get("executor", "SYSTEM_AGENT")
-                task.next_dispatch = self._assignment(task, name, "CONTINUE")
-                return True
-            question = (last or {}).get("claim") or task.goal
-            self._ask_user(task, f"I need your input to continue: {question[:600]}")
-            return False
-        if d == "CERTIFY":
-            return self._certify(task)
-        if d == "RUN_TESTS":
-            self._run_tests(task)
-            return True
-        if d == "ROLLBACK":
-            return self._rollback(task)
-        if d == "REQUEST_MORE_TESTS":
-            task.test_plan["attempts"] = task.test_plan.get("attempts", 0) + 1
-            task.next_dispatch = self._assignment(task, self._tester(task) or "TEST_AGENT", d)
-            return True
-        if d == "REQUEST_REVIEW":
-            reviewers = self._reviewers(task)
-            name = pick.value if pick.value in reviewers else reviewers[0]
-            task.next_dispatch = self._assignment(task, name, d)
-            return True
-        prev = (last or {}).get("executor")
-        name = pick.value if pick.value in executors else (prev or "SYSTEM_AGENT")
-        if d == "RETRY":
-            name = prev or name
-        elif d == "CHANGE_EXECUTOR" and name == prev:
-            ranked = sorted((pick.probabilities or {}).items(), key=lambda kv: -kv[1])
-            name = next((n for n, _ in ranked if n != prev and n in executors and n not in ("TEST_AGENT", "REVIEW_AGENT")),
-                        next((n for n in executors if n != prev), name))
-        elif d == "SPAWN_SUBAGENT" and self.executors.get(name, self.executors.get("SYSTEM_AGENT")).kind != "internal":
-            name = "SYSTEM_AGENT" if "SYSTEM_AGENT" in executors else name
-        if task.agent:
-            name = task.agent
-        task.next_dispatch = self._assignment(task, name, d)
-        return True
-
-    def _consecutive(self, task: Task) -> int:
-        """How many times in a row the last executor has run."""
-        count, last = 0, task.steps[-1]["executor"] if task.steps else None
-        for step in reversed(task.steps):
-            if step["executor"] != last:
-                break
-            count += 1
-        return count
-
     # ------------------------------------------------------------ testing
     def _propose_tests(self, task: Task, commands: list[str]) -> None:
         prefix = f"cd {task.workspace} && "
@@ -1163,248 +758,6 @@ class TaskRuntime:
 
     def _reviewed_since_change(self, task: Task) -> bool:
         return any(r["at"] >= task.budget.get("changed_at", 0) for r in task.reviews)
-
-    # -------------------------------------------------------- certification
-    def _certification_gate(self, task: Task) -> tuple[bool, str]:
-        """Code-owned preconditions before Jev may even be asked to certify."""
-        if not task.steps:
-            return False, "no work has been done"
-        dispatched = [s for s in task.steps if s["outcome"] not in ("waiting_approval", "paused", "declined")]
-        if dispatched and dispatched[-1]["outcome"] not in ("done",):
-            return False, f"the last step ended {dispatched[-1]['outcome']}"
-        if task.pending_approval:
-            return False, "a permission request is pending"
-        changed_at = task.budget.get("changed_at", 0)
-        fresh = [e for e in task.evidence if e["source"] == "harness" and e["ok"] and e["at"] >= changed_at]
-        if not fresh:
-            return False, "no independent evidence observed after the last change"
-        if task.files_modified:
-            tests = self._tests_since_change(task)
-            if any(t["exit_code"] != 0 for t in tests):
-                return False, "a verification command failed after the last change"
-            reviews = [r for r in task.reviews if r["at"] >= changed_at]
-            if any(r["verdict"] == "fail" for r in reviews):
-                return False, "the latest review failed the change"
-            validated = (task.test_plan.get("validated") or 0) >= VALIDATED_P
-            reviewed_ok = any(r["verdict"] == "pass" for r in reviews)
-            if not (tests and validated) and not (reviewed_ok and task.test_plan.get("attempts", 0) >= MAX_PLAN_ATTEMPTS):
-                return False, "changed files have not been verified by validated tests run after the change"
-        return True, ""
-
-    def _certify(self, task: Task) -> bool:
-        task.phase = "certify"
-        ok, reason = self._certification_gate(task)
-        if not ok:
-            task.add_note(f"Certification refused by the harness: {reason}")
-            return True
-        p, gap, simulated, user_only = self.control.certify(task)
-        task.add_decision("certify", p is not None and p >= CERTIFY_P, p, {"gap": gap.value if gap else None})
-        if p is None:
-            self._finish(task, UNVERIFIED, "The work appears finished, but Jev was unavailable to certify it, so it "
-                                           "is not verified.")
-            return False
-        if p >= CERTIFY_P:
-            task.certification = {"status": "certified", "p": p, "at": time.time(),
-                                  "evidence": [e["id"] for e in task.evidence if e["source"] != "executor"][-10:]}
-            self._finish(task, CERTIFIED, self._done_message(task))
-            return False
-        task.cert_rejections += 1
-        task.budget["cert_rejected_at"] = time.time()
-        task.certification = {"status": "rejected", "p": p, "gap": gap.value if gap else None, "at": time.time()}
-        task.add_note(f"Jev did not certify (p={p:.2f}); missing: {gap.value if gap else 'unknown'}")
-        missing = _MISSING.get(gap.value if gap else "", "the evidence was not enough to confirm it")
-        if gap and gap.value in LIVE_GAPS and (simulated or 0) >= SIMULATED_P:
-            # 2026-10-07: a drone script went back to the worker three times,
-            # twice, for a flight no worker can make. When all a worker can
-            # show is a simulation, another round only spends the budget.
-            task.certification["status"] = "needs_live_test"
-            claim = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")), "")
-            tests = self._tests_since_change(task)
-            checks = (f" and {sum(t['exit_code'] == 0 for t in tests)}/{len(tests)} checks pass" if tests else "")
-            self._finish(task, UNVERIFIED, f"The work is done{checks}, but it needs a live test by you: {missing}, "
-                                           "and the workers could only simulate that part."
-                                           + (f"\n\n{claim[:900]}" if claim else ""))
-            return False
-        if (p >= CONFIRM_FLOOR_P and not task.budget.get("confirmation_asked")
-                and ((gap and gap.value == "user_confirmation") or (user_only or 0) >= USER_ONLY_P)):
-            # 2026-10-12: a countdown spoken in another room, then two
-            # computers locked. Every call returned ok, and it ended unverified
-            # twice (0.73, 0.74): no command here can hear a speaker. More
-            # rounds add nothing; the user can settle it in a word, and a yes
-            # certifies it (so the skill it ran is brought up to date).
-            task.budget["confirmation_asked"] = time.time()
-            task.certification["status"] = AWAITING_CONFIRMATION
-            self._ask_user(task, "Did it work? Every step reported success, but I cannot check the result myself. "
-                                 f"If you do not say no within {CONFIRM_MINUTES} minutes I will take it as a yes: "
-                                 + task.title[:300])
-            return False
-        # A confident but wrong "done" never fails a step: the rejection is
-        # the signal that the worker model was not up to it.
-        last = next((s for s in reversed(task.steps) if s["executor"] in self.executors), None)
-        if last and _escalates(self.executors[last["executor"]]):
-            self._escalate(task, last)
-        if task.cert_rejections >= MAX_CERT_REJECTIONS:
-            self._finish(task, UNVERIFIED, f"The work was done but could not be verified: {missing}.")
-            return False
-        self.store.save(task)
-        return True
-
-    def _confirmed(self, task: Task) -> None:
-        """The user answered "did it work?": their word is the evidence no
-        worker could get. Jev reads the answer; nothing is run again."""
-        answer = task.answers[-1]
-        silent = answer == NO_ANSWER_IS_YES
-        verdict = "worked" if silent else self.control.confirmation(task)
-        task.add_decision("confirm", verdict, None, {"by": "default" if silent else "user"})
-        claim = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")
-                      and s.get("role") not in (TEST, REVIEW)), "")
-        if verdict == "worked":
-            evidence = task.add_evidence(
-                "confirmation", f"The user did not say it failed within {CONFIRM_MINUTES} minutes of being asked."
-                if silent else f"The user confirmed it worked: {answer[:300]}", source="user", ok=True)
-            task.certification = {"status": "certified", "p": task.certification.get("p"),
-                                  "by": "default" if silent else "user",
-                                  "at": time.time(), "evidence": [evidence["id"]]}
-            self._finish(task, CERTIFIED, self._done_message(task))
-        elif verdict == "did_not_work":
-            task.certification["status"] = "rejected"
-            self._finish(task, FAILED, f"You said it did not work: {answer[:300]}"
-                                       + (f"\n\nWhat was done: {claim[:900]}" if claim else ""))
-        else:
-            task.certification["status"] = "rejected"
-            self._finish(task, UNVERIFIED, (claim[:1200] + "\n\n" if claim else "")
-                         + "Not verified: only you can tell whether it worked, and your answer did not say.")
-
-    def _done_message(self, task: Task) -> str:
-        last = next((s for s in reversed(task.steps) if s["outcome"] == "done"), None)
-        tests = self._tests_since_change(task)
-        parts = [f"Done and verified: {task.objective or task.goal}"]
-        if last and last["claim"]:
-            parts.append(last["claim"][:500])
-        if tests:
-            parts.append(f"{sum(t['exit_code'] == 0 for t in tests)}/{len(tests)} verification checks passed.")
-        if task.files_modified:
-            parts.append(f"Changed {len(task.files_modified)} file(s).")
-        return " ".join(parts)
-
-    # ------------------------------------------------------ workspace/git
-    def _git(self, task: Task, *args: str, timeout: float = 30) -> shell.CommandResult:
-        return shell.run(["git", *args], task.workspace, timeout=timeout)
-
-    def _is_git(self, task: Task) -> bool:
-        return self._git(task, "rev-parse", "--is-inside-work-tree").output.strip() == "true"
-
-    def _baseline(self, task: Task) -> None:
-        if task.checkpoints or not self._is_git(task):
-            return
-        self._checkpoint(task)
-        task.change_marker = self._marker(task)[0]
-
-    def _checkpoint(self, task: Task) -> None:
-        if not self._is_git(task):
-            return
-        stash = self._git(task, "stash", "create").output.strip()
-        head = self._git(task, "rev-parse", "--verify", "-q", "HEAD").output.strip()
-        untracked = self._git(task, "ls-files", "--others", "--exclude-standard").output.splitlines()
-        if not _OBJECT_ID.fullmatch(stash or ""):
-            stash = head if _OBJECT_ID.fullmatch(head or "") else ""
-        if not stash:
-            # No commit yet (fresh `git init`): the empty tree is the baseline,
-            # so every file the task creates is a change (code review 2026-09-23).
-            stash = self._git(task, "hash-object", "-t", "tree", "/dev/null").output.strip()
-            if not _OBJECT_ID.fullmatch(stash):
-                return
-            head = ""
-        if stash != head and head:
-            # Keep the snapshot reachable so `git gc` cannot drop it.
-            self._git(task, "update-ref", f"refs/omarchy-ai/tasks/{task.id}/{len(task.checkpoints)}", stash)
-        task.checkpoints.append({"ref": stash, "head": head, "untracked": untracked[:2000],
-                                 "step": len(task.steps), "at": time.time()})
-        self.store.save(task)
-
-    def _marker(self, task: Task) -> tuple[str, list[str], str]:
-        """Paths are relative to the workspace, which may be a repo subdirectory:
-        `git diff` needs --relative to agree with ls-files/ls-tree there."""
-        if not task.checkpoints:
-            return task.change_marker, [], ""
-        base = task.checkpoints[0]
-        names = self._git(task, "diff", "--relative", "--name-only", base["ref"]).output.splitlines()
-        untracked = set(self._git(task, "ls-files", "--others", "--exclude-standard").output.splitlines())
-        # Running tests creates bytecode/caches; they are not changes (live run 2026-09-23).
-        new = sorted(n for n in untracked - set(base["untracked"]) if not _ARTIFACT.search(n))
-        diff = self._git(task, "diff", "--relative", base["ref"]).output
-        digest = hashlib.sha1(diff.encode())
-        for name in new[:200]:
-            try:
-                st = (Path(task.workspace) / name).stat()
-                digest.update(f"{name}:{st.st_size}:{st.st_mtime_ns}".encode())
-            except OSError:
-                continue
-        stat = self._git(task, "diff", "--relative", "--stat", base["ref"]).output
-        return digest.hexdigest(), [n for n in names + new if n], stat
-
-    def _observe_workspace(self, task: Task, step: int) -> None:
-        if not task.checkpoints:
-            return
-        marker, files, stat = self._marker(task)
-        if marker == task.change_marker:
-            return
-        task.change_marker = marker
-        task.change_step = step
-        task.budget["changed_at"] = time.time()
-        task.files_modified = []
-        task.note_files(files)
-        for test in task.tests:
-            test["after_change"] = False
-        task.add_evidence("workspace_diff", f"{len(files)} file(s) differ from the task baseline:\n{stat[-1500:]}"
-                          + (f"\nnew files: {', '.join(n for n in files if n not in stat)[:400]}" if files else ""),
-                          ok=None, step=step)
-
-    def _rollback(self, task: Task) -> bool:
-        base = task.checkpoints[0] if task.checkpoints else None
-        if not base:
-            task.add_note("Rollback requested but there is no checkpoint.")
-            return True
-        subject = f"restore {task.workspace} to the state before this task ({len(task.files_modified)} file(s))"
-        fp = f"rollback:{task.id}:{task.change_marker}"
-        assessment = Assessment(Risk.ELEVATED, ["discards the changes made during this task"])
-        decision = decide("rollback", fp, assessment, auto_approve=Risk.parse(task.auto_approve, Risk.NORMAL),
-                          grants=set(task.grants))
-        if decision.behavior != "allow":
-            task.pending_approval = {"fingerprint": decision.fingerprint, "kind": "rollback", "subject": subject,
-                                     "risk": "ELEVATED", "reasons": assessment.reasons, "asked_at": time.time()}
-            task.next_dispatch = None
-            task.status = WAITING_APPROVAL
-            task.add_note("Waiting for approval to roll back; after approval Jev will direct the rollback again.")
-            self.store.save(task)
-            self._emit(task, "waiting_approval")
-            return False
-        _, files, _ = self._marker(task)
-        tracked = self._git(task, "ls-tree", "-r", "--name-only", base["ref"]).output.splitlines()
-        restore = [f for f in files if f in set(tracked)]
-        new = [f for f in files if f not in set(tracked) and f not in set(base["untracked"])]
-        problems = []
-        if restore:
-            result = self._git(task, "restore", f"--source={base['ref']}", "--worktree", "--", *restore)
-            if not result.ok:
-                problems.append(f"git restore failed: {result.output[-300:]}")
-        workspace = Path(task.workspace).resolve()
-        for name in new:
-            path = (workspace / name).resolve()
-            if workspace in path.parents and path.is_file():
-                path.unlink(missing_ok=True)
-        # Success is what the workspace shows afterwards, not what was attempted.
-        _, remaining, _ = self._marker(task)
-        if remaining:
-            problems.append(f"{len(remaining)} file(s) still differ from the baseline: {', '.join(remaining[:10])}")
-        task.add_evidence("rollback", f"restored {len(restore)} file(s), removed {len(new)} new file(s)"
-                          + (f"; {'; '.join(problems)}" if problems else "; workspace matches the baseline"),
-                          ok=not problems, step=len(task.steps) or None)
-        self._observe_workspace(task, len(task.steps))
-        task.add_note("Rolled back all changes made during this task." if not problems
-                      else f"Rollback incomplete: {'; '.join(problems)}")
-        self.store.save(task)
-        return True
 
     # ----------------------------------------------------------- endings
     def _ask_user(self, task: Task, question: str) -> None:
@@ -1691,8 +1044,6 @@ class WorkContextImpl:
 
 
 # ------------------------------------------------------------------ helpers
-_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # SHA-1 or SHA-256 repositories
-_ARTIFACT = re.compile(r"(?:^|/)(?:__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|node_modules|\.tox)/|\.py[co]$")
 _MASKING_TAIL = re.compile(r"^(?:echo|printf|true|:|exit\s+0)\b")
 
 
@@ -1702,29 +1053,6 @@ def masked_exit_code(command: str) -> bool:
     if len(parts) > 1 and _MASKING_TAIL.match(parts[-1].strip()) and re.search(r";|\|\||\n", command):
         return True
     return bool(re.search(r"\|\|\s*(?:true|:|echo|printf|exit\s+0)\b", command))
-
-
-def _model_of(executor: Executor) -> str:
-    """The model behind an executor, so "which model is doing this?" has a
-    real answer (real gap 2026-09-26: asked mid-task, she could not say)."""
-    worker = getattr(executor, "model", None)
-    try:
-        name = worker if isinstance(worker, str) else getattr(worker, "model", None)
-    except Exception:  # noqa: BLE001 -- the gateway config may be unreadable
-        name = None
-    if name:
-        return str(name)
-    return {"CLAUDE_CODE": "Claude Code (its default model)", "CODEX": "Codex (its default model)",
-            "DIRECT_TOOL": "desktop tools (Jev)"}.get(executor.name, "unknown")
-
-
-def _escalates(executor: Executor) -> bool:
-    """Only workers on the auto-chosen model move up the ladder."""
-    worker = getattr(executor, "model", None)
-    try:
-        return bool(getattr(worker, "auto", False))
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _config(name: str, default):
@@ -1825,19 +1153,6 @@ def _open_task(task_id: str) -> None:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         log.warning("could not open task %s in a terminal", task_id, exc_info=True)
-
-
-def _timeout_step(step: dict | None) -> bool:
-    """Whether a worker exhausted its own assignment time, not task time."""
-    return bool(step and step.get("outcome") == "blocked"
-                and ((step.get("meta") or {}).get("failure_kind") == "timeout"
-                     or "ran out of time for this assignment" in str(step.get("claim", "")).lower()))
-
-
-def _timeout_question(task: Task) -> bool:
-    return (task.status == WAITING_USER
-            and "ran out of time for this assignment" in str(task.question or "").lower()
-            and _timeout_step(task.steps[-1] if task.steps else None))
 
 
 def _phone(title: str, body: str, *, kind: str = "other", conversation: str = "") -> None:
