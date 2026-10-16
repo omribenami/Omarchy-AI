@@ -24,6 +24,7 @@ shape, which is version 0 (no field). A file created with `version=N` is a
 JSON object carrying `"schema_version": N`; one written by a newer version
 than the caller knows is refused instead of being overwritten.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -36,7 +37,7 @@ from pathlib import Path
 import secrets
 import threading
 import time
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, TextIO
 
 import yaml
 
@@ -56,7 +57,7 @@ class _PathLock:
     def __init__(self) -> None:
         self.rlock = threading.RLock()
         self.depth = 0
-        self.handle = None
+        self.handle: TextIO | None = None
 
 
 _registry_lock = threading.Lock()
@@ -90,11 +91,12 @@ def locked(path: Path) -> Iterator[None]:
         finally:
             entry.depth -= 1
             if entry.depth == 0:
-                handle, entry.handle = entry.handle, None
+                held, entry.handle = entry.handle, None
+                assert held is not None
                 try:
-                    fcntl.flock(handle, fcntl.LOCK_UN)
+                    fcntl.flock(held, fcntl.LOCK_UN)
                 finally:
-                    handle.close()
+                    held.close()
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -138,6 +140,7 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 # ------------------------------------------------------------ quarantine
 
+
 def quarantine(path: Path, reason: str = "") -> Path | None:
     """Move an unusable state file aside as `<name>.corrupt-<ts>` and warn.
     Call under `locked(path)`. Returns where it went (None if it was gone)."""
@@ -153,8 +156,12 @@ def quarantine(path: Path, reason: str = "") -> Path | None:
     except FileNotFoundError:
         return None
     _fsync_dir(path.parent)
-    log.warning("state file %s could not be read (%s); kept it as %s and started a new one",
-                path, reason or "corrupt", target.name)
+    log.warning(
+        "state file %s could not be read (%s); kept it as %s and started a new one",
+        path,
+        reason or "corrupt",
+        target.name,
+    )
     return target
 
 
@@ -168,8 +175,12 @@ def quarantine_text(path: Path, text: str, reason: str = "") -> Path:
         n += 1
         target = path.with_name(f"{path.name}{CORRUPT_MARK}{stamp}-{n}")
     atomic_write_text(target, text)
-    log.warning("state file %s had unreadable records (%s); kept them as %s", path, reason or "corrupt",
-                target.name)
+    log.warning(
+        "state file %s had unreadable records (%s); kept them as %s",
+        path,
+        reason or "corrupt",
+        target.name,
+    )
     return target
 
 
@@ -185,12 +196,15 @@ def corrupt_files(directory: Path | None = None) -> list[Path]:
 
 # ---------------------------------------------------------------- documents
 
+
 def _check_version(data: Any, version: int, path: Path) -> None:
     if not version:
         return
     found = data.get(SCHEMA_KEY, 0) if isinstance(data, dict) else 0
     if not isinstance(found, int) or found > version:
-        raise StateFileError(f"{path} has schema version {found!r}; this version understands up to {version}")
+        raise StateFileError(
+            f"{path} has schema version {found!r}; this version understands up to {version}"
+        )
 
 
 def schema_version(data: Any) -> int:
@@ -215,7 +229,9 @@ def _parse(path: Path, load: Callable[[str], Any], expect: type | tuple | None):
     if data is None:
         return None, None
     if expect is not None and not isinstance(data, expect):
-        raise ValueError(f"expected {getattr(expect, '__name__', expect)}, found {type(data).__name__}")
+        raise ValueError(
+            f"expected {getattr(expect, '__name__', expect)}, found {type(data).__name__}"
+        )
     return data, text
 
 
@@ -234,7 +250,14 @@ def _load_locked(path, default, load, expect):
     return data, text
 
 
-def read_doc(path: Path, default: Any, *, load: Callable[[str], Any], expect=None, version: int = 0) -> Any:
+def read_doc(
+    path: Path,
+    default: Any,
+    *,
+    load: Callable[[str], Any],
+    expect=None,
+    version: int = 0,
+) -> Any:
     """Read-only load. Takes no lock on the normal path (writes are atomic);
     a file that does not parse is re-checked under the lock, then
     quarantined. Never raises for missing or unreadable content."""
@@ -242,7 +265,9 @@ def read_doc(path: Path, default: Any, *, load: Callable[[str], Any], expect=Non
     try:
         data, _ = _parse(path, load, expect)
     except (ValueError, UnicodeDecodeError):
-        with locked(path):  # it may have been replaced since; only a real corrupt file moves aside
+        with locked(
+            path
+        ):  # it may have been replaced since; only a real corrupt file moves aside
             data, _ = _load_locked(path, default, load, expect)
     except OSError:
         log.warning("state file %s could not be read", path, exc_info=True)
@@ -261,8 +286,15 @@ class Doc:
 
 
 @contextmanager
-def locked_doc(path: Path, default: Any, *, load: Callable[[str], Any], dump: Callable[[Any], str],
-               expect=None, version: int = 0) -> Iterator[Doc]:
+def locked_doc(
+    path: Path,
+    default: Any,
+    *,
+    load: Callable[[str], Any],
+    dump: Callable[[Any], str],
+    expect=None,
+    version: int = 0,
+) -> Iterator[Doc]:
     """flock + read + yield + atomic write. The file is written only when the
     block finishes without an exception and `doc.data` serializes to
     something other than what was read."""
@@ -284,29 +316,62 @@ def json_dump(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=1)
 
 
-def locked_json(path: Path, default: Any = None, *, expect=None, dump: Callable[[Any], str] = json_dump,
-                version: int = 0):
-    return locked_doc(path, {} if default is None else default, load=json.loads, dump=dump, expect=expect,
-                      version=version)
+def locked_json(
+    path: Path,
+    default: Any = None,
+    *,
+    expect=None,
+    dump: Callable[[Any], str] = json_dump,
+    version: int = 0,
+):
+    return locked_doc(
+        path,
+        {} if default is None else default,
+        load=json.loads,
+        dump=dump,
+        expect=expect,
+        version=version,
+    )
 
 
 def read_json(path: Path, default: Any = None, *, expect=None, version: int = 0) -> Any:
-    return read_doc(path, {} if default is None else default, load=json.loads, expect=expect, version=version)
+    return read_doc(
+        path,
+        {} if default is None else default,
+        load=json.loads,
+        expect=expect,
+        version=version,
+    )
 
 
 def yaml_dump(data: Any) -> str:
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
 
 
-def locked_yaml(path: Path, default: Any = None, *, expect=None, dump: Callable[[Any], str] = yaml_dump):
-    return locked_doc(path, {} if default is None else default, load=yaml.safe_load, dump=dump, expect=expect)
+def locked_yaml(
+    path: Path,
+    default: Any = None,
+    *,
+    expect=None,
+    dump: Callable[[Any], str] = yaml_dump,
+):
+    return locked_doc(
+        path,
+        {} if default is None else default,
+        load=yaml.safe_load,
+        dump=dump,
+        expect=expect,
+    )
 
 
 def read_yaml(path: Path, default: Any = None, *, expect=None) -> Any:
-    return read_doc(path, {} if default is None else default, load=yaml.safe_load, expect=expect)
+    return read_doc(
+        path, {} if default is None else default, load=yaml.safe_load, expect=expect
+    )
 
 
 # ---------------------------------------------------------------- JSON lines
+
 
 def read_jsonl(path: Path, bad: list[str] | None = None) -> list:
     """Every record that parses. Lines that do not (a torn last line) are
@@ -343,5 +408,7 @@ def rewrite_jsonl(path: Path, text: str, bad: list[str] | None = None) -> None:
     """Replace a JSONL file atomically (call under `locked(path)`). Lines that
     did not parse are kept in a quarantine file, not dropped."""
     if bad:
-        quarantine_text(path, "".join(line + "\n" for line in bad), f"{len(bad)} unreadable line(s)")
+        quarantine_text(
+            path, "".join(line + "\n" for line in bad), f"{len(bad)} unreadable line(s)"
+        )
     atomic_write_text(path, text)
