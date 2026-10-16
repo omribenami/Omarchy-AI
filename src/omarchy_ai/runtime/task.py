@@ -231,7 +231,8 @@ def owned_elsewhere(task: Task) -> bool:
 
 
 class TaskStore:
-    """One JSON file per task; atomic replace on every save.
+    """One JSON file per task; atomic, fsynced replace on every save
+    (core/statefile.py's atomic_write_text).
 
     Several processes use the same files (the daemon drives voice tasks, the
     CLI drives its own and may approve or cancel any). Saves are serialized
@@ -255,11 +256,9 @@ class TaskStore:
 
     def _write(self, task: Task) -> None:
         task.touch()
-        target = self.path(task.id)
-        tmp = target.with_suffix(f".json.{os.getpid()}.tmp")
+        from ..core.statefile import atomic_write_text
         from ..execution.passwords import redact
-        tmp.write_text(redact(json.dumps(asdict(task), ensure_ascii=False, indent=1)))
-        os.replace(tmp, target)
+        atomic_write_text(self.path(task.id), redact(json.dumps(asdict(task), ensure_ascii=False, indent=1)))
 
     def update(self, task_id: str, change) -> Task | None:
         """Load, change and save one task atomically with respect to other savers."""
