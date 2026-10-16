@@ -76,11 +76,11 @@ class InputGuardTests(unittest.TestCase):
         self.execute.assert_called_with('type_text', {'text': prompt})
 
     def test_focus_dispatch_success_is_not_focus_verification(self):
-        with patch('omarchy_ai.execution.actions._hyprctl_dispatch', return_value=ActionResult(True)), patch('omarchy_ai.execution.actions._run', return_value=ActionResult(True, '{"address":"0x456"}')), patch('omarchy_ai.execution.actions.time.sleep'):
+        with patch('omarchy_ai.execution.actions.windows._hyprctl_dispatch', return_value=ActionResult(True)), patch('omarchy_ai.execution.actions.windows._run', return_value=ActionResult(True, '{"address":"0x456"}')), patch('omarchy_ai.execution.actions.desktop._run', return_value=ActionResult(True, '{"address":"0x456"}')), patch('omarchy_ai.execution.actions.time.sleep'):
             self.assertFalse(focus_window({'target': '0x123'}).ok)
 
     def test_focus_verified_against_requested_address(self):
-        with patch('omarchy_ai.execution.actions._hyprctl_dispatch', return_value=ActionResult(True)), patch('omarchy_ai.execution.actions._run', return_value=ActionResult(True, '{"address":"0x123"}')):
+        with patch('omarchy_ai.execution.actions.windows._hyprctl_dispatch', return_value=ActionResult(True)), patch('omarchy_ai.execution.actions.windows._run', return_value=ActionResult(True, '{"address":"0x123"}')):
             self.assertTrue(focus_window({'target': '0x123'}).ok)
 
     def test_exit_needs_the_users_answer_to_a_question(self):

@@ -35,9 +35,9 @@ class LocalFileToolTests(unittest.TestCase):
     def test_submit_sudo_password_never_returns_the_secret(self):
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
         with patch.object(actions.sudo_approval, "retrieve", return_value="not-in-results"), \
-             patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
+             patch.object(actions.desktop, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
              patch.object(actions.shutil, "which", return_value="/usr/bin/wtype"), \
-             patch.object(actions, "_screen_locked", return_value=False), \
+             patch.object(actions.desktop, "_screen_locked", return_value=False), \
              patch.object(actions.subprocess, "run", return_value=completed) as run:
             result = actions.submit_sudo_password({})
         self.assertTrue(result.ok)
@@ -46,7 +46,7 @@ class LocalFileToolTests(unittest.TestCase):
         self.assertEqual([c.args[0][0] for c in run.call_args_list if c.args[0][0] == "wtype"], ["wtype", "wtype"])
 
     def test_regular_window_sudo_is_pointed_at_submit_sudo_password(self):
-        with patch.object(actions, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
+        with patch.object(actions.terminal, "load_config", return_value=SimpleNamespace(sudo_access_enabled=True)), \
              patch("omarchy_ai.execution.workbench.exists", return_value=False):
             result = actions.terminal_sudo({"name": "user@desktop:~"})
         self.assertFalse(result.ok)
@@ -295,7 +295,7 @@ class GmailAttachmentToolTests(unittest.TestCase):
             config = SimpleNamespace(file_access_roots=[str(home)])
             with patch.object(actions.myapi, "is_connected", return_value=True), \
                  patch.object(actions.myapi, "MyApiClient", return_value=client), \
-                 patch.object(actions, "load_config", return_value=config), \
+                 patch.object(actions.myapi_tools, "load_config", return_value=config), \
                  patch.object(actions.Path, "home", return_value=home), \
                  patch.object(actions.myapi_usage, "record"):
                 result = actions.myapi_gmail_download_attachment({
@@ -313,9 +313,9 @@ class GmailAttachmentToolTests(unittest.TestCase):
             config = SimpleNamespace(file_access_roots=[str(home)])
             with patch.object(actions.myapi, "is_connected", return_value=True), \
                  patch.object(actions.myapi, "MyApiClient", return_value=client), \
-                 patch.object(actions, "load_config", return_value=config), \
+                 patch.object(actions.myapi_tools, "load_config", return_value=config), \
                  patch.object(actions.Path, "home", return_value=home), \
-                 patch.object(actions, "_download_url", return_value=b"url bytes") as download, \
+                 patch.object(actions.myapi_tools, "_download_url", return_value=b"url bytes") as download, \
                  patch.object(actions.myapi_usage, "record"):
                 result = actions.myapi_gmail_download_attachment({
                     "message_id": "message-1", "attachment_id": "attach-1", "filename": "report.pdf",
