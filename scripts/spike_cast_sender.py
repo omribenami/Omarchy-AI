@@ -3,11 +3,11 @@
 
 Proves the whole capture -> encode -> WebRTC chain end to end on real
 hardware before any of this touches the Android app (same "GStreamer-only
-proof of concept first" convention as scripts/spike_live_webrtc.py in
+proof of concept first" convention as experiments/spike_live_webrtc.py in
 Phase 1). Combines:
 
 - Video: `wlr-screencopy-unstable-v1` (via scripts/wlr_screencopy_capture.py,
-  proven in isolation by scripts/spike_cast_wlr_screencopy.py -- 60fps
+  proven in isolation by experiments/spike_cast_wlr_screencopy.py -- 60fps
   sustained, 0 failures, over 40+ real seconds) feeds a GStreamer `appsrc`
   directly with raw wl_shm frames -> `openh264enc` (software H.264; no
   GStreamer VAAPI plugin is installed on this machine -- see
@@ -49,7 +49,7 @@ push frames into the pipeline ourselves via `appsrc`, bypassing the portal
 (and its buffer-pool bug) entirely. Side benefit, confirmed live: this also
 needs no screen-share consent dialog at all -- wlr-screencopy is
 compositor-policy-gated, not portal-consent-gated, on this Hyprland build.
-See scripts/spike_cast_wlr_screencopy.py and
+See experiments/spike_cast_wlr_screencopy.py and
 scripts/wlr_screencopy_capture.py for the isolated proof and the shared
 capture implementation.
 """

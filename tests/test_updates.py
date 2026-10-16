@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from omarchy_ai.core import updates
@@ -149,6 +150,19 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 updates.discover()
         dist.assert_not_called()
+
+    def test_untracked_dist_folder_leaves_only_release_assets(self):
+        # main no longer tracks dist/, so GitHub answers its listing with 404.
+        def fake_json(url):
+            if url == updates.API + '/commits/main':
+                return {'sha': 'c' * 40}
+            raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        with patch.object(updates, '_json', side_effect=fake_json):
+            self.assertEqual(updates._dist_candidates(), [])
+        with patch.object(updates, '_list_releases', return_value=[self._github_release('0.15.0')]), \
+                patch.object(updates, '_json', side_effect=fake_json):
+            result = updates.discover()
+        self.assertEqual((result['latest_version'], result['source']), ('0.15.0', 'release'))
 
     def test_release_pagination_follows_github_api_only(self):
         first = updates.API + '/releases?per_page=100'

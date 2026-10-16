@@ -225,7 +225,7 @@ class ScheduleToolTests(unittest.TestCase):
 
     def test_an_assistant_task_one_tool_can_do_becomes_that_exact_call(self):
         step = {"tool": "device", "args": {"operation": "ask", "text": "turn on the fan"}}
-        with patch.object(actions, "_resolve_scheduled", return_value=(step, "")):
+        with patch.object(actions.assistant, "_resolve_scheduled", return_value=(step, "")):
             result = actions.schedule_task({"title": "fan", "kind": "assistant", "in_minutes": 30,
                                             "request": "turn on the fan"})
         out = json.loads(result.message)
@@ -233,12 +233,12 @@ class ScheduleToolTests(unittest.TestCase):
         self.assertIn("in 30 min", out["scheduled"]["when"])
 
     def test_an_assistant_task_no_tool_does_stays_one(self):
-        with patch.object(actions, "_resolve_scheduled", return_value=(None, "No catalog tool does this.")):
+        with patch.object(actions.assistant, "_resolve_scheduled", return_value=(None, "No catalog tool does this.")):
             result = actions.schedule_task({"title": "talk", "kind": "assistant", "in_minutes": 30})
         self.assertEqual(json.loads(result.message)["scheduled"]["kind"], "assistant")
 
     def test_an_action_from_a_request_that_cannot_be_resolved_is_not_scheduled(self):
-        with patch.object(actions, "_resolve_scheduled", return_value=(None, "Jev is not sure.")):
+        with patch.object(actions.assistant, "_resolve_scheduled", return_value=(None, "Jev is not sure.")):
             result = actions.schedule_task({"title": "x", "kind": "action", "in_minutes": 5, "request": "x"})
         self.assertFalse(result.ok)
         self.assertIn("NOT scheduled", result.message)

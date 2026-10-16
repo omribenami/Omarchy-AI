@@ -3,6 +3,7 @@
 Before it, pending_actions.json had a thread lock only, learned_preferences
 was written in place, and every loader turned a file it could not parse into
 an empty one, which the next save made permanent."""
+
 import json
 import os
 import subprocess
@@ -41,7 +42,10 @@ def _env(root: Path) -> dict:
 
 
 def _run_workers(script: str, args_per_worker: list[list[str]], root: Path) -> None:
-    procs = [subprocess.Popen([sys.executable, "-c", script, *args], env=_env(root)) for args in args_per_worker]
+    procs = [
+        subprocess.Popen([sys.executable, "-c", script, *args], env=_env(root))
+        for args in args_per_worker
+    ]
     for proc in procs:
         proc.wait(timeout=180)
         if proc.returncode != 0:
@@ -56,11 +60,17 @@ class StatefileTests(unittest.TestCase):
 
     def test_two_processes_interleaving_1000_writes_lose_no_update(self):
         path = self.root / "shared.json"
-        _run_workers(WORKER.format(src=SRC), [[str(path), "a", "500"], [str(path), "b", "500"]], self.root)
+        _run_workers(
+            WORKER.format(src=SRC),
+            [[str(path), "a", "500"], [str(path), "b", "500"]],
+            self.root,
+        )
         data = json.loads(path.read_text())
         self.assertEqual(data["count"], 1000)
         self.assertEqual(sum(1 for k in data if k.startswith(("a-", "b-"))), 1000)
-        self.assertEqual([p.name for p in self.root.iterdir() if p.name.endswith(".tmp")], [])
+        self.assertEqual(
+            [p.name for p in self.root.iterdir() if p.name.endswith(".tmp")], []
+        )
 
     def test_a_corrupt_file_is_quarantined_and_reported_not_reset(self):
         path = self.root / "agenda.json"
@@ -137,7 +147,9 @@ class StatefileTests(unittest.TestCase):
             with self.assertLogs("omarchy_ai.core.statefile", "WARNING"):
                 statefile.rewrite_jsonl(path, '{"id": "a"}\n', bad)
         self.assertEqual(path.read_text(), '{"id": "a"}\n')
-        self.assertEqual(statefile.corrupt_files(self.root)[0].read_text(), '{"id": "b", "tor\n')
+        self.assertEqual(
+            statefile.corrupt_files(self.root)[0].read_text(), '{"id": "b", "tor\n'
+        )
 
 
 class PendingActionsStateTests(unittest.TestCase):
@@ -150,8 +162,15 @@ class PendingActionsStateTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_an_existing_file_loads_and_keeps_its_shape(self):
-        legacy = {"abc123": {"id": "abc123", "created": time.time(), "status": "waiting", "outcome": "",
-                             "service": "gmail"}}
+        legacy = {
+            "abc123": {
+                "id": "abc123",
+                "created": time.time(),
+                "status": "waiting",
+                "outcome": "",
+                "service": "gmail",
+            }
+        }
         self.path.write_text(json.dumps(legacy, indent=1))
         self.assertEqual(pending_actions.claim("abc123")["status"], "running")
         on_disk = json.loads(self.path.read_text())
@@ -168,8 +187,15 @@ class PendingActionsStateTests(unittest.TestCase):
             pending_actions.PATH = Path(sys.argv[1])
             print("won" if pending_actions.claim(sys.argv[2]) else "lost")
         """)
-        procs = [subprocess.Popen([sys.executable, "-c", script, str(self.path), aid], stdout=subprocess.PIPE,
-                                  text=True, env=_env(self.path.parent)) for _ in range(4)]
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, str(self.path), aid],
+                stdout=subprocess.PIPE,
+                text=True,
+                env=_env(self.path.parent),
+            )
+            for _ in range(4)
+        ]
         said = sorted(p.communicate(timeout=60)[0].strip() for p in procs)
         self.assertEqual(said, ["lost", "lost", "lost", "won"])
 
@@ -191,10 +217,17 @@ class LearnedPreferencesStateTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_the_existing_yaml_list_loads_and_is_written_in_the_same_shape(self):
-        self.path.write_text(yaml.safe_dump(["call me Sam"], allow_unicode=True, sort_keys=False))
+        self.path.write_text(
+            yaml.safe_dump(["call me Sam"], allow_unicode=True, sort_keys=False)
+        )
         memory.add_preference("always confirm before muting")
-        self.assertEqual(yaml.safe_load(self.path.read_text()), ["call me Sam", "always confirm before muting"])
-        self.assertEqual(memory.load_preferences(), ["call me Sam", "always confirm before muting"])
+        self.assertEqual(
+            yaml.safe_load(self.path.read_text()),
+            ["call me Sam", "always confirm before muting"],
+        )
+        self.assertEqual(
+            memory.load_preferences(), ["call me Sam", "always confirm before muting"]
+        )
 
     def test_two_processes_adding_at_once_keep_every_preference(self):
         script = textwrap.dedent(f"""
@@ -206,14 +239,19 @@ class LearnedPreferencesStateTests(unittest.TestCase):
             for i in range(20):
                 memory.add_preference(f"{{sys.argv[2]}} {{i}}")
         """)
-        _run_workers(script, [[str(self.path), "a"], [str(self.path), "b"]], self.path.parent)
+        _run_workers(
+            script, [[str(self.path), "a"], [str(self.path), "b"]], self.path.parent
+        )
         self.assertEqual(len(memory.load_preferences()), 40)
 
     def test_a_corrupt_file_is_quarantined_not_replaced_by_one_entry(self):
         self.path.write_text("- one\n- [unclosed\n")
         with self.assertLogs("omarchy_ai.core.statefile", "WARNING"):
             self.assertEqual(memory.load_preferences(), [])
-        self.assertEqual(statefile.corrupt_files(self.path.parent)[0].read_text(), "- one\n- [unclosed\n")
+        self.assertEqual(
+            statefile.corrupt_files(self.path.parent)[0].read_text(),
+            "- one\n- [unclosed\n",
+        )
 
 
 if __name__ == "__main__":

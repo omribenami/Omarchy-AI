@@ -82,7 +82,7 @@ Hyprland's `wlr-screencopy-unstable-v1` Wayland global directly (the same
 protocol `grim` uses, proven reliable dozens of times this session) via
 `pywayland`, feeding a GStreamer `appsrc` instead of consuming a
 portal-negotiated `pipewiresrc` node. Proven in isolation first
-(`scripts/spike_cast_wlr_screencopy.py`): 40 real seconds, ~60fps
+(`experiments/spike_cast_wlr_screencopy.py`): 40 real seconds, ~60fps
 sustained, 0 failures, real pixel-content changes confirmed via per-frame
 CRC and a visual PNG sanity dump, **zero** `xdg-desktop-portal-hyprland`
 log lines during the entire test (definitive proof of zero portal

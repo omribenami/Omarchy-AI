@@ -52,7 +52,9 @@ def changed_paths(base: str) -> list[tuple[str, str]]:
 
 
 def release_archive_paths(changes: list[tuple[str, str]]) -> list[str]:
-    return [path for _status, path in changes if RELEASE_ARCHIVE.fullmatch(path)]
+    # Deleting a tracked historical archive is fine; adding one is not.
+    return [path for status, path in changes
+            if status != "D" and RELEASE_ARCHIVE.fullmatch(path)]
 
 
 def commit_message(version: str) -> str:
