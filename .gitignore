@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
 dist/
 # Raw demo captures stay local; README uses the compressed docs/media/ copies.
 docs/media/original/
