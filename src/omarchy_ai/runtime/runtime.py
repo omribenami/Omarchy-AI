@@ -59,6 +59,8 @@ MAX_STEPS_WITHOUT_EVIDENCE = 2
 MAX_PLAN_ATTEMPTS = 2
 MAX_CONSECUTIVE_RETRIES = 2
 USER_ONLY_P = 0.8           # P(only the user can tell it worked) at which the user is asked instead
+CONFIRM_MINUTES = 10        # "Did it work?" unanswered this long counts as a yes (the user's rule, 2026-10-13)
+NO_ANSWER_IS_YES = "(no answer: taken as a yes)"
 CONFIRM_FLOOR_P = 0.4       # ... but not when Jev thinks it failed (the two that began this re-scored 0.51, 0.69)
 SIMULATED_P = 0.7           # P(only simulated evidence) that ends a live gap as "needs a live test"
 
@@ -163,6 +165,9 @@ class TaskRuntime:
         task = Task(id=new_id(), goal=goal[:4000], workspace=str(ws), source=source,
                     auto_approve=(auto_approve or self.default_auto_approve).upper(), agent=agent,
                     unsandboxed=bool(unsandboxed and agent in CODING), conversation=conversation)
+        from ..core import identities
+        who = identities.current()
+        task.person, task.person_how = who.person or "", who.how or ""
         task.budget["max_steps"] = int(max_steps or _config("task_max_steps", 12))
         task.budget["max_seconds"] = int(_config("task_max_minutes", 60)) * 60
         self.store.save(task)
@@ -306,6 +311,23 @@ class TaskRuntime:
                     self._prompting.discard(task.id)
         threading.Thread(target=prompt, daemon=True, name=f"fingerprint-{task.id}").start()
         return {"ok": True, "message": "Sent the fingerprint prompt to the phone."}
+
+    def expire_confirmations(self, now: float | None = None) -> list[str]:
+        """A "Did it work?" nobody answered within CONFIRM_MINUTES is a yes:
+        the user has that long to say no. Called on the heartbeat."""
+        now = time.time() if now is None else now
+        done = []
+        for task in self.store.list(50):
+            if (task.status != WAITING_USER or task.certification.get("status") != AWAITING_CONFIRMATION
+                    or owned_elsewhere(task)):
+                continue
+            asked = float(task.budget.get("confirmation_asked") or task.updated_at or now)
+            if now - asked >= CONFIRM_MINUTES * 60 and self.respond(task.id, answer=NO_ANSWER_IS_YES,
+                                                                    channel="policy").get("ok"):
+                done.append(task.id)
+        if done:
+            log.info("unanswered confirmations taken as yes: %s", ", ".join(done))
+        return done
 
     def tidy_approvals(self, now: float | None = None) -> list[str]:
         """Approvals nobody answered do not wait forever (2026-09-30: three
@@ -579,6 +601,9 @@ class TaskRuntime:
         task = self.store.load(task_id)
         if task is None:
             return
+        from ..core import identities
+        # It acts as the person who started it (MyApi is the owner's).
+        token = identities.set_current(identities.Identity(task.person or None, task.person_how or None))
         try:
             self._loop(task)
         except Exception as exc:  # noqa: BLE001 -- a crash must leave an honest record
@@ -586,6 +611,7 @@ class TaskRuntime:
             task.add_error(f"runtime crash: {type(exc).__name__}: {exc}")
             self._finish(task, FAILED, f"The task runtime hit an internal error: {exc}")
         finally:
+            identities.reset_current(token)
             task.owner = None
             self.store.save(task)
 
@@ -1208,7 +1234,8 @@ class TaskRuntime:
             # certifies it (so the skill it ran is brought up to date).
             task.budget["confirmation_asked"] = time.time()
             task.certification["status"] = AWAITING_CONFIRMATION
-            self._ask_user(task, "Did it work? Every step reported success, but I cannot check the result myself: "
+            self._ask_user(task, "Did it work? Every step reported success, but I cannot check the result myself. "
+                                 f"If you do not say no within {CONFIRM_MINUTES} minutes I will take it as a yes: "
                                  + task.title[:300])
             return False
         # A confident but wrong "done" never fails a step: the rejection is
@@ -1226,14 +1253,17 @@ class TaskRuntime:
         """The user answered "did it work?": their word is the evidence no
         worker could get. Jev reads the answer; nothing is run again."""
         answer = task.answers[-1]
-        verdict = self.control.confirmation(task)
-        task.add_decision("confirm", verdict, None)
+        silent = answer == NO_ANSWER_IS_YES
+        verdict = "worked" if silent else self.control.confirmation(task)
+        task.add_decision("confirm", verdict, None, {"by": "default" if silent else "user"})
         claim = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")
                       and s.get("role") not in (TEST, REVIEW)), "")
         if verdict == "worked":
-            evidence = task.add_evidence("confirmation", f"The user confirmed it worked: {answer[:300]}", source="user",
-                                         ok=True)
-            task.certification = {"status": "certified", "p": task.certification.get("p"), "by": "user",
+            evidence = task.add_evidence(
+                "confirmation", f"The user did not say it failed within {CONFIRM_MINUTES} minutes of being asked."
+                if silent else f"The user confirmed it worked: {answer[:300]}", source="user", ok=True)
+            task.certification = {"status": "certified", "p": task.certification.get("p"),
+                                  "by": "default" if silent else "user",
                                   "at": time.time(), "evidence": [evidence["id"]]}
             self._finish(task, CERTIFIED, self._done_message(task))
         elif verdict == "did_not_work":

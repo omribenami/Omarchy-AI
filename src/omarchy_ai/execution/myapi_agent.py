@@ -228,6 +228,9 @@ def _call(service: str, method: str, args: dict) -> ActionResult:
 
 def run(args: dict) -> ActionResult:
     from .. import myapi
+    from ..core import identities
+    if refusal := identities.myapi_refusal():
+        return ActionResult(False, refusal)
     if not myapi.is_connected():
         return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
     request = " ".join(str(args.get("request") or "").split())

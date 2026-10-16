@@ -81,6 +81,8 @@ class Task:
     agent: str = ""              # executor the user asked for by name (e.g. CODEX): every work step uses it
     unsandboxed: bool = False    # the user asked for it without its sandbox (codex --yolo); HIGH, approved once
     conversation: str = ""       # the talk it was started in (core/conversations.py): its cards go back there
+    person: str = ""             # who started it (core/identities.py): it runs as them
+    person_how: str = ""         # how that was known: phone | voice | typed
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     plan: list[str] = field(default_factory=list)

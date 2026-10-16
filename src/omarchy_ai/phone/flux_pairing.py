@@ -74,15 +74,18 @@ def signed_text(nonce: str, pin: str, device_id: str) -> bytes:
     return f"omarchy-ai-flux-pair\n{nonce}\n{pin}\n{device_id}".encode()
 
 
-def _paired_certificate(device_id: str) -> x509.Certificate | None:
+def devices() -> list[dict]:
+    """The phones desktop Flux paired with this computer ({"id", "name", ...})."""
     try:
-        devices = json.loads(devices_path().read_text())
+        data = json.loads(devices_path().read_text())
     except (OSError, ValueError):
-        return None
-    if not isinstance(devices, list):
-        return None
-    for device in devices:
-        if isinstance(device, dict) and device.get("id") == device_id and device.get("certificate"):
+        return []
+    return [d for d in data if isinstance(d, dict) and isinstance(d.get("id"), str) and d["id"]] if isinstance(data, list) else []
+
+
+def _paired_certificate(device_id: str) -> x509.Certificate | None:
+    for device in devices():
+        if device.get("id") == device_id and device.get("certificate"):
             try:
                 return x509.load_pem_x509_certificate(device["certificate"].encode())
             except ValueError:

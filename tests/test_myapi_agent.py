@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from omarchy_ai.core import conversations, pending_actions
+from omarchy_ai.core import conversations, identities, pending_actions
 from omarchy_ai.execution import myapi_agent
 from omarchy_ai.execution.actions import ActionResult
 
@@ -40,6 +40,7 @@ class MyApiAgentTests(unittest.TestCase):
         root = Path(tmp.name)
         for target, name_, value in ((conversations, "DIR", root / "c"), (conversations, "_cache", {}),
                               (conversations, "_dirty", {}), (pending_actions, "PATH", root / "actions.json"),
+                              (identities, "PATH", root / "identities.json"),
                               (myapi_agent, "_cache", {})):
             p = patch.object(target, name_, value)
             p.start()

@@ -41,6 +41,7 @@ class AgendaTests(unittest.TestCase):
             self.addCleanup(p.stop)
         self.notify = patch.object(agenda, "notify").start()
         self.hud_refresh = patch.object(agenda, "_refresh_routines_hud").start()
+        patch.object(agenda, "CONFIRM_DELAY_SECONDS", 0).start()
         self.address_for = patch("omarchy_ai.execution.tile_logs.address_for", return_value="0xc1a").start()
         self.addCleanup(patch.stopall)
         agenda._briefed.clear()
@@ -161,6 +162,21 @@ class AgendaTests(unittest.TestCase):
         self.assertEqual(done["status"], "done")
         self.notify.assert_called_once_with("Parcel", "a parcel is on the doorstep", False)
         self.assertIn("/frames/" + job["id"], agenda._inbox_read()[-1]["detail"])
+
+    def test_a_picture_alerts_only_when_a_second_frame_agrees(self):
+        job = self.camera_watch()
+        first = {"met": {"p": 0.97}, "urgency": {"choice": "normal", "p": 1.0}}
+        later = {"met": {"p": 0.3}, "urgency": {"choice": "normal", "p": 1.0}}
+        with patch("omarchy_ai.execution.cameras.snapshot", lambda name, config, key: Path("/frames") / key), \
+                patch("omarchy_ai.execution.vision.judge_image", side_effect=[first, later]) as judge:
+            agenda.run_job(next(j for j in agenda._load() if j["id"] == job["id"]), None, self.now)
+        after = next(j for j in agenda._load() if j["id"] == job["id"])
+        self.assertEqual(judge.call_count, 2)
+        self.assertEqual((after["status"], after["last_met"]), ("active", False))
+        self.notify.assert_not_called()
+        _, judge = self.look(job["id"], 0.97, now=self.now + 120)
+        self.assertEqual(judge.call_count, 2)  # the first frame and the one confirming it
+        self.notify.assert_called_once()
 
     def test_camera_that_gives_no_frame_keeps_the_watch_waiting(self):
         job = self.camera_watch()
@@ -408,13 +424,53 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(skills.skill_of_goal(goal), "restart-waybar")
         self.assertEqual(skills.request_of_goal(goal), "the top bar is gone, bring it back")
         self.assertIn("Run omarchy-restart-waybar", goal)
-        # A loose fit is enough to show the model a skill, not to hand its steps to a worker.
-        self.assertIsNone(service._skill_for("make the bar taller", answer(0.5)))
+        # A loose fit is enough to show the worker a skill as reference, not to hand it its steps as the job.
+        loose = service._skill_for("make the bar taller", answer(0.5))
+        self.assertIsNone(skills.skill_of_goal(loose))
+        self.assertTrue(loose.startswith("make the bar taller\n\nREFERENCE ONLY"), loose)
         self.assertIsNone(service._skill_for(goal, answer(0.9)))  # already a skill run
 
         def down(state, questions, timeout=8):
             raise RuntimeError("HTTP 503")
         self.assertIsNone(service._skill_for("the top bar is gone", Jev(down)))
+
+    def test_a_related_skill_reaches_the_worker_as_reference_only(self):
+        # 2026-10-15 20:47: a request to lock one computer fitted a countdown that ends by locking it 0.57;
+        # the countdown rightly did not run, but the worker never saw the command that locks that computer.
+        from omarchy_ai.runtime import service
+        skills.save("countdown-lock", "Announce a countdown on a speaker, then lock the kids' computers.",
+                    "1. Announce on media_player.example_room\n2. Wait\n3. omarchy-ai-tool run home_assistant "
+                    "script.turn_on '{\"entity_id\": \"script.lock_child_b_pc\"}'")
+
+        def answer(fits):
+            def reply(name, q, state):
+                if name == "which":
+                    return "countdown-lock"
+                if name.startswith("gate::"):
+                    return 0.1 if name.endswith("prose_suffices") else 0.9
+                return fits if name == "fits::countdown-lock" else 0.05
+            return Jev(FakeGateway(reply))
+        request = "Lock child B's computer immediately."
+        goal = service._skill_for(request, answer(0.57))
+        self.assertTrue(goal.startswith(request + "\n\n"), goal)
+        self.assertIsNone(skills.skill_of_goal(goal))  # not a run of the skill
+        reference = goal[len(request):]
+        self.assertIn("REFERENCE ONLY", reference)
+        self.assertIn("NOT this job", reference)
+        self.assertIn("'countdown-lock'", reference)
+        self.assertIn("Announce a countdown on a speaker", reference)  # its description
+        self.assertIn("script.lock_child_b_pc", reference)  # the fact the worker needs
+        self.assertIsNone(service._skill_for(request, answer(0.1)))  # unrelated: the goal stays as asked
+        run = service._skill_for("give the kids a 3 minute countdown", answer(0.85))
+        self.assertEqual(skills.skill_of_goal(run), "countdown-lock")
+        self.assertNotIn("REFERENCE ONLY", run)
+        # Clipped to fit, and left out when the goal has no room for it.
+        skills.save("countdown-lock", "Announce a countdown on a speaker, then lock the kids' computers.",
+                    "step\n" * 1000)
+        clipped = service._skill_for(request, answer(0.57))
+        self.assertLessEqual(len(clipped) - len(request), service.REFERENCE_CHARS + 400)
+        self.assertTrue(clipped.endswith("…"))
+        self.assertIsNone(service._skill_for(request + " x" * 1900, answer(0.57)))
 
     def test_suggest_two_stage_picks_the_fitting_skill(self):
         def answer(name, q, state):
@@ -466,6 +522,10 @@ class SkillTests(unittest.TestCase):
         self.assertLess(goal.index("tell claude"), goal.index("1. focus_window"))
         self.assertIn("worked before", goal)
         self.assertIn("real wait", goal)
+        # The saved values are one run's: the request's values win, and repeated steps scale to it.
+        self.assertIn("take every value from the request", goal)
+        self.assertIn("use a saved one only where the request gives none", goal)
+        self.assertIn("Scale repeated steps to the request", goal)
         long = skills.run_goal({"name": "long-one", "body": "step\n" * 3000}, "do the long one " * 200)
         self.assertLessEqual(len(long), 3900)
         self.assertEqual(skills.skill_of_goal(long), "long-one")
@@ -587,6 +647,9 @@ class LearnFromTaskTests(unittest.TestCase):
         self.assertEqual(skill["description"], "Water the plants once a minute.")
         self.assertIn(f"Request: {self.REQUEST}", skill["body"])
         self.assertIn(f"Commands that worked (task {task.id}, ", skill["body"])
+        # The commands carry that request's values; a new request's replace them.
+        self.assertIn(f"):\n{skills.VALUES_NOTE}\nvalve open", skill["body"])
+        self.assertIn("came from that request", skills.VALUES_NOTE)
         self.assertIn("valve open\nsleep 60\nvalve close\n", skill["body"])
         self.assertIn("Result: Watered five times, a minute apart.", skill["body"])
         for left_out in ("ls ~/garden", "--force", "valve status"):

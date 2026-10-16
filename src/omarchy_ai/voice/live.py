@@ -212,8 +212,9 @@ def build_session_config(config: Config) -> dict:
         "or the job is a separate local background job. Do not close windows you did not open unless told."
         "\n\nCOPY, DON'T INVENT: When asked to reproduce or mirror a setup (a docker-compose service, a "
         "config, a command), copy the real text from the source -- read it with read_tile_log or read_file -- "
-        "and change only what must change (paths, hosts). Screenshots (describe_screen) are summaries and lose "
-        "lines: never write a file or command from them. If you cannot read the exact source text, stop and say "
+        "and change only what must change (paths, hosts). Screenshots (describe_screen) are Jev typed answers, "
+        "not readable text, and lose lines: never write a file or command from them. Ask exactly what to check; "
+        "if an answer omits something, ask again and never claim it is absent. If you cannot read the exact source text, stop and say "
         "so."
         "\n\nMULTI-STEP JOBS: For a request with several steps, say the plan in one short sentence (e.g. "
         "'read the Minecraft service in the server's terminal, write it here pointing at ~/minecraft_new, start "
@@ -374,7 +375,7 @@ def build_session_config(config: Config) -> dict:
         "preferences. Resume only when requested in THIS session. When discussing "
         "a terminal tile, resolve its window identity and read its current transcript; "
         "do not infer current contents from old conversation. Report missing capture "
-        "honestly and use describe_screen for current visible contents when necessary."
+        "honestly and use describe_screen with an exact Jev question for current visible contents when necessary."
     )
 
     instructions += (
@@ -384,7 +385,7 @@ def build_session_config(config: Config) -> dict:
         "focus_window successfully for the intended window. Input tools only confirm "
         "input dispatch, NEVER application acceptance or completion. After submitting "
         "a prompt, read fresh output from that same terminal and verify that the app "
-        "accepted this exact request; inspect describe_screen if redraw history is "
+        "accepted this exact request; ask describe_screen an exact visual question if redraw history is "
         "ambiguous. Old 'Working' text is not evidence of current work. If evidence "
         "is missing, say 'input sent, outcome unverified', not 'done'. Never claim "
         "ongoing monitoring or promise future alerts unless an actual monitoring "

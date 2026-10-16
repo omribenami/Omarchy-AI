@@ -12,7 +12,8 @@ import time
 from pathlib import Path
 import numpy as np
 from .. import myapi
-from ..core import alert_clips, quota, updates
+from ..core import alert_clips, identities, quota, updates
+from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
 from ..execution.actions import run_action, ActionResult
@@ -136,6 +137,23 @@ def transcription_languages(names) -> list[str]:
     return codes
 
 
+def origin_note(conversation: str | None = None, channel: str | None = None) -> str:
+    """Where the user is, for a live session's instructions (core/origin.py):
+    the conversation's channel, or `channel` when there is no conversation.
+    Who is speaking is said separately ([Speaker], WHO IS SPEAKING/TYPING).
+    2026-10-15 19:58: "make it a bit calmer here", said to the speaker in a
+    room, became the night light on this computer's screen."""
+    try:
+        info = origins.current(conversation)
+    except Exception:  # noqa: BLE001 -- the session starts without it
+        return ""
+    if not info.get("channel") and channel in origins.CHANNELS:
+        talking_to, at_computer = origins.CHANNELS[channel]
+        info.update(channel=channel, talking_to=talking_to, at_this_computer=at_computer)
+    text = origins.describe({**info, "person": None})
+    return f"\n\nWHERE THE USER IS: {text}" if text else ""
+
+
 def build_live_config(config):
     shared = build_session_config(config)
     declared = shared["delegation"]["responses"]["tools"]
@@ -158,7 +176,7 @@ def build_live_config(config):
         instructions += (
             "\n\nWHO IS SPEAKING: this machine recognizes enrolled household members by their voice. A message "
             "that starts with [Speaker] names the person talking from then on, until another one arrives; it is "
-            "not a request and needs no reply. Treat 'I', 'my' and 'me' as that person (their computer, calendar, "
+            "not a request and needs no reply. On their own phone it is certain; by voice it is a match. Treat 'I', 'my' and 'me' as that person (their computer, calendar, "
             "messages, preferences). Be personal with them: call them by their first name, in your first reply "
             "after you learn who it is and regularly after that, the way someone who knows the family would "
             "('Yes, Dana?', 'It ends at 20:45, Dana. Anything else I can help you with?'), and follow what the "
@@ -277,6 +295,13 @@ class GeminiLiveSession:
         self._running_background = 0
         self._last_user_speech = 0.0
         self.from_paired_phone = False  # set by phone/gemini.py; gates unlock_screen
+        # Who is talking when it is known without a voice (core/identities.py):
+        # the person of a paired phone (phone/gemini.py), the owner typing (voice/text_chat.py).
+        self.known_identity: identities.Identity | None = None
+        # The channel when no conversation in context says it (core/origin.py
+        # CHANNELS): the desktop text chat has no saved conversation.
+        self.channel: str | None = None
+        self._task_seen: dict = {}  # task id -> (what task_status said, monotonic time) (_task_status_repeat)
         self._offers_turn, self._offers = 0.0, 0  # use_tool offers in this user turn (_offer_result)
         self._refused_turn, self._refused = 0.0, {}  # calls Jev sent back in this user turn (_sent_back)
         self._awaiting_since = 0.0  # 0: no reply pending
@@ -528,7 +553,7 @@ class GeminiLiveSession:
             self._utterance_checked = self._fast_judging = True  # until back at the top (_judge_claim waits)
             text = " ".join("".join(self._utterance).split())
             started = time.monotonic()
-            decision, route = await asyncio.to_thread(jev_fast.judge, text)
+            decision, route = await asyncio.to_thread(jev_fast.judge, text, origin=self._origin())
             if route:
                 self._route_hint = {**route, "request": text, "at": time.monotonic()}
             # A whole job must not depend on Gemini remembering to make one
@@ -565,6 +590,7 @@ class GeminiLiveSession:
                 continue
             if self._overlay:
                 await asyncio.to_thread(watchdog.tool_call, tool, args)
+            self._as_speaker()
             result = await asyncio.to_thread(jev_fast.execute, tool, args)
             self._jev_done = (tool, args, time.monotonic(), result.message, text) if result.ok else None
             log.info("Jev fast path: %r -> %s %s ok=%s %r evidence=%s total=%.0fms", text[:120], tool, args,
@@ -1096,6 +1122,7 @@ class GeminiLiveSession:
 
     async def _escalate(self, goal: str, proactive: bool = False, unbacked: bool = False) -> None:
         log.info("Escalating to the Task Runtime: session=%s goal=%r", self._audit_session, goal[:600])
+        self._as_speaker()  # the task runs as them (runtime/runtime.py)
         result = await asyncio.to_thread(run_action, "start_task", {"goal": goal})
         try:
             started = json.loads(result.message) if result.ok else {}
@@ -1130,7 +1157,21 @@ class GeminiLiveSession:
         failed = ({"tool": last["action"], "args": last["args"], "error": last["message"]}
                   if last and not last["ok"] and time.time() - last.get("ts", 0) < 180 else None)
         return switchboard.Context(request, groups[-4:-1], {k: hint[k] for k in ("route", "p")} if hint else None,
-                                   calls, failed=failed)
+                                   calls, failed=failed, origin=self._origin() or None)
+
+    def _origin(self) -> dict:
+        """Where the request being handled came from (core/origin.py), None
+        fields dropped, for every Jev decision on it: the fast pass, the
+        catalog pick and the switchboard. Read from the conversation in this
+        task's context (run(), voice/satellite.py and phone/gemini.py set it
+        before the workers start; asyncio.to_thread carries it into Jev's
+        thread) and the person talking now, with `channel` as the fallback."""
+        self._as_speaker()
+        info = origins.current()
+        if not info.get("channel") and self.channel in origins.CHANNELS:
+            talking_to, at_computer = origins.CHANNELS[self.channel]
+            info.update(channel=self.channel, talking_to=talking_to, at_this_computer=at_computer)
+        return {k: v for k, v in info.items() if v is not None}
 
     async def _pick(self, call) -> catalog.Resolution:
         """use_tool: Jev picks the catalog tool (execution/catalog.py)."""
@@ -1142,7 +1183,8 @@ class GeminiLiveSession:
                                      lambda system, user: GatewayClient(self.config).complete_json(system, user,
                                                                                                     timeout=8))
         pick = await asyncio.to_thread(catalog.resolve, dict(call.args or {}), groups[-1] if groups else "",
-                                       myapi_on=self.config.myapi_enabled and myapi.is_connected(), fill=fill)
+                                       myapi_on=self.config.myapi_enabled and myapi.is_connected(), fill=fill,
+                                       origin=self._origin())
         log.info("Catalog: call=%s request=%r -> %s %s", call.id, (call.args or {}).get("request", "")[:120],
                  pick.tool if pick.run else "offer", pick.evidence)
         return pick
@@ -1155,6 +1197,19 @@ class GeminiLiveSession:
         except Exception:  # noqa: BLE001 -- when unsure, say it
             return True
         return task is None or task.status == WAITING_APPROVAL
+
+    def identity(self) -> identities.Identity:
+        """Who is talking now: a known identity (attached phone, typed) for
+        the whole session, else the voice recognized last, else nobody."""
+        if self.known_identity is not None and self.known_identity.person:
+            return self.known_identity
+        speaker = self._voices.speaker if self._voices is not None else None
+        return identities.Identity(speaker, "voice") if speaker else identities.Identity()
+
+    def _as_speaker(self) -> None:
+        """Tools run from here on act as whoever is talking now (asyncio.to_thread
+        copies this into their thread). Each worker task has its own context."""
+        identities.set_current(self.identity())
 
     def _run_tool(self, name: str, args: dict) -> ActionResult:
         """run_action, except unlock_screen from the paired phone (the only
@@ -1189,6 +1244,38 @@ class GeminiLiveSession:
                                    "use_tool(name=..., args={...}) with every required parameter inside `args`, "
                                    "or tell the user in one short sentence what you still need.")
 
+    TASK_REPEAT_SECONDS = 10
+
+    def _task_status_repeat(self, args: dict, result: ActionResult) -> ActionResult:
+        """task_status for a task that has not changed since she asked a moment
+        ago: a short answer that says so. Journal 2026-10-15 20:48:06-20:48:38:
+        about 40 task_status calls in 32 seconds for one task, each the full
+        payload. Her next poll within TASK_REPEAT_SECONDS is short again."""
+        if not result.ok or (args or {}).get("list"):
+            return result
+        try:
+            summary = json.loads(result.message)
+        except ValueError:
+            return result
+        if not isinstance(summary, dict) or not summary.get("id"):
+            return result
+        seen = {k: summary.get(k) for k in ("status", "phase", "steps", "last_step", "pending_approval",
+                                            "question", "result", "errors")}
+        now = time.monotonic()
+        self._task_seen = {k: v for k, v in self._task_seen.items() if now - v[1] <= self.TASK_REPEAT_SECONDS}
+        before = self._task_seen.get(summary["id"])
+        self._task_seen[summary["id"]] = (seen, now)
+        if before is None or before[0] != seen:
+            return result
+        short = {"id": summary["id"], "status": summary.get("status"), "phase": summary.get("phase"),
+                 "steps": summary.get("steps"), "unchanged": True,
+                 "note": (f"Nothing changed since you checked {now - before[1]:.0f}s ago. The user will be told "
+                          "when this task changes or finishes, without you checking. Stop calling task_status for "
+                          "it now; tell the user it is still working, or go on with the conversation.")}
+        if summary.get("question"):
+            short["question"] = summary["question"]
+        return ActionResult(True, json.dumps(short, ensure_ascii=False))
+
     MAX_SAME_REFUSAL = 2  # the same call, sent back twice: the third answer says stop
 
     def _sent_back(self, name: str, args: dict, message: str) -> ActionResult:
@@ -1216,6 +1303,7 @@ class GeminiLiveSession:
 
     async def _run_call(self, session, call) -> None:
         from google.genai import types
+        self._as_speaker()  # checked at each call: the speaker can change mid-session
         original_request = self._switchboard_context().request
         log.info("Gemini action started: session=%s call=%s name=%s args=%r",
                  self._audit_session, call.id, call.name, call.args or {})
@@ -1305,6 +1393,8 @@ class GeminiLiveSession:
                     await action
                     raise
                 window = looking.result() if looking.done() and not looking.exception() else {}
+                if ran == "task_status" and action is not None:
+                    result = self._task_status_repeat(ran_args, result)
                 if call.name == "read_file" and result.ok and "[assistant note] This file is a multi-step script" in result.message:
                     self._script_read_at = time.monotonic()
                     # The planner fills missing step details from the script itself.
@@ -1524,9 +1614,21 @@ class GeminiLiveSession:
         ok, message = speaker_id.remember(name, self._voices.recent(), source)
         return ActionResult(ok, message)
 
+    # A recognized speaker is forgotten only when the voice is clearly no one
+    # enrolled, twice in a row: the owner's own speech often scores 0.28-0.37,
+    # just under speaker_id.MATCH (journal 2026-10), and must not flap.
+    STRANGER_SCORE = 0.2
+    STRANGER_WINDOWS = 2
+
     async def _speaker_watch(self, session) -> None:
         """Tell the model who is speaking when the voice is recognized, and
-        again when it becomes someone else (voice/speaker_id.py)."""
+        again when it becomes someone else (voice/speaker_id.py). A session
+        whose person is already known (their own phone) needs no voice match."""
+        if self.known_identity is not None and self.known_identity.person:
+            await session.send_client_content(turns={"role": "user", "parts": [{"text": (
+                f"[Speaker] {identities.describe(self.known_identity)} That holds for this whole conversation. "
+                "This is context, not a request.")}]}, turn_complete=False)
+            return await asyncio.Event().wait()
         if self._voices is None:
             return await asyncio.Event().wait()  # off: a worker that never ends, like the others
         identifier = speaker_id.Identifier()
@@ -1544,6 +1646,7 @@ class GeminiLiveSession:
             await session.send_client_content(turns={"role": "user", "parts": [{"text": unknown.format(
                 "Nobody's voice has been recognized in this conversation yet")}]}, turn_complete=False)
         told_unknown = False
+        strangers = 0  # windows in a row where no enrolled voice came close
         try:
             while True:
                 await asyncio.sleep(0.25)
@@ -1557,9 +1660,17 @@ class GeminiLiveSession:
                     told_unknown = True
                     await session.send_client_content(turns={"role": "user", "parts": [{"text": unknown.format(
                         "The voice speaking now is not recognized as anyone enrolled")}]}, turn_complete=False)
+                stranger = name is None and max(scores.values(), default=0.0) < self.STRANGER_SCORE
+                strangers = strangers + 1 if stranger else 0
+                if strangers >= self.STRANGER_WINDOWS and self._voices.speaker is not None:
+                    # Someone else is talking: nobody's tools (MyApi) act for the last one recognized.
+                    self._voices.speaker = None
+                    await session.send_client_content(turns={"role": "user", "parts": [{"text": unknown.format(
+                        "The voice speaking now is not recognized as anyone enrolled")}]}, turn_complete=False)
+                    continue
                 if name is None or name == self._voices.speaker:
                     continue  # an unsure stretch changes nothing
-                self._voices.speaker = name
+                self._voices.speaker = name  # tools now run as them (identity())
                 who = speaker_id.describe(name, (await asyncio.to_thread(speaker_id.people)).get(name))
                 await session.send_client_content(turns={"role": "user", "parts": [{"text": (
                     f"[Speaker] The person speaking now, recognized by their voice: {who}. "
@@ -1783,7 +1894,9 @@ class GeminiLiveSession:
             while True:
                 model = models[index]
                 try:
-                    async with live_connect(client, self.config, model, build_live_config(self.config)) as session:
+                    live_config = build_live_config(self.config)
+                    live_config["system_instruction"] += origin_note(self.conversation)
+                    async with live_connect(client, self.config, model, live_config) as session:
                         if mic is None:
                             argv = ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms"]
                             argv.extend(["--target", self._echo.source])

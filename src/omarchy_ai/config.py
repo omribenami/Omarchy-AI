@@ -113,11 +113,6 @@ class Config:
     # UI choice. Jev remains the structured decision/browser policy; it is
     # never incorrectly used as a free-form text generator.
     omarchy_model_choice: str = "gemini"
-    omarchy_vision_model: str = "google/gemini-2.5-flash-lite"
-    # Typed judgments about an image (a camera frame, a screenshot): the
-    # Gateway decision model that accepts image input. Jev itself rejects
-    # files ("decision file input not supported", probed 2026-10-11).
-    omarchy_image_decision_model: str = "openai/gpt-6-luna-decisions"
     # The user's program that knows their cameras. `<command> list` prints a
     # JSON list of camera names; `<command> snapshot <name> <file>` writes
     # the current frame (JPEG or PNG) to <file>. None: no camera watches.
@@ -171,8 +166,11 @@ class Config:
         'answer by looking; call hide_window_labels as soon as you have their answer. get_recent_actions '
         '(optionally filtered to a window) recalls what you did this conversation: use it before '
         "repeating an action or when asked what you've done.\n"
-        'LOOKING: describe_screen lets you look at the screen but takes several seconds: only when '
-        "genuinely needed, and say something brief like 'let me take a look' right before calling it. For "
+        'LOOKING: describe_screen asks Jev typed questions about the screen and takes several seconds: only '
+        "when genuinely needed, and say something brief like 'let me take a look' right before calling it. "
+        "The question must name exactly what to check (for example, 'how many cars, including on the street'). "
+        "If an answer does not mention something, never claim it is not in view; ask again about that thing. "
+        "Jev cannot read out exact on-screen text. For "
         'a terminal (did a command finish, what was being worked on, the result of a job the user says '
         'finished) call read_tile_log instead: it is instant real text. Assistant-opened terminals '
         'include full output and newly opened user terminals record live output; older terminals may have '
@@ -193,9 +191,10 @@ class Config:
         'stop_casting ends casting. To set up a TV that was never cast to, call install_receiver_on_tv '
         'and walk through its guidance out loud step by step, since parts of it (Developer options, '
         'Wireless debugging, reading a pairing code) happen on the TV itself with the user looking at it.\n'
-        "REMINDERS AND CUSTOMIZATION: Omarchy's notification-popup reminders are "
-        'set_reminder/list_reminders/clear_reminders, not run_omarchy_command. set_reminder takes minutes '
-        "from now, so convert 'in an hour' or 'at 3pm' yourself. Other customization (theme, bar widget, "
+        "REMINDERS AND CUSTOMIZATION: create every reminder with schedule_task kind 'remind' (a time or "
+        "in_minutes; it reaches the phone and the desktop, and you say it). list_reminders/clear_reminders "
+        "manage Omarchy's own desktop popups; set_reminder only when the user asks for such a popup by name, "
+        "never run_omarchy_command for either. Other customization (theme, bar widget, "
         "screenshot/recording) is run_omarchy_command with the matching omarchy CLI args (e.g. ['theme', "
         "'set', 'catppuccin']); night light is its own tool, nightlight_toggle. Only "
         'theme/toggle/reminder/bar/capture run through run_omarchy_command; that limit does not apply to '
@@ -361,6 +360,9 @@ class Config:
     # model when the device sends two (1 = the second, noise-suppressed one
     # on a Voice PE); the wake word always uses the first.
     satellite_host: str | None = None
+    # The room the satellite speaker stands in ("living room"): where "here"
+    # is for a request said to it (core/origin.py).
+    satellite_room: str = ""
     satellite_port: int = 6053
     satellite_key_path: str = str(CONFIG_DIR / "satellite-key")
     satellite_http_port: int = 8767

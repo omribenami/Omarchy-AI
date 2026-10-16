@@ -123,7 +123,22 @@ _CREDENTIAL = [
 ]
 # Remote code execution idioms (curl | bash): MiniMax demoted these from hard
 # block to a bypass-immune ask so real installers (rustup, nvm) still work.
-_REMOTE_EXEC = re.compile(rf"\b(?:curl|wget)\b[^;&]*\|\s*(?:sudo\s+)?{_INTERPRETERS}\b", re.I)
+# Downloaded bytes only become code when the interpreter reads its PROGRAM
+# from stdin (`| sh`, `| bash -s -- arg`, `| python3 -`); given inline code
+# (`| python3 -c '...json.load(sys.stdin)...'`) or a script file, the
+# download is just data on stdin. 2026-10-15: a checker's curl-to-`python3
+# -c` JSON check of a local HTTP API was asked for ten times in the test
+# role and skipped until the task ran out of steps. See _remote_exec().
+_DOWNLOAD = re.compile(r"\b(?:curl|wget)\b", re.I)
+_INTERPRETER_WORD = re.compile(rf"{_INTERPRETERS}", re.I)
+# Inline code that would still run what it reads (exec(sys.stdin.read()),
+# os.system, a nested shell): fed a download, that is remote execution again.
+_INLINE_RUNS_INPUT = re.compile(r"(?<![\w.])(?:exec|eval|compile|Function)\s*\(|`|\bqx\b|__import__|"
+                                r"\b(?:system|popen|spawn\w*|subprocess|child_process|execSync|execFile\w*|runpy)\b")
+_INLINE_SHELL_RUNS_INPUT = re.compile(rf"\b(?:eval|source|exec)\b|(?:^|[\s;&|(]){_INTERPRETERS}(?:\s|$|[;&|)])"
+                                      r"|(?:^|[\s;&|])\.\s", re.I)
+# Interpreter options that take the next word as their value, not a script.
+_OPTION_VALUES = {"-W", "-X", "-o", "-O", "-r", "--require", "--import", "--rcfile", "--init-file"}
 
 # ---------------------------------------------------------------------------
 # Command vocabulary
@@ -320,6 +335,104 @@ def _substitutions(command: str) -> list[str]:
     return found
 
 
+def _pipelines(command: str) -> list[list[str]]:
+    """Pipelines of `command`, each as its stages (quote- and $(...)-aware,
+    like split_commands, but a single `|` separates stages, not commands)."""
+    pipelines, stages, current, quote, escaped, depth = [], [], [], None, False, 0
+    text = command.replace("\r\n", "\n")
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\" and quote != "'":
+            current.append(ch)
+            escaped = True
+        elif quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            current.append(ch)
+        elif ch == "(" and i > 0 and text[i - 1] == "$":
+            depth += 1
+            current.append(ch)
+        elif ch == ")" and depth:
+            depth -= 1
+            current.append(ch)
+        elif depth == 0 and ch == "|" and text[i + 1:i + 2] != "|" and text[i - 1:i] != ">":
+            stages.append("".join(current))
+            current = []
+            if text[i + 1:i + 2] == "&":  # |& pipes stderr too
+                i += 1
+        elif depth == 0 and (ch in ";\n" or ch == "|" or (ch == "&" and text[i - 1:i] not in (">", "<")
+                                                          and text[i + 1:i + 2] != ">")):
+            stages.append("".join(current))
+            pipelines.append(stages)
+            stages, current = [], []
+            if text[i + 1:i + 2] == ch:  # && ||
+                i += 1
+        else:
+            current.append(ch)
+        i += 1
+    stages.append("".join(current))
+    pipelines.append(stages)
+    return [[s.strip() for s in p] for p in pipelines if any(s.strip() for s in p)]
+
+
+def _reads_program_from_stdin(word: str, args: list[str]) -> tuple[bool, str | None]:
+    """(program comes from stdin, inline code if any) for an interpreter's args."""
+    shell = word in _SHELLS
+    inline_flags = "c" if shell or word.startswith("python") else "eE"
+    stdin_flag = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-":
+            return True, None
+        if arg == "--":
+            # `bash -s -- arg`: what follows are the program's arguments.
+            return stdin_flag or not shell or i + 1 >= len(args), None
+        if arg in ("--eval", "--print") or (arg.startswith("-") and not arg.startswith("--") and len(arg) > 1
+                                           and (arg[-1] in inline_flags or (word == "node" and arg[-1] == "p"))):
+            return False, args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith("-"):
+            if shell and not arg.startswith("--") and "s" in arg[1:]:
+                stdin_flag = True
+            if arg in _OPTION_VALUES or (word.startswith("python") and arg == "-m"):
+                if arg == "-m":
+                    return False, None  # runs an installed module
+                i += 1
+            i += 1
+            continue
+        # A script file (or, after -s, the program's own arguments).
+        return stdin_flag, None
+    return True, None
+
+
+def _remote_exec(command: str) -> str | None:
+    """Why `command` runs a download as code (curl x | sh), or None."""
+    if not (_DOWNLOAD.search(command) and "|" in command):
+        return None
+    for stages in _pipelines(command):
+        downloaded = False
+        for stage in stages:
+            if downloaded:
+                tokens, _ = unwrap(_tokens(stage))
+                word = os.path.basename(tokens[0]) if tokens else ""
+                if _INTERPRETER_WORD.fullmatch(word):
+                    from_stdin, code = _reads_program_from_stdin(word, tokens[1:])
+                    if from_stdin:
+                        return "pipes a download into an interpreter"
+                    danger = _INLINE_SHELL_RUNS_INPUT if word in _SHELLS else _INLINE_RUNS_INPUT
+                    if code and danger.search(code):
+                        return "pipes a download into inline code that runs its input"
+            downloaded = downloaded or bool(_DOWNLOAD.search(stage))
+    return None
+
+
 def unwrap(tokens: list[str]) -> tuple[list[str], list[str]]:
     """(real command tokens, wrappers seen). `sudo -u x env A=1 timeout 5 ls`
     -> (['ls'], ['sudo', 'env', 'timeout'])."""
@@ -467,8 +580,9 @@ def classify(command: str, cwd: str | Path | None = None, scope: Scope | None = 
     for pattern, why in _CREDENTIAL:
         if pattern.search(command):
             result.raise_to(Risk.HIGH, why)
-    if _REMOTE_EXEC.search(command):
-        result.raise_to(Risk.HIGH, "pipes a download into an interpreter")
+    remote = _remote_exec(command)
+    if remote:
+        result.raise_to(Risk.HIGH, remote)
     _tool_cli_risk(command, result)
     for inner in _substitutions(command):
         result.merge(classify(inner, cwd, scope))

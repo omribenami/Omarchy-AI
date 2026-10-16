@@ -69,6 +69,9 @@ REPORTED_HEADING = "Commands the worker reported (not observed by the harness; t
 _SECTION = re.compile("|".join(re.escape(h) for h in (COMMANDS_HEADING, REPORTED_HEADING)))
 # Last section of a coding agent's report (runtime/executors/coding_agents.py).
 COMMANDS_MARKER = "COMMANDS THAT DID IT:"
+# First line under a learned skill's commands: they are one run, not the procedure's fixed values.
+VALUES_NOTE = ("The values in these commands (durations, counts, times, names, messages, targets) came from that "
+               "request; a new request's values replace them, and repeated steps scale to it.")
 REPORTED_MAX, REPORTED_CHARS = 30, 600
 _NEW = "new"              # the "none of the saved ones" option; a skill of that very name is not offered
 _lock = threading.Lock()
@@ -243,8 +246,12 @@ def run_goal(skill: dict, request: str) -> str:
     the body is clipped so the goal always fits."""
     request = " ".join(str(request or "").split())[:1000] or f"run {skill['name']}"
     head = (f"{RUN_PREFIX}'{skill['name']}'.\n\n{_RUN_REQUEST}{request}\n\n"
-            "The steps below are a procedure that worked before: follow them, and adapt to the request where it "
-            "differs. A wait between steps is a real wait: let that time pass before the next step.\n\n")
+            "The steps below are a procedure that worked before. Its concrete values (durations, counts, times, "
+            "names, messages, targets, devices) are those of the run it was learned from: take every value from "
+            "the request above, and use a saved one only where the request gives none. Scale repeated steps to "
+            "the request (an announcement every minute over N minutes is N announcements, whatever N the saved "
+            "run used), and leave out the parts the request does not want. A wait between steps is a real wait: "
+            "let that time pass before the next step.\n\n")
     body, room = str(skill.get("body") or ""), GOAL_CHARS - len(head)
     return head + (body if len(body) <= room else body[:room - 1] + "…")
 
@@ -436,7 +443,7 @@ def learn_from_task(task, jev: Jev | None = None) -> dict | None:
     existing = own
     if existing is None and others and answers["same"]["choice"] != _NEW and answers["same"]["p"] >= LEARN_P:
         existing = load(answers["same"]["choice"])
-    section = (f"{heading}{task.id}, {datetime.now():%Y-%m-%d}):\n" + "\n".join(kept)
+    section = (f"{heading}{task.id}, {datetime.now():%Y-%m-%d}):\n{VALUES_NOTE}\n" + "\n".join(kept)
                + (f"\n\nResult: {claim}" if claim else ""))[:6000]
     if existing is not None:
         # Hand-written steps stay; only the commands a task recorded are replaced.

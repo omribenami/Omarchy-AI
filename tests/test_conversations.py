@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest.mock
 from unittest.mock import patch
 
-from omarchy_ai.core import conversations
+from omarchy_ai.core import conversations, skills
 from omarchy_ai.phone import server
 
 OPEN_QUESTION = conversations._open_question  # before the conftest fixture swaps it
@@ -20,6 +20,9 @@ class ConversationTests(unittest.TestCase):
             patcher = patch.object(conversations, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = patch.object(skills, "SKILLS_DIR", Path(self.tmp.name) / "skills")  # conftest.py is pytest-only
+        patcher.start()
+        self.addCleanup(patcher.stop)
         # No titles from the Gateway in tests, no keyring for redaction.
         for target in ("_maybe_title",):
             patcher = patch.object(conversations, target)

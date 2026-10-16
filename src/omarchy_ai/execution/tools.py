@@ -41,7 +41,7 @@ TOOLS: list[dict] = [
         "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
     _tool("get_release_notes", "Read the published changelog: what's new in an available update (every version newer than the installed one, from the exact commit the updater would install), or the installed version's notes when already current, or one specific version. Call it whenever the user asks what's new, what changed, or for the highlights of a version. Summarize the Highlights in the user's language and offer the Fixes/Under the hood detail if they want more. Only describe changes this tool returned; never invent them.", {
         "type": "object", "properties": {"version": {"type": "string", "description": "Optional exact version like 0.3.10; omit for the available update (or the installed version)."}}, "required": []}),
-    _tool("schedule_task", "Schedule work that runs in the background on the heartbeat, outside this conversation, even after it ends; the user is told the result. Kinds: 'action' (DEFAULT for doing something at a time or on a routine: the exact tool call(s) to make then -- any of your tools or catalog tools, e.g. a smart-home device, volume, a MyApi call, a command tool. Give `tool` + `args` exactly as you would call it now, or `steps` [{tool, args}, ...] for a routine of several calls; if you do not know the call, give `request` and it is resolved now. It runs on time, unattended, and the user hears done/failed), 'remind' (show the title as a reminder, one-off or recurring), 'watch' (keep checking one source -- a terminal window, a file path, a shell command's output, a home camera or the screen -- until Jev judges the condition true, e.g. 'the build finished', 'Claude Code is waiting for my input or approval', 'tests failed', or for a camera 'a delivery person or a package is at the door', 'a car has pulled into the driveway', 'a child is outside the fenced yard'; default every 2 minutes for 24 hours; every_minutes 1 is the fastest. A camera or the screen has no default: give for_minutes, the time frame the user said, and ask them when they said none; its looks are then spread over that time, and a camera with a motion sensor is also looked at the moment it sees movement, so give it no timing), 'desktop' (a native desktop goal run through the Jev desktop loop at that time), 'command' (run a shell command in the background at that time; optional condition decides whether to alert), 'assistant' (ONLY for what needs a conversation with the user at that time; anything a tool can do is an 'action'). Give exactly one timing: at (local 'YYYY-MM-DDTHH:MM', or 'HH:MM' / 'today 18:30' / 'tomorrow 9:00'), in_minutes, every_minutes, or cron (5-field, local time, e.g. '0 9 * * 1-5'). To CHANGE a scheduled task (another time or day), pass replace_id with its id: the new one is created and the old one cancelled in one step; never cancel first and schedule after. Only the result of this call says whether something is scheduled or whether a time has passed: never claim either without it. Repeat back the returned `when`.", {
+    _tool("schedule_task", "Schedule work that runs in the background on the heartbeat, outside this conversation, even after it ends; the user is told the result. Kinds: 'action' (DEFAULT for doing something at a time or on a routine: the exact tool call(s) to make then -- any of your tools or catalog tools, e.g. a smart-home device, volume, a MyApi call, a command tool. Give `tool` + `args` exactly as you would call it now, or `steps` [{tool, args}, ...] for a routine of several calls; if you do not know the call, give `request` and it is resolved now. It runs on time, unattended, and the user hears done/failed), 'remind' (show the title as a reminder, one-off or recurring), 'watch' (keep checking one source -- a terminal window, a file path, a shell command's output, a home camera or the screen -- until Jev judges the condition true, e.g. 'the build finished', 'Claude Code is waiting for my input or approval', 'tests failed', or for a camera 'a delivery person or a package is at the door', 'a car has pulled into the driveway', 'a child is outside the fenced yard'; default every 2 minutes for 24 hours; every_minutes 1 is the fastest. A camera or the screen has no default: give for_minutes, the time frame the user said, and ask them when they said none; its looks are then spread over that time, and a camera with a motion sensor is also looked at the moment it sees movement, so give it no timing), 'desktop' (a native desktop goal run through the Jev desktop loop at that time), 'command' (run a shell command in the background at that time; optional condition decides whether to alert), 'assistant' (ONLY for what needs a conversation with the user at that time; anything a tool can do is an 'action'). Give exactly one timing: at (local 'YYYY-MM-DDTHH:MM', or 'HH:MM' / 'today 18:30' / 'tomorrow 9:00'), in_minutes, every_minutes, or cron (5-field, local time, e.g. '0 9 * * 1-5'). To CHANGE a scheduled task (another time or day), pass replace_id with its id: the new one is created and the old one cancelled in one step; never cancel first and schedule after. Only the result of this call says whether something is scheduled or whether a time has passed: never claim either without it. Repeat back the returned `when`. A reminder for later today asked on the speaker: ask whether to also say it on the speaker; set announce_on_speaker only on a yes.", {
         "type": "object", "properties": {
             "title": {"type": "string", "description": "Short label the user will recognise; also the reminder text."},
             "kind": {"type": "string", "enum": ["action", "remind", "watch", "desktop", "command", "assistant"]},
@@ -64,6 +64,7 @@ TOOLS: list[dict] = [
             "repeat": {"type": "boolean", "description": "watch: keep watching and alert every time it becomes true."},
             "expires_in_hours": {"type": "number", "description": "watch: stop after this long (default 24)."},
             "for_minutes": {"type": "number", "description": "watch: the time frame in minutes, instead of expires_in_hours. Required for a camera or the screen."},
+            "announce_on_speaker": {"type": "boolean", "description": "remind, asked on the speaker, due later today: the user said yes to also hearing it on the speaker."},
         }, "required": ["title", "kind"]}),
     _tool("watch_camera", "Start a background watch that keeps checking a home camera for a time frame and alerts the user if something happens; never for one look at what a camera shows now. For kids playing outside, danger, a delivery, a car, an animal. Use it for 'watch', 'keep an eye on', 'monitor' or 'tell me if' on a camera; a single look with another tool cannot keep that promise. Until the time frame ends, the camera's current frame and the condition go to the image decision model again and again, in the background, even after this conversation; the user is alerted each time the condition becomes true and told when the watch ends. `for_minutes` is the time frame the user said: when they said none, ask them how long before calling, never guess one. Stop it early with cancel_scheduled_task.", {
         "type": "object", "properties": {
@@ -394,19 +395,21 @@ TOOLS: list[dict] = [
     ),
     _tool(
         "describe_screen",
-        "Take a screenshot and get a description of what's actually on "
-        "screen right now, answering a specific question about it if "
-        "given. Only use this when list_windows and the conversation so "
-        "far genuinely aren't enough to tell what the user means — it's "
-        "slower than the other tools, so don't reach for it by default.",
+        "Take a screenshot and have Jev return typed answers about what's "
+        "actually on screen. The question must name exactly what to check "
+        "(for example, 'how many cars, including on the street'). If a "
+        "result does not mention something, do not claim it is absent; ask "
+        "again about that thing. Jev cannot read out exact text, so use "
+        "read_tile_log, inspect_browser, or terminal_read for text. Only use "
+        "this when text tools and the conversation genuinely aren't enough.",
         {
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
                     "description": (
-                        "What to look for or ask about the screen. Empty "
-                        "for a general description."
+                        "Exactly what Jev should check visually. Empty for "
+                        "a small set of general typed observations."
                     ),
                 }
             },
@@ -648,7 +651,8 @@ TOOLS: list[dict] = [
         "understands minutes from now, not absolute times or dates: "
         "convert whatever the user said ('in 20 minutes', 'in an hour', "
         "'at 3pm') into a minute count yourself before calling this. "
-        "Prefer this over run_omarchy_command for reminders.",
+        "Only when the user asks for this desktop popup by name: every "
+        "other reminder is schedule_task kind 'remind'.",
         {
             "type": "object",
             "properties": {

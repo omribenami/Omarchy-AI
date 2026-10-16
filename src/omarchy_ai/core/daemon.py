@@ -154,6 +154,7 @@ class OmaDaemon:
                 try:
                     from ..runtime import service as task_service
                     await asyncio.to_thread(task_service.get_runtime().tidy_approvals)
+                    await asyncio.to_thread(task_service.get_runtime().expire_confirmations)
                     await asyncio.to_thread(task_service.get_runtime().report_running_progress)
                     from . import conversations
                     await asyncio.to_thread(conversations.sync_installs)  # a tool install to approve, in its chat
@@ -218,6 +219,9 @@ class OmaDaemon:
         watch fired at 01:03 and only a desktop popup appeared."""
         from . import agenda
         on_call = agenda.announce_to_calls(entry)  # the user is on the phone: say it there
+        if entry.get("announce") == "satellite":  # a reminder asked on the speaker: say it there too
+            from ..voice import satellite as voice_satellite
+            on_call = voice_satellite.announce(entry) or on_call
         session = self._session
         if session is not None and hasattr(session, 'announce'):  # starting or active
             session.announce(entry)

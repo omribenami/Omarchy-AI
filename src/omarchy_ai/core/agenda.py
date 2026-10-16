@@ -92,6 +92,7 @@ EVIDENCE_LINES = 20
 # Firing on a watch notifies the user; a false alarm is cheap but a wall of
 # them is not. Jev's boolean is a probability, so require a clear yes.
 WATCH_THRESHOLD = 0.85
+CONFIRM_DELAY_SECONDS = 1.5  # between a visual watch's frame and its confirming frame
 
 _lock = threading.RLock()
 _running: set[str] = set()
@@ -153,6 +154,8 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
     entry = {"id": uuid.uuid4().hex[:10], "job_id": job["id"], "title": job["title"], "kind": job["kind"],
              "outcome": outcome, "detail": detail[:1500], "urgent": urgent, "at": time.time(),
              "delivered": False}
+    if job.get("announce") and outcome == "reminded":
+        entry["announce"] = job["announce"]  # also said there (core/daemon.py)
     with _lock:
         INBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
         with INBOX_PATH.open("a") as stream:
@@ -218,6 +221,11 @@ def attach_call(session, loop) -> None:
 def detach_call(session) -> None:
     with _lock:
         _calls.pop(session, None)
+
+
+def attached(session) -> bool:
+    with _lock:
+        return session in _calls
 
 
 def announce_to_calls(entry: dict) -> bool:
@@ -467,6 +475,15 @@ def create(args: dict, now: float | None = None) -> dict:
         job["schedule"]["at"] if "at" in job["schedule"] else schedule.next_run(job["schedule"], now)
     if job["next_run"] is None:
         raise ValueError(f"That time has already passed (it is now {schedule.describe(now)})")
+    if args.get("announce") == "satellite":  # execution/actions.py: asked on the speaker, and the user said yes
+        if kind != "remind" or time.localtime(job["next_run"])[:3] != time.localtime(now)[:3]:
+            raise ValueError("announce_on_speaker is only for a reminder due later today; schedule it again "
+                             "without announce_on_speaker (the phone and the desktop still get it)")
+        job["announce"] = "satellite"
+    from . import identities
+    who = identities.current()
+    if who.person:  # who asked: their phones get it, and it runs as them (run_job)
+        job["requester"], job["requester_how"] = who.person, who.how
     replace = _text(args, "replace_id", 40)
     with _lock:
         jobs = _load()
@@ -500,7 +517,7 @@ def cancel(job_id: str) -> dict | None:
 def summary(job: dict) -> dict:
     keys = ("id", "title", "kind", "status", "window", "terminal", "path", "command", "camera", "screen",
             "trigger", "goal", "condition",
-            "repeat", "request", "runs", "last_result")
+            "repeat", "request", "announce", "runs", "last_result")
     out = {k: job[k] for k in keys if job.get(k) not in (None, "")}
     sched = job.get("schedule", {})
     out["schedule"] = (f"once at {schedule.describe(sched['at'])}" if "at" in sched else
@@ -524,10 +541,14 @@ def list_jobs(include_finished: bool = False) -> list[dict]:
 
 # ---------------------------------------------------------------- effects
 
-def notify(title: str, body: str = "", urgent: bool = False) -> None:
+def notify(title: str, body: str = "", urgent: bool = False, person: str | None = None) -> None:
+    """On the desktop and the phones; with a `person` who has attached
+    phones (core/identities.py), only on theirs."""
     try:
         from ..phone import flux_notify
-        flux_notify.send(title[:120], body[:400])  # and on the phone, through Flux
+        from . import identities
+        flux_notify.send(title[:120], body[:400],  # and on the phone, through Flux
+                         devices=identities.phones(person) or None)
     except Exception:  # noqa: BLE001 -- the desktop notification must still go out
         log.debug("flux notify unavailable", exc_info=True)
     try:
@@ -660,8 +681,14 @@ def _finish(job: dict, now: float, result: str, *, done: bool = False, **extra) 
 
 
 def _run_remind(job, now, jev):
-    notify("Reminder", job["title"])
-    _inbox_add(job, "reminded", "Reminder shown: " + job["title"])
+    person = job.get("requester")
+    notify("Reminder", job["title"], **({"person": person} if person else {}))
+    if person:
+        from . import identities
+        _inbox_add(job, "reminded", f"Reminder for {identities.name(person)} (say it to them by name): "
+                   + job["title"])
+    else:
+        _inbox_add(job, "reminded", "Reminder shown: " + job["title"])
     _finish(job, now, "reminder shown")
 
 
@@ -830,6 +857,17 @@ def _run_watch(job, now, jev):
         return
     met = verdict["p"] >= WATCH_THRESHOLD
     was_met = bool(job.get("last_met"))
+    if visual and met and not was_met:
+        # One frame can mislead (a shadow, a passing headlight): a picture
+        # alerts only when a fresh frame a moment later agrees.
+        time.sleep(CONFIRM_DELAY_SECONDS)
+        try:
+            second = _look(job)
+        except (OSError, LookupError, subprocess.SubprocessError, JevError) as exc:
+            _finish(job, now, f"unconfirmed p={verdict['p']:.2f}: {str(exc)[:200]}")
+            return
+        met = second["p"] >= WATCH_THRESHOLD
+        verdict = dict(second, p=min(verdict["p"], second["p"]), urgent=verdict["urgent"] or second["urgent"])
     result = f"condition p={verdict['p']:.2f}"
     if met and not was_met:
         notify(job["title"], verdict["evidence"] or job["condition"], verdict["urgent"])
@@ -864,6 +902,9 @@ def _missed(job: dict, now: float) -> bool:
 
 def run_job(job: dict, jev: Jev | None = None, now: float | None = None) -> None:
     now = time.time() if now is None else now
+    from . import identities
+    # It runs as whoever asked for it (MyApi is the owner's: core/identities.py).
+    token = identities.set_current(identities.Identity(job.get("requester"), job.get("requester_how")))
     try:
         if _missed(job, now):
             return
@@ -872,6 +913,7 @@ def run_job(job: dict, jev: Jev | None = None, now: float | None = None) -> None
         log.exception("agenda: job %s crashed", job.get("id"))
         _finish(job, now, f"crashed: {type(exc).__name__}: {exc}")
     finally:
+        identities.reset_current(token)
         with _lock:
             _running.discard(job["id"])
 

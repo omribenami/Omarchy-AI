@@ -205,9 +205,14 @@ class TextChat:
     async def _run(self, queue: asyncio.Queue) -> None:
         from ..core import agenda
         from ..core.history import append_session
-        from .gemini_live import GeminiLiveSession, build_live_config
+        from .gemini_live import GeminiLiveSession, build_live_config, origin_note
 
+        from ..core import identities
         adapter = GeminiLiveSession(self.config)
+        # Typed at this computer: its owner (core/identities.py), no voice match needed.
+        adapter.known_identity = identities.Identity(identities.owner(), "typed")
+        # No saved conversation here: the channel says where the user is (core/origin.py).
+        adapter.channel = "desktop-text"
         adapter.on_message = lambda message: self._on_message(message, adapter)
         self._adapter = adapter
         self.status = "connecting"
@@ -216,7 +221,9 @@ class TextChat:
         client = None
         try:
             live_config = build_live_config(self.config)
-            live_config["system_instruction"] += TEXT_NOTE
+            live_config["system_instruction"] += TEXT_NOTE + origin_note(channel="desktop-text")
+            if who := identities.describe(adapter.known_identity):
+                live_config["system_instruction"] += "\n\nWHO IS TYPING: " + who
             client, connection = self._connect(self.config, live_config)
             async with connection as session:
                 agenda.mark_briefed()  # this prompt carried the pending results

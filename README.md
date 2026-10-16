@@ -660,9 +660,9 @@ API key.
 
 Then open the **Omarchy AI** settings panel on the right side of the bar,
 choose **OpenAI**, **Gemini** or **Gateway voice**, and save the
-**Vercel AI Gateway key**: the one key for Jev's desktop, browser and Task
-Runtime decisions (no separate TypeSafe token), the OpenAI backup voice, and
-the Gateway speech, text and vision models. Gemini Live and OpenAI Live also
+**Vercel AI Gateway key**: the one key for Jev's desktop, browser, image and
+Task Runtime decisions (no separate TypeSafe token), the OpenAI backup voice,
+and Gateway speech and text. Gemini Live and OpenAI Live also
 take their own provider key, because they connect to that provider directly.
 With Gemini selected, a failing voice model is replaced mid-conversation in
 this order: Gemini 3.8 Live, GPT Realtime 2 through the Gateway key, then

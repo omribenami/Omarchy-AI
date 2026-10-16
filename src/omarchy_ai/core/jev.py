@@ -75,8 +75,7 @@ def parse(response: dict, questions: dict) -> dict:
     answers = response.get("answers") if isinstance(response, dict) else None
     if not isinstance(answers, dict):
         raise JevError("Jev response has no answers")
-    # Under the answering provider's name: "typesafe" for Jev, "openai" for
-    # the image decision model.
+    # Under the answering provider's name ("typesafe" for Jev).
     confidence = next((meta["confidence"] for meta in (response.get("providerMetadata") or {}).values()
                        if isinstance(meta, dict) and isinstance(meta.get("confidence"), dict)), {})
     result = {}

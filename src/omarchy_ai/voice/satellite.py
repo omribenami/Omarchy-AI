@@ -73,12 +73,16 @@ PLAY_START_SECONDS = 0.5
 # Speech that follows this soon joins the reply being played instead of
 # starting a new announcement, which would cut the end of the first.
 STREAM_LINGER_SECONDS = 1.0
+# A reminder to say while the device is between runs: wait this long for it
+# to stream its microphone again before calling out.
+CALL_OUT_WAIT_SECONDS = 15.0
 
 SATELLITE_NOTE = (
     "\n\nVOICE SATELLITE: The user is talking to you through a smart speaker in another room, not at the "
     "computer. They cannot see the screen, so say what they need to know instead of pointing at it, and keep "
     "replies short. Everything else (tools, tasks, results, ending the conversation) works exactly as in a "
-    "conversation at the computer."
+    "conversation at the computer. A reminder for later today: ask \"Should I also say it on the speaker?\" and "
+    "pass schedule_task announce_on_speaker true only on a yes."
 )
 
 
@@ -183,6 +187,9 @@ class Satellite:
         self._diagnostics = os.environ.get("OMARCHY_AI_WAKE_DIAGNOSTICS") == "1"
         self._metrics = {"score": 0.0, "rms": 0.0}
         self._talk_levels: list[float] = []  # frame rms of one conversation, for level_summary
+        self._loop = None
+        self._waiting: list[dict] = []      # results for the next conversation to say (announce)
+        self._calling: asyncio.Task | None = None
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -190,6 +197,7 @@ class Satellite:
         from openwakeword.model import Model
         from .wake import _resolve_model_paths
 
+        self._loop = asyncio.get_running_loop()
         self._model = await asyncio.to_thread(Model, wakeword_model_paths=_resolve_model_paths(self.config))
         self._server = await asyncio.start_server(self._serve_reply, "0.0.0.0", self.config.satellite_http_port)
         key_path = Path(self.config.satellite_key_path)
@@ -207,6 +215,11 @@ class Satellite:
                  ", ".join(self._model.models))
 
     async def stop(self) -> None:
+        global _running
+        if _running is self:
+            _running = None
+        if self._calling is not None:
+            self._calling.cancel()
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
@@ -489,7 +502,41 @@ class Satellite:
                     break
 
     # ------------------------------------------------------- a conversation
-    def _begin(self, woke: bool) -> None:
+    def _announce(self, entry: dict) -> None:
+        """Say a result on the speaker (a reminder the user asked to hear
+        there). Runs on this loop. An open conversation says it, once: one
+        attached to the agenda already got it from announce_to_calls."""
+        from ..core import agenda
+        adapter = self._adapter
+        if adapter is not None and not adapter._hangup.is_set():
+            if not agenda.attached(adapter):
+                adapter.announce(entry)  # still connecting: said once it is up
+            return
+        self._waiting.append(dict(entry))
+        if self._phase == "wake":
+            self._begin(woke=True, proactive=True)
+        elif self._phase != "talk" and (self._calling is None or self._calling.done()):
+            self._calling = asyncio.create_task(self._call_out())
+        # talk without an open conversation: the next one starts and says it
+
+    async def _call_out(self) -> None:
+        """The device is between runs (or its conversation is ending): call
+        out as soon as it streams its microphone again."""
+        deadline = time.monotonic() + CALL_OUT_WAIT_SECONDS
+        while self._waiting and self._phase != "wake" and time.monotonic() < deadline:
+            if self._phase == "talk" and self._adapter is None:
+                return  # a conversation is starting: it takes _waiting
+            await asyncio.sleep(0.2)
+        if not self._waiting:
+            return
+        if self._phase == "wake":
+            self._begin(woke=True, proactive=True)
+        elif self._phase != "talk":
+            log.warning("satellite not streaming (%s); %d result(s) not said on the speaker", self._phase,
+                        len(self._waiting))
+            self._waiting.clear()
+
+    def _begin(self, woke: bool, proactive: bool = False) -> None:
         while not self._mic.empty():
             self._mic.get_nowait()
         self._phase = "talk"
@@ -499,7 +546,7 @@ class Satellite:
             self._event("WAKE_WORD_END")
         self._event("STT_START")
         self._show("listening")
-        self._session_task = asyncio.create_task(self._run_session(self._session_task, self._runs))
+        self._session_task = asyncio.create_task(self._run_session(self._session_task, self._runs, proactive))
 
     def _hang_up(self) -> None:
         if self._adapter is not None:
@@ -622,16 +669,23 @@ class Satellite:
                 log.info("satellite: nobody spoke for %ds; ending the conversation", limit)
                 return
 
-    async def _run_session(self, previous: asyncio.Task | None, run: int) -> None:
+    async def _run_session(self, previous: asyncio.Task | None, run: int, proactive: bool = False) -> None:
         from ..core import agenda, conversations
         from ..core.history import append_session
-        from .gemini_live import GeminiLiveSession, build_live_config, gemini_client, live_connect
+        from .gemini_live import GeminiLiveSession, build_live_config, gemini_client, live_connect, origin_note
 
         if previous is not None and not previous.done():
             await asyncio.gather(previous, return_exceptions=True)  # it saves the conversation this one continues
         woke = time.monotonic()
-        adapter = GeminiLiveSession(self.config)
+        # Proactive: she called out to say these, and the announcer hangs up
+        # if nobody answers (PROACTIVE_SILENCE_SECONDS); otherwise she says
+        # them in the conversation the user started.
+        waiting, self._waiting = self._waiting, []
+        adapter = GeminiLiveSession(self.config, announcements=waiting if proactive else None)
+        for entry in [] if proactive else waiting:
+            adapter.announce(entry)
         adapter.on_message = self._on_message
+        adapter.channel = "satellite"  # core/origin.py, if the conversation cannot say
         adapter._loop = asyncio.get_running_loop()  # notice() from other threads (quota)
         # No echo gate: the device cancels her voice itself (microphone level
         # while she spoke = the quiet level), and the desktop's gate blanked
@@ -652,7 +706,7 @@ class Satellite:
             conversations.CURRENT.set(conversation)
             prepared = time.monotonic()
             live_config = build_live_config(self.config)
-            live_config["system_instruction"] += SATELLITE_NOTE
+            live_config["system_instruction"] += SATELLITE_NOTE + origin_note(conversation)
             built = time.monotonic()
             client = gemini_client(self.config)
             async with live_connect(client, self.config, self.config.gemini_model, live_config) as session:
@@ -740,10 +794,33 @@ async def start(config) -> Satellite | None:
     if getattr(config, "provider", "gemini") != "gemini":
         log.warning("voice satellite needs the Gemini provider; not started")
         return None
+    global _running
     satellite = Satellite(config)
     try:
         await satellite.start()
     except Exception:  # noqa: BLE001 -- a satellite problem must never stop the desktop assistant
         log.exception("voice satellite could not start")
         return None
+    _running = satellite
     return satellite
+
+
+_running: Satellite | None = None  # the daemon's satellite, for announce()
+
+
+def announce(entry: dict) -> bool:
+    """Say a result on the speaker too (core/daemon.py, a reminder with
+    announce=satellite): in its open conversation, or in a short one she
+    starts. True if the speaker will say it."""
+    satellite = _running
+    if satellite is None or satellite._loop is None or satellite._loop.is_closed() or satellite._phase == "off":
+        return False
+    try:
+        here = asyncio.get_running_loop() is satellite._loop
+    except RuntimeError:
+        here = False
+    if here:
+        satellite._announce(dict(entry))
+    else:
+        satellite._loop.call_soon_threadsafe(satellite._announce, dict(entry))
+    return True

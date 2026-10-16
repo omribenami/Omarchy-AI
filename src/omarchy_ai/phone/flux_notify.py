@@ -28,15 +28,17 @@ def _enabled() -> bool:
         return True
 
 
-def send(title: str, body: str = "", *, kind: str = "other", conversation: str = "") -> None:
-    """Show `title` and `body` on every paired phone that Flux has connected now.
+def send(title: str, body: str = "", *, kind: str = "other", conversation: str = "",
+         devices: list[str] | None = None) -> None:
+    """Show `title` and `body` on every paired phone that Flux has connected now
+    (only those of `devices`, Flux device ids, when given and not empty).
     With a `conversation`, a tap on it opens that chat in Flux."""
     if not title or not _enabled():
         return
     if conversation:
         from ..core import conversations
         conversations.notified(_titled(title, kind)[:120], conversation)
-    threading.Thread(target=deliver, args=(title, body, kind), daemon=True, name="flux-notify").start()
+    threading.Thread(target=deliver, args=(title, body, kind, devices), daemon=True, name="flux-notify").start()
 
 
 def _titled(title: str, kind: str) -> str:
@@ -45,7 +47,7 @@ def _titled(title: str, kind: str) -> str:
     return title if title.startswith(marker) else marker + title.removeprefix("Omarchy AI · ")
 
 
-def deliver(title: str, body: str = "", kind: str = "other") -> int:
+def deliver(title: str, body: str = "", kind: str = "other", devices: list[str] | None = None) -> int:
     """Sends now and returns how many phones got it (for tests and callers that wait)."""
     from ..execution.flux_approve import Fluxd
     title = _titled(title, kind)
@@ -55,9 +57,9 @@ def deliver(title: str, body: str = "", kind: str = "other") -> int:
         return 0  # no Flux on this computer
     sent = 0
     try:
-        devices = fluxd.call("state", {}, timeout=5).get("devices") or []
-        for device in devices:
-            if not (device.get("paired") and device.get("online")):
+        connected = fluxd.call("state", {}, timeout=5).get("devices") or []
+        for device in connected:
+            if not (device.get("paired") and device.get("online")) or (devices and device.get("id") not in devices):
                 continue
             try:
                 fluxd.call("notify.send", {"device": device["id"], "title": title[:120], "body": body[:600]}, timeout=5)

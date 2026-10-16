@@ -23,6 +23,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import base64
 import urllib.parse
@@ -78,18 +79,28 @@ def _desktop_env() -> dict[str, str]:
 
 
 def _run(argv: list[str], timeout: float = _TIMEOUT, cwd: str | None = None) -> ActionResult:
-    try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, check=False, cwd=cwd, env=_desktop_env()
-        )
-    except FileNotFoundError:
-        return ActionResult(False, f"{argv[0]} is not installed")
-    except subprocess.TimeoutExpired:
-        return ActionResult(False, f"{argv[0]} timed out")
+    # Output goes to temporary files, not pipes: a script that starts a
+    # background program (omarchy-toggle-nightlight's `setsid uwsm-app --
+    # hyprsunset &`) hands it the same descriptors, and a pipe would then
+    # not reach EOF until that program exited -- the call would sit out the
+    # whole timeout although the script itself finished at once. With files,
+    # subprocess.run only waits for the process it started.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err_file:
+        try:
+            proc = subprocess.run(argv, stdout=out, stderr=err_file, timeout=timeout, check=False, cwd=cwd,
+                                  env=_desktop_env())
+        except FileNotFoundError:
+            return ActionResult(False, f"{argv[0]} is not installed")
+        except subprocess.TimeoutExpired:
+            return ActionResult(False, f"{argv[0]} timed out")
+        out.seek(0)
+        err_file.seek(0)
+        stdout = out.read().decode(errors="replace")
+        stderr = err_file.read().decode(errors="replace")
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        err = (stderr or stdout or "").strip().splitlines()
         return ActionResult(False, err[0] if err else f"{argv[0]} failed")
-    return ActionResult(True, (proc.stdout or "").strip())
+    return ActionResult(True, stdout.strip())
 
 
 def _run_detached(argv: list[str]) -> ActionResult:
@@ -170,14 +181,20 @@ def brightness_set(args: dict) -> ActionResult:
 
 def screenshot(args: dict) -> ActionResult:
     from ..config import load_config
-    from .vision import _capture, inspect_gateway_image
+    from .vision import _capture, look
 
     path = _capture()
     if path is None:
         return ActionResult(False, "Screenshot capture failed; no saved image verified.")
     cfg = load_config()
     if _gateway_key_configured(cfg):
-        evidence = inspect_gateway_image(path, "Describe the visible desktop in this saved screenshot.", cfg)
+        evidence = look(
+            path,
+            "Describe the visible desktop in this saved screenshot.",
+            cfg,
+            subject="the visible desktop screen",
+            context=_screen_context(),
+        )
         if evidence.startswith("error:"):
             return ActionResult(False, f"Screenshot saved at {path}, but visual inspection failed: {evidence}")
         return ActionResult(True, f"Screenshot saved at {path}. Visual evidence: {evidence}")
@@ -698,6 +715,13 @@ def schedule_task(args: dict) -> ActionResult:
     from ..core import agenda, schedule
     args = dict(args or {})
     kind = str(args.get("kind") or "").strip()
+    args.pop("announce", None)  # only set here, from announce_on_speaker
+    if args.pop("announce_on_speaker", None) is True:
+        from ..core import conversations
+        if conversations.source(conversations.CURRENT.get()) != "satellite":
+            return ActionResult(False, "Task NOT scheduled: announce_on_speaker is only for a reminder asked "
+                                       "through the speaker. Schedule it again without announce_on_speaker.")
+        args["announce"] = "satellite"  # agenda.create checks it is a reminder due today
     has_calls = args.get("steps") not in (None, "", []) or bool(args.get("tool"))
     if kind == "action" and not has_calls:
         request = str(args.get("request") or args.get("title") or "").strip()
@@ -1080,23 +1104,38 @@ def _terminal_text_hint() -> str:
 
 def _describe_screen_raw(args: dict) -> ActionResult:
     from ..config import load_config
-    from .vision import describe_screen as _describe_screen
+    from .vision import _capture, look
 
     question = args.get("question") or "Briefly describe what's on the screen."
     cfg = load_config()
-    if _gateway_key_configured(cfg):
-        from .vision import _capture, inspect_gateway_image
-        path = _capture()
-        if path is None:
-            return ActionResult(False, "Screenshot capture failed; screen contents unverified.")
-        text = inspect_gateway_image(path, question, cfg)
-        return ActionResult(not text.startswith("error:"), text)
-    text = _describe_screen(
-        question, cfg.api_key_path, cfg.responses_model, cfg.responses_reasoning_effort
-    )
-    if text.startswith("error:"):
-        return ActionResult(False, text)
-    return ActionResult(True, text)
+    if not _gateway_key_configured(cfg):
+        return ActionResult(False, "error: a Vercel AI Gateway key is required for Jev image recognition")
+    path = _capture()
+    if path is None:
+        return ActionResult(False, "Screenshot capture failed; screen contents unverified.")
+    text = look(path, question, cfg, subject="the visible desktop screen", context=_screen_context())
+    return ActionResult(not text.startswith("error:"), text)
+
+
+def _screen_context() -> str:
+    """Cheap text context for Jev; no screenshot pixels leave vision.py."""
+    from . import tile_logs
+
+    try:
+        clients = tile_logs._clients()
+    except Exception:
+        return ""
+    focused = next((client for client in clients if client.get("focusHistoryID") == 0), {})
+    focused_class = str(focused.get("class") or "unknown")[:120]
+    titles = []
+    for client in clients[:20]:
+        title = " ".join(str(client.get("title") or "").split())[:160]
+        if title:
+            titles.append(title)
+    lines = [f"Focused window class: {focused_class}."]
+    if titles:
+        lines.append("Open window titles: " + "; ".join(titles))
+    return "\n".join(lines)
 
 
 def _gateway_key_configured(cfg) -> bool:
@@ -2852,6 +2891,14 @@ def run_action(name: str, args: dict) -> ActionResult:
             return user_tools.run(name, args)
         log.error("no such action: %s", name)
         return ActionResult(False, f"unknown action '{name}'")
+    if name == "myapi" or name.startswith("myapi_"):
+        # The owner's account (core/identities.py), checked at each call: the
+        # voice speaking can change in the middle of a conversation.
+        from ..core import identities
+        refusal = identities.myapi_refusal()
+        if refusal:
+            log.info("refused %s for %s", name, identities.current())
+            return ActionResult(False, refusal)
     try:
         return fn(args)
     except Exception:  # noqa: BLE001

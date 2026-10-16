@@ -280,5 +280,43 @@ class UseToolDispatchTests(unittest.TestCase):
         self.assertTrue(self.dispatch(s, {"request": "remind me"}, offer)[1]["ok"])
 
 
+class CatalogOriginTests(unittest.TestCase):
+    """2026-10-15 19:52: "tell the kids they have 2 minutes to leave the computer", said to the
+    speaker, was picked as set_reminder (a notification on this computer's screen)."""
+
+    SPEAKER = {"channel": "satellite", "talking_to": "the voice speaker", "at_this_computer": False,
+               "room": None, "person": None}
+
+    def test_the_pick_sees_where_the_request_came_from(self):
+        jev = PickJev("set_reminder")
+        catalog.resolve({"request": "tell the kids they have 2 minutes"}, jev=jev, origin=self.SPEAKER)
+        state, questions = jev.calls[0]
+        self.assertEqual(state["origin"], {"channel": "satellite", "talking_to": "the voice speaker",
+                                           "at_this_computer": False})
+        self.assertIn("`origin`", questions["tool"]["instructions"])
+
+    def test_no_origin_known_means_none_in_the_state(self):
+        jev = PickJev("set_reminder")
+        catalog.resolve({"request": "remind me in 10 minutes"}, jev=jev, origin={"channel": None})
+        self.assertNotIn("origin", jev.calls[0][0])
+
+    def test_a_call_by_name_skips_the_pick_but_not_the_review(self):
+        r = catalog.resolve({"name": "set_reminder", "args": {"minutes": 2, "message": "time to go"}},
+                            jev=PickJev("x", fail=True))
+        self.assertTrue(r.run)
+        self.assertFalse(r.picked)  # _run_call reviews every call that is not `picked`
+
+    def test_the_session_passes_its_origin_to_the_pick(self):
+        s = UseToolDispatchTests.session(self, lambda tool, args, ctx: switchboard.Verdict("execute", tool, args))
+        s.channel = "desktop-text"
+        pick = catalog.Resolution(False, message="Jev is not sure.")
+        with patch("omarchy_ai.voice.gemini_live.catalog.resolve", return_value=pick) as resolve, \
+                patch("omarchy_ai.voice.gemini_live.run_action", side_effect=AssertionError("nothing runs")), \
+                patch("omarchy_ai.voice.gemini_live.LiveSession._current_window", return_value={}):
+            session = SimpleNamespace(send_tool_response=AsyncMock())
+            asyncio.run(s._run_call(session, SimpleNamespace(id="c1", name="use_tool", args={"request": "x"})))
+        self.assertEqual(resolve.call_args.kwargs["origin"]["channel"], "desktop-text")
+
+
 if __name__ == "__main__":
     unittest.main()

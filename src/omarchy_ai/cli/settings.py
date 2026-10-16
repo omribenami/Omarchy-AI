@@ -19,7 +19,13 @@ Commands:
                                  print the fresh snapshot (same shape as get)
   restart-status             -> {"busy": bool, "reason": str}
   restart                    -> restart omarchy-ai.service iff not busy
-  pair-phone / revoke-phones -> phone bridge QR pairing (see phone/server.py)
+  pair-phone / revoke-phones -> phone bridge QR pairing (see phone/server.py);
+                                 `pair-phone --person <key>` attaches the phone
+  identity-add <key> [name] / identity-remove <key> / identity-rename <key> <name>
+  identity-attach-phone <key> <device> / identity-detach-phone <device>
+  identity-owner <key|none>  -> the household (core/identities.py); each prints
+                                 the snapshot, whose "identities" block is
+                                 identities.status()
   connect-myapi               -> exchange an ASC Quick Connect code (env
                                  var OMARCHY_AI_MYAPI_CODE) for a MyApi
                                  identity (see ../myapi/)
@@ -119,7 +125,6 @@ SETTABLE = (
     "phone_bridge_enabled",
     "myapi_enabled",
     "omarchy_text_model",
-    "omarchy_vision_model",
     "omarchy_stt_model",
     "omarchy_model_choice",
     "speaker_id_enabled",
@@ -186,11 +191,40 @@ def _snapshot() -> dict:
         "voice_fallback": _voice_fallback(cfg),
         "github_issue_token": {"set": issues.has_token(), "path": str(issues.TOKEN_PATH)},
         "phone_bridge_paired_count": paired_count(),
+        "identities": _identities(cfg),
         "myapi": _myapi_state(),
         "assistant": control.request('status'),
         "sudo_approval": sudo_approval.status(),
         "approval_pin": approval_pin.status(),
     }
+
+
+def _identities(cfg: Config) -> dict:
+    from ..core import identities
+    try:
+        return identities.status(cfg)
+    except Exception as exc:  # noqa: BLE001 -- one broken file must not blank the whole panel
+        return {"error": f"could not read identities: {exc}", "people": []}
+
+
+def cmd_identity(args: argparse.Namespace) -> dict:
+    from ..core import identities
+    try:
+        if args.command == "identity-add":
+            identities.add(args.key, args.name)
+        elif args.command == "identity-remove":
+            identities.remove(args.key)
+        elif args.command == "identity-rename":
+            identities.rename(args.key, args.name)
+        elif args.command == "identity-attach-phone":
+            identities.attach_phone(args.key, args.device)
+        elif args.command == "identity-detach-phone":
+            identities.detach_phone(args.device)
+        elif args.command == "identity-owner":
+            identities.set_owner(None if args.key.lower() in ("", "none") else args.key)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return _snapshot()
 
 
 def _validate(key: str, raw_value: str, cfg: Config) -> object:
@@ -226,7 +260,7 @@ def _validate(key: str, raw_value: str, cfg: Config) -> object:
             raise ValidationError("provider must be openai, gemini, or omarchy")
         return value
 
-    if key in {"omarchy_text_model", "omarchy_vision_model", "omarchy_stt_model"}:
+    if key in {"omarchy_text_model", "omarchy_stt_model"}:
         if not isinstance(value, str) or "/" not in value or any(c.isspace() for c in value):
             raise ValidationError(f"{key} must be a Gateway model id")
         return value
@@ -653,7 +687,12 @@ def cmd_pair_phone(_args: argparse.Namespace) -> dict:
 
     from ..phone.server import mint_pairing_token
 
-    info = mint_pairing_token(cfg)
+    person = getattr(_args, "person", None)
+    if person:
+        from ..core import identities
+        if person not in {p["key"] for p in identities.people()}:
+            return {"error": f"no person '{person}'"}
+    info = mint_pairing_token(cfg, person=person or None)
     proc = subprocess.run(
         [
             "qrencode", "-t", "PNG", "-s", "8",
@@ -796,7 +835,19 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("forget-github-issue-token")
     sub.add_parser("restart-status")
     sub.add_parser("restart")
-    sub.add_parser("pair-phone")
+    sub.add_parser("pair-phone").add_argument("--person")
+    p_identity = sub.add_parser("identity-add")
+    p_identity.add_argument("key")
+    p_identity.add_argument("name", nargs="?")
+    sub.add_parser("identity-remove").add_argument("key")
+    p_identity = sub.add_parser("identity-rename")
+    p_identity.add_argument("key")
+    p_identity.add_argument("name")
+    p_identity = sub.add_parser("identity-attach-phone")
+    p_identity.add_argument("key")
+    p_identity.add_argument("device")
+    sub.add_parser("identity-detach-phone").add_argument("device")
+    sub.add_parser("identity-owner").add_argument("key")
     sub.add_parser("revoke-phones")
     sub.add_parser("connect-myapi")
     sub.add_parser("disconnect-myapi")
@@ -833,6 +884,8 @@ def main(argv: list[str] | None = None) -> int:
         "restart-status": cmd_restart_status,
         "pair-phone": cmd_pair_phone,
         "revoke-phones": cmd_revoke_phones,
+        **{name: cmd_identity for name in ("identity-add", "identity-remove", "identity-rename",
+                                           "identity-attach-phone", "identity-detach-phone", "identity-owner")},
         "connect-myapi": cmd_connect_myapi,
         "disconnect-myapi": cmd_disconnect_myapi,
         "myapi-usage": cmd_myapi_usage,

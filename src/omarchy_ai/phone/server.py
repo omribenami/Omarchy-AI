@@ -81,11 +81,13 @@ def _write_json_0600(path: Path, data: dict | list) -> None:
         raise
 
 
-def _new_session_cookie() -> str:
-    """Records a new paired session and returns its Set-Cookie value."""
+def _new_session_cookie(device: str | None = None, name: str | None = None, person: str | None = None) -> str:
+    """Records a new paired session and returns its Set-Cookie value. A Flux
+    pairing keeps the phone's device id (and Flux's name for it), a QR
+    pairing made for someone keeps their key: core/identities.py."""
     session_id = secrets.token_urlsafe(32)
-    sessions = _load_sessions()
-    sessions.append(session_id)
+    sessions = load_sessions()
+    sessions.append({"id": session_id, "device": device, "name": name, "person": person})
     _write_json_0600(_SESSIONS_PATH, sessions)
     cookie = http.cookies.SimpleCookie()
     cookie[_SESSION_COOKIE] = session_id
@@ -97,17 +99,18 @@ def _new_session_cookie() -> str:
     return cookie[_SESSION_COOKIE].OutputString()
 
 
-def mint_pairing_token(config: Config) -> dict:
+def mint_pairing_token(config: Config, person: str | None = None) -> dict:
     """Called from cli/settings.py's `pair-phone` command (a separate,
     short-lived process — this just writes a file the long-running daemon
     reads, the same "settings writes shared state, daemon reads it"
     pattern config.yaml itself already uses, rather than adding an
     internal HTTP call between the two processes). 5-minute TTL,
     idempotent within it rather than strictly single-use — see
-    `_handle_pair`'s own comment for why."""
+    `_handle_pair`'s own comment for why. `person`: the identity key the
+    phone that scans it belongs to (core/identities.py)."""
     token = secrets.token_urlsafe(24)
     expires_at = time.time() + _PAIR_TOKEN_TTL_SECONDS
-    _write_json_0600(_PAIR_TOKEN_PATH, {"token": token, "expires_at": expires_at, "used": False})
+    _write_json_0600(_PAIR_TOKEN_PATH, {"token": token, "expires_at": expires_at, "used": False, "person": person})
     ip = _primary_lan_ip() or "127.0.0.1"
     lan_url = f"https://{ip}:{config.phone_bridge_port}/pair?token={token}"
     tail_ip, _ = _tailscale_address()
@@ -116,13 +119,50 @@ def mint_pairing_token(config: Config) -> dict:
             "tailscale_url": tail_url, "expires_at": expires_at}
 
 
-def _load_sessions() -> list[str]:
+def load_sessions() -> list[dict]:
+    """Paired sessions as {"id", "device", "name", "person"}. The file was a
+    plain list of session ids before phones kept their identity; those stay
+    paired, anonymous (no device, no person) until the phone pairs again."""
     try:
         with open(_SESSIONS_PATH) as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+    out = []
+    for entry in data if isinstance(data, list) else []:
+        if isinstance(entry, str):
+            entry = {"id": entry}
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"]:
+            out.append({"id": entry["id"], **{k: entry.get(k) if isinstance(entry.get(k), str) else None
+                                              for k in ("device", "name", "person")}})
+    return out
+
+
+def session_for_cookie(raw_cookie: str) -> dict | None:
+    """The paired session a request's Cookie header carries, or None."""
+    jar = http.cookies.SimpleCookie()
+    try:
+        jar.load(raw_cookie or "")
+    except http.cookies.CookieError:
+        return None
+    morsel = jar.get(_SESSION_COOKIE)
+    if morsel is None:
+        return None
+    return next((s for s in load_sessions() if secrets.compare_digest(s["id"].encode(), morsel.value.encode())), None)
+
+
+def session_device(raw_cookie: str) -> str | None:
+    """The Flux device id behind a request's session cookie (None for a QR
+    or legacy session)."""
+    return (session_for_cookie(raw_cookie) or {}).get("device")
+
+
+def identity_for_cookie(raw_cookie: str):
+    """Who a paired phone's request comes from (core/identities.py): the
+    session's person is certain, for the whole session; nobody otherwise."""
+    from ..core import identities
+    person = identities.person_for_session(session_for_cookie(raw_cookie))
+    return identities.Identity(person, "phone") if person else identities.Identity()
 
 
 def revoke_all_sessions() -> None:
@@ -133,7 +173,7 @@ def revoke_all_sessions() -> None:
 
 
 def paired_count() -> int:
-    return len(_load_sessions())
+    return len(load_sessions())
 
 
 def _primary_lan_ip() -> str | None:
@@ -245,14 +285,23 @@ def _read_api_key(config: Config) -> str:
         return f.read().strip()
 
 
-def _relay_offer(config: Config, offer_sdp: str, conversation: str = "") -> str:
+def _relay_offer(config: Config, offer_sdp: str, conversation: str = "", identity=None) -> str:
     """POSTs the browser's SDP offer to OpenAI (server-side, real key) and
     returns the answer SDP — same request shape as the desktop LiveSession,
-    built from the same build_session_config so the two can't drift."""
+    built from the same build_session_config so the two can't drift.
+    `identity`: who the phone belongs to (identity_for_cookie)."""
     if config.provider == "gemini":
         from .gemini import relay_offer
-        return relay_offer(config, offer_sdp, conversation)
+        return relay_offer(config, offer_sdp, conversation, identity)
     session_config = build_session_config(config)
+    if identity is not None and identity.person:
+        from ..core import identities
+        session_config["instructions"] += "\n\nWHO IS SPEAKING: " + identities.describe(identity)
+    # Where the user is: the phone, not at this computer (core/origin.py).
+    from ..core import origin
+    where = origin.describe({**origin.current(conversation or None), "person": None})
+    if where:
+        session_config["instructions"] += "\n\nWHERE THE USER IS: " + where
     session_config["delegation"]["responses"]["tools"].append({
         "type": "function", "name": "share_file",
         "description": ("Attach one existing desktop file to this phone chat when the user asks you to send, "
@@ -494,8 +543,8 @@ class _Handler(BaseHTTPRequestHandler):
                 log.info("phone bridge: GET %s from %s -- Cookie header present but no %s in it: %r",
                           self.path, self.address_string(), _SESSION_COOKIE, raw_cookie)
             return False
-        sessions = _load_sessions()
-        if morsel.value not in sessions:
+        sessions = load_sessions()
+        if morsel.value not in {s["id"] for s in sessions}:
             log.info("phone bridge: GET %s from %s -- session id present but not in paired_sessions.json (%d paired)",
                       self.path, self.address_string(), len(sessions))
             return False
@@ -681,10 +730,12 @@ class _Handler(BaseHTTPRequestHandler):
         if _CERT_PATH.is_file() and flux_pairing.verify(
             data.get("device"), data.get("nonce"), data.get("signature"), flux_pairing.key_pin(_CERT_PATH),
         ):
-            log.info("phone bridge: Flux-paired phone %s accepted from %s", data.get("device"), self.address_string())
+            device = data.get("device")
+            log.info("phone bridge: Flux-paired phone %s accepted from %s", device, self.address_string())
+            name = next((str(d.get("name") or "") or None for d in flux_pairing.devices() if d["id"] == device), None)
             body = json.dumps({"ok": True}).encode()
             self.send_response(200)
-            self.send_header("Set-Cookie", _new_session_cookie())
+            self.send_header("Set-Cookie", _new_session_cookie(device=device, name=name))
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -727,8 +778,9 @@ class _Handler(BaseHTTPRequestHandler):
             _write_json_0600(_PAIR_TOKEN_PATH, pending)
 
         log.info("phone bridge: new pairing accepted from %s", self.address_string())
+        person = pending.get("person")
         self.send_response(302)
-        self.send_header("Set-Cookie", _new_session_cookie())
+        self.send_header("Set-Cookie", _new_session_cookie(person=person if isinstance(person, str) else None))
         self.send_header("Location", "/")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -785,7 +837,12 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(400, {"ok": False, "message": "request is empty"})
                     return
                 log.info("phone bridge: Flux asks Omarchy: %s", request[:200])
-                result = start_task({"goal": request})
+                from ..core import identities
+                token = identities.set_current(identity_for_cookie(self.headers.get("Cookie", "")))
+                try:
+                    result = start_task({"goal": request})
+                finally:
+                    identities.reset_current(token)
             else:
                 target = str(data.get("target") or "").strip()
                 result = run_action("stop_casting", {}) if path.endswith("/stop") else run_action("start_casting", {"target": target})
@@ -933,7 +990,8 @@ class _Handler(BaseHTTPRequestHandler):
             source = "phone-text" if data.get("mode") == "text" else "phone-voice"
             conversation = conversations.continue_or_create(data.get("conversation_id"), source)
             log.info("phone bridge: creating %s session (conversation %s)", self.config.provider, conversation)
-            answer_sdp = _relay_offer(self.config, offer_sdp, conversation)
+            answer_sdp = _relay_offer(self.config, offer_sdp, conversation,
+                                      identity_for_cookie(self.headers.get("Cookie", "")))
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")
             log.error("phone bridge: session creation failed: HTTP %s %s", e.code, detail)
@@ -975,6 +1033,8 @@ class _Handler(BaseHTTPRequestHandler):
             # may reach for.
             self._send_json(200, {"ok": True, "message": "[]"})
             return
+        from ..core import identities
+        token = identities.set_current(identity_for_cookie(self.headers.get("Cookie", "")))
         try:
             # Paired phone only (checked before _handle_tool): the one caller
             # allowed to unlock; run_action refuses it for everyone else.
@@ -983,6 +1043,8 @@ class _Handler(BaseHTTPRequestHandler):
             log.exception("phone bridge: tool call %s failed", name)
             self._send_json(200, {"ok": False, "message": f"{name} failed unexpectedly"})
             return
+        finally:
+            identities.reset_current(token)
         log.info("phone bridge tool result: ok=%s message=%r", result.ok, result.message)
         self._send_json(200, {"ok": result.ok, "message": result.message})
 

@@ -20,7 +20,7 @@ from google.genai import types
 
 from ..core.history import append_session
 from ..voice import extensions
-from ..voice.gemini_live import GeminiLiveSession, build_live_config, gemini_client, live_connect
+from ..voice.gemini_live import GeminiLiveSession, build_live_config, gemini_client, live_connect, origin_note
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +79,40 @@ def _phone_message(raw):
     return None
 
 
+async def _attachment_parts(config, conversation: str, attachment_ids: list[str], request: str):
+    """Build Gemini parts without ever giving Gemini attached image bytes."""
+    from ..core import conversations
+    from ..execution import vision
+
+    attachment_meta = []
+    parts = []
+    for aid in attachment_ids:
+        found = conversations.attachment(conversation, aid)
+        if found is None:
+            continue
+        path, meta = found
+        attachment_meta.append(meta)
+        mime = str(meta.get('mime') or 'application/octet-stream')
+        note = f"[Attached file: {meta.get('name')} ({mime}, {meta.get('size')} bytes); stored at {path}]"
+        if mime.startswith('text/'):
+            content = path.read_text(errors='replace')
+            parts.append({'text': note + '\n' + content[:200_000]})
+        elif mime.startswith('image/'):
+            judgment = await asyncio.to_thread(
+                vision.look,
+                path,
+                request or "Describe this image",
+                config,
+                subject="an image the user attached",
+            )
+            parts.append({'text': note + '\n' + judgment})
+        elif mime == 'application/pdf':
+            parts.extend(({'text': note}, types.Part.from_bytes(data=path.read_bytes(), mime_type=mime)))
+        else:
+            parts.append({'text': note})
+    return attachment_meta, parts
+
+
 class OutputAudio(AudioStreamTrack):
     def __init__(self, adapter):
         super().__init__()
@@ -111,7 +145,7 @@ class OutputAudio(AudioStreamTrack):
         return frame
 
 
-async def _serve(config, sdp, answer, cancelled, conversation=''):
+async def _serve(config, sdp, answer, cancelled, conversation='', identity=None):
     # No STUN: with iceServers unset aiortc falls back to Google's STUN and
     # waits out its timeout before answering -- measured 5.01s per phone
     # session vs 0.01s without (2026-09-23). The phone reaches this machine
@@ -120,6 +154,9 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
     adapter = GeminiLiveSession(config)
     adapter._splice_abort_rms = PHONE_SPLICE_ABORT_RMS
     adapter.from_paired_phone = True  # only started for a paired session (/api/live/offer)
+    adapter.channel = 'phone-voice'  # core/origin.py, when there is no conversation to say it
+    # The phone's person (phone/server.py identity_for_cookie) is who talks, for the whole call.
+    adapter.known_identity = identity if identity is not None and identity.person else None
     peer.addTrack(OutputAudio(adapter))
     incoming = asyncio.Queue(maxsize=1)
     messages = asyncio.Queue(maxsize=32)
@@ -256,23 +293,9 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
                     turns={'role': 'user', 'parts': [{'text': '[Context, not a request]' + TEXT_NOTE}]},
                     turn_complete=False)
                 told = True
-            attachment_meta = []
-            parts = []
-            for aid in attachment_ids:
-                found = conversations.attachment(conversation, aid)
-                if found is None:
-                    continue
-                path, meta = found
-                attachment_meta.append(meta)
-                mime = str(meta.get('mime') or 'application/octet-stream')
-                note = f"[Attached file: {meta.get('name')} ({mime}, {meta.get('size')} bytes); stored at {path}]"
-                if mime.startswith('text/'):
-                    content = path.read_text(errors='replace')
-                    parts.append({'text': note + '\n' + content[:200_000]})
-                elif mime.startswith('image/') or mime == 'application/pdf':
-                    parts.extend(({'text': note}, types.Part.from_bytes(data=path.read_bytes(), mime_type=mime)))
-                else:
-                    parts.append({'text': note})
+            attachment_meta, parts = await _attachment_parts(
+                config, conversation, attachment_ids, text
+            )
             display = text or ("Attached " + ", ".join(str(m.get('name')) for m in attachment_meta))
             adapter._transcript.append({'role': 'user', 'text': display, 'attachments': attachment_meta})
             adapter._capture_password(text)  # a typed "pass: X" goes to the keyring too
@@ -307,6 +330,8 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
             session_tasks = []
             try:
                 live_config = build_live_config(config)
+                # Where the user is: the phone, not at this computer (core/origin.py).
+                live_config['system_instruction'] += origin_note(conversation or None, 'phone-voice')
                 live_config['tools'][0]['function_declarations'].append({
                     'name': 'share_file',
                     'description': ('Attach one existing desktop file to this phone chat when the user asks you to send, '
@@ -402,7 +427,7 @@ async def _serve(config, sdp, answer, cancelled, conversation=''):
             call[2].set()
 
 
-def relay_offer(config, sdp, conversation=''):
+def relay_offer(config, sdp, conversation='', identity=None):
     _end_previous_calls()
     if not _slots.acquire(blocking=False):
         raise RuntimeError('Two Gemini phone sessions are already active; hang up one first')
@@ -411,7 +436,7 @@ def relay_offer(config, sdp, conversation=''):
 
     def run():
         try:
-            asyncio.run(_serve(config, sdp, answer, cancelled, conversation))
+            asyncio.run(_serve(config, sdp, answer, cancelled, conversation, identity))
         except Exception as error:
             if not answer.done():
                 answer.set_exception(error)

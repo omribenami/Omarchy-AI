@@ -3,7 +3,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from google.genai import types
 from omarchy_ai.config import Config
@@ -554,7 +554,7 @@ class JevFastPathTests(unittest.TestCase):
                 await asyncio.sleep(0.25)
                 task.cancel()
             asyncio.run(run())
-        decide.assert_called_once_with("Can you switch to workspace 4?")
+        decide.assert_called_once_with("Can you switch to workspace 4?", origin=ANY)
         execute.assert_called_once_with("workspace_switch", {"number": 4})
         self.assertEqual(s._jev_done[:2], ("workspace_switch", {"number": 4}))
 

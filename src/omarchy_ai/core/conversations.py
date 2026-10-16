@@ -540,6 +540,13 @@ def summaries(tasks=None) -> dict:
     return {"conversations": rows, "waiting": total}
 
 
+def source(cid) -> str:
+    """Where a conversation happens ("satellite", "desktop-voice", ...); "" if unknown."""
+    with _lock:
+        conv = _load(cid)
+        return str(conv.get("source") or "") if conv else ""
+
+
 def get(cid, tasks=None) -> dict | None:
     sync_installs()
     flush(cid if isinstance(cid, str) else None)

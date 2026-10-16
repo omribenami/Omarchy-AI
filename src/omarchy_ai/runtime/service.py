@@ -104,6 +104,8 @@ def _same_job(runtime, goal: str, jev=None):
 
 
 SKILL_FITS_P = 0.7
+REFERENCE_CHARS = 900     # of a related skill's text shown to the worker as reference
+_REFERENCE_MIN = 300      # less room than this in the goal: no reference
 
 
 def _skill_for(goal: str, jev=None) -> str | None:
@@ -112,7 +114,15 @@ def _skill_for(goal: str, jev=None) -> str | None:
     exactly this job was saved, the live model sent the request straight
     here in its own words, and the task knew nothing of the skill's device
     or steps. The bar is higher than find_skill's: there the model reads the
-    skill and may set it aside; here its steps go to a worker as the job."""
+    skill and may set it aside; here its steps go to a worker as the job.
+
+    A skill that is related but not this job (a fit of at least
+    skills.FITS_THRESHOLD) is added to the goal as reference only.
+    2026-10-15 20:47: a request to lock one family member's computer fitted
+    a saved countdown that ends by locking it 0.57 -- right not to run the
+    countdown, but the worker never learned the command in it that locks
+    that computer, and gave up not knowing which machine it was. None: the
+    goal stays as it is."""
     from ..core import skills
     if skills.skill_of_goal(goal):
         return None  # run_skill already built it
@@ -121,12 +131,30 @@ def _skill_for(goal: str, jev=None) -> str | None:
         picked = skills.suggest(request, jev)
         name = picked.get("skill")
         fits = (picked.get("fits") or {}).get(name, 0)
-        skill = skills.load(name) if name and fits >= SKILL_FITS_P else None
+        skill = skills.load(name) if name and fits >= skills.FITS_THRESHOLD else None
     except Exception as exc:  # noqa: BLE001 -- unsure: the task starts as it was asked
         log.warning("skill check unavailable, starting the task as asked: %s", str(exc)[:160])
         return None
-    log.info("start_task: skill for %r -> %s (fits=%s)", request[:120], name if skill else None, picked.get("fits"))
-    return skills.run_goal(skill, request) if skill else None
+    run = skill is not None and fits >= SKILL_FITS_P
+    log.info("start_task: skill for %r -> %s (fits=%s)", request[:120],
+             (name if run else f"{name} as reference") if skill else None, picked.get("fits"))
+    if skill is None:
+        return None
+    return skills.run_goal(skill, request) if run else _with_reference(goal, skill)
+
+
+def _with_reference(goal: str, skill: dict) -> str | None:
+    """`goal` plus a related saved skill, marked as reference and not the job,
+    within the goal's length limit (core/skills.py GOAL_CHARS)."""
+    from ..core import skills
+    head = (f"\n\nREFERENCE ONLY -- a related saved skill, '{skill['name']}'. It is NOT this job: do not carry "
+            "it out. Facts in it (device and entity ids, machines, commands that worked) may be reused for this "
+            f"job.\nDescription: {skill.get('description', '')}\nSaved text:\n")
+    room = min(REFERENCE_CHARS, skills.GOAL_CHARS - len(goal) - len(head))
+    if room < _REFERENCE_MIN:
+        return None  # the goal is long already: it goes as asked
+    body = str(skill.get("body") or "")
+    return goal + head + (body if len(body) <= room else body[:room - 1] + "…")
 
 
 _AGENTS = {"codex": "CODEX", "claude_code": "CLAUDE_CODE", "claude": "CLAUDE_CODE", "claude code": "CLAUDE_CODE"}
@@ -192,7 +220,7 @@ def start_task(args: dict) -> ActionResult:
     try:
         # The daemon's own cwd is this project's checkout; a voice task must not
         # silently work (and checkpoint/roll back) inside it (code review 2026-09-23).
-        task = runtime.start(_with_user_links(goal, cid) + elsewhere, workspace, source="voice",
+        task = runtime.start(_with_user_links(_with_origin(goal, cid), cid) + elsewhere, workspace, source="voice",
                              agent=agent, unsandboxed=unsandboxed, conversation=cid)
     except ValueError as exc:
         return _not_started(goal, str(exc), cid)
@@ -203,6 +231,22 @@ def start_task(args: dict) -> ActionResult:
         "note": ("Running in the background. Tell the user it has started; its result, any approval it needs and "
                  "any question will be announced. Do not claim it is done until task_status says certified."),
     }))
+
+
+def _with_origin(goal: str, cid: str) -> str:
+    """The goal plus where the request came from and who asked
+    (core/origin.py), when known. 2026-10-15: a task did not know whether
+    "here" was a room with a speaker, the phone or this desk."""
+    try:
+        from ..core import origin
+        said = origin.describe(origin.current(cid or ""))
+    except Exception:  # noqa: BLE001 -- origin only informs the worker
+        log.debug("request origin unavailable", exc_info=True)
+        said = ""
+    if not said:
+        return goal
+    extra = "\n\nWhere this request came from: " + said
+    return goal[:max(0, 4000 - len(extra))] + extra
 
 
 def _with_user_links(goal: str, cid: str) -> str:

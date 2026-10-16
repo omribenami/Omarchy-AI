@@ -73,7 +73,9 @@ def questions() -> dict:
         "command": choice(
             "Which single desktop command does the user's latest `request` ask for? Any language. "
             "Choose other for questions, conversation, anything negated or conditional, more than one "
-            "task, a different window than the focused one, or anything not listed.",
+            "task, a different window than the focused one, or anything not listed. These commands act on this "
+            "computer: when `origin` says the user is not at it (the voice speaker in a room, the phone), choose "
+            "other unless the request is clearly about this computer (its workspaces, windows or screen).",
             {"other": "None of these, or not exactly one of these.",
              **{key: text for key, (_, _, text) in ACTIONS.items()}}),
         # Wording from a real probe: "no question" made Jev reject "Can you
@@ -82,18 +84,34 @@ def questions() -> dict:
             "Does `request` ask the assistant to do exactly one simple desktop action right now? A polite "
             "request phrased as a question ('can you switch to...?') counts. It does not count if it asks for "
             "information, adds a second task, sets a condition, or says not to do it."),
-        "route": choice("What kind of request is the user's latest `request`?", ROUTES),
+        "route": choice("What kind of request is the user's latest `request`? `origin` says where it came from: "
+                        "when the user is not at this computer, 'here', 'this room', 'the lights' mean the place "
+                        "where they are, not this computer's desktop.", ROUTES),
     }
 
 
-def judge(text: str, jev: Jev | None = None) -> tuple[tuple[str, dict, dict] | None, dict | None]:
+def judge(text: str, jev: Jev | None = None, origin: dict | None = None) -> tuple[tuple[str, dict, dict] | None, dict | None]:
     """First pass: ((tool, args, evidence) for a clear fast command or None,
-    {"route", "p"} or None when Jev is unavailable)."""
+    {"route", "p"} or None when Jev is unavailable).
+
+    `origin` (core/origin.py): where the request came from. 2026-10-15 19:58:
+    "make it a bit calmer here" said to the speaker in a room; nothing told
+    Jev the user was not at this computer."""
     text = " ".join(str(text or "").split())
     if not 2 <= len(text) <= 300:
         return None, None
+    state = {"request": text}
+    if origin is None:
+        try:
+            from ..core import origin as origins
+            origin = origins.current()  # the conversation and person in context
+        except Exception:  # noqa: BLE001 -- origin only informs the judgement
+            origin = {}
+    where = {k: v for k, v in origin.items() if v is not None}
+    if where.get("channel"):
+        state["origin"] = where
     try:
-        answers = (jev or Jev()).ask({"request": text}, questions(), timeout=TIMEOUT, retries=0, fail_fast=True)
+        answers = (jev or Jev()).ask(state, questions(), timeout=TIMEOUT, retries=0, fail_fast=True)
     except JevError as exc:
         log.info("Jev fast path unavailable: %s", str(exc)[:120])
         return None, None

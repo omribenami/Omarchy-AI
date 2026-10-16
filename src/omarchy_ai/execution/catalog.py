@@ -213,16 +213,38 @@ def _complete(tool: dict, given: dict, request: str, heard: str, fill) -> dict |
     return None if _problems(tool, args) else args
 
 
-def _keyword_rank(request: str, tools: dict[str, dict]) -> list[dict]:
+def _keyword_rank(request: str, tools: dict[str, dict], matched_only: bool = False) -> list[dict]:
+    """Tools by how many of the request's (English) words they contain;
+    `matched_only` leaves out the ones that share none."""
     words = {w for w in re.findall(r"[a-z]{3,}", request.lower())}
     def score(t):
         hay = (t["name"].replace("_", " ") + " " + t["description"]).lower()
         return sum(w in hay for w in words) + 2 * sum(w in t["name"] for w in words)
-    return sorted(tools.values(), key=score, reverse=True)
+    ranked = sorted(tools.values(), key=score, reverse=True)
+    return [t for t in ranked if score(t) > 0] if matched_only else ranked
 
 
-def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fill=None) -> Resolution:
+def _origin(given: dict | None) -> dict | None:
+    """Where the request came from (core/origin.py), None fields dropped;
+    read from the conversation and person in context when not given."""
+    if given is None:
+        try:
+            from ..core import origin
+            given = origin.current()
+        except Exception:  # noqa: BLE001 -- origin only informs the pick
+            return None
+    info = {k: v for k, v in (given or {}).items() if v is not None}
+    return info if info.get("channel") else None
+
+
+def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fill=None,
+            origin: dict | None = None) -> Resolution:
     """What a use_tool call means: a tool to run now, or what to tell the model.
+
+    A call by name runs without a Jev pick here; the session's switchboard
+    still reviews it (voice/gemini_live.py _run_call: only `picked` skips
+    that), and the review offers Jev the other tools that could fit.
+    `origin` (core/origin.py) tells Jev where the request came from.
 
     `fill(tool, request, heard) -> dict` fills missing arguments from the
     request (fill_args with the Gateway model); a filled call is not `picked`,
@@ -264,11 +286,22 @@ def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fi
     from ..core.jev import Jev, JevError, choice
     criteria = {n: _summary(t) for n, t in tools.items()}
     criteria[_NONE] = "No tool here does this (it is conversation, or needs a core tool or start_task)."
+    state = {"request": request[:600], "user_said": heard[-300:]}
+    if (where := _origin(origin)) is not None:
+        state["origin"] = where
+    # 2026-10-15 19:52: "tell the kids they have 2 minutes to leave the
+    # computer" (said to the speaker) was picked as set_reminder, a desktop
+    # notification on this computer; Jev did not know who was where.
     try:
         answer = (jev or Jev()).ask(
-            {"request": request[:600], "user_said": heard[-300:]},
+            state,
             {"tool": choice("Which one tool carries out `request` (the user's words are `user_said`, speech "
-                            "recognition, possibly garbled)? Pick the tool whose job this is.", criteria)},
+                            "recognition, possibly garbled)? Pick the tool whose job this is. `origin` says where "
+                            "the request came from and whether the user is at this computer: when they are not "
+                            "(the voice speaker in a room, the phone), 'here', 'this room', 'the lights' mean the "
+                            "place where they are, and a tool that only shows or changes something on this "
+                            "computer's screen (night light, a desktop notification or reminder) reaches only "
+                            "someone at this computer.", criteria)},
             timeout=TIMEOUT, retries=0)["tool"]
     except (JevError, KeyError, ValueError) as exc:
         log.warning("Catalog pick unavailable, offering keyword matches: %s", str(exc)[:160])

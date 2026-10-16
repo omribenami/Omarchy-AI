@@ -179,15 +179,18 @@ class GatewayClient:
         )
         return json.loads(response)
 
-    def decide_response(self, parts: list[dict], questions: dict, *, model: str, timeout: float = 20) -> dict:
+    def decide_response(self, parts: list[dict], questions: dict, *, model: str, timeout: float = 20,
+                        extra_headers: dict[str, str] | None = None) -> dict:
         """Typed answers about ordered state parts, which may include images
         ({"type": "file", "mediaType": ..., "data": {"type": "data", "data":
         <base64>}}). This is /decision-model, not /evaluation-model: the
-        older endpoint accepts such a list and reads it as text (2026-10-11:
-        a 4 KB PNG cost 4,258 tokens there and was judged blind; 703 here)."""
+        evaluation endpoint's asset form does not expose image pixels to Jev."""
+        headers = {"ai-decision-model-specification-version": "4", "ai-model-id": model}
+        if extra_headers:
+            headers.update(extra_headers)
         response = self._request(
             "/ai/decision-model", json.dumps({"stateParts": parts, "questions": questions}).encode(),
-            "application/json", {"ai-decision-model-specification-version": "4", "ai-model-id": model},
+            "application/json", headers,
             timeout=timeout,
         )
         return json.loads(response)

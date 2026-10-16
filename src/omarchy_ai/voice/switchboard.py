@@ -12,6 +12,14 @@ Two passes (docs/ADR-0003-jev-switchboard.md):
    the user, or reroute it to a better executor (the Task Runtime for a
    multi-step job, the Jev desktop loop for a native desktop goal).
 
+Jev decides the tool, not only yes or no: every non-read review also offers
+a short list of other tools that could carry out the request (a shortlist
+code builds from the tool catalog), and gets where the request came from
+(core/origin.py: the speaker in a room, the phone, this computer). 2026-10-15
+19:58: "make it a bit calmer here", said to the speaker, ran the night light
+on this computer's screen (execute p=0.9): Jev saw neither where the user
+was nor any other tool.
+
 Code owns everything exact: which reroutes a tool may take, their arguments
 (the user's own words, never generated text), the thresholds, and when a
 reroute is allowed at all (never in the middle of a chain the model already
@@ -88,6 +96,9 @@ REROUTE_P = 0.9       # a reroute replaces the model's plan: only when clear
 # this window to workspace 4" via list_commands -> desktop_task at 0.81).
 DESKTOP_REROUTE_P = 0.75
 REJECT_P = 0.8
+BETTER_P = 0.8        # Jev's other tool replaces the model's: only when clear
+SHORTLIST = 8         # other tools offered with each review
+USER_TOOLS_OFFERED = 3
 REJECT_MATCH = 0.3    # ... and only if the call itself does not look right
 HARD_MISMATCH = 0.1   # a call this far from the request never runs
 READ_MISMATCH = 0.05  # reads are harmless: reject only obvious nonsense
@@ -114,6 +125,7 @@ class Context:
     calls: list[tuple[str, dict]]     # the model's calls since the request
     description: str = ""             # the tool's own description
     failed: dict | None = None        # her last call, when it failed: {"tool", "args", "error"}
+    origin: dict | None = None        # where the request came from (core/origin.py), None fields dropped
 
 
 def _options(tool: str, ctx: Context) -> dict:
@@ -131,12 +143,81 @@ def _options(tool: str, ctx: Context) -> dict:
     return options
 
 
-def questions(tool: str, ctx: Context, args: dict | None = None) -> dict:
+# Said in every question that reads `origin`: what "here" means depends on it.
+ORIGIN_NOTE = (
+    "`origin` says where the request came from (channel, what the user talks to, room) and whether the user is "
+    "at this computer. When at_this_computer is false (the voice speaker in a room, or the phone), 'here', 'this "
+    "room', 'the lights', 'the atmosphere' mean the place where the user is, not this computer: a call that only "
+    "changes this computer's screen (night light, windows, a desktop notification) does not carry it out unless "
+    "they named the computer or its screen.")
+
+
+def _pool() -> dict[str, dict]:
+    """Every tool the model can reach: built-in and the user's own."""
+    from ..execution.tools import TOOLS
+    pool = {t["name"]: t for t in TOOLS}
+    try:
+        from ..execution import user_tools
+        pool.update({t["name"]: t for t in user_tools.schemas()})
+    except Exception:  # noqa: BLE001 -- the shortlist only informs the review
+        pass
+    return pool
+
+
+# Executors for a whole kind of job: always worth offering.
+ALWAYS_OFFERED = ("start_task", "desktop_task", "browser_task", "run_skill")
+
+
+def _skills_summary(base: str) -> str:
+    """run_skill with the saved procedures by name. 2026-10-15 19:52: "tell
+    the kids they have 2 minutes, then lock" went to set_reminder and a
+    desktop notification; the saved countdown skill was never among
+    Jev's options, since nothing said which skills exist."""
+    try:
+        from ..core import skills
+        listed = skills.index_text(limit=12, width=220)
+    except Exception:  # noqa: BLE001 -- the skills only inform the choice
+        listed = ""
+    return f"{base} Saved skills:\n{listed}"[:1800] if listed.strip() else base
+
+
+def shortlist(tool: str, args: dict, ctx: Context) -> dict[str, str]:
+    """{tool: one-line description}: the called tool, the tools whose words
+    match the request (catalog keyword rank over the request, the call's text
+    arguments and this turn's use_tool requests), the user's own tools (their
+    house, their services: what 'the lights' usually means) and the
+    whole-job executors. Code chooses the candidates; Jev chooses among them."""
+    from ..execution import catalog
+    pool = _pool()
+    try:
+        from ..execution import user_tools
+        added = {t["name"] for t in user_tools.schemas()}
+    except Exception:  # noqa: BLE001
+        added = set()
+    words = " ".join([ctx.request, *ctx.earlier[-1:],
+                      *(v for v in (args or {}).values() if isinstance(v, str)),
+                      *(str(a.get("request") or "") for _, a in ctx.calls)])
+    matched = [t["name"] for t in catalog._keyword_rank(words, pool, matched_only=True)]
+    ranked = [t["name"] for t in catalog._keyword_rank(words, pool)]
+    names = [tool] if tool in pool else []
+    names += [n for n in ranked if n in added][:USER_TOOLS_OFFERED]
+    names += [n for n in ALWAYS_OFFERED if n in pool]
+    names += matched
+    picked = list(dict.fromkeys(names))[:SHORTLIST + 1]
+    if tool not in picked:
+        picked = [tool, *picked[:SHORTLIST]]
+    offered = {n: (catalog._summary(pool[n]) if n in pool else ctx.description[:180] or n) for n in picked}
+    if "run_skill" in offered:
+        offered["run_skill"] = _skills_summary(offered["run_skill"])
+    return offered
+
+
+def questions(tool: str, ctx: Context, args: dict | None = None, offered: dict | None = None) -> dict:
     writes = _writes(tool, args)
     result = {
         "route": choice(
             "The live model wants to make `call` for the user's latest `request` (earlier turns and the calls it "
-            "already made this turn are context). Decide where this goes. Relaying or typing text the user "
+            "already made this turn are context). Decide where this goes. " + ORIGIN_NOTE + " Relaying or typing text the user "
             "dictated into a terminal or to a coding agent (Claude Code, Codex) is exactly what they asked: "
             "execute it. A request that is cut off mid-sentence, or the user describing or explaining how "
             "something works, asks for nothing: reject a call that acts on it. The request is speech recognition "
@@ -149,8 +230,8 @@ def questions(tool: str, ctx: Context, args: dict | None = None) -> dict:
             _options(tool, ctx)),
         "matches": boolean(
             "Does `call` carry out what the user's latest `request` asks, or a sensible step toward it, with the "
-            "right target and values (numbers, names, text)? Read the request as the user meant it given the "
-            "earlier turns, not its misheard words."),
+            "right target and values (numbers, names, text), in the place the user means (`origin`)? Read the "
+            "request as the user meant it given the earlier turns, not its misheard words."),
         "gap": choice(
             "If `call` does not fit the request, what is wrong with it?",
             {"none": "Nothing, it fits.",
@@ -159,6 +240,11 @@ def questions(tool: str, ctx: Context, args: dict | None = None) -> dict:
              "not_asked": "The user did not ask for this.",
              "ambiguous": "The request does not say clearly what to act on."}),
     }
+    if offered and len(offered) > 1:
+        result["better_tool"] = choice(
+            "The user's latest `request` must be carried out where and for whom they meant (see `origin`: they "
+            "may not be at this computer, and a request about other people or another room must reach them there). "
+            "Which one of these tools does that best? Judge from the request itself, not from how `call` worded it.", offered)
     if writes:
         result["confirmed"] = boolean(
             "Did the user explicitly instruct or approve this exact external change? A direct command such as "
@@ -175,6 +261,7 @@ def state(tool: str, args: dict, ctx: Context) -> dict:
         "request": ctx.request[-600:],
         "earlier_user_turns": [t[-200:] for t in ctx.earlier[-3:]],
         "fast_pass_route": ctx.hint,
+        **({"origin": ctx.origin} if ctx.origin else {}),
         "calls_this_turn": [{"tool": n, "args": _short(a)} for n, a in ctx.calls[-6:]],
         "call": {"tool": tool, "args": _short(args, 2_000 if _writes(tool, args) else 300),
                  "what_it_does": ctx.description[:240]},
@@ -229,9 +316,54 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
             "Ask the user one short question, then act."))
     reads = _reads(tool, args)
     floor = READ_MISMATCH if reads else HARD_MISMATCH
-    if match < floor or (not reads and route == "reject" and p >= REJECT_P and match < REJECT_MATCH):
-        why = {"values": "the target or values are wrong", "tool": "it is the wrong kind of action",
-               "not_asked": "the user did not ask for this", "ambiguous": "the request is ambiguous"}.get(gap, "it does not fit")
+    why = {"values": "the target or values are wrong", "tool": "it is the wrong kind of action",
+           "not_asked": "the user did not ask for this", "ambiguous": "the request is ambiguous"}.get(gap, "it does not fit")
+    # A call that does not fit: Jev thinks it more likely wrong than right
+    # (matches < 0.5) AND names it the wrong kind of action or one nobody
+    # asked for. Two of Jev's own answers agreeing, not one more threshold.
+    # Reads stay lenient: a lookup is how a follow-up starts (2026-10-08).
+    misfit = not reads and match < 0.5 and gap in ("tool", "not_asked")
+    better = answers.get("better_tool") or {}
+    if better:
+        evidence.update(better=better.get("choice"), better_p=round(better.get("p", 0), 2))
+    # How much Jev's own tool choice backs the called tool. 2026-10-15 replays
+    # (live Jev): "tell the kids they have 2 minutes, then lock" as
+    # set_reminder got matches 0.6 but run_skill 0.93 / set_reminder 0.03;
+    # "make it calmer here" said to the speaker as nightlight_toggle got route
+    # reject 0.95, matches 0.72 and only 0.22 for the night light. matches
+    # reads the call's own wording; the choice weighs it against the others.
+    support = (better.get("probabilities") or {}).get(tool, 1.0) if better else 1.0
+    if better:
+        evidence["call_support"] = round(support, 2)
+    displaced = (not reads and better.get("choice") not in (None, tool) and better.get("p", 0) >= BETTER_P
+                 and support < 0.2)
+    doubted = not reads and better and route == "reject" and p >= REJECT_P and support < 0.3
+    if doubted and not displaced:
+        ranked = sorted((better.get("probabilities") or {}).items(), key=lambda kv: -kv[1])
+        likely = ", ".join([n for n, _ in ranked if n != tool][:2])
+        where = ""
+        if ctx.origin and ctx.origin.get("at_this_computer") is False:
+            where = f" The user is talking through {ctx.origin.get('talking_to') or ctx.origin.get('channel')}, not at this computer."
+        return Verdict("reject", evidence=evidence, message=(
+            f"Not run: Jev judged {tool} wrong for the user's request {ctx.request[-200:]!r}.{where} "
+            f"More likely: {likely}. Make the right call for what and where the user meant, or ask them."))
+    if (misfit or displaced) and better.get("choice") not in (None, tool) and better.get("p", 0) >= BETTER_P:
+        other = better["choice"]
+        from ..execution import catalog
+        direct = other in catalog.CORE or other in catalog.MYAPI_CORE
+        where = ""
+        if ctx.origin and ctx.origin.get("at_this_computer") is False:
+            where = f" The user is talking through {ctx.origin.get('talking_to') or ctx.origin.get('channel')}, not at this computer."
+        how = f"call {other}" if direct else f"call {other} (through use_tool with name='{other}' if it is not declared to you)"
+        return Verdict("reject", evidence=evidence, message=(
+            f"Not run: Jev checked {tool} against the user's request {ctx.request[-200:]!r}: {why}.{where} "
+            f"The tool for this is {other}. Instead, {how} with arguments for what the user asked."))
+    # 2026-10-15 20:48:02: hide_window_labels with route=reject p=0.72,
+    # matches=0.16, gap=not_asked ran, because p was under REJECT_P. When the
+    # route's own top choice is reject and the call is a misfit, three answers
+    # agree: it does not run.
+    if match < floor or (misfit and route == "reject") or (
+            not reads and route == "reject" and p >= REJECT_P and match < REJECT_MATCH):
         return Verdict("reject", evidence=evidence, message=(
             f"Not run: Jev checked {tool} {json.dumps(_short(args), ensure_ascii=False)[:200]} against the user's "
             f"request {ctx.request[-200:]!r} and {why}. Re-read the request and make the right call, or ask."))
@@ -269,7 +401,7 @@ class Switchboard:
         self._lock = threading.Lock()
 
     def review(self, tool: str, args: dict, ctx: Context) -> Verdict:
-        key = json.dumps([tool, args, ctx.request, ctx.failed], sort_keys=True, ensure_ascii=False, default=str)
+        key = json.dumps([tool, args, ctx.request, ctx.failed, ctx.origin], sort_keys=True, ensure_ascii=False, default=str)
         now = time.monotonic()
         with self._lock:
             cached = self._cache.get(key)
@@ -293,7 +425,15 @@ class Switchboard:
             verdict = Verdict("execute", tool, dict(args or {}), evidence={"skipped": "relays the user's words to a task"})
         else:
             try:
-                answers = (self._jev or Jev()).ask(state(tool, args, ctx), questions(tool, ctx, args),
+                # Reads are never replaced by another tool, and a write's
+                # question is its confirmation: neither gets a shortlist.
+                offered = None
+                if not (_reads(tool, args) or _writes(tool, args)):
+                    try:
+                        offered = shortlist(tool, args, ctx)
+                    except Exception as exc:  # noqa: BLE001 -- the review still runs without it
+                        log.warning("Switchboard shortlist failed: %s", str(exc)[:160])
+                answers = (self._jev or Jev()).ask(state(tool, args, ctx), questions(tool, ctx, args, offered),
                                                    timeout=TIMEOUT, retries=0, fail_fast=True)
                 verdict = decide(answers, tool, args, ctx)
             except (JevError, KeyError) as exc:
