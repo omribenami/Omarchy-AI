@@ -38,8 +38,6 @@ from .. import files as local_files
 from .. import sudo_approval
 from ..desktop_env import desktop_env
 
-log = logging.getLogger("omarchy_ai.execution.actions")
-
 from .base import (  # noqa: F401
     ActionResult,
     _TIMEOUT,
@@ -230,6 +228,8 @@ from .myapi_tools import (  # noqa: F401
     myapi_vault_list,
     myapi_write,
 )
+
+log = logging.getLogger("omarchy_ai.execution.actions")
 
 
 ACTIONS = {
