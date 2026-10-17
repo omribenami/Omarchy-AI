@@ -17,7 +17,7 @@ from unittest import mock
 
 from fakes.effects_journal import isolate_journal
 from omarchy_ai.core import cancel, effects
-from omarchy_ai.execution import actions, runner, tools
+from omarchy_ai.execution import actions, provenance, runner, tools
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.catalog import USE_TOOL
 
@@ -333,7 +333,7 @@ class Async(unittest.IsolatedAsyncioTestCase):
         hung = asyncio.create_task(call({"hang": True}, 1.0))
         await asyncio.sleep(0.05)
         second = await call({}, 5)
-        self.assertEqual(second.message, "fresh")
+        self.assertEqual(provenance.unfence(second.message), "fresh")
         self.assertLess(time.monotonic() - started, 0.5)
         self.assertFalse(hung.done())
         first = await hung
@@ -432,6 +432,15 @@ class Worker(unittest.TestCase):
         )
         names.start()
         self.addCleanup(names.stop)
+        # The fake tools say who they are: their results are not fenced.
+        trusted = mock.patch.dict(
+            tools.PROVENANCE,
+            dict.fromkeys(
+                ("echo", "fail", "boom", "die", "hang", "stubborn"), "system"
+            ),
+        )
+        trusted.start()
+        self.addCleanup(trusted.stop)
         self.pool = runner.WorkerPool(
             [
                 sys.executable,

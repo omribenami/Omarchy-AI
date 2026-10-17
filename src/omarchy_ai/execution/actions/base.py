@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..desktop_env import desktop_env
 
@@ -17,6 +17,9 @@ _TIMEOUT = 10
 class ActionResult:
     ok: bool
     message: str = ""
+    # The harness's own words (a refusal, a block), never fenced as untrusted
+    # content even from a tool whose results are (execution/provenance.py).
+    harness: bool = field(default=False, compare=False, repr=False)
 
 
 def _desktop_env() -> dict[str, str]:

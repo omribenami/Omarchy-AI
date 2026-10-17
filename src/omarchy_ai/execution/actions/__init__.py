@@ -368,7 +368,7 @@ def myapi_refused(name: str) -> ActionResult | None:
         refusal = identities.myapi_refusal()
         if refusal:
             log.info("refused %s for %s", name, identities.current())
-            return ActionResult(False, refusal)
+            return ActionResult(False, refusal, harness=True)
     return None
 
 

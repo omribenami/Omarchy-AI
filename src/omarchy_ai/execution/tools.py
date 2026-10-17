@@ -970,6 +970,61 @@ EFFECT_CLASSES = {
 }
 
 
+# --- where a tool's result comes from (execution/provenance.py) --------------
+# external, web, file, terminal and vision results are untrusted: the runner
+# fences them before any model reads them. web, file and vision become
+# specific from the call's arguments (web:<host>, file:<path>, a camera).
+_SYS, _LOCAL = "system", "local_state"
+PROVENANCE = {
+    # Task Runtime, skills, schedules, updates
+    "desktop_task": "vision", "start_task": _LOCAL, "task_status": _LOCAL, "task_respond": _LOCAL,
+    "show_tasks_hud": _SYS, "hide_tasks_hud": _SYS, "search_os_knowledge": _LOCAL,
+    "get_release_notes": "external:github", "schedule_task": _LOCAL, "watch_camera": _LOCAL,
+    "look_camera": "vision",
+    "list_scheduled_tasks": _LOCAL, "show_routines_hud": _SYS, "hide_routines_hud": _SYS,
+    "cancel_scheduled_task": _LOCAL, "run_scheduled_task_now": _LOCAL, "find_skill": _LOCAL,
+    "load_skill": _LOCAL, "run_skill": _LOCAL, "save_skill": _LOCAL, "list_skills": _LOCAL,
+    "delete_skill": _LOCAL, "check_assistant_updates": "external:github", "update_assistant": _SYS,
+    "get_update_status": _LOCAL, "report_issue": _SYS, "remember_preference": _LOCAL,
+    "run_mission": _SYS,
+    # bar, audio, display, power
+    "list_bar_icons": _SYS, "open_bar_panel": _SYS, "close_bar_panel": _SYS,
+    "volume_up": _SYS, "volume_down": _SYS, "volume_mute_toggle": _SYS,
+    "volume_set": _SYS, "mic_mute_toggle": _SYS, "brightness_up": _SYS,
+    "brightness_down": _SYS, "brightness_set": _SYS, "screenshot": _SYS,
+    "lock_screen": _SYS, "unlock_screen": _SYS, "bluetooth_toggle": _SYS,
+    "nightlight_toggle": _SYS, "battery_status": _SYS, "run_omarchy_command": _SYS,
+    # apps, browser, files
+    "github_upload_attachment": _SYS, "open_terminal": _SYS, "open_browser": _SYS,
+    "inspect_browser": "web", "browser_control": "web", "show_browser": _SYS,
+    "browser_task": "web", "open_files": _SYS, "open_editor": _SYS, "list_files": "file",
+    "read_file": "file", "write_file": _SYS, "edit_file": _SYS,
+    # windows, input, terminals
+    "read_tile_log": "terminal", "workspace_switch": _SYS, "workspace_next": _SYS,
+    "workspace_prev": _SYS, "close_window": _SYS, "window_fullscreen_toggle": _SYS,
+    "list_windows": _SYS, "list_commands": _LOCAL, "execute_command": _SYS, "type_text": _SYS,
+    "press_key": _SYS, "submit_sudo_password": _SYS, "get_recent_actions": _LOCAL,
+    "describe_screen": "vision", "terminal_task": "terminal", "terminal_read": "terminal",
+    "terminal_type": _SYS, "terminal_sudo": _SYS, "terminal_show": _SYS,
+    "terminal_hide": _SYS, "terminal_close": _SYS, "move_window_to_workspace": _SYS,
+    "focus_window": _SYS, "show_window_labels": _SYS, "hide_window_labels": _SYS,
+    # media, casting, reminders
+    "media_play_pause": _SYS, "media_next": _SYS, "media_prev": _SYS,
+    "start_casting": _SYS, "stop_casting": _SYS, "list_cast_targets": _SYS,
+    "install_receiver_on_tv": _SYS, "set_reminder": _LOCAL, "list_reminders": _LOCAL,
+    "clear_reminders": _LOCAL,
+    # MyApi
+    "myapi": "external:myapi", "myapi_vault_list": "external:myapi", "myapi_list_services": "external:myapi",
+    "myapi_service_methods": "external:myapi", "myapi_call": "external:myapi", "myapi_write": "external:myapi",
+    "myapi_execute": "external:myapi", "myapi_gmail_send": _SYS, "myapi_gmail_reply": _SYS,
+    "myapi_gmail_search": "external:gmail", "myapi_gmail_search_attachments": "external:gmail",
+    "myapi_gmail_download_attachment": _SYS,
+    # declared by the sessions themselves (execution/catalog.py, voice/, phone/)
+    "use_tool": _SYS, "end_conversation": _SYS, "remember_voice": _SYS,
+    "share_file": _SYS,
+}
+
+
 def effect_class(name: str) -> str:
     """A tool's effect class. A tool the user added (execution/user_tools.py)
     is `reversible`, as it was retried before; any other unknown name is

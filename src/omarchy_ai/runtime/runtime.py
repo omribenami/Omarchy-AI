@@ -31,6 +31,7 @@ import time
 from typing import Callable
 
 from . import shell
+from ..execution import provenance
 from .control import LIVE_GAPS, ControlPlane
 from .executors import Executor, default_executors
 from .executors.base import (BLOCKED, DIAGNOSE, DONE, FAILED as R_FAILED, IMPLEMENT, NEEDS_APPROVAL,
@@ -1021,10 +1022,10 @@ class WorkContextImpl:
 
     def screen(self, question: str) -> dict:
         result = self._action_runner()("describe_screen", {"question": question[:500]})
-        self.task.add_evidence("screen", f"screen check '{question[:150]}': {result.message[:800]}",
+        self.task.add_evidence("screen", f"screen check '{question[:150]}': {provenance.clip(result.message, 800)}",
                                source="vision", ok=result.ok, step=self.step)
         self.runtime.store.save(self.task)
-        return {"ok": result.ok, "text": result.message[:3000]}
+        return {"ok": result.ok, "text": provenance.clip(result.message, 3000)}
 
     def action(self, name: str, args: dict) -> dict:
         label = str(args.get("goal") or args.get("request") or args.get("url") or name).replace("\n", " ")
@@ -1046,7 +1047,7 @@ class WorkContextImpl:
         self.task.add_command({"command": f"[tool] {subject[:500]}", "step": self.step, "decision": "allow",
                                "risk": assessment.risk.name, "exit_code": 0 if result.ok else 1,
                                "output": result.message[-1500:], "at": time.time()})
-        self.task.add_evidence("action", f"{subject[:200]} -> {'ok' if result.ok else 'failed'}: {result.message[:600]}",
+        self.task.add_evidence("action", f"{subject[:200]} -> {'ok' if result.ok else 'failed'}: {provenance.clip(result.message, 600)}",
                                ok=result.ok, step=self.step)
         self.runtime.store.save(self.task)
         return {"ok": result.ok, "decision": "allow", "message": result.message}
