@@ -226,6 +226,11 @@ def _call(service: str, method: str, args: dict, origin: str = "") -> ActionResu
         except (myapi.MyApiError, ValueError) as exc:
             return ActionResult(False, f"Gmail search failed: {exc}")
         return ActionResult(True, json.dumps({"attempted": attempted, **result}, ensure_ascii=False))
+    if service == "gmail" and method == "GMAIL_FETCH_EMAILS" and "include_payload" not in args:
+        # Sender, subject, preview and text without the raw MIME parts: four
+        # messages were 429k characters with them and 37k without (live
+        # 2026-10-17), and "check my last 4 emails" took over 20 s to read.
+        args = {**args, "include_payload": False}
     if origin:
         from ..core import effects
         from .actions.myapi_tools import myapi_write_execute

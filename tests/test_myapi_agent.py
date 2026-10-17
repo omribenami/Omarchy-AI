@@ -127,6 +127,13 @@ class MyApiAgentTests(unittest.TestCase):
         for method in ("GMAIL_SEND_EMAIL", "GMAIL_DELETE_MESSAGE", "GITHUB_CREATE_AN_ISSUE", "SOMETHING_ODD"):
             self.assertTrue(myapi_agent.is_write(method), method)
 
+    def test_fetching_mail_leaves_out_the_raw_payload_unless_asked(self):
+        with patch.object(myapi_agent, "_read", return_value=ActionResult(True, "{}")) as read:
+            myapi_agent._call("gmail", "GMAIL_FETCH_EMAILS", {"max_results": 4})
+            myapi_agent._call("gmail", "GMAIL_FETCH_EMAILS", {"max_results": 1, "include_payload": True})
+        self.assertEqual(read.call_args_list[0].args[2], {"max_results": 4, "include_payload": False})
+        self.assertEqual(read.call_args_list[1].args[2], {"max_results": 1, "include_payload": True})
+
     def test_no_fitting_service_says_so(self):
         with patch("omarchy_ai.core.jev.Jev", return_value=FakeJev(["none"])):
             result = myapi_agent.run({"request": "water the plants"})
