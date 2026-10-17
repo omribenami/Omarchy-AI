@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, patch
 
+import no_live_desktop
 from google.genai import types
 from omarchy_ai.config import Config
 from omarchy_ai.execution.actions import ActionResult
@@ -23,12 +24,17 @@ _pass = patch.object(switchboard.Switchboard, "review",
                      lambda self, tool, args, ctx: switchboard.Verdict("execute", tool, dict(args)))
 
 
+_no_session_probe, _restore_session_probe = no_live_desktop.without_session_probe()
+
+
 def setUpModule():
     _pass.start()
+    _no_session_probe()
 
 
 def tearDownModule():
     _pass.stop()
+    _restore_session_probe()
 
 
 class GeminiTests(unittest.IsolatedAsyncioTestCase):

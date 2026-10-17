@@ -50,6 +50,7 @@ class TerminalTaskTests(unittest.TestCase):
     def run_task(self, active, show="auto"):
         workbench.pending_handover.clear()
         with patch.object(operator, "user_active", return_value=active), \
+                patch.object(workbench, "exists", return_value=False), \
                 patch.object(workbench, "start", return_value=ActionResult(True, "started")), \
                 patch.object(workbench, "idle_terminal", return_value=None), \
                 patch.object(workbench, "remotes", return_value={}), \
