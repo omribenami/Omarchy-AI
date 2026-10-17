@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import os
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -60,12 +61,23 @@ class MyApiError(Exception):
     """Carries a human-readable message; reconnect_needed is set when the
     identity was rejected server-side (401/403 — e.g. revoked from the
     MyApi dashboard), so callers can tell 'try again later' apart from
-    'reconnect from the settings panel'."""
+    'reconnect from the settings panel'.
 
-    def __init__(self, message: str, *, reconnect_needed: bool = False, details: object = None) -> None:
+    maybe_sent is set when the request may have reached MyApi although no
+    answer came back (a timeout, a dropped connection): a write may then
+    have happened, and core/effects.py does not send it again."""
+
+    def __init__(self, message: str, *, reconnect_needed: bool = False, details: object = None,
+                 maybe_sent: bool = False) -> None:
         super().__init__(message)
         self.reconnect_needed = reconnect_needed
         self.details = details
+        self.maybe_sent = maybe_sent
+
+
+def _never_sent(reason: object) -> bool:
+    """A connection error that happened before any byte of the request left."""
+    return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
 
 
 def _write_json_0600(path, data: dict) -> None:
@@ -187,6 +199,7 @@ class MyApiClient:
     def _raw_request(
         self, method: str, path: str, *,
         query: dict | None = None, body: object | None = None, signed: bool = True,
+        idempotency_key: str | None = None,
     ) -> dict:
         url = BASE_URL + path
         if query:
@@ -198,6 +211,11 @@ class MyApiClient:
         }
         if signed:
             headers.update(self._sign_headers())
+        if idempotency_key:
+            # The same logical action always carries the same key
+            # (core/effects.py), so a provider that honours it can drop a
+            # repeat; one that does not ignores the header.
+            headers["Idempotency-Key"] = idempotency_key
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
@@ -215,15 +233,16 @@ class MyApiClient:
                 message = f"{message}: " + "; ".join(map(str, data_error["errors"]))
             raise MyApiError(message, reconnect_needed=e.code in (401, 403), details=parsed) from e
         except urllib.error.URLError as e:
-            raise MyApiError(f"could not reach myapiai.com: {e.reason}") from e
+            raise MyApiError(f"could not reach myapiai.com: {e.reason}",
+                             maybe_sent=not _never_sent(e.reason)) from e
         # Real session 2026-09-28 17:29 (phone): a Gmail fetch timed out while
         # reading the response body. urlopen only wraps connect-time errors in
         # URLError, so the bare TimeoutError escaped every `except MyApiError`
         # and the action was reported as "crashed" instead of a retryable miss.
         except TimeoutError as e:
-            raise MyApiError(f"myapiai.com did not answer within {_TIMEOUT}s; try again") from e
+            raise MyApiError(f"myapiai.com did not answer within {_TIMEOUT}s; try again", maybe_sent=True) from e
         except OSError as e:
-            raise MyApiError(f"connection to myapiai.com failed: {e}") from e
+            raise MyApiError(f"connection to myapiai.com failed: {e}", maybe_sent=not _never_sent(e)) from e
         if not raw:
             return {}
         try:
@@ -234,8 +253,10 @@ class MyApiClient:
         except json.JSONDecodeError:
             return {"raw": raw.decode(errors="replace")}
 
-    def request(self, method: str, path: str, *, query: dict | None = None, body: object | None = None) -> dict:
-        return self._raw_request(method, path, query=query, body=body, signed=True)
+    def request(self, method: str, path: str, *, query: dict | None = None, body: object | None = None,
+                idempotency_key: str | None = None) -> dict:
+        return self._raw_request(method, path, query=query, body=body, signed=True,
+                                 idempotency_key=idempotency_key)
 
     # -- convenience wrappers over the service gateway --------------------
 
@@ -264,7 +285,7 @@ class MyApiClient:
 
     def call_service(
         self, service: str, path: str, method: str = "GET",
-        query: dict | None = None, body: object | None = None,
+        query: dict | None = None, body: object | None = None, idempotency_key: str | None = None,
     ) -> dict:
         # REST query parameters travel as text. Composio's proxy rejects
         # numeric/bool values instead of applying normal URL encoding.
@@ -278,4 +299,4 @@ class MyApiClient:
         payload = {"path": path, "method": method, "query": parameters}
         if body is not None:
             payload["body"] = body
-        return self.request("POST", f"/services/{service}/proxy", body=payload)
+        return self.request("POST", f"/services/{service}/proxy", body=payload, idempotency_key=idempotency_key)

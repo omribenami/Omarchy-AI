@@ -8,6 +8,10 @@ from unittest.mock import patch
 from omarchy_ai.execution import actions, catalog, user_tools
 from omarchy_ai.runtime import permissions
 
+from fakes.effects_journal import isolate_journal  # noqa: E402
+
+setUpModule, tearDownModule = isolate_journal()
+
 
 def make_tool(folder: Path, name="wifi_health", test_exit=0, description="Counts iwlwifi firmware errors this boot."):
     folder.mkdir(parents=True, exist_ok=True)

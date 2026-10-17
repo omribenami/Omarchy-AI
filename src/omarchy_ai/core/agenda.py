@@ -728,14 +728,24 @@ def _brief(message: str, limit: int = 300) -> str:
     return " ".join(str(message).split())[:limit]
 
 
-def _call(step: dict):
+def _call(step: dict, origin: str = "", job_id: str = ""):
+    """Run one step, retrying a failure that is safe to repeat. Each attempt
+    goes through the side-effect journal (core/effects.py) with the run's
+    step as its origin, so a retry never repeats a step that may already
+    have happened, and the tool's own effects carry the same origin."""
     from ..execution.actions import run_action
+    from . import effects
     delays = () if _NOT_REPEATABLE.search(step["tool"]) else STEP_RETRY_DELAYS
+    origin = origin or f"once:{uuid.uuid4().hex}"
     attempt = 0
     while True:
-        result = run_action(step["tool"], dict(step["args"]))
+        with effects.origin(origin):
+            result = effects.perform("agenda_step", step["tool"], step["args"],
+                                     lambda _key: run_action(step["tool"], dict(step["args"])),
+                                     target=f"agenda:{job_id}:{step['tool']}", correlation_id=job_id,
+                                     succeeded=lambda r: _failure(r) is None)
         why = _failure(result)
-        if why is None or attempt >= len(delays):
+        if why is None or attempt >= len(delays) or effects.not_dispatched(result):
             return result, why, attempt + 1
         log.warning("agenda: step %s failed (%s); retrying in %gs", step["tool"], why[:160], delays[attempt])
         time.sleep(delays[attempt])
@@ -748,7 +758,7 @@ def _run_action(job, now, jev):
     _update(job["id"], started_at=now, next_run=schedule.next_run(job["schedule"], now))
     results, failed = [], None
     for number, step in enumerate(job["steps"], 1):
-        result, why, attempts = _call(step)
+        result, why, attempts = _call(step, f"agenda:{job['id']}:{now}:{number}", job["id"])
         line = {"tool": step["tool"], "ok": why is None, "result": result.message[:600], "attempts": attempts}
         results.append(line)
         log.info("agenda: %s step %d/%d %s -> %s%s", job["id"], number, len(job["steps"]), step["tool"],

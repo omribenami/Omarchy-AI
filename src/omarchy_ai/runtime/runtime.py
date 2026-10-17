@@ -903,8 +903,14 @@ class WorkContextImpl:
             # The user just approved this exact install; the CLI must not ask twice.
             from ..execution.user_tools import APPROVED_ENV
             env[APPROVED_ENV] = installs[0]
-        result = shell.run(run_as, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
-                           output_dir=self.runtime.store.dir / self.task.id, env=env)
+        def execute(_key: str = "") -> shell.CommandResult:
+            return shell.run(run_as, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
+                             output_dir=self.runtime.store.dir / self.task.id, env=env)
+
+        if assessment.risk >= Risk.ELEVATED:
+            result = self._journaled_command(command, cwd, execute)
+        else:
+            result = execute()
         result.output = passwords.redact(result.output)  # e.g. a vault token a command printed
         data = result.as_dict()
         record.update(exit_code=result.exit_code, timed_out=result.timed_out, duration=round(result.duration, 2),
@@ -928,6 +934,41 @@ class WorkContextImpl:
                                ok=ok, step=self.step)
         self.runtime.store.save(self.task)
         return {**data, "decision": "allow", "risk": assessment.risk.name}
+
+    def _step_record(self) -> dict:
+        return next((s for s in self.task.steps if s.get("n") == self.step), {})
+
+    def _journaled_command(self, command: str, cwd: str, execute) -> shell.CommandResult:
+        """An ELEVATED-or-above command, at most once (core/effects.py). Its
+        origin is the task, the step and how many such commands this step
+        has finished: a deliberate repeat after one finished runs again; the
+        same command after a crash mid-run is not run a second time."""
+        from ..core import effects
+        step = self._step_record()
+        done = int(step.get("effects_done") or 0)
+
+        def stored(r: shell.CommandResult) -> dict:
+            return {**r.as_dict(effects.RESULT_CHARS), "duration": r.duration}
+
+        def loaded(d: dict) -> shell.CommandResult:
+            return shell.CommandResult(str(d.get("command") or command), str(d.get("cwd") or cwd),
+                                       d.get("exit_code"), str(d.get("output") or ""), float(d.get("duration") or 0),
+                                       timed_out=bool(d.get("timed_out")), cancelled=bool(d.get("cancelled")),
+                                       truncated=bool(d.get("truncated")), full_output_path=d.get("full_output_path"),
+                                       error=d.get("error"))
+
+        def unsure(effect, state: str) -> shell.CommandResult:
+            info = effects.describe(effect, state)
+            return shell.CommandResult(command, cwd, None, info["message"], 0.0, error=f"effect {state}")
+
+        result = effects.perform("command", "run_command", {"command": command, "cwd": cwd},
+                                 execute, target=command[:300],
+                                 origin_id=f"task:{self.task.id}:step{self.step}:{done}",
+                                 correlation_id=self.task.id, succeeded=lambda r: r.exit_code == 0,
+                                 store=stored, load=loaded, unsure=unsure)
+        if step and result.error not in ("effect uncertain", "effect in_progress"):
+            step["effects_done"] = done + 1
+        return result
 
     def launch(self, command: str) -> dict:
         assessment = classify(command, self.task.workspace, self.scope)
@@ -991,7 +1032,15 @@ class WorkContextImpl:
         decision = self._decide("action", subject, assessment)
         if decision.behavior != "allow":
             return {"ok": False, "decision": decision.behavior, "request": self._request(decision, "action", subject)}
-        result = self._action_runner()(name, args)
+        # What the tool's own side effects are caused by (core/effects.py):
+        # this task, step and call.
+        from ..core import effects
+        step = self._step_record()
+        calls = int(step.get("actions_done") or 0)
+        with effects.origin(f"task:{self.task.id}:step{self.step}:action{calls}"):
+            result = self._action_runner()(name, args)
+        if step:
+            step["actions_done"] = calls + 1
         self.task.add_command({"command": f"[tool] {subject[:500]}", "step": self.step, "decision": "allow",
                                "risk": assessment.risk.name, "exit_code": 0 if result.ok else 1,
                                "output": result.message[-1500:], "at": time.time()})

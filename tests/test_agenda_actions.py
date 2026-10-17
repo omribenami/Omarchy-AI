@@ -10,6 +10,10 @@ from omarchy_ai.execution import actions
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.verified_input import writes_externally
 
+from fakes.effects_journal import isolate_journal  # noqa: E402
+
+setUpModule, tearDownModule = isolate_journal()
+
 
 def _schema(name, props, required=()):
     return {"name": name, "description": name, "parameters": {

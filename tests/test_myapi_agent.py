@@ -103,7 +103,8 @@ class MyApiAgentTests(unittest.TestCase):
             self.assertEqual((ok, message), (True, "Sent ✓ to c@example.com"))
             self.assertFalse(myapi_agent.decide(aid, True, "again")[0])  # never twice
         call.assert_called_once_with("gmail", "GMAIL_REPLY_TO_THREAD", {"thread_id": "t1", "recipient_email":
-                                                                        "c@example.com", "message_body": "hi"})
+                                                                        "c@example.com", "message_body": "hi"},
+                                     origin=f"pending:{aid}")
         self.assertEqual(pending_actions.get(aid)["outcome"], "sent")
         with patch.object(myapi_agent, "_call", return_value=ActionResult(True, "{}")), \
                 patch.object(myapi_agent, "_worked", return_value=True), \

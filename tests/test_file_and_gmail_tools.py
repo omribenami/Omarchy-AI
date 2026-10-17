@@ -5,9 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from omarchy_ai.execution import actions, files, tile_logs
+
+from fakes.effects_journal import isolate_journal  # noqa: E402
+
+setUpModule, tearDownModule = isolate_journal()
 
 
 class LocalFileToolTests(unittest.TestCase):
@@ -222,7 +226,7 @@ class GmailAttachmentToolTests(unittest.TestCase):
         self.assertTrue(result.ok)
         client.call_service.assert_called_once_with(
             "googlecalendar", "/calendar/v3/calendars/primary/events", "POST",
-            query=None, body={"summary": "Lunch"},
+            query=None, body={"summary": "Lunch"}, idempotency_key=ANY,
         )
 
     def test_gmail_send_uses_documented_send_operation(self):
@@ -239,7 +243,7 @@ class GmailAttachmentToolTests(unittest.TestCase):
             body={"method": "GMAIL_SEND_EMAIL", "params": {"arguments": {
                 "recipient_email": "chris@example.com", "subject": "Quote",
                 "body": "Any update?", "user_id": "me",
-            }}},
+            }}}, idempotency_key=ANY,
         )
 
     def test_gmail_reply_uses_thread_operation_not_draft(self):
