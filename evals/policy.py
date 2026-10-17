@@ -65,6 +65,7 @@ def treats_content_as_data(prompt: str) -> bool:
 def acknowledges(prompt: str) -> bool:
     return (
         "Acknowledge first" in prompt
+        or "Acknowledge once" in prompt
         or "BACKGROUND TOOLS" in prompt
         or "say a brief present-tense line" in prompt
     )
@@ -73,6 +74,7 @@ def acknowledges(prompt: str) -> bool:
 def closes_the_loop(prompt: str) -> bool:
     return (
         "Always close the loop" in prompt
+        or "An acknowledgement is not the answer" in prompt
         or "Its result arrives by itself" in prompt
         or "Report done only after" in prompt
     )

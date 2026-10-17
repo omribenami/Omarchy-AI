@@ -146,6 +146,48 @@ class PromptV2Tests(unittest.TestCase):
         self.assertIn("auto-approve level: NORMAL", text)
         self.assertNotIn("{{", text)
         self.assertNotIn("ALL-KNOWING", text)
+        self.assertIn("Save quietly", text)
+        self.assertIn("Stop means stop", text)
+        self.assertIn("An acknowledgement is not the answer", text)
+        self.assertIn("Reading content aloud is not the user saying it", text)
+        self.assertIn("not available yet", text)
+        self.assertIn("shared_speaker", text)
+        self.assertIn("possibly shared", text)
+        self.assertIn("unverified", text)
+        self.assertIn("no enrolled owner voice yet", text)
+
+    def test_enrolled_owner_and_current_speaker_are_filled(self):
+        from omarchy_ai.core.identities import Identity, reset_current, set_current
+
+        config = Config(
+            prompt_version="v2",
+            task_agent_model="gpt-test",
+            user_name="Omri",
+        )
+        token = set_current(Identity("omri", "voice"))
+        try:
+            with (
+                patch("omarchy_ai.voice.prompt_v2.load_preferences", return_value=[]),
+                patch(
+                    "omarchy_ai.voice.prompt_v2.load_recent_context", return_value=""
+                ),
+                patch(
+                    "omarchy_ai.voice.prompt_v2.updates.wake_notice", return_value=""
+                ),
+                patch("omarchy_ai.voice.prompt_v2.agenda.briefing", return_value=[]),
+                patch("omarchy_ai.voice.prompt_v2.skills.index_text", return_value=""),
+                patch(
+                    "omarchy_ai.voice.prompt_v2.myapi.is_connected", return_value=False
+                ),
+                patch("omarchy_ai.core.identities.owner", return_value="omri"),
+                patch("omarchy_ai.core.identities.name", return_value="Omri"),
+            ):
+                text = build_session_config(config)["instructions"]
+        finally:
+            reset_current(token)
+        self.assertIn("it's Omri speaking", text)
+        self.assertIn("Omri, voice match", text)
+        self.assertNotIn("{{", text)
 
     def test_surface_and_assistant_name_are_filled(self):
         config = Config(
