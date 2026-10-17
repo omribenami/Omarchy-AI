@@ -62,6 +62,10 @@ Actions:
               SSH with a password (the user gave one, or said it is the same as root/sudo): `ssh-copy-id -i
               <key.pub> user@host` once, or `sshpass ssh user@host '<cmd>'`; the harness types the password.
               Never write a password into a command and never ask the user to do it by hand.
+              Commands run in a sandbox: below ELEVATED, ~/.config is read-only and only the workspace, /tmp,
+              caches and the paths a command names as write targets (redirect, cp/mv/mkdir/tee/touch) are
+              writable; key files, ~/.ssh (except for ssh/scp/rsync/git) and browser profiles are hidden. On
+              "Read-only file system", name the target path in the command instead of working around it.
 - find_tools: {"query": "<need, e.g. 'bluetooth radio'>"}      search installed commands and the man index
 - help:       {"tool": "<command>", "topic": "<optional option/subcommand>"}  local --help/man for the INSTALLED version.
               Use it whenever you are unsure of a flag; do not guess version-specific options.
