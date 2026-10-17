@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 from omarchy_ai.config import Config
 from omarchy_ai.core import agenda, identities
 from omarchy_ai.core.identities import Identity
-from omarchy_ai.execution import actions, myapi_agent
+from omarchy_ai.execution import actions, myapi_agent, provenance
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.phone import flux_notify, server
 from omarchy_ai.voice import speaker_id
@@ -121,7 +121,7 @@ class PhoneIdentityTests(Household):
             owner._handle_tool()
             other = self.handler(self.pair(person="person-b"), {"name": "myapi_call", "arguments": {}})
             other._handle_tool()
-        self.assertEqual(owner.sent, [{"ok": True, "message": "sent"}])
+        self.assertEqual(owner.sent, [{"ok": True, "message": provenance.fence("sent", "external:myapi")}])
         self.assertFalse(other.sent[0]["ok"])
 
     def test_the_openai_phone_prompt_names_a_known_person(self):

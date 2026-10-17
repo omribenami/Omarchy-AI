@@ -16,7 +16,7 @@ from ..core import alert_clips, identities, logs, quota, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
-from ..execution import runner
+from ..execution import provenance, runner
 from ..execution.actions import run_action, ActionResult
 from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
@@ -1431,7 +1431,7 @@ class GeminiLiveSession:
                 if call.name == "read_file" and result.ok and "[assistant note] This file is a multi-step script" in result.message:
                     self._script_read_at = time.monotonic()
                     # The planner fills missing step details from the script itself.
-                    self._script_text = result.message.split("\n\n[assistant note]", 1)[0]
+                    self._script_text = provenance.unfence(result.message).split("\n\n[assistant note]", 1)[0]
                 if ran == "close_window" and result.ok:
                     self._action_log = [e for e in self._action_log if e["window"] != window]
                 else:
@@ -1451,8 +1451,10 @@ class GeminiLiveSession:
             if result.ok and ran.startswith("myapi_"):
                 refinement_request = str((call.args or {}).get("request") or original_request)
                 try:
+                    # Ranked inside its fence: the content stays marked untrusted.
                     refined = await asyncio.to_thread(
-                        refine_myapi_result, self.config, refinement_request, message
+                        provenance.rewrap, message,
+                        lambda inner: refine_myapi_result(self.config, refinement_request, inner),
                     )
                 except Exception as exc:  # noqa: BLE001 -- raw bounded result is the safe fallback
                     log.warning("MyApi refinement unavailable: session=%s call=%s: %s",

@@ -21,6 +21,7 @@ import json
 import logging
 
 from ..core.jev import Jev, JevError, boolean, choice
+from ..execution import provenance
 from .task import Task
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,13 @@ def _middle(text, n: int) -> str:
     return text if len(text) <= n else text[: n * 3 // 5] + " … " + text[-(n * 2 // 5):]
 
 
+def _claim(step: dict) -> str:
+    """An executor's own account, in the same fence as every untrusted tool
+    result (execution/provenance.py)."""
+    claim = _clip(step.get("claim"), 350)
+    return provenance.fence(claim, f"external:{step.get('executor') or 'executor'}") if claim else ""
+
+
 def brief(task: Task, *, evidence_items: int = 14, steps: int = 8) -> str:
     """Compact, bounded, JSON state for Jev. Untrusted text is marked."""
     harness = [e for e in task.evidence if e["source"] != "executor"][-evidence_items:]
@@ -82,7 +90,7 @@ def brief(task: Task, *, evidence_items: int = 14, steps: int = 8) -> str:
         "acceptance_criteria": [_clip(c, 300) for c in task.plan[:8]],
         "workspace": task.workspace,
         "steps": [{"n": s["n"], "executor": s["executor"], "role": s["role"], "outcome": s["outcome"],
-                   "claim_UNTRUSTED": _clip(s["claim"], 350)} for s in task.steps[-steps:]],
+                   "claim_UNTRUSTED": _claim(s)} for s in task.steps[-steps:]],
         "evidence_observed_by_harness": [{"id": e["id"], "kind": e["kind"], "source": e["source"], "ok": e["ok"],
                                           "step": e["step"], "text": _middle(e["text"], 700)} for e in harness],
         "files_modified": task.files_modified[-15:],

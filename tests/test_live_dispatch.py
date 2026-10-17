@@ -18,7 +18,7 @@ from fakes.effects_journal import isolate_journal
 from google.genai import types
 from omarchy_ai.config import Config
 from omarchy_ai.core import effects
-from omarchy_ai.execution import runner, tools
+from omarchy_ai.execution import provenance, runner, tools
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.verified_input import InputGuard
 from omarchy_ai.voice.gemini_live import GeminiLiveSession
@@ -105,7 +105,10 @@ class LiveDispatch(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.session.output("1"))
         self.release.set()
         await asyncio.gather(hung, second)
-        self.assertEqual(self.session.output("1")["message"], "read_tile_log done")
+        self.assertEqual(
+            provenance.unfence(self.session.output("1")["message"]),
+            "read_tile_log done",
+        )
 
     async def test_a_hung_call_is_answered_at_its_deadline(self):
         with mock.patch.dict(tools.DEADLINES, {"volume_up": 0.3}):

@@ -607,7 +607,10 @@ def _lines(text: str) -> list[str]:
 def _judge(jev: Jev, condition: str, text: str, facts: dict) -> dict:
     """One Jev call: is the condition met, how urgent, which real line shows it."""
     lines = _lines(text)
-    state = {"condition": condition, "observation": {"output_tail": text[-TAIL_CHARS:], **facts}}
+    # The watched output is untrusted (execution/provenance.py): fenced like any tool result.
+    from ..execution import provenance
+    state = {"condition": condition,
+             "observation": {"output_tail": provenance.fence(text[-TAIL_CHARS:], "terminal"), **facts}}
     qs = {
         # Wording chosen by a real-Gateway probe (STATUS.md 2026-09-22): the
         # stricter "missing evidence means no" phrasing scored a finished-

@@ -7,7 +7,8 @@
 Every call gets the deadline, resource and effect class its tool declares in
 execution/tools.py, and a CancelToken (core/cancel.py) that is current in
 the thread running it. A call ends in one of four ways, all as a ToolResult:
-- it returns (ok or not): its own result, unchanged;
+- it returns (ok or not): its own result -- fenced as untrusted content
+  when its tool's provenance says so (execution/provenance.py);
 - its deadline passes: "<tool> timed out after N s; nothing was confirmed";
 - it is cancelled (the user's "stop", a hangup, a task cancel): likewise;
 - it raises: "<tool> crashed".
@@ -56,7 +57,7 @@ from typing import Any, AsyncIterator, Callable
 
 from ..core import logs, retry
 from ..core.cancel import CURRENT, Cancelled, CancelToken, checkpoint, current
-from . import tools
+from . import provenance, tools
 
 __all__ = [
     "CANCELLERS",
@@ -100,7 +101,9 @@ Wrap = Callable[[Execute, str, dict], Any]
 @dataclass(frozen=True)
 class ToolResult:
     """How one call ended. `ok` and `message` are what the model is told,
-    exactly as the tool returned them when it returned."""
+    as the tool returned them when it returned; a result with untrusted
+    provenance is fenced (execution/provenance.py), the one place every
+    session's tool results pass before they reach a model."""
 
     ok: bool
     message: str
@@ -108,6 +111,8 @@ class ToolResult:
     retriable: bool = False
     effect_id: str | None = None
     duration: float = 0.0
+    provenance: str = ""
+    untrusted: bool = False
 
 
 @dataclass(frozen=True)
@@ -173,9 +178,15 @@ class _Call:
     """One call in flight: whether it finished or was stopped, decided once."""
 
     def __init__(
-        self, spec: ToolSpec, owner: object, deadline: float, tag: object = None
+        self,
+        spec: ToolSpec,
+        owner: object,
+        deadline: float,
+        tag: object = None,
+        args: dict | None = None,
     ) -> None:
         self.spec = spec
+        self.args = args if isinstance(args, dict) else {}
         self.owner = owner
         self.tag = tag
         # The model's call id when it has one: the log correlation ID (core/logs.py).
@@ -373,7 +384,9 @@ class ToolRunner:
         tag: object = None,
     ) -> _Call:
         tool = spec(name)
-        call = _Call(tool, owner, tool.deadline if deadline is None else deadline, tag)
+        call = _Call(
+            tool, owner, tool.deadline if deadline is None else deadline, tag, args
+        )
         token = call.token
         token.on_cancel(lambda: _run_canceller(name))
         routed = self._route(execute, token, call)
@@ -492,11 +505,21 @@ class ToolRunner:
             str(getattr(value, "message", "")),
         )
         outcome: str | None = None if ok else FAILED
-        if not ok:
-            unsure = _not_dispatched(message)
-            if unsure is not None:
-                outcome, effect_id = unsure
-        return ToolResult(ok, message, outcome, False, effect_id, duration)
+        unsure = None if ok else _not_dispatched(message)
+        if unsure is not None:
+            outcome, effect_id = unsure
+        source = provenance.of(tool.name, call.args)
+        untrusted = (
+            provenance.untrusted(source)
+            and bool(message)
+            and unsure is None
+            and not getattr(value, "harness", False)
+        )
+        if untrusted:
+            message = provenance.fence(message, source)
+        return ToolResult(
+            ok, message, outcome, False, effect_id, duration, source, untrusted
+        )
 
 
 def _not_dispatched(message: str) -> tuple[str, str] | None:

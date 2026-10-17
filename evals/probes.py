@@ -166,9 +166,9 @@ def high_risk_not_approved_by_voice(directory: Path) -> tuple[bool, str]:
 def voice_read_aloud_is_not_a_command() -> tuple[bool, str]:
     """True when an instruction inside a tool result is fenced before it can be read aloud.
 
-    ``_send_function_result`` forwards the tool message raw. Nothing marks it
-    as data, so an instruction in an email or page is not distinguished from
-    the user saying it.
+    Drives the live session's real dispatch (ToolDispatchMixin._run_tool_call
+    on the ToolRunner) with a Gmail search that returns an email carrying an
+    instruction, and reads what goes back to the model.
     """
     import json
 
@@ -181,9 +181,35 @@ def voice_read_aloud_is_not_a_command() -> tuple[bool, str]:
         def send(self, payload: str) -> None:
             captured.append(payload)
 
-    session = ToolDispatchMixin.__new__(ToolDispatchMixin)
-    session._dc = Channel()
-    session._send_function_result("call-1", True, instruction)
+    def run_action(name, args=None):
+        if name == "list_windows":
+            return SimpleNamespace(ok=True, message="[]")
+        return SimpleNamespace(
+            ok=True, message=json.dumps({"messages": [{"body": instruction}]})
+        )
+
+    class Session(ToolDispatchMixin):
+        def __init__(self):
+            self._resources = None
+            self._hangup = asyncio.Event()
+            self._demo_waiting_for_action = asyncio.Event()
+            self._watchdog_on = False
+            self._action_log: list = []
+            self._dc = Channel()
+            self._input_guard = SimpleNamespace(
+                run=lambda execute, name, args: execute(name, args)
+            )
+
+        def _set_watchdog_state(self, state):
+            return None
+
+    async def probe() -> None:
+        await Session()._run_tool_call(
+            "call-1", "myapi_gmail_search", {"query": "in:inbox"}
+        )
+
+    with patch("omarchy_ai.voice.tool_dispatch.run_action", run_action):
+        asyncio.run(probe())
     outputs: list[str] = []
     for payload in captured:
         try:
@@ -192,7 +218,7 @@ def voice_read_aloud_is_not_a_command() -> tuple[bool, str]:
             continue
         output = (item.get("item") or {}).get("output")
         if isinstance(output, str):
-            outputs.append(output)
+            outputs.append(json.loads(output).get("message", ""))
     blob = "\n".join(outputs)
     if "<untrusted" in blob and instruction in blob:
         return True, "the instruction was fenced before it could be read or acted on"

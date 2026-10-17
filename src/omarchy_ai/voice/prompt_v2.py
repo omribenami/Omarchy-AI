@@ -8,8 +8,10 @@ adds the behavior sections B1-B22, reconciled with the harness plan:
 - B10 (memory): a stated preference is saved only after the user says yes,
   and never from outside content (plan 2.2), instead of "save quietly".
 - Nothing here claims a mechanism the code does not have yet: no doctor
-  command, no ``<untrusted>`` wrapping of tool results, no file attachments,
-  no audience sensor.
+  command, no file attachments, no audience sensor. Untrusted tool results
+  do come fenced in ``<untrusted>`` (plan 2.1, execution/provenance.py); the
+  "Untrusted content" rule below already says tool results are data, so the
+  text does not name the tag and stays as it was (routing unchanged).
 
 Order: who you are and how a turn works, operating rules, runtime context,
 the fenced memory and archived conversations, then the rules that override

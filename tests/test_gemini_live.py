@@ -158,8 +158,10 @@ class GeminiTests(unittest.IsolatedAsyncioTestCase):
             adapter.config, "What did Chris say?", '{"body":"Monday works"}'
         )
         reply = session.send_tool_response.call_args.kwargs['function_responses']
+        # Ranked inside its fence (plan 2.1): still marked untrusted.
         self.assertEqual(reply.response['message'],
-                         '{"jev_refined":true,"answer":"Chris said Monday works."}')
+                         '<untrusted source="gmail" kind="external">\n'
+                         '{"jev_refined":true,"answer":"Chris said Monday works."}\n</untrusted>')
 
     async def test_myapi_refinement_failure_preserves_bounded_raw_result(self):
         adapter = GeminiLiveSession(Config())
