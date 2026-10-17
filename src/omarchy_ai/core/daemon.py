@@ -13,7 +13,7 @@ import threading
 
 from ..config import Config, ensure_dirs, load_config
 from ..execution import tile_logs
-from . import updates
+from . import logs, updates
 from ..phone import presence as phone_presence
 from ..phone import server as phone_server
 from ..voice import feedback, control
@@ -289,6 +289,8 @@ class OmaDaemon:
                 # Another provider running out is said by this conversation;
                 # Gemini itself running out falls back to the local clip.
                 quota.speaker = lambda provider, text: provider != "gemini" and session.notice(text)
+            # Every log line of this conversation carries its session ID (core/logs.py).
+            logs.set_ids(session_id=getattr(session, "_audit_session", None) or logs.new_id())
             try:
                 self._last_error = None
                 self._session = session
@@ -322,6 +324,7 @@ class OmaDaemon:
             self._session = None
             feedback.play(feedback.HANGUP())
             log.info("session ended, back to listening")
+            logs.set_ids(session_id=None, turn_id=None)
             self._state = 'listening'
 
     def stop(self) -> None:
@@ -332,15 +335,14 @@ class OmaDaemon:
             phone_presence.stop()
 
 
+LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
+
+
 def main() -> None:
     cfg = load_config()
-    logging.basicConfig(
-        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
-    from ..execution.passwords import RedactingFilter
-    for handler in logging.getLogger().handlers:
-        handler.addFilter(RedactingFilter())
+    # The journal line is unchanged; the IDs go to STATE_DIR/logs (core/logs.py).
+    from ..config import STATE_DIR
+    logs.setup(getattr(logging, cfg.log_level.upper(), logging.INFO), fmt=LOG_FORMAT, log_dir=STATE_DIR / "logs")
     # MyApi/Gmail reads run in killable worker processes (execution/runner.py).
     from ..execution import runner
     runner.use_workers()

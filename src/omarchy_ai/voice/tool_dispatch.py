@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 
+from ..core import logs
 from ..execution import runner
 from ..execution.actions import run_action
 from . import watchdog
@@ -38,7 +39,10 @@ class ToolDispatchMixin:
         async with self._resources.hold(tool.resource, exclusive=not tool.reads):
             if self._hangup.is_set():
                 return
-            await self._run_tool_call_ordered(call_id, name, args)
+            # Its log lines, and its tool's (worker included), carry these (core/logs.py).
+            with logs.bind(session_id=getattr(self, "_audit_session", None),
+                           turn_id=getattr(self, "_turn_id", None), tool_call_id=call_id):
+                await self._run_tool_call_ordered(call_id, name, args)
 
     async def _run_tool_call_ordered(self, call_id: str, name: str, args: dict) -> None:
         if self._demo_waiting_for_action.is_set():

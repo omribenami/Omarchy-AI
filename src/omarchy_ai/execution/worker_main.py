@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any, Callable
 
 log = logging.getLogger("omarchy_ai.execution.worker")
@@ -37,6 +38,18 @@ def _actions(spec: str | None) -> dict[str, Callable[[dict], Any]]:
 
 
 def _call(table: dict[str, Callable[[dict], Any]], request: dict) -> dict:
+    from ..core import logs
+
+    ids = request.get("log")
+    ids = {k: str(v) for k, v in ids.items() if v} if isinstance(ids, dict) else {}
+    # The call's IDs (core/logs.py): on its log lines, and in the environment
+    # of anything it starts.
+    logs.export(ids)
+    with logs.bind_only(ids):
+        return _run(table, request)
+
+
+def _run(table: dict[str, Callable[[dict], Any]], request: dict) -> dict:
     from ..core import conversations, effects
 
     name = str(request.get("name") or "")
@@ -61,14 +74,18 @@ def main(argv: list[str] | None = None) -> int:
     options = parser.parse_args(argv)
     replies = os.fdopen(os.dup(sys.stdout.fileno()), "w", buffering=1, encoding="utf-8")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    logging.basicConfig(
-        level=os.environ.get("OMARCHY_WORKER_LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(name)s[worker %(process)d] %(levelname)s %(message)s",
-    )
-    from .passwords import RedactingFilter
+    from ..core import logs
 
-    for handler in logging.getLogger().handlers:
-        handler.addFilter(RedactingFilter())
+    # stderr is the daemon's journal; the JSONL file is the daemon's, which
+    # this process only appends to (core/logs.py). Both are redacted.
+    jsonl = os.environ.get(logs.JSONL_ENV)
+    logs.setup(
+        os.environ.get("OMARCHY_WORKER_LOG_LEVEL", "INFO"),
+        fmt="%(asctime)s %(name)s[worker %(process)d] %(levelname)s %(message)s",
+        jsonl_path=Path(jsonl) if jsonl else None,
+        rotate=False,
+    )
+    logs.set_ids(**logs.from_env())
     table = _actions(options.actions)
     for line in sys.stdin:
         if not line.strip():

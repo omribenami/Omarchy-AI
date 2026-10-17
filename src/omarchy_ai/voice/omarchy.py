@@ -31,6 +31,7 @@ from rapidfuzz import fuzz
 from ..config import Config
 from ..core.history import append_session, load_recent_context
 from ..core.memory import load_preferences
+from ..core import logs
 from ..execution import runner
 from ..execution.actions import run_action
 from ..execution.tools import TOOLS
@@ -308,6 +309,7 @@ class OmarchySession:
         self._transcript: list[dict] = []
         self._guard = InputGuard()
         self._state = "listening"
+        self._audit_session = logs.new_id()  # log correlation (core/logs.py)
         self.on_connected = None
         self._vad = None
 
@@ -537,6 +539,7 @@ class OmarchySession:
                 if not transcript:
                     watchdog.state("listening")
                     continue
+                logs.set_ids(session_id=self._audit_session, turn_id=logs.new_id())
                 log.info("STT transcript=%r", transcript)
                 self._transcript.append({"role": "user", "text": transcript})
                 self._guard.heard_user()

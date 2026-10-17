@@ -30,7 +30,7 @@ from .. import myapi
 from ..config import MYAPI_INSTRUCTIONS, Config
 from .prompt_version import resolve_prompt_version
 from ..core.history import append_session, load_recent_context
-from ..core import updates
+from ..core import logs, updates
 from ..core.memory import load_preferences
 from ..execution import runner
 from ..execution.actions import run_action
@@ -612,6 +612,9 @@ class LiveSession(ToolDispatchMixin):
     def __init__(self, config: Config, *, mic_source: str = "desktop"):
         self.config = config
         self.mic_source = mic_source
+        # Log correlation (core/logs.py): this conversation, the user's latest words.
+        self._audit_session = logs.new_id()
+        self._turn_id: str | None = None
         self._pc: RTCPeerConnection | None = None
         self._hangup = asyncio.Event()
         self._input_buffer = ""
@@ -830,6 +833,8 @@ class LiveSession(ToolDispatchMixin):
             # delta, only the real transitions reach the overlay.
             self._set_watchdog_state("listening")
             self._awaiting_playback_start.clear()
+            if not self._input_buffer:
+                self._turn_id = logs.new_id()  # the first words of a new utterance
             self._input_buffer += event.get("delta", "")
             self._input_guard.heard_user()
             if _is_capability_demo(self._input_buffer):
