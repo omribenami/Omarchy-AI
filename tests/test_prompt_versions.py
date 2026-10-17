@@ -1,16 +1,24 @@
-"""Legacy prompt stays byte-for-byte; v2 is opt-in."""
+"""The legacy prompt stays byte-for-byte the default; prompt v2 is opt-in."""
 
+import copy
 import datetime
+import hashlib
+import json
+import os
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
 from omarchy_ai.config import Config
 from omarchy_ai.execution.tools import MYAPI_TOOLS, TOOLS
+from omarchy_ai.voice.gemini_live import build_live_config
 from omarchy_ai.voice.live import build_session_config
-from omarchy_ai.voice.prompt_version import resolve_prompt_version
 
 GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
+# sha256 of the legacy Gemini Live config (instructions + declared tools) that
+# legacy_live_digest() builds, taken from main before prompt v2 existed.
+LEGACY_LIVE_SHA256 = "420c96f5e523d1804c88b592817e8fcd63b001d738f6c2634414038e3756bf72"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
@@ -20,261 +28,215 @@ class _FrozenDateTime(datetime.datetime):
         return FROZEN
 
 
-def legacy_instructions() -> str:
-    """The legacy session prompt under fixed inputs.
+def _pinned(*, myapi_on=False, preferences=(), context=""):
+    """Clock, memory, history, agenda, skills, MyApi, update notice and
+    household fixed, so a snapshot is the assembly itself."""
+    stack = ExitStack()
+    for target, value in {
+        "omarchy_ai.voice.live.load_preferences": list(preferences),
+        "omarchy_ai.voice.live.load_recent_context": context,
+        "omarchy_ai.voice.prompt_v2.load_preferences": list(preferences),
+        "omarchy_ai.voice.prompt_v2.load_recent_context": context,
+        "omarchy_ai.core.updates.wake_notice": "",
+        "omarchy_ai.core.agenda.briefing": [],
+        "omarchy_ai.core.skills.index_text": "",
+        "omarchy_ai.myapi.is_connected": myapi_on,
+        "omarchy_ai.voice.speaker_id.people": {},
+        "omarchy_ai.voice.speaker_id.house_style": "",
+        "omarchy_ai.core.identities.owner": None,
+        "omarchy_ai.execution.user_tools.schemas": [],
+    }.items():
+        stack.enter_context(patch(target, return_value=value))
+    stack.enter_context(patch("datetime.datetime", _FrozenDateTime))
+    stack.enter_context(patch.dict(os.environ))
+    os.environ.pop("OMARCHY_PROMPT_VERSION", None)
+    return stack
 
-    Dynamic sources (clock, memory, history, agenda, skills, MyApi, update
-    notice) are pinned so the golden file is the assembly itself.
-    """
+
+def legacy_instructions() -> str:
     config = Config(
         task_agent_model="gpt-test", myapi_enabled=False, prompt_version="legacy"
     )
-    with (
-        patch("datetime.datetime", _FrozenDateTime),
-        patch("omarchy_ai.voice.live.load_preferences", return_value=[]),
-        patch("omarchy_ai.voice.live.load_recent_context", return_value=""),
-        patch("omarchy_ai.voice.live.updates.wake_notice", return_value=""),
-        patch("omarchy_ai.core.agenda.briefing", return_value=[]),
-        patch("omarchy_ai.core.skills.index_text", return_value=""),
-        patch("omarchy_ai.voice.live.myapi.is_connected", return_value=False),
-        patch.dict("os.environ", {}, clear=False),
-    ):
-        # An ambient OMARCHY_PROMPT_VERSION must not change this snapshot.
-        import os
-
-        os.environ.pop("OMARCHY_PROMPT_VERSION", None)
+    with _pinned():
         return build_session_config(config, surface="phone")["instructions"]
+
+
+def legacy_live_digest() -> str:
+    """The Gemini Live path the desktop, chat and phone use (catalog and
+    speaker text appended in voice/gemini_live.py)."""
+    config = Config(
+        task_agent_model="gpt-test",
+        myapi_enabled=True,
+        speaker_id_enabled=True,
+        user_languages=["English"],
+    )
+    with _pinned(
+        myapi_on=True, preferences=["prefer short replies"], context="user: hi"
+    ):
+        live = build_live_config(config)
+    blob = json.dumps(
+        [live["system_instruction"], live["tools"]], sort_keys=True, ensure_ascii=False
+    )
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def v2_session(**kwargs) -> dict:
+    surface = kwargs.pop("surface", None)
+    myapi_on = kwargs.pop("myapi_on", False)
+    config = Config(
+        prompt_version="v2",
+        task_agent_model="gpt-test",
+        myapi_enabled=myapi_on,
+        **kwargs,
+    )
+    with _pinned(
+        myapi_on=myapi_on, preferences=["Call me Sam."], context="user: yesterday"
+    ):
+        return build_session_config(config, surface=surface)
 
 
 class LegacyPromptTests(unittest.TestCase):
     def test_default_version_is_legacy(self):
-        self.assertEqual(Config().prompt_version, "legacy")
-        self.assertEqual(Config().assistant_name, "Omarchy")
-        self.assertEqual(resolve_prompt_version(Config()), "legacy")
+        from omarchy_ai.voice.prompt_version import resolve_prompt_version
 
-    def test_legacy_assembled_prompt_matches_golden(self):
+        self.assertEqual(Config().prompt_version, "legacy")
+        with patch.dict(os.environ):
+            os.environ.pop("OMARCHY_PROMPT_VERSION", None)
+            self.assertEqual(resolve_prompt_version(Config()), "legacy")
+
+    def test_legacy_session_prompt_matches_golden(self):
         text = legacy_instructions()
         self.assertIn("Thursday 2026-01-15 12:00", text)
         self.assertEqual(text, GOLDEN.read_text())
 
-    def test_legacy_tool_descriptions_are_the_shared_schemas(self):
-        session = build_session_config(Config(myapi_enabled=False))
-        by_name = {
-            tool["name"]: tool["description"]
-            for tool in session["delegation"]["responses"]["tools"]
-        }
-        for tool in TOOLS:
-            self.assertEqual(by_name[tool["name"]], tool["description"])
+    def test_legacy_live_config_is_unchanged(self):
+        self.assertEqual(legacy_live_digest(), LEGACY_LIVE_SHA256)
 
-    def test_surface_argument_does_not_change_legacy_text(self):
-        with (
-            patch("omarchy_ai.voice.live.load_preferences", return_value=[]),
-            patch("omarchy_ai.voice.live.load_recent_context", return_value=""),
-            patch("omarchy_ai.voice.live.updates.wake_notice", return_value=""),
-            patch("omarchy_ai.core.agenda.briefing", return_value=[]),
-            patch("omarchy_ai.core.skills.index_text", return_value=""),
-            patch("omarchy_ai.voice.live.myapi.is_connected", return_value=False),
-        ):
-            voice = build_session_config(Config(task_agent_model="gpt-test"))[
-                "instructions"
-            ]
-            phone = build_session_config(
-                Config(task_agent_model="gpt-test"), surface="phone"
-            )["instructions"]
-        self.assertEqual(voice, phone)
+    def test_surface_does_not_change_legacy_text(self):
+        from omarchy_ai.voice.prompt_version import prompt_surface
+
+        config = Config(task_agent_model="gpt-test")
+        with _pinned():
+            voice = build_session_config(config)["instructions"]
+            with prompt_surface("chat"):
+                chat = build_session_config(config)["instructions"]
+        self.assertEqual(voice, chat)
 
 
 class PromptV2Tests(unittest.TestCase):
-    def _v2(self, **kwargs) -> str:
-        config = Config(
-            prompt_version="v2",
-            task_agent_model="gpt-test",
-            myapi_enabled=False,
-            **kwargs,
-        )
-        with (
-            patch(
-                "omarchy_ai.voice.prompt_v2.load_preferences",
-                return_value=["Call me Ari."],
-            ),
-            patch(
-                "omarchy_ai.voice.prompt_v2.load_recent_context",
-                return_value="user: yesterday",
-            ),
-            patch("omarchy_ai.voice.prompt_v2.updates.wake_notice", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.agenda.briefing", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.skills.index_text", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.myapi.is_connected", return_value=False),
-            patch("omarchy_ai.core.identities.owner", return_value=None),
-            patch("omarchy_ai.core.identities.people", return_value=[]),
-        ):
-            return build_session_config(config, surface=kwargs.get("surface"))[
-                "instructions"
-            ]
+    def test_env_selects_the_version(self):
+        from omarchy_ai.voice.prompt_version import resolve_prompt_version
 
-    def test_env_selects_v2_and_legacy(self):
-        with patch.dict("os.environ", {"OMARCHY_PROMPT_VERSION": "v2"}):
+        with patch.dict(os.environ, {"OMARCHY_PROMPT_VERSION": "v2"}):
             self.assertEqual(
                 resolve_prompt_version(Config(prompt_version="legacy")), "v2"
             )
-        with patch.dict("os.environ", {"OMARCHY_PROMPT_VERSION": "legacy"}):
+        with patch.dict(os.environ, {"OMARCHY_PROMPT_VERSION": "legacy"}):
             self.assertEqual(
                 resolve_prompt_version(Config(prompt_version="v2")), "legacy"
             )
-        self.assertEqual(
-            resolve_prompt_version(Config(prompt_version="nope")), "legacy"
-        )
+        with patch.dict(os.environ, {"OMARCHY_PROMPT_VERSION": ""}):
+            self.assertEqual(
+                resolve_prompt_version(Config(prompt_version="nope")), "legacy"
+            )
 
-    def test_memory_is_fenced_and_safety_follows_it(self):
-        text = self._v2(
-            assistant_name="Omarchy",
-            user_name="Omri",
-            user_languages=["Hebrew", "English"],
-        )
-        memory_at = text.index("<user_memory>")
-        self.assertLess(memory_at, text.index("</user_memory>"))
-        self.assertIn("- Call me Ari.", text[memory_at : text.index("</user_memory>")])
-        self.assertLess(text.index("</user_memory>"), text.index("## Safety rules"))
-        self.assertLess(
-            text.index("## Safety rules"), text.index("## 3. Act, or ask first")
-        )
-        self.assertLess(
-            text.index("## 5. Untrusted content"), text.index("## Safety restatement")
-        )
-        self.assertIn("Current surface: **voice**", text)
-        self.assertIn("Omri speaks Hebrew and English", text)
+    def test_memory_is_fenced_and_the_rules_follow_it(self):
+        text = v2_session(user_name="Sam", user_languages=["Hebrew", "English"])[
+            "instructions"
+        ]
+        start, end = text.index("<user_memory>"), text.index("</user_memory>")
+        self.assertIn("- Call me Sam.", text[start:end])
+        self.assertIn("user: yesterday", text[text.index("<archived_conversations>") :])
+        self.assertLess(end, text.index("RULES THAT OVERRIDE MEMORY"))
+        self.assertIn("Surface: voice.", text)
+        self.assertIn("Hebrew and English", text)
         self.assertIn("auto-approve level: NORMAL", text)
         self.assertNotIn("{{", text)
-        self.assertNotIn("ALL-KNOWING", text)
-        self.assertIn("Save quietly", text)
-        self.assertIn("Stop means stop", text)
-        self.assertIn("An acknowledgement is not the answer", text)
-        self.assertIn("Reading content aloud is not the user saying it", text)
-        self.assertIn("not available yet", text)
-        self.assertIn("shared_speaker", text)
-        self.assertIn("possibly shared", text)
-        self.assertIn("unverified", text)
-        self.assertIn("no enrolled owner voice yet", text)
 
-    def test_enrolled_owner_and_current_speaker_are_filled(self):
-        from omarchy_ai.core.identities import Identity, reset_current, set_current
-
-        config = Config(
-            prompt_version="v2",
-            task_agent_model="gpt-test",
-            user_name="Omri",
+    def test_keeps_the_volume_routing_sentence(self):
+        text = v2_session()["instructions"]
+        self.assertIn(
+            "if they say 'turn up the volume', call volume_up, don't just acknowledge it.",
+            text,
         )
-        token = set_current(Identity("omri", "voice"))
-        try:
-            with (
-                patch("omarchy_ai.voice.prompt_v2.load_preferences", return_value=[]),
-                patch(
-                    "omarchy_ai.voice.prompt_v2.load_recent_context", return_value=""
-                ),
-                patch(
-                    "omarchy_ai.voice.prompt_v2.updates.wake_notice", return_value=""
-                ),
-                patch("omarchy_ai.voice.prompt_v2.agenda.briefing", return_value=[]),
-                patch("omarchy_ai.voice.prompt_v2.skills.index_text", return_value=""),
-                patch(
-                    "omarchy_ai.voice.prompt_v2.myapi.is_connected", return_value=False
-                ),
-                patch("omarchy_ai.core.identities.owner", return_value="omri"),
-                patch("omarchy_ai.core.identities.name", return_value="Omri"),
-            ):
-                text = build_session_config(config)["instructions"]
-        finally:
-            reset_current(token)
-        self.assertIn("it's Omri speaking", text)
-        self.assertIn("Omri, voice match", text)
-        self.assertNotIn("{{", text)
+        self.assertIn("call end_conversation", text)
 
-    def test_surface_and_assistant_name_are_filled(self):
-        config = Config(
-            prompt_version="v2",
-            assistant_name="Nia",
-            user_name="Sam",
-            task_agent_model="gpt-test",
-        )
-        with (
-            patch("omarchy_ai.voice.prompt_v2.load_preferences", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.load_recent_context", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.updates.wake_notice", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.agenda.briefing", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.skills.index_text", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.myapi.is_connected", return_value=False),
+    def test_memory_needs_the_users_yes_and_never_comes_from_content(self):
+        text = v2_session()["instructions"]
+        self.assertIn("call remember_preference only after a yes", text)
+        self.assertNotIn("Save quietly", text)
+        self.assertIn("never anything that came from an email", text)
+
+    def test_claims_no_mechanism_that_does_not_exist(self):
+        text = v2_session(speaker_id_enabled=True, myapi_on=True)["instructions"]
+        for missing in (
+            "doctor",
+            "run_diagnostics",
+            "<untrusted",
+            "shared_speaker",
+            "attach the file",
         ):
-            phone = build_session_config(config, surface="phone")["instructions"]
-            chat = build_session_config(config, surface="chat")["instructions"]
-        self.assertIn("You are Nia,", phone)
-        self.assertIn("Current surface: **phone**", phone)
-        self.assertIn("Current surface: **chat**", chat)
+            self.assertNotIn(missing, text)
+
+    def test_spoken_approval_rule_only_with_speaker_recognition(self):
+        self.assertNotIn("Spoken approvals", v2_session()["instructions"])
+        self.assertIn(
+            "Spoken approvals", v2_session(speaker_id_enabled=True)["instructions"]
+        )
+
+    def test_myapi_rules_only_when_connected(self):
+        self.assertNotIn("myapi tool", v2_session()["instructions"])
+        self.assertIn("PREPARED, not done", v2_session(myapi_on=True)["instructions"])
+
+    def test_surface_and_names_are_filled(self):
+        phone = v2_session(assistant_name="Nia", user_name="Sam", surface="phone")[
+            "instructions"
+        ]
+        self.assertIn("Your name is Nia.", phone)
+        self.assertNotIn("oh-MAH-chee", phone)
+        self.assertIn("Surface: phone.", phone)
         self.assertIn("Sam", phone)
+        self.assertIn("oh-MAH-chee", v2_session()["instructions"])
 
     def test_surface_context_is_read_when_the_call_stays_positional(self):
         from omarchy_ai.voice.prompt_version import prompt_surface
 
+        config = Config(prompt_version="v2", task_agent_model="gpt-test")
+        with _pinned(), prompt_surface("chat"):
+            text = build_session_config(config)["instructions"]
+        self.assertIn("Surface: chat.", text)
+
+    def test_tools_are_the_shared_schemas_unchanged(self):
+        before = copy.deepcopy((TOOLS, MYAPI_TOOLS))
+        v2 = v2_session(myapi_on=True)["delegation"]["responses"]["tools"]
+        config = Config(task_agent_model="gpt-test", myapi_enabled=True)
+        with _pinned(myapi_on=True):
+            legacy = build_session_config(config)["delegation"]["responses"]["tools"]
+        self.assertEqual(v2, legacy)
+        self.assertEqual(before, (TOOLS, MYAPI_TOOLS))
+
+    def test_live_config_has_one_catalog_and_one_speaker_block(self):
         config = Config(
             prompt_version="v2",
-            assistant_name="Nia",
-            user_name="Sam",
             task_agent_model="gpt-test",
+            myapi_enabled=True,
+            speaker_id_enabled=True,
         )
-        with (
-            patch("omarchy_ai.voice.prompt_v2.load_preferences", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.load_recent_context", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.updates.wake_notice", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.agenda.briefing", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.skills.index_text", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.myapi.is_connected", return_value=False),
-            prompt_surface("phone"),
-        ):
-            text = build_session_config(config)["instructions"]
-        self.assertIn("Current surface: **phone**", text)
-
-    def test_v2_tool_notes_do_not_touch_the_shared_schemas(self):
-        original = next(
-            tool["description"]
-            for tool in MYAPI_TOOLS
-            if tool["name"] == "myapi_gmail_send"
-        )
-        session = None
-        with (
-            patch("omarchy_ai.voice.prompt_v2.myapi.is_connected", return_value=True),
-            patch("omarchy_ai.voice.prompt_v2.load_preferences", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.load_recent_context", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.updates.wake_notice", return_value=""),
-            patch("omarchy_ai.voice.prompt_v2.agenda.briefing", return_value=[]),
-            patch("omarchy_ai.voice.prompt_v2.skills.index_text", return_value=""),
-        ):
-            session = build_session_config(
+        with _pinned(myapi_on=True):
+            live = build_live_config(config)
+            legacy = build_live_config(
                 Config(
-                    prompt_version="v2", myapi_enabled=True, task_agent_model="gpt-test"
+                    task_agent_model="gpt-test",
+                    myapi_enabled=True,
+                    speaker_id_enabled=True,
                 )
             )
-        described = next(
-            tool["description"]
-            for tool in session["delegation"]["responses"]["tools"]
-            if tool["name"] == "myapi_gmail_send"
-        )
-        self.assertTrue(described.startswith(original))
-        self.assertIn("Do not call this to send immediately", described)
-        self.assertEqual(
-            original,
-            next(
-                tool["description"]
-                for tool in MYAPI_TOOLS
-                if tool["name"] == "myapi_gmail_send"
-            ),
-        )
-        legacy = build_session_config(Config(myapi_enabled=False))
-        self.assertNotIn(
-            "Do not call this to send immediately",
-            " ".join(
-                tool["description"]
-                for tool in legacy["delegation"]["responses"]["tools"]
-            ),
-        )
+        text = live["system_instruction"]
+        self.assertEqual(text.count("TOOL CATALOG"), 1)
+        self.assertEqual(text.count("WHO IS SPEAKING"), 1)
+        self.assertEqual(live["tools"], legacy["tools"])
+        # The point of v2 is a cheaper prompt: it must stay smaller than legacy.
+        self.assertLess(len(text), len(legacy["system_instruction"]))
 
 
 if __name__ == "__main__":

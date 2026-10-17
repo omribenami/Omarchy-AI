@@ -47,6 +47,7 @@ def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
                 session._run_tool_call("c1", "browser_task", {"goal": "hang"})
             )
             done, _pending = await asyncio.wait({task}, timeout=deadline)
+            stop.set()  # release the fake tool so loop shutdown does not wait on it
             task.cancel()
             return task in done
 
@@ -60,38 +61,45 @@ def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
 
 
 def crash_does_not_double_send(directory: Path) -> tuple[bool, str]:
-    """True when a second attempt of the same send is not delivered.
+    """True when a retried send after a crash mid-send is not delivered again.
 
-    The current pending-action store has no idempotency key. A crash after
-    the provider accepts the send and before ``finish`` leaves the action
-    ``running``, and a retry ``create``s a new action and sends again.
+    Drives the real Gmail send path (myapi_gmail_send -> core/effects.py)
+    with the provider call faked. The first attempt "dies" right after the
+    provider accepted the message and before the journal recorded it
+    (crashpoint effects.after_dispatch_before_record); the retry of the same
+    logical action (same origin) must not send a second copy.
     """
-    from omarchy_ai.core import pending_actions
+    from omarchy_ai import config
+    from omarchy_ai.core import crashpoints, effects
+    from omarchy_ai.execution.actions import ActionResult, myapi_tools
 
-    sent: list[str] = []
-    path = directory / "pending_actions.json"
+    delivered: list[dict] = []
 
-    def attempt() -> None:
-        with patch.object(pending_actions, "PATH", path):
-            aid = pending_actions.create(
-                {
-                    "kind": "gmail_send",
-                    "recipient": "alex@example.com",
-                    "subject": "Running late",
-                    "body": "I'll be late",
-                }
-            )
-            claimed = pending_actions.claim(aid)
-            if claimed is None:
-                return
-            sent.append(str(claimed["id"]))
-            # Crash window: the provider has the message, finish() never runs.
+    def provider(service, operation, arguments, idem_key=None):
+        delivered.append(arguments)
+        return ActionResult(True, '{"status": "sent"}')
 
-    attempt()
-    attempt()
-    if len(sent) == 1:
-        return True, "one delivery"
-    return False, f"{len(sent)} deliveries for one logical send"
+    args = {
+        "recipient_email": "alex@example.com",
+        "subject": "Running late",
+        "body": "I'll be late",
+    }
+    with (
+        patch.object(config, "STATE_DIR", directory),
+        patch.object(myapi_tools, "_myapi_execute", provider),
+        effects.origin("turn:eval-crash-mid-send"),
+    ):
+        crashpoints.arm("effects.after_dispatch_before_record=raise")
+        try:
+            myapi_tools.myapi_gmail_send(args)
+        except crashpoints.CrashpointHit:
+            pass
+        finally:
+            crashpoints.arm("")
+        retry = myapi_tools.myapi_gmail_send(args)
+    if len(delivered) == 1:
+        return True, f"one delivery; the retry said: {retry.message[:160]}"
+    return False, f"{len(delivered)} deliveries for one logical send"
 
 
 def high_risk_not_approved_by_voice(directory: Path) -> tuple[bool, str]:

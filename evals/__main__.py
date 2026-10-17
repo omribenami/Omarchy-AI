@@ -1,7 +1,7 @@
 """Run the behavior evals.
 
 uv run python -m evals run --prompt both
-uv run python -m evals compare
+uv run python -m evals compare [--update]
 OMARCHY_EVAL_LIVE=1 OMARCHY_EVAL_API_KEY=... uv run python -m evals run --live --prompt v2
 """
 
@@ -33,8 +33,6 @@ def _dump(rows: dict) -> dict:
             "title": scenario.title,
             "legacy": rows["legacy"][scenario.id].status,
             "v2": rows["v2"][scenario.id].status,
-            "legacy_detail": rows["legacy"][scenario.id].detail,
-            "v2_detail": rows["v2"][scenario.id].detail,
         }
     return body
 
@@ -47,8 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument(
         "--live", action="store_true", help="use a live model (OMARCHY_EVAL_LIVE=1)"
     )
-    sub.add_parser(
+    compare = sub.add_parser(
         "compare", help="print legacy vs v2 and check the committed baseline"
+    )
+    compare.add_argument(
+        "--update", action="store_true", help="rewrite the baseline with these statuses"
     )
     args = parser.parse_args(argv)
 
@@ -66,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     rows = _rows(False)
     print(markdown_table(rows))
     actual = _dump(rows)
+    if args.update:
+        BASELINE.write_text(json.dumps(actual, indent=2) + "\n")
+        print(f"\nwrote {BASELINE}")
+        return 0
     if not BASELINE.is_file():
         print(f"\nno baseline at {BASELINE}", file=sys.stderr)
         return 1

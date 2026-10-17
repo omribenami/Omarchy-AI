@@ -64,24 +64,19 @@ def treats_content_as_data(prompt: str) -> bool:
 
 def acknowledges(prompt: str) -> bool:
     return (
-        "Acknowledge first" in prompt
-        or "Acknowledge once" in prompt
-        or "BACKGROUND TOOLS" in prompt
+        "BACKGROUND TOOLS" in prompt
         or "say a brief present-tense line" in prompt
+        or "say a few words naming the step" in prompt
     )
 
 
 def closes_the_loop(prompt: str) -> bool:
-    return (
-        "Always close the loop" in prompt
-        or "An acknowledgement is not the answer" in prompt
-        or "Its result arrives by itself" in prompt
-        or "Report done only after" in prompt
-    )
+    lowered = prompt.lower()
+    return "its result arrives by itself" in lowered or "report done only" in lowered
 
 
 def stops_immediately(prompt: str) -> bool:
-    return "Stop means stop" in prompt
+    return "while work is running means halt it now" in prompt
 
 
 def may_fabricate(prompt: str) -> bool:

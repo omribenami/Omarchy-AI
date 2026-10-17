@@ -1,40 +1,35 @@
-"""Deterministic behavior scores for the legacy prompt and prompt v2."""
+"""Deterministic behavior scores for the legacy prompt and prompt v2.
+
+A cell with an xfail reason is a known gap (strict: the day the harness or
+prompt fixes it, the cell fails until its marker is removed here and the
+baseline is regenerated with ``python -m evals compare --update``).
+"""
 
 from __future__ import annotations
 
-import json
 import os
 
 import pytest
 
-from evals.__main__ import BASELINE, _dump, _rows
 from evals.suite import SCENARIOS, run_scenario
 
-_PROMPTS = ["legacy", "v2"]
+_PROMPTS = ("legacy", "v2")
 
 
-@pytest.mark.parametrize("prompt", _PROMPTS)
-@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario.id)
+def _cells():
+    for scenario in SCENARIOS:
+        for prompt in _PROMPTS:
+            reason = scenario.xfail.get(prompt)
+            marks = [pytest.mark.xfail(strict=True, reason=reason)] if reason else []
+            yield pytest.param(
+                prompt, scenario, id=f"{scenario.id}-{prompt}", marks=marks
+            )
+
+
+@pytest.mark.parametrize(("prompt", "scenario"), list(_cells()))
 def test_scenario(prompt, scenario):
     score = run_scenario(prompt, scenario)
-    reason = scenario.xfail.get(prompt)
-    if reason:
-        if score.passed:
-            pytest.fail(
-                f"expected this to stay xfail ({reason}) but it passed; update the baseline"
-            )
-        pytest.xfail(reason)
     assert score.passed, score.detail
-
-
-def test_scorecard_matches_committed_baseline():
-    actual = _dump(_rows(False))
-    expected = json.loads(BASELINE.read_text())
-    assert actual["scenarios"].keys() == expected["scenarios"].keys()
-    for scenario_id, item in actual["scenarios"].items():
-        prior = expected["scenarios"][scenario_id]
-        assert item["legacy"] == prior["legacy"], scenario_id
-        assert item["v2"] == prior["v2"], scenario_id
 
 
 @pytest.mark.live
