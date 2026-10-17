@@ -940,11 +940,16 @@ class _Handler(BaseHTTPRequestHandler):
                 data = self._read_json_body()
             except (json.JSONDecodeError, ValueError):
                 data = None
-            if not isinstance(data, dict) or not isinstance(data.get("id"), str) or not isinstance(data.get("go"), bool):
-                self._send_json(400, {"ok": False, "message": "expected {id, go}"})
-                return
             from ..execution import myapi_agent
-            ok, message = myapi_agent.decide(data["id"], data["go"], "on the phone")
+            # {id, go}: Send or Cancel. {id, choice}: check, resend or drop one that may have been sent.
+            if (not isinstance(data, dict) or not isinstance(data.get("id"), str)
+                    or not (isinstance(data.get("go"), bool) or data.get("choice") in myapi_agent.CHOICES)):
+                self._send_json(400, {"ok": False, "message": "expected {id, go} or {id, choice}"})
+                return
+            if data.get("choice") in myapi_agent.CHOICES:
+                ok, message = myapi_agent.resolve(data["id"], data["choice"], "on the phone")
+            else:
+                ok, message = myapi_agent.decide(data["id"], data["go"], "on the phone")
             self._send_json(200 if ok else 409, {"ok": ok, "message": message})
             return
         if path == "/api/questions/answer":

@@ -128,6 +128,16 @@ class OmaDaemon:
                     log.warning("Update check unavailable", exc_info=True)
                 await asyncio.sleep(updates.CACHE_SECONDS)
         update_checker = asyncio.create_task(refresh_updates())
+        async def recover_pending():
+            # Prepared actions a dead process left running, or that expired
+            # while it was down, are settled now and the user is told; none is
+            # ever sent again on its own (core/pending_actions.py).
+            from . import pending_actions
+            try:
+                await asyncio.to_thread(pending_actions.recover)
+            except Exception:
+                log.warning("Pending action recovery failed", exc_info=True)
+        recovering = asyncio.create_task(recover_pending())
         try:
             # Task Runtime events (done, needs approval, question) reach an
             # open conversation; they always raise a desktop notification too.
@@ -151,6 +161,7 @@ class OmaDaemon:
                     await asyncio.to_thread(agenda.tick)
                 except Exception:
                     log.warning("Heartbeat tick failed", exc_info=True)
+                await recover_pending()  # waiting actions that expire while the daemon runs
                 try:
                     from ..runtime import service as task_service
                     await asyncio.to_thread(task_service.get_runtime().tidy_approvals)
@@ -209,7 +220,8 @@ class OmaDaemon:
             if heart is not None:
                 heart.cancel()
                 agenda.changed.set()  # release the heartbeat's waiting thread now, not after its timeout
-            await asyncio.gather(update_checker, *([heart] if heart else []), return_exceptions=True)
+            recovering.cancel()
+            await asyncio.gather(update_checker, recovering, *([heart] if heart else []), return_exceptions=True)
             loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
 
