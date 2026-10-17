@@ -292,6 +292,10 @@ class Config:
     # asking (LOW, NORMAL or ELEVATED; HIGH always asks, BLOCKED never runs).
     task_runtime_enabled: bool = True
     task_auto_approve: str = "NORMAL"
+    # Task commands below HIGH and user tools run in a bubblewrap sandbox by
+    # risk (runtime/sandbox.py): keys, ~/.ssh, ~/.gnupg and browser profiles
+    # hidden, writes only where the level allows. False runs them unsandboxed.
+    sandbox_commands: bool = True
     # An approval nobody answers expires after this many hours, and its task
     # stops (runtime.tidy_approvals); the heartbeat checks.
     task_approval_hours: float = 4
