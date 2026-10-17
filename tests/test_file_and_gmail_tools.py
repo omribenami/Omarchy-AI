@@ -78,10 +78,10 @@ class LocalFileToolTests(unittest.TestCase):
                  patch.object(tile_logs, "_clients", return_value=[]), \
                  patch.object(tile_logs.threading, "Thread", return_value=thread):
                 initial, prefix, label = tile_logs.start_terminal_log()
+                self.assertEqual(tile_logs.find_log(label), initial)
             self.assertTrue(initial.exists())
             self.assertEqual(prefix[:2], ["env", f"OMARCHY_AI_TERMINAL_TITLE={label}"])
             self.assertTrue(label.startswith("Omarchy AI "))
-            self.assertEqual(tile_logs.find_log(label), initial)
             with tile_logs._lock:
                 tile_logs._aliases.pop(label.lower(), None)
 
@@ -122,7 +122,8 @@ class LocalFileToolTests(unittest.TestCase):
             root = Path(directory)
             log = root / "pts_2.log"
             log.write_text(f"[2026-01-01T00:00:00] shell=bash pid={os.getpid()} cwd=/work/demo status=0 command=pytest\n")
-            with patch.object(tile_logs, "TERMINAL_CONTEXT_DIR", root):
+            with patch.object(tile_logs, "TERMINAL_CONTEXT_DIR", root), \
+                 patch.object(tile_logs, "_clients", return_value=[]):
                 self.assertTrue(any("/work/demo" in item for item in tile_logs.list_tiles()))
                 self.assertIn("pytest", tile_logs.read_log("demo"))
 
@@ -135,7 +136,8 @@ class LocalFileToolTests(unittest.TestCase):
             transcript = live / "Omarchy_AI_1234abcd.log"
             transcript.write_text("installer finished successfully\n")
             with patch.object(tile_logs, "TILE_LOG_DIR", live), \
-                 patch.object(tile_logs, "TERMINAL_HISTORY_DIR", history):
+                 patch.object(tile_logs, "TERMINAL_HISTORY_DIR", history), \
+                 patch.object(tile_logs, "_clients", return_value=[]):
                 tile_logs.sweep_stale()
                 self.assertFalse(transcript.exists())
                 self.assertNotIn("installer finished successfully", tile_logs.read_log("Omarchy AI 1234abcd"))

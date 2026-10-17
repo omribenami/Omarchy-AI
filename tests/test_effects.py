@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import no_live_desktop
 from fakes.myapi_server import FakeMyApi, fake_identity
 from omarchy_ai.core import effects
 from omarchy_ai.execution import actions
@@ -16,6 +17,8 @@ from omarchy_ai.execution.verified_input import InputGuard
 from omarchy_ai.myapi import MyApiClient
 from omarchy_ai.runtime.executors.base import DONE, Report
 from test_task_runtime import RuntimeHarness, ScriptedJev, ScriptExecutor, git_repo
+
+setUpModule, tearDownModule = no_live_desktop.without_session_probe()
 
 
 def use_journal_in(test, root):

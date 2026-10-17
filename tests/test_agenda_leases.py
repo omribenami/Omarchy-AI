@@ -16,10 +16,14 @@ from unittest.mock import patch
 from omarchy_ai.core import agenda, statefile
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
+TESTS = str(Path(__file__).resolve().parent)
 
+# The child processes save jobs too, and saving redacts with the keyring's
+# passwords: they load the test guard (tests/no_live_desktop.py) as well.
 PRELUDE = textwrap.dedent(f"""
     import sys, time
-    sys.path.insert(0, {SRC!r})
+    sys.path[:0] = [{SRC!r}, {TESTS!r}]
+    import no_live_desktop
     from pathlib import Path
     from omarchy_ai.core import agenda
     base = Path(sys.argv[1])

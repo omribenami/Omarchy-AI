@@ -42,6 +42,7 @@ def main() -> None:
             file=sys.stderr,
         )
         os._exit(ISOLATION_EXIT_CODE)
+    import no_live_desktop  # noqa: F401  (no desktop commands or keyring here either)
     from omarchy_ai.core.crashpoints import CRASH_EXIT_CODE, CrashpointHit
 
     if url := os.environ.get("OMARCHY_CHAOS_MYAPI_URL"):

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import no_live_desktop
 from omarchy_ai.myapi import vault
 from omarchy_ai.myapi.client import MyApiError
 
@@ -66,6 +67,8 @@ class VaultTests(unittest.TestCase):
 
 from test_task_runtime import RuntimeHarness, ScriptedJev, ScriptExecutor  # noqa: E402
 from omarchy_ai.runtime.executors.base import DONE, Report  # noqa: E402
+
+setUpModule, tearDownModule = no_live_desktop.without_session_probe()
 
 
 class FailureMessageTests(RuntimeHarness):
