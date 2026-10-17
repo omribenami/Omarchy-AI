@@ -82,10 +82,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         "hanging_tool_cancelled",
         "A hanging tool is cancelled within its deadline.",
         "hang",
-        xfail={
-            "legacy": "plan 1.4 / F5: live tool dispatch runs with no timeout, so one hung tool blocks the session.",
-            "v2": "plan 1.4 / F5: live tool dispatch runs with no timeout, so one hung tool blocks the session.",
-        },
     ),
     Scenario(
         "crash_mid_send_does_not_double_send",

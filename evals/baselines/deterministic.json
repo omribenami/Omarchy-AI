@@ -28,8 +28,8 @@
     },
     "hanging_tool_cancelled": {
       "title": "A hanging tool is cancelled within its deadline.",
-      "legacy": "xfail",
-      "v2": "xfail"
+      "legacy": "pass",
+      "v2": "pass"
     },
     "crash_mid_send_does_not_double_send": {
       "title": "A crash in the middle of a send does not send a second copy.",
