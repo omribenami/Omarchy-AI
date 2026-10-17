@@ -21,6 +21,7 @@ from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
 from .live import build_session_config, LiveSession
+from .prompt_version import current_surface, resolve_prompt_version
 from .echo_cancel import EchoCancellation
 from . import escalation, extensions, fallback, speaker_id, switchboard
 from .myapi_refinement import refine_myapi_result
@@ -154,10 +155,59 @@ def origin_note(conversation: str | None = None, channel: str | None = None) -> 
     return f"\n\nWHERE THE USER IS: {text}" if text else ""
 
 
-def build_live_config(config):
-    shared = build_session_config(config)
+def _build_live_config_v2(config, shared):
+    """Gemini Live config for prompt v2.
+
+    Catalog and speaker guidance are already in the v2 instructions. This
+    still narrows the declared tools and adds remember_voice, matching the
+    legacy path below without appending those instruction blocks again.
+    """
+    from .prompt_v2 import overlay_tool_descriptions
+
+    declared = shared["delegation"]["responses"]["tools"]
+    if getattr(config, "tool_picker", False):
+        myapi_on = getattr(config, "myapi_enabled", False) and myapi.is_connected()
+        declared = [t for t in declared if t["name"] == "end_conversation"] + catalog.declared(myapi_on)
+        declared = overlay_tool_descriptions(declared)
+    tools = [{"name": t["name"], "description": t["description"],
+              "parameters_json_schema": t["parameters"],
+              "behavior": "NON_BLOCKING" if t["name"] in NON_BLOCKING_ACTIONS else "BLOCKING"}
+             for t in declared]
+    if getattr(config, "speaker_id_enabled", False):
+        tools.append({
+            "name": "remember_voice",
+            "description": ("Add what the person speaking has just said to their own voice recordings, so they are "
+                            "recognized better on this microphone. Only for a person who is already recognized by "
+                            "voice in this conversation; it refuses anyone else."),
+            "parameters_json_schema": {"type": "object", "properties": {
+                "name": {"type": "string", "description": "The person's name, as in the [Speaker] message."}},
+                "required": ["name"]},
+            "behavior": "BLOCKING"})
+    languages = transcription_languages(getattr(config, "user_languages", None))
+    return {"response_modalities": ["AUDIO"], "system_instruction": shared["instructions"],
+            "input_audio_transcription": ({"language_codes": languages} if languages else {}),
+            "output_audio_transcription": {},
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "disabled": False,
+                    "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
+                    "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 600,
+                },
+                "activity_handling": "START_OF_ACTIVITY_INTERRUPTS",
+            },
+            "tools": [{"function_declarations": tools}]}
+
+
+def build_live_config(config, *, surface: str | None = None):
+    if surface is None:
+        surface = current_surface()
+    shared = build_session_config(config, surface=surface)
     declared = shared["delegation"]["responses"]["tools"]
     instructions = shared["instructions"]
+    if resolve_prompt_version(config) == "v2":
+        return _build_live_config_v2(config, shared)
     if getattr(config, "tool_picker", False):
         myapi_on = getattr(config, "myapi_enabled", False) and myapi.is_connected()
         declared = [t for t in declared if t["name"] == "end_conversation"] + catalog.declared(myapi_on)

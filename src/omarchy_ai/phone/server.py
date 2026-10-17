@@ -293,7 +293,10 @@ def _relay_offer(config: Config, offer_sdp: str, conversation: str = "", identit
     if config.provider == "gemini":
         from .gemini import relay_offer
         return relay_offer(config, offer_sdp, conversation, identity)
-    session_config = build_session_config(config)
+    from ..voice.prompt_version import prompt_surface
+
+    with prompt_surface("phone"):
+        session_config = build_session_config(config)
     if identity is not None and identity.person:
         from ..core import identities
         session_config["instructions"] += "\n\nWHO IS SPEAKING: " + identities.describe(identity)

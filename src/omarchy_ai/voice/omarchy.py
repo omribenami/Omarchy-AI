@@ -311,6 +311,12 @@ class OmarchySession:
         self._vad = None
 
     def _instructions(self) -> str:
+        from .prompt_version import resolve_prompt_version
+
+        if resolve_prompt_version(self.config) == "v2":
+            from .prompt_v2 import render_prompt
+
+            return render_prompt(self.config, surface="voice")
         instructions = self.config.instructions + "\n\nYou are the language and tool-argument layer of Omarchy-ai. Jev has already evaluated this turn. Keep replies brief. Never claim an action succeeded until its tool result says it did."
         prefs = load_preferences()
         if prefs:
