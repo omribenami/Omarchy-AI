@@ -839,7 +839,7 @@ class LiveSession(ToolDispatchMixin):
             self._set_watchdog_state("listening")
             self._awaiting_playback_start.clear()
             self._input_buffer += event.get("delta", "")
-            self._input_guard.heard_user()
+            self._input_guard.heard_user(event.get("delta", ""))
             if _is_capability_demo(self._input_buffer):
                 self._demo_waiting_for_action.set()
             if self._output_buffer:

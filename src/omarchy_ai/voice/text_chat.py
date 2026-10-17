@@ -188,7 +188,7 @@ class TextChat:
                 continue
             adapter._transcript.append({"role": "user", "text": text})
             adapter._capture_password(text)
-            adapter._input_guard.heard_user()
+            adapter._input_guard.heard_user(text)
             # A typed line is the user answering: announcements said before
             # it count as heard (acknowledged_ids), as speech does in a call.
             adapter.user_spoke_at = adapter._last_user_speech = time.monotonic()

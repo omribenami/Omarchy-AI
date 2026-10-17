@@ -539,7 +539,7 @@ class OmarchySession:
                     continue
                 log.info("STT transcript=%r", transcript)
                 self._transcript.append({"role": "user", "text": transcript})
-                self._guard.heard_user()
+                self._guard.heard_user(transcript)
                 if self._check_exit_phrase(transcript):
                     reply = "Goodbye."
                     self._transcript.append({"role": "assistant", "text": reply})

@@ -1025,6 +1025,36 @@ PROVENANCE = {
 }
 
 
+# --- what an irreversible call aims at (execution/provenance.py) -------------
+# Once untrusted content is in a conversation, an irreversible call whose
+# targets (recipient, URL, path, command, amount...) the user never said
+# needs the user's tap. These are the arguments that carry a target: a name
+# alone is the whole value; "name~" means the targets written inside free
+# text (URLs, addresses, paths, file and domain names, amounts). A dict or
+# list is walked. () means the call aims at nothing outside itself. Every
+# irreversible tool is listed (tests/test_taint.py), so none is forgotten.
+KEY_ARGS: dict[str, tuple[str, ...]] = {
+    "start_task": ("workspace",), "task_respond": (), "schedule_task": ("path", "command~", "args", "steps"),
+    "watch_camera": (), "run_scheduled_task_now": (), "run_skill": (), "delete_skill": ("name",),
+    "update_assistant": (), "report_issue": ("repo",), "run_mission": ("workspace", "steps"),
+    "volume_mute_toggle": (), "mic_mute_toggle": (), "bluetooth_toggle": (), "nightlight_toggle": (),
+    "run_omarchy_command": (), "github_upload_attachment": ("path", "repo"),
+    "browser_control": ("url", "text~"), "browser_task": ("url", "goal~"),
+    "write_file": ("path",), "edit_file": ("path",), "workspace_next": (), "workspace_prev": (),
+    "close_window": (), "window_fullscreen_toggle": (), "execute_command": (), "type_text": ("text~",),
+    "press_key": (), "submit_sudo_password": (), "terminal_task": ("command~",),
+    "terminal_type": ("text~",), "terminal_sudo": (), "terminal_close": (),
+    "media_play_pause": (), "media_next": (), "media_prev": (), "set_reminder": (), "clear_reminders": (),
+    # myapi prepares every send, change or delete as a confirm card the user taps.
+    "myapi": (),
+    "myapi_write": ("path", "body~", "query~"), "myapi_execute": ("arguments",),
+    "myapi_gmail_send": ("recipient_email", "cc", "bcc"),
+    "myapi_gmail_reply": ("recipient_email", "cc", "bcc"),
+    # use_tool's pick is checked when it runs, under the picked tool's name.
+    "use_tool": (), "end_conversation": (), "share_file": (),
+}
+
+
 def effect_class(name: str) -> str:
     """A tool's effect class. A tool the user added (execution/user_tools.py)
     is `reversible`, as it was retried before; any other unknown name is

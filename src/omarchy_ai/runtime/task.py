@@ -117,6 +117,9 @@ class Task:
     model_tier: int = 0                                      # worker-model escalation step (runtime/models.py)
     owner: dict | None = None                                # {"pid", "start"} of the process driving it now
     budget: dict = field(default_factory=lambda: {"max_steps": 12, "max_seconds": 3600})
+    # Untrusted content (command output, an executor's claim, a page, a mail)
+    # entered this task's context: execution/provenance.py's taint check.
+    tainted: bool = False
 
     @property
     def title(self) -> str:
@@ -138,6 +141,8 @@ class Task:
     def finish_step(self, step: dict, outcome: str, claim: str = "") -> None:
         step["outcome"] = outcome
         step["claim"] = _clip(claim, 2000)
+        if claim:
+            self.tainted = True  # an executor's own account is untrusted
         step["finished_at"] = time.time()
         self.touch()
 

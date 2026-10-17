@@ -449,7 +449,10 @@ class GeminiLiveSession:
                             self._utterance.append(transcription.text)
                             self._capture_password()
                             self._splice_armed = True
-                            self._input_guard.heard_user()
+                            # Her own voice echoed back (reading an email aloud) is
+                            # not the user's words for the taint check.
+                            self._input_guard.heard_user(
+                                transcription.text if self.user_spoke_at == self._last_user_speech else "")
                             try:
                                 taken = await extensions.heard(self, transcription.text)
                             except fallback.Reconnect:
@@ -1227,8 +1230,11 @@ class GeminiLiveSession:
         is answered "timed out after N s; nothing was confirmed"), cancelled
         with this conversation or its call id. `guarded` runs it through
         InputGuard, as the model's own calls always were."""
-        return await runner.default_runner().arun(
+        result = await runner.default_runner().arun(
             name, args, execute=execute, wrap=self._input_guard.run if guarded else None, owner=self, tag=call_id)
+        if getattr(result, "untrusted", False):  # an unguarded call's content taints this conversation too
+            self._input_guard.taint.mark(getattr(result, "provenance", ""))
+        return result
 
     def _run_tool(self, name: str, args: dict) -> ActionResult:
         """run_action, except unlock_screen from the paired phone (the only

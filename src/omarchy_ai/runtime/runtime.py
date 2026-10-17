@@ -177,6 +177,19 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             return {"ok": False, "message": f"task {task.id} is being run by another process (pid {task.owner['pid']})"}
         if task.status == WAITING_APPROVAL:
             request = task.pending_approval or {}
+            if approve and channel == "voice" and request.get("tap_only"):
+                # A target that came from untrusted content (execution/provenance.py):
+                # the spoken yes is relayed by the model that read it.
+                sent = self.ask_fingerprint(task.id)
+                if sent["ok"]:
+                    return {"ok": True, "message": (
+                        f"Not approved yet: '{request.get('subject')}' takes a target from untrusted content, so a "
+                        "fingerprint prompt went to the phone. The task resumes when the user touches it. Tell the "
+                        "user that in one sentence.")}
+                return {"ok": False, "message": (
+                    f"'{request.get('subject')}' takes a target from untrusted content. It can only be approved "
+                    "with the Approve button on the desktop (the notification or the approval envelope), or "
+                    f"`omarchy-ai-task approve {task.id}` -- not by voice. {sent['message']}")}
             if approve and channel == "voice" and Risk.parse(request.get("risk"), Risk.HIGH) >= Risk.HIGH:
                 # A spoken yes is relayed by the model, so it cannot approve
                 # HIGH risk; a fingerprint on the phone can (2026-09-30: the
@@ -915,6 +928,7 @@ class WorkContextImpl:
         else:
             result = execute()
         result.output = passwords.redact(result.output)  # e.g. a vault token a command printed
+        self.task.tainted = True  # its output is untrusted (execution/provenance.py)
         data = result.as_dict()
         record.update(exit_code=result.exit_code, timed_out=result.timed_out, duration=round(result.duration, 2),
                       output=result.output[-3000:], full_output_path=result.full_output_path)
@@ -1022,6 +1036,7 @@ class WorkContextImpl:
 
     def screen(self, question: str) -> dict:
         result = self._action_runner()("describe_screen", {"question": question[:500]})
+        self.task.tainted = True
         self.task.add_evidence("screen", f"screen check '{question[:150]}': {provenance.clip(result.message, 800)}",
                                source="vision", ok=result.ok, step=self.step)
         self.runtime.store.save(self.task)
@@ -1032,9 +1047,17 @@ class WorkContextImpl:
         self._stage(label[:110])
         assessment = Assessment(_ACTION_RISK.get(name, Risk.NORMAL))
         subject = f"{name} {json.dumps(args, sort_keys=True)}"
+        why = provenance.approval_needed(name, args, tainted=self.task.tainted, said=self._user_said())
+        if why is not None:
+            # A target from untrusted content: the user's tap, whatever auto-approve says.
+            assessment.always_ask = True
+            assessment.reasons.append(f"after untrusted content: {why}")
         decision = self._decide("action", subject, assessment)
         if decision.behavior != "allow":
-            return {"ok": False, "decision": decision.behavior, "request": self._request(decision, "action", subject)}
+            request = self._request(decision, "action", subject)
+            if why is not None:
+                request["tap_only"] = True
+            return {"ok": False, "decision": decision.behavior, "request": request}
         # What the tool's own side effects are caused by (core/effects.py):
         # this task, step and call.
         from ..core import effects
@@ -1042,6 +1065,8 @@ class WorkContextImpl:
         calls = int(step.get("actions_done") or 0)
         with effects.origin(f"task:{self.task.id}:step{self.step}:action{calls}"):
             result = self._action_runner()(name, args)
+        if getattr(result, "untrusted", False):
+            self.task.tainted = True
         if step:
             step["actions_done"] = calls + 1
         self.task.add_command({"command": f"[tool] {subject[:500]}", "step": self.step, "decision": "allow",
@@ -1051,6 +1076,12 @@ class WorkContextImpl:
                                ok=result.ok, step=self.step)
         self.runtime.store.save(self.task)
         return {"ok": result.ok, "decision": "allow", "message": result.message}
+
+    def _user_said(self) -> str:
+        """The user's own words for this task: the goal, their answers, and
+        what they approved (execution/provenance.py's taint check)."""
+        approved = [n for n in self.task.notes if n.startswith("User approved")]
+        return "\n".join([self.task.goal, *self.task.answers, *approved])
 
     def _action_runner(self):
         if self.runtime._run_action is not None:
