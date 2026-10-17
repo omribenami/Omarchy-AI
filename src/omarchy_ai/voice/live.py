@@ -31,6 +31,7 @@ from ..config import MYAPI_INSTRUCTIONS, Config
 from ..core.history import append_session, load_recent_context
 from ..core import updates
 from ..core.memory import load_preferences
+from ..execution import runner
 from ..execution.actions import run_action
 from ..execution.verified_input import InputGuard
 from ..execution.tools import MYAPI_TOOLS, TOOLS
@@ -618,7 +619,7 @@ class LiveSession(ToolDispatchMixin):
         # A live response can emit several function calls in one burst.
         # Desktop actions must complete in their received order so a demo
         # cannot describe a sequence while its actual changes are deferred.
-        self._tool_lock: asyncio.Lock | None = None
+        self._resources: runner.Resources | None = None
         # In-memory only, per conversation — resets every session. A
         # per-window ("per-tile") log so the model can recall what it's
         # already done to a specific window rather than only the last
@@ -770,6 +771,7 @@ class LiveSession(ToolDispatchMixin):
         if name == "end_conversation":
             from ..execution.desktop_jev import cancel_desktop_tasks
             cancel_desktop_tasks()
+            runner.default_runner().cancel(owner=self, reason="the conversation ended")
             log.info("end_conversation tool call received")
             self._hangup.set()
             return
@@ -988,6 +990,7 @@ class LiveSession(ToolDispatchMixin):
         finally:
             from ..execution.desktop_jev import cancel_desktop_tasks
             cancel_desktop_tasks()
+            runner.default_runner().cancel(owner=self, reason="the conversation ended")
             status_icon.set_live(False)
             if self._watchdog_on:
                 watchdog.stop()

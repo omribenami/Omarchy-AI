@@ -405,6 +405,8 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
         event = self._cancel.get(task.id)
         if event:
             event.set()
+        from ..execution import runner
+        runner.default_runner().cancel(owner=f"task:{task.id}", reason="the task was cancelled")
 
         def mark(t):
             if t.status not in TERMINAL:
@@ -1052,8 +1054,11 @@ class WorkContextImpl:
     def _action_runner(self):
         if self.runtime._run_action is not None:
             return self.runtime._run_action
-        from ..execution.actions import run_action
-        return run_action
+        # On the ToolRunner: each call has its tool's deadline, and cancelling
+        # the task stops the calls it has running (Runtime.cancel).
+        from ..execution import runner
+        owner = f"task:{self.task.id}"
+        return lambda name, args: runner.default_runner().run(name, args, owner=owner)
 
     def check_external(self, kind: str, subject: str, risk, reasons: list[str]) -> dict:
         assessment = Assessment(Risk(risk) if not isinstance(risk, Risk) else risk, list(reasons))

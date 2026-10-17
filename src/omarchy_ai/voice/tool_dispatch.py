@@ -1,13 +1,18 @@
 """Tool-call dispatch for the desktop live session (gpt-live-1).
 
-How one function call from the model is run and answered: calls run one at a
-time, in the order received, behind an asyncio.Lock; each runs off the event
-loop through run_in_executor and InputGuard; its outcome goes into the
+How one function call from the model is run and answered. Calls are ordered
+by the resource their tool holds (execution/tools.py RESOURCES, through
+execution/runner.Resources): mutating calls on one resource run one at a
+time in the order received, as every call once did behind a single lock;
+read-only calls run side by side and never overtake a mutation received
+before them. Each call runs through InputGuard on the ToolRunner, with its
+tool's deadline: a call that hangs is answered "timed out after N s; nothing
+was confirmed" instead of holding the session. Its outcome goes into the
 per-window action log (get_recent_actions) and back to the model as a
 function_call_output (_send_function_result).
 
 Split out of voice/live.py; LiveSession inherits ToolDispatchMixin and still
-owns the state these methods use (_tool_lock, _hangup, _action_log,
+owns the state these methods use (_resources, _hangup, _action_log,
 _input_guard, _dc, _demo_waiting_for_action, the watchdog flags).
 """
 from __future__ import annotations
@@ -16,6 +21,7 @@ import asyncio
 import json
 import logging
 
+from ..execution import runner
 from ..execution.actions import run_action
 from . import watchdog
 
@@ -26,14 +32,15 @@ class ToolDispatchMixin:
     """LiveSession's tool-call execution path."""
 
     async def _run_tool_call(self, call_id: str, name: str, args: dict) -> None:
-        if self._tool_lock is None:
-            self._tool_lock = asyncio.Lock()
-        async with self._tool_lock:
+        if self._resources is None:
+            self._resources = runner.Resources()
+        tool = runner.spec(name)
+        async with self._resources.hold(tool.resource, exclusive=not tool.reads):
             if self._hangup.is_set():
                 return
-            await self._run_tool_call_serialized(call_id, name, args)
+            await self._run_tool_call_ordered(call_id, name, args)
 
-    async def _run_tool_call_serialized(self, call_id: str, name: str, args: dict) -> None:
+    async def _run_tool_call_ordered(self, call_id: str, name: str, args: dict) -> None:
         if self._demo_waiting_for_action.is_set():
             self._demo_waiting_for_action.clear()
             log.info("demo: first real action %s; enabling assistant audio", name)
@@ -45,7 +52,8 @@ class ToolDispatchMixin:
         self._set_watchdog_state("thinking")
         if self._watchdog_on:
             watchdog.tool_call(name, args)
-        result = await loop.run_in_executor(None, self._input_guard.run, run_action, name, args)
+        result = await runner.default_runner().arun(
+            name, args, execute=run_action, wrap=self._input_guard.run, owner=self, tag=call_id)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
         if self._watchdog_on:
             watchdog.tool_result(name, args, result.ok, result.message)
