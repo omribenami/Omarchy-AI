@@ -65,10 +65,9 @@ STALE_RUN_SECONDS = 30 * 60
 # held by another process that is still alive this long after it started is
 # taken as hung and no longer blocks the job's next run.
 LEASE_SECONDS = 2 * 3600
-# A failed step is retried, unless repeating it could undo it (a toggle).
+# A failed step is retried, unless its tool is `irreversible` (execution/
+# tools.py's effect_class: a repeat would send, toggle or run it again).
 STEP_RETRY_DELAYS = (5.0, 20.0)
-_NOT_REPEATABLE = re.compile(r"toggle|play_pause|_next$|_prev$|type_text|press_key|terminal_type|gmail_send|"
-                             r"gmail_reply|myapi_write|myapi_execute|^myapi$|start_task|run_skill|write_file|edit_file")
 # Tools that only make sense inside a live conversation, or would let a
 # schedule bypass a live approval.
 NOT_SCHEDULABLE = frozenset({"run_mission", "get_recent_actions", "task_respond", "unlock_screen",
@@ -735,7 +734,8 @@ def _call(step: dict, origin: str = "", job_id: str = ""):
     have happened, and the tool's own effects carry the same origin."""
     from ..execution.actions import run_action
     from . import effects
-    delays = () if _NOT_REPEATABLE.search(step["tool"]) else STEP_RETRY_DELAYS
+    from ..execution.tools import IRREVERSIBLE, effect_class
+    delays = () if effect_class(step["tool"]) == IRREVERSIBLE else STEP_RETRY_DELAYS
     origin = origin or f"once:{uuid.uuid4().hex}"
     attempt = 0
     while True:
