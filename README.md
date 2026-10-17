@@ -24,6 +24,58 @@
 
 ---
 
+## Getting started
+
+Save a Vercel AI Gateway key before the first conversation. The full
+install, phone, log, and uninstall steps are in
+[Getting Started](docs/getting-started.md).
+
+1. **Install** one way:
+   - **Omarchy package** (after
+     [omacom/omarchy-pkgs#1196](https://github.com/omacom/omarchy-pkgs/pull/1196)
+     is merged): `omarchy pkg add omarchy-ai`. This puts the app in
+     `/opt/omarchy-ai` and leaves the user service disabled.
+   - **OmaStore:** open **Omarchy AI**. The first launch runs setup and
+     enables `omarchy-ai.service`.
+   - **Release archive:** check the `.sha256`, unpack, run
+     `bash install.sh`, then
+     `systemctl --user enable --now omarchy-ai.service`. The
+     [fast install](#fast-install-copy-and-paste) block does that for the
+     newest stable release.
+2. **Create a Gateway key.** Sign up at
+   [vercel.com/signup](https://vercel.com/signup). Open
+   [AI Gateway → API Keys](https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys&title=AI+Gateway+API+Keys)
+   and click **Create key**
+   ([the dialog](https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys%3FshowCreateKeyModal%3Dtrue&title=AI+Gateway+API+Keys)).
+   Copy the key. Vercel shows it once. Add a
+   [payment method](https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%3Fmodal%3Dadd-credit-card)
+   to use free AI Gateway Credits. Details are in the
+   [pricing docs](https://vercel.com/docs/ai-gateway/pricing).
+3. **Save it in Omarchy AI.** Open the **Omarchy-AI** icon on the right of
+   the bar. Set **Conversation model** to **Gateway voice**. Paste into
+   the **Vercel AI Gateway key** field and click **Save key**, then
+   **Apply saved changes**. The key is stored mode `0600` at
+   `~/.config/omarchy-ai/vercel-ai-gateway-key`. From the unpacked
+   install directory:
+
+   ```bash
+   printf '%s' 'YOUR_KEY' | .venv/bin/omarchy-ai-settings set-vercel-gateway-api-key
+   .venv/bin/omarchy-ai-settings set provider omarchy
+   .venv/bin/omarchy-ai-settings restart
+   ```
+
+   On the Omarchy package, `omarchy-ai-settings` is on `PATH`. Drop the
+   `.venv/bin/` prefix.
+
+4. **Check it.** Say **omachy** and ask it to turn the volume up.
+   `install.sh` and OmaStore also bind **Super + `**. Logs:
+   `journalctl --user -u omarchy-ai.service -f`.
+
+OpenAI Live and Gemini Live are optional. They each need their own key.
+The Gateway key is still required for Jev.
+
+---
+
 **Omarchy AI** is an agentic AI harness built specifically for
 [Omarchy](https://omarchy.org), the Arch-based Hyprland desktop. It lives
 directly in your session, with deep Omarchy integration and full control of
@@ -285,8 +337,8 @@ quickshell/        Quickshell/QML plugins: watchdog HUD, task/routine HUDs and
                    approval envelope, text chat, window labels, settings,
                    MyApi, TV picker, quota alert
 systemd/           omarchy-ai.service template
-docs/              ADR-0001 (architecture), ADR-0002 (Task Runtime),
-                   ADR-0003 (Jev switchboard),
+docs/              getting-started, ADR-0001 (architecture),
+                   ADR-0002 (Task Runtime), ADR-0003 (Jev switchboard),
                    JEV-DESKTOP, gemini-live, DEPENDENCIES, media
 scripts/           install/build/publish, probes and the original spikes
 ```
@@ -605,6 +657,19 @@ flowchart LR
 
 ## Installation
 
+New installs start with [Getting Started](docs/getting-started.md): a
+Vercel AI Gateway key, then **Gateway voice**. The three routes are
+below.
+
+### Omarchy package
+
+`omarchy pkg add omarchy-ai` is the Omarchy package proposed in
+[omacom/omarchy-pkgs#1196](https://github.com/omacom/omarchy-pkgs/pull/1196).
+It installs under `/opt/omarchy-ai`, puts `omarchy-ai` and
+`omarchy-ai-settings` on `PATH`, and leaves the user service disabled.
+It does not run `install.sh`. What it installs, how to start it, and how
+to remove it are in [Getting Started](docs/getting-started.md#1-install).
+
 ### OmaStore
 
 [OmaStore](https://github.com/KitsuneSemCalda/OmaStore) lists this app once
@@ -658,12 +723,14 @@ installs the desktop plugins, copies the wake-word models, creates the user
 config and installs the systemd service. It never guesses or overwrites your
 API key.
 
-Then open the **Omarchy AI** settings panel on the right side of the bar,
-choose **OpenAI**, **Gemini** or **Gateway voice**, and save the
+Then open the **Omarchy AI** settings panel on the right side of the bar.
+Set **Conversation model** to **Gateway voice** and save the
 **Vercel AI Gateway key**: the one key for Jev's desktop, browser, image and
-Task Runtime decisions (no separate TypeSafe token), the OpenAI backup voice,
-and Gateway speech and text. Gemini Live and OpenAI Live also
-take their own provider key, because they connect to that provider directly.
+Task Runtime decisions (no separate TypeSafe token), Gateway speech, and
+Gateway text. OpenAI Live and Gemini Live are optional. Each connects to
+that provider with its own key. The steps are in
+[Getting Started](docs/getting-started.md).
+
 With Gemini selected, a failing voice model is replaced mid-conversation in
 this order: Gemini 3.8 Live, GPT Realtime 2 through the Gateway key, then
 the older Gemini Live models; a step whose key is missing is skipped. Press
