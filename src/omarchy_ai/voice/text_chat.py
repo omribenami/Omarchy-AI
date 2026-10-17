@@ -220,7 +220,10 @@ class TextChat:
         tasks: list[asyncio.Task] = []
         client = None
         try:
-            live_config = build_live_config(self.config)
+            from .prompt_version import prompt_surface
+
+            with prompt_surface("chat"):
+                live_config = build_live_config(self.config)
             live_config["system_instruction"] += TEXT_NOTE + origin_note(channel="desktop-text")
             if who := identities.describe(adapter.known_identity):
                 live_config["system_instruction"] += "\n\nWHO IS TYPING: " + who

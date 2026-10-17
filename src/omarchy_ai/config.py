@@ -410,6 +410,16 @@ class Config:
     # tools/instructions being exposed to the model even once connected.
     myapi_enabled: bool = False
 
+    # Spoken name for prompt_version "v2" ({{assistant_name}}). The legacy
+    # prompt hard-codes this same name in Config.instructions and does not
+    # read the field, so changing it cannot alter the default persona.
+    assistant_name: str = "Omarchy"
+    # Empty: v2 uses the enrolled household owner's name, else "the user".
+    user_name: str = ""
+    # "legacy" (default) keeps today's session prompt byte-for-byte.
+    # "v2" assembles voice/prompt_v2.py. OMARCHY_PROMPT_VERSION overrides this.
+    prompt_version: str = "legacy"
+
 
 # Appended to Config.instructions at session-build time, only when MyApi is
 # actually connected (see voice/live.py's build_session_config) — same

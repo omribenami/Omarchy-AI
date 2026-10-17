@@ -329,7 +329,10 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
             model = models[index]
             session_tasks = []
             try:
-                live_config = build_live_config(config)
+                from ..voice.prompt_version import prompt_surface
+
+                with prompt_surface("phone"):
+                    live_config = build_live_config(config)
                 # Where the user is: the phone, not at this computer (core/origin.py).
                 live_config['system_instruction'] += origin_note(conversation or None, 'phone-voice')
                 live_config['tools'][0]['function_declarations'].append({

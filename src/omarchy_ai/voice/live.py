@@ -28,6 +28,7 @@ from rapidfuzz import fuzz
 
 from .. import myapi
 from ..config import MYAPI_INSTRUCTIONS, Config
+from .prompt_version import resolve_prompt_version
 from ..core.history import append_session, load_recent_context
 from ..core import updates
 from ..core.memory import load_preferences
@@ -58,13 +59,24 @@ def _is_capability_demo(text: str) -> bool:
     ))
 
 
-def build_session_config(config: Config) -> dict:
+def build_session_config(config: Config, *, surface: str | None = None) -> dict:
     """Assembles the `session` object for the /v1/live/sessions POST body
     -- instructions (base + learned preferences + recent context) plus the
     model/tools config. Shared by the desktop LiveSession below (aiortc)
     and the phone bridge (phone/server.py, browser WebRTC) -- both talk to
     the exact same OpenAI session shape, so this has to stay one function,
-    not two copies that can quietly drift apart."""
+    not two copies that can quietly drift apart.
+
+    ``surface`` is only read by prompt_version "v2" (and by the surface
+    context var when it is left unset). The legacy assembly below is unchanged.
+    """
+    if resolve_prompt_version(config) == "v2":
+        from .prompt_v2 import build_session_config_v2
+        from .prompt_version import current_surface
+
+        return build_session_config_v2(
+            config, surface=surface if surface is not None else current_surface()
+        )
     instructions = config.instructions
     instructions += (
         "\n\nJEV DESKTOP DELEGATION: You remain the live conversational model. "
