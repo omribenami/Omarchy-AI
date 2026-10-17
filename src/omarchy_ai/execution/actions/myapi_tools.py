@@ -334,13 +334,22 @@ def _myapi_execute(service: str, operation: str, arguments: dict, idem_key: str 
                            duration_ms=(time.monotonic() - started) * 1000)
 
 
+def _write_args(service: str, arguments: dict) -> dict:
+    return {"service": service, "arguments": arguments}
+
+
+def myapi_write_key(origin_id: str, service: str, operation: str, arguments: dict) -> str:
+    """The journal key myapi_write_execute uses for this write under that origin."""
+    return effects.idem_key(origin_id, operation, _write_args(service, arguments))
+
+
 def myapi_write_execute(service: str, operation: str, arguments: dict) -> ActionResult:
     """A state-changing /execute call, journaled and sent at most once per
     origin (core/effects.py). Gmail's GMAIL_SEND_EMAIL / GMAIL_REPLY_TO_THREAD
     take only recipients, subject and body (no custom headers), so the key
     cannot be put into the email itself; it travels as the Idempotency-Key
     header to MyApi."""
-    return effects.perform("myapi_execute", operation, {"service": service, "arguments": arguments},
+    return effects.perform("myapi_execute", operation, _write_args(service, arguments),
                            lambda key: _myapi_execute(service, operation, arguments, key),
                            target=f"{service}:{operation}")
 

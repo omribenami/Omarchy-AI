@@ -340,7 +340,10 @@ def _prepare(service: str, method: dict, args: dict, request: str, observations:
     aid = pending_actions.create({"service": service, "method": method["name"], "arguments": args,
                                   "title": title, "fields": fields, "request": request, "conversation": cid})
     if cid:
-        conversations.add_card(cid, {"kind": "confirm", "task_id": f"{ACTION}{aid}", "text": title,
+        expires = pending_actions.expires_at(pending_actions.get(aid) or {})
+        until = time.strftime("%H:%M on %Y-%m-%d", time.localtime(expires))
+        conversations.add_card(cid, {"kind": "confirm", "task_id": f"{ACTION}{aid}",
+                                     "text": f"{title} (waits for your OK until {until})", "expires_at": expires,
                                      "action": {"id": aid, "title": title, "service": service,
                                                 "method": method["name"], "fields": fields}})
     shown = "\n".join(f"{f['label']}: {f['value']}" for f in fields)
@@ -357,18 +360,46 @@ ACTION = "action:"
 def decide(aid: str, go: bool, how: str) -> tuple[bool, str]:
     """The user's Send (go) or Cancel for a prepared action. Send runs it and
     checks it worked; email must show up in Sent."""
-    from ..core import conversations, pending_actions
+    from ..core import pending_actions
+    from ..core.crashpoints import crashpoint
     action = pending_actions.claim(aid)
     if action is None:
         current = pending_actions.get(aid)
-        return False, f"That was already {current.get('outcome') or 'decided'}." if current else "No such action."
-    cid = action.get("conversation") or ""
+        if not current:
+            return False, "No such action."
+        if current.get("status") == pending_actions.UNCERTAIN:
+            if not go:
+                return resolve(aid, "drop", how)
+            # A Send meant for the first try must never become a second send.
+            return False, ("It may already have been sent. To send it again on purpose, choose Resend on its card "
+                           "(or answer it with resend); Check looks for it first.")
+        if pending_actions.expired(current):
+            return False, "That expired before it was answered, so it was not sent."
+        return False, f"That was already {current.get('outcome') or 'decided'}."
+    crashpoint("pending.after_claim")
     if not go:
         pending_actions.finish(aid, "cancelled", how)
         return True, "Cancelled."
-    # The action itself is the origin: the same approved action is sent once,
-    # however often its Send is pressed or retried.
-    result = _call(action["service"], action["method"], action["arguments"], origin=f"pending:{aid}")
+    return _send(action)
+
+
+def _send(action: dict) -> tuple[bool, str]:
+    """Run a claimed action under its origin (the action itself, or a Resend's
+    new one): the same approved send goes out once, however often its Send is
+    pressed or retried."""
+    from ..core import conversations, effects, pending_actions
+    aid, cid = action["id"], action.get("conversation") or ""
+    result = _call(action["service"], action["method"], action["arguments"],
+                   origin=pending_actions.origin_of(action))
+    effect = None if result.ok else effects.lookup(pending_actions.effect_key(action))
+    if effect is not None and effect.state == effects.UNCERTAIN:
+        # No answer came back, so it may have gone out: the user decides, never a retry.
+        pending_actions.mark_uncertain(aid, f"I may have sent this ({action['title']}): no answer came back from "
+                                            "MyApi. Check whether it went out, then resend or drop it.")
+        current = pending_actions.get(aid) or action
+        if cid:
+            conversations.add_card(cid, pending_actions.uncertain_card(current))
+        return False, str(current.get("message") or "")
     ok = result.ok and _worked(action, result.message)
     message = (_sent_check(action) if ok and action["method"].startswith("GMAIL_") and
                action["method"] in ("GMAIL_SEND_EMAIL", "GMAIL_REPLY_TO_THREAD") else None)
@@ -381,6 +412,48 @@ def decide(aid: str, go: bool, how: str) -> tuple[bool, str]:
         conversations.add_card(cid, {"kind": "result", "task_id": f"{ACTION}{aid}",
                                      "event": "certified" if ok else "failed", "text": message})
     return ok, message
+
+
+CHOICES = ("check", "resend", "drop")
+_EMAIL = ("GMAIL_SEND_EMAIL", "GMAIL_REPLY_TO_THREAD")
+
+
+def resolve(aid: str, choice: str, how: str) -> tuple[bool, str]:
+    """The user's answer to an action that may already have been sent
+    (core/pending_actions.py): check for it, resend it on purpose (a new
+    origin, so a deliberate second send), or drop it."""
+    from ..core import conversations, pending_actions
+    action = pending_actions.get(aid)
+    if not action:
+        return False, "No such action."
+    if action.get("status") != pending_actions.UNCERTAIN:
+        return False, f"That is not waiting for a check, resend or drop (it is {action.get('outcome') or 'open'})."
+    cid = action.get("conversation") or ""
+
+    def settle(outcome: str, event: str, message: str) -> tuple[bool, str]:
+        if not pending_actions.settle_uncertain(aid, outcome, message):
+            return False, "That was already decided."
+        if cid:
+            conversations.add_card(cid, {"kind": "result", "task_id": f"{ACTION}{aid}", "event": event,
+                                         "text": message})
+        return True, message
+
+    if choice == "drop":
+        return settle("dropped", "cancelled", f"{action['title']}: dropped {how}. If it did go out, it stays sent.")
+    if choice == "check":
+        if action.get("method") not in _EMAIL:
+            return False, (f"I can't check {action.get('service') or 'that service'} for it from here. Look there, "
+                           "then resend or drop it.")
+        message = _sent_check(action) or ""
+        if not message.startswith("Sent ✓"):
+            return False, f"{message} Resend it, or drop it if you can see it went out."
+        return settle("sent", "certified", message)
+    if choice == "resend":
+        claimed = pending_actions.claim_resend(aid)
+        if claimed is None:
+            return False, "That was already decided."
+        return _send(claimed)
+    return False, f"Answer with one of: {', '.join(CHOICES)}."
 
 
 def _worked(action: dict, raw: str) -> bool:

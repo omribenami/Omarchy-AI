@@ -233,6 +233,17 @@ def lookup(key: str) -> Effect | None:
     return _view(key, entry) if isinstance(entry, dict) else None
 
 
+def in_flight(key: str) -> bool:
+    """Whether a live process is proposing or dispatching this key right now."""
+    data = statefile.read_json(index_path(), {}, expect=dict, version=INDEX_VERSION)
+    entry = _entries(data).get(key)
+    return (
+        isinstance(entry, dict)
+        and entry.get("state") in (PROPOSED, DISPATCHED)
+        and _owner_alive(entry, key)
+    )
+
+
 def records(effect_id: str | None = None) -> list[dict]:
     """The journal (one effect's lines when given), oldest first."""
     rows = statefile.read_jsonl(journal_path())
