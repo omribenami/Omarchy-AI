@@ -64,7 +64,7 @@ class JevParseTests(unittest.TestCase):
     def test_transport_failure_becomes_jev_error(self):
         def broken(state, questions, timeout):
             raise OSError("offline")
-        with self.assertRaises(jev.JevError):
+        with patch.object(jev.time, "sleep"), self.assertRaises(jev.JevError):
             jev.Jev(broken).ask({"x": 1}, {"b": self.qs["b"]})
 
     def test_transient_gateway_errors_are_retried_with_backoff(self):

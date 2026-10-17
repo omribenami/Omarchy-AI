@@ -42,7 +42,7 @@ import time
 import uuid
 
 from ..config import STATE_DIR
-from . import schedule, statefile
+from . import retry, schedule, statefile
 from .jev import Jev, JevError, boolean, choice
 
 log = logging.getLogger("omarchy_ai.core.agenda")
@@ -65,9 +65,11 @@ STALE_RUN_SECONDS = 30 * 60
 # held by another process that is still alive this long after it started is
 # taken as hung and no longer blocks the job's next run.
 LEASE_SECONDS = 2 * 3600
-# A failed step is retried, unless its tool is `irreversible` (execution/
-# tools.py's effect_class: a repeat would send, toggle or run it again).
-STEP_RETRY_DELAYS = (5.0, 20.0)
+# A failed step is retried by core/retry.py's policy: never when its tool is
+# `irreversible` (execution/tools.py's effect_class: a repeat would send,
+# toggle or run it again) or the failure is a client error; else after ~5 s,
+# then ~20 s.
+STEP_RETRY = retry.Policy(attempts=3, base=5.0, factor=4.0, cap=20.0, jitter=0.1)
 # Tools that only make sense inside a live conversation, or would let a
 # schedule bypass a live approval.
 NOT_SCHEDULABLE = frozenset({"run_mission", "get_recent_actions", "task_respond", "unlock_screen",
@@ -736,22 +738,28 @@ def _call(step: dict, origin: str = "", job_id: str = ""):
     have happened, and the tool's own effects carry the same origin."""
     from ..execution.actions import run_action
     from . import effects
-    from ..execution.tools import IRREVERSIBLE, effect_class
-    delays = () if effect_class(step["tool"]) == IRREVERSIBLE else STEP_RETRY_DELAYS
+    from ..execution.tools import effect_class
     origin = origin or f"once:{uuid.uuid4().hex}"
-    attempt = 0
-    while True:
+    attempts = 0
+
+    def attempt():
+        nonlocal attempts
+        attempts += 1
         with effects.origin(origin):
-            result = effects.perform("agenda_step", step["tool"], step["args"],
-                                     lambda _key: run_action(step["tool"], dict(step["args"])),
-                                     target=f"agenda:{job_id}:{step['tool']}", correlation_id=job_id,
-                                     succeeded=lambda r: _failure(r) is None)
+            return effects.perform("agenda_step", step["tool"], step["args"],
+                                   lambda _key: run_action(step["tool"], dict(step["args"])),
+                                   target=f"agenda:{job_id}:{step['tool']}", correlation_id=job_id,
+                                   succeeded=lambda r: _failure(r) is None)
+
+    def failure(result):
+        if effects.not_dispatched(result):
+            return retry.Failure(retry.UNCERTAIN)
         why = _failure(result)
-        if why is None or attempt >= len(delays) or effects.not_dispatched(result):
-            return result, why, attempt + 1
-        log.warning("agenda: step %s failed (%s); retrying in %gs", step["tool"], why[:160], delays[attempt])
-        time.sleep(delays[attempt])
-        attempt += 1
+        return None if why is None else retry.classify_text(why)
+
+    result = retry.run(attempt, effect_class=effect_class(step["tool"]), policy=STEP_RETRY, check=failure,
+                       name=f"agenda: step {step['tool']}")
+    return result, _failure(result), attempts
 
 
 def _run_action(job, now, jev):

@@ -314,6 +314,17 @@ def _myapi_execute(service: str, operation: str, arguments: dict, idem_key: str 
     """One /execute call. With idem_key (a journaled write, core/effects.py)
     it carries the Idempotency-Key header, and a call that may have reached
     MyApi without an answer raises effects.Uncertain instead of returning."""
+    try:
+        return ActionResult(True, json.dumps(myapi_execute_request(service, operation, arguments, idem_key)))
+    except myapi.MyApiError as exc:
+        failed = ActionResult(False, f"MyApi action failed: {exc}")
+        if idem_key and exc.maybe_sent:
+            raise effects.Uncertain(failed) from exc
+        return failed
+
+
+def myapi_execute_request(service: str, operation: str, arguments: dict, idem_key: str | None = None) -> dict:
+    """The /execute request itself; raises MyApiError."""
     started = time.monotonic()
     ok = False
     try:
@@ -323,12 +334,7 @@ def _myapi_execute(service: str, operation: str, arguments: dict, idem_key: str 
             body={"method": operation, "params": {"arguments": arguments}}, **extra,
         )
         ok = True
-        return ActionResult(True, json.dumps(result))
-    except myapi.MyApiError as exc:
-        failed = ActionResult(False, f"MyApi action failed: {exc}")
-        if idem_key and exc.maybe_sent:
-            raise effects.Uncertain(failed) from exc
-        return failed
+        return result
     finally:
         myapi_usage.record(service=service, path=f"/execute:{operation}", method="POST(write)", ok=ok,
                            duration_ms=(time.monotonic() - started) * 1000)
