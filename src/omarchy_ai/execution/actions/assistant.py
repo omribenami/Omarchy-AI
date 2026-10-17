@@ -108,6 +108,35 @@ def watch_camera(args: dict) -> ActionResult:
                           "for_minutes": args.get("for_minutes"), "every_minutes": args.get("every_minutes")})
 
 
+def look_camera(args: dict) -> ActionResult:
+    """One frame from a home camera, answered as a question about the image
+    (the same snapshot and vision path a camera watch takes, once)."""
+    import uuid
+
+    from .. import cameras, vision
+    args = dict(args or {})
+    said = str(args.get("camera") or "").strip()
+    question = str(args.get("question") or "").strip() or "What does the camera show right now?"
+    config = load_config()
+    try:
+        camera = cameras.resolve(said, config)
+    except LookupError as exc:  # no camera program, or it failed to list
+        return ActionResult(False, f"Could not look at a camera: {exc}")
+    except ValueError as exc:  # names the real cameras
+        return ActionResult(False, str(exc))
+    key = f"look-{uuid.uuid4().hex}"
+    try:
+        frame = cameras.snapshot(camera, config, key)
+        answer = vision.look(frame, question, config, subject=f"the {camera} camera's current picture")
+    except LookupError as exc:
+        return ActionResult(False, f"Could not get a picture from the {camera} camera: {exc}")
+    finally:
+        (cameras.FRAME_DIR / key).unlink(missing_ok=True)  # also a partial file from a failed fetch
+    if answer.startswith("error:"):
+        return ActionResult(False, f"Got a picture from the {camera} camera but could not judge it ({answer}).")
+    return ActionResult(True, f"The {camera} camera, just now:\n{answer}")
+
+
 def list_scheduled_tasks(args: dict) -> ActionResult:
     from ...core import agenda, schedule
     return ActionResult(True, json.dumps({"now": schedule.describe(time.time()),

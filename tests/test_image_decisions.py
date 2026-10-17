@@ -130,5 +130,71 @@ class CameraProgramTests(unittest.TestCase):
         self.assertFalse(cameras.can_wait("porch", SimpleNamespace(camera_snapshot_command=None)))
 
 
+
+class LookCameraTests(unittest.TestCase):
+    """look_camera: one frame from the user's camera program, answered by vision.look."""
+
+    def setUp(self):
+        from omarchy_ai.execution import actions
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+        self.frames = self.base / "frames"
+        patch.object(cameras, "FRAME_DIR", self.frames).start()
+        self.addCleanup(patch.stopall)
+        self.look = actions.ACTIONS["look_camera"]
+
+    def configure(self, body):
+        path = self.base / "cams"
+        if body is not None:
+            path.write_text("#!/bin/sh\n" + body)
+            path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        config = SimpleNamespace(camera_snapshot_command=str(path) if body is not None else None)
+        patch("omarchy_ai.execution.actions.assistant.load_config", return_value=config).start()
+
+    def test_one_look_answers_the_question_and_keeps_no_frame(self):
+        self.configure('[ "$1" = list ] && echo \'["Gate", "Shed"]\' && exit 0\n'
+                       '[ "$1" = snapshot ] && printf \'\\211PNG\\r\\n\\032\\n0000\' > "$3"\n')
+        seen = {}
+
+        def look(path, request, config, *, subject="the image", context=""):
+            seen.update(valid=vision._valid_image(path), request=request, subject=subject)
+            return "Is a person visible? -> yes"
+        with patch.object(vision, "look", side_effect=look):
+            result = self.look({"camera": "the gate camera", "question": "who is at the gate?"})
+        self.assertTrue(result.ok, result.message)
+        self.assertIn("Gate camera", result.message)
+        self.assertIn("Is a person visible? -> yes", result.message)
+        self.assertEqual(seen, {"valid": True, "request": "who is at the gate?",
+                                "subject": "the Gate camera's current picture"})
+        self.assertEqual(list(self.frames.iterdir()), [])
+
+    def test_an_unknown_name_lists_the_real_cameras(self):
+        self.configure('echo \'["Gate", "Shed"]\'\n')
+        with patch.object(vision, "look") as look:
+            result = self.look({"camera": "roof", "question": "anything there?"})
+        self.assertFalse(result.ok)
+        self.assertIn("the cameras are: Gate, Shed", result.message)
+        look.assert_not_called()
+
+    def test_no_cameras_configured(self):
+        self.configure(None)
+        with patch.object(vision, "look") as look:
+            result = self.look({"camera": "Gate", "question": "anything there?"})
+        self.assertFalse(result.ok)
+        self.assertIn("no cameras are set up", result.message)
+        look.assert_not_called()
+
+    def test_a_failed_snapshot_says_so_and_leaves_nothing(self):
+        self.configure('[ "$1" = list ] && echo \'["Gate"]\' && exit 0\n'
+                       'echo junk > "$3"; echo offline >&2; exit 1\n')
+        with patch.object(vision, "look") as look:
+            result = self.look({"camera": "Gate", "question": "anything there?"})
+        self.assertFalse(result.ok)
+        self.assertIn("Could not get a picture from the Gate camera: offline", result.message)
+        look.assert_not_called()
+        self.assertEqual(list(self.frames.iterdir()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

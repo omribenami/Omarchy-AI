@@ -18,7 +18,9 @@ from omarchy_ai.voice.live import build_session_config
 GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # sha256 of the legacy Gemini Live config (instructions + declared tools) that
 # legacy_live_digest() builds, taken from main before prompt v2 existed.
-LEGACY_LIVE_SHA256 = "420c96f5e523d1804c88b592817e8fcd63b001d738f6c2634414038e3756bf72"
+# Re-pinned once for one catalog tool: the TOOL CATALOG signature line gained
+# "look_camera(camera*, question*), "; the declared tools did not change.
+LEGACY_LIVE_SHA256 = "4c33fe0cd779018dde53234e8e2787d9cceee9514330e3a780824fc0bc8d3575"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
