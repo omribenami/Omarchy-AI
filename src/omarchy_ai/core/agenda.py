@@ -533,14 +533,16 @@ def list_jobs(include_finished: bool = False) -> list[dict]:
 
 # ---------------------------------------------------------------- effects
 
-def notify(title: str, body: str = "", urgent: bool = False, person: str | None = None) -> None:
+def notify(title: str, body: str = "", urgent: bool = False, person: str | None = None,
+           conversation: str = "") -> None:
     """On the desktop and the phones; with a `person` who has attached
-    phones (core/identities.py), only on theirs."""
+    phones (core/identities.py), only on theirs. With a `conversation`, a tap
+    on the phone's notice opens that chat."""
     try:
         from ..phone import flux_notify
         from . import identities
         flux_notify.send(title[:120], body[:400],  # and on the phone, through Flux
-                         devices=identities.phones(person) or None)
+                         devices=identities.phones(person) or None, conversation=conversation)
     except Exception:  # noqa: BLE001 -- the desktop notification must still go out
         log.debug("flux notify unavailable", exc_info=True)
     try:
