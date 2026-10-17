@@ -389,6 +389,17 @@ request, or automatically when the assistant keeps failing at something.
   for your OK; HIGH (root, credential access, deleting significant data)
   needs a real click; BLOCKED (disk erase, `rm -rf ~`, reverse shells) is
   refused. Code changes get a git checkpoint so they can be rolled back.
+- **Sandboxed commands.** Below HIGH, commands and the assistant's own
+  tools run in a [bubblewrap](https://github.com/containers/bubblewrap)
+  sandbox (`runtime/sandbox.py`): the system read-only, writes only to the
+  task's workspace, `/tmp`, caches and the paths the command names (plus
+  approved config paths at ELEVATED); `~/.ssh`, `~/.gnupg`, keyrings,
+  browser profiles and the assistant's own keys hidden; desktop sockets
+  (Wayland, Hyprland, PipeWire, a filtered D-Bus) only for the programs
+  that need them. HIGH commands run unsandboxed after your tap. Setting:
+  `sandbox_commands: false` in `~/.config/omarchy-ai/config.yaml` turns it
+  off (default on); without `bwrap` commands run unsandboxed and a warning
+  is logged.
 - **Approvals you can't miss.** A task waiting for you wakes the assistant
   to say which task, what exactly it wants to run and why that needs
   approval. Ask what it changes and it reads you the pending diff, commits
@@ -517,7 +528,10 @@ About 90 typed tools plus Omarchy's full command set:
   (a folder with `tool.json`, `run` and `test`, checked and staged with
   `omarchy-ai-tool`). Nothing is installed without your approval; approval
   pins every file's hash, and the new tool is usable in the same
-  conversation.
+  conversation. A tool runs sandboxed with the MyApi vault and the
+  network; its `tool.json` can ask for more with
+  `"sandbox": {"needs": ["assistant_keys", "desktop"]}` or opt out with
+  `"sandbox": false` (both part of what you approve).
 - **Skills.** A procedure that worked is saved as a named skill (`SKILL.md`
   under `~/.config/omarchy-ai/skills/`) and rewritten when it turns out
   wrong; Jev suggests the matching skill, or none.

@@ -11,7 +11,7 @@ fi
 # fully working tool. setup.sh has its own command -v-based check that
 # installs it via astral's script only if it's genuinely absent.
 packages=(python android-tools gst-plugins-bad gst-plugins-good qrencode
-  python-gobject pipewire-audio pipewire-pulse libpulse)
+  python-gobject pipewire-audio pipewire-pulse libpulse bubblewrap xdg-dbus-proxy)
 missing=()
 for package in "${packages[@]}"; do
   pacman -Q "$package" >/dev/null 2>&1 || missing+=("$package")
