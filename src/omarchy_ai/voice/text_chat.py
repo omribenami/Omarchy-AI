@@ -26,6 +26,7 @@ import logging
 import subprocess
 import time
 
+from ..core import logs
 from . import extensions
 
 log = logging.getLogger("omarchy_ai.voice.text_chat")
@@ -187,6 +188,7 @@ class TextChat:
                 self._schedule_push()
                 continue
             adapter._transcript.append({"role": "user", "text": text})
+            adapter._turn_id = logs.new_id()  # each typed line is a user turn (core/logs.py)
             adapter._capture_password(text)
             adapter._input_guard.heard_user(text)
             # A typed line is the user answering: announcements said before
@@ -209,6 +211,7 @@ class TextChat:
 
         from ..core import identities
         adapter = GeminiLiveSession(self.config)
+        logs.set_ids(session_id=adapter._audit_session)  # this task's log lines (core/logs.py)
         # Typed at this computer: its owner (core/identities.py), no voice match needed.
         adapter.known_identity = identities.Identity(identities.owner(), "typed")
         # No saved conversation here: the channel says where the user is (core/origin.py).

@@ -270,14 +270,23 @@ def ssh_terminal_command(command: str) -> str:
 
 class RedactingFilter(logging.Filter):
     """Masks saved passwords in every log record (the daemon logs tool calls
-    with their arguments)."""
+    with their arguments). It is on every sink (core/logs.py); a record is
+    masked once, by the first sink's filter, and the others see it masked.
+    A traceback is masked too."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if getattr(record, "omarchy_redacted", False):
+            return True
         try:
             message = record.getMessage()
             masked = redact(message)
             if masked != message:
                 record.msg, record.args = masked, None
+            if record.exc_info and not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = redact(record.exc_text)
+            record.omarchy_redacted = True
         except Exception:  # noqa: BLE001 -- logging must never fail
             pass
         return True

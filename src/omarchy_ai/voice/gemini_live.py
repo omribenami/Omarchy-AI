@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 import numpy as np
 from .. import myapi
-from ..core import alert_clips, identities, quota, updates
+from ..core import alert_clips, identities, logs, quota, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
@@ -381,6 +381,10 @@ class GeminiLiveSession:
         # cancel/await them instead of leaking a bare create_task().
         self._bg_tasks: set[asyncio.Task] = set()
         self._audit_session = uuid.uuid4().hex
+        # The user's latest words, for log correlation (core/logs.py): a new
+        # turn starts with the first words heard after her turn ended.
+        self._turn_id: str | None = None
+        self._turn_open = False
         self.on_connected = None
         self.on_message = None
         # Session-scoped capabilities (for example phone-chat file sharing).
@@ -437,6 +441,8 @@ class GeminiLiveSession:
                     if transcription and transcription.text:
                         self._transcript.append({"role": role, "text": transcription.text})
                         if role == "user":
+                            if not self._turn_open:
+                                self._turn_id, self._turn_open = logs.new_id(), True
                             self._last_user_speech = time.monotonic()
                             # Her own voice leaking back is transcribed as the
                             # user ("Sure." right after she said it, 2026-09-23).
@@ -465,6 +471,7 @@ class GeminiLiveSession:
                             if taken:
                                 self._utterance = []  # an extension took these words: none for the fast path
                 if server.interrupted or server.turn_complete:
+                    self._turn_open = False
                     self._replied()
                 if server.interrupted:
                     self._interruptions += 1
@@ -1327,6 +1334,12 @@ class GeminiLiveSession:
         return verdict
 
     async def _run_call(self, session, call) -> None:
+        # Its log lines, and its tool's (worker included), carry these (core/logs.py).
+        with logs.bind(session_id=getattr(self, "_audit_session", None), turn_id=getattr(self, "_turn_id", None),
+                       tool_call_id=call.id):
+            await self._run_call_bound(session, call)
+
+    async def _run_call_bound(self, session, call) -> None:
         from google.genai import types
         self._as_speaker()  # checked at each call: the speaker can change mid-session
         original_request = self._switchboard_context().request
