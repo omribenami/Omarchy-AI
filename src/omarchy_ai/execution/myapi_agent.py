@@ -27,6 +27,7 @@ import logging
 import re
 import time
 
+from ..core import retry
 from .actions import ActionResult
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,9 @@ MAX_OPTIONS = 250
 PICK_P = 0.5
 ARGS_P = 0.7
 _CACHE_SECONDS = 15 * 60
+# A read step that fails transiently (MyApi or the service unreachable, 429,
+# 5xx, a timeout) is tried again after ~1 s, then ~2 s (core/retry.py).
+READ_RETRY = retry.Policy(attempts=3, base=1.0, factor=2.0)
 _cache: dict[str, tuple[float, object]] = {}
 
 # A method is a read only when its name says so and nothing in it writes;
@@ -206,7 +210,6 @@ def _writes(name: str, method: dict, args: dict) -> bool:
 def _call(service: str, method: str, args: dict, origin: str = "") -> ActionResult:
     """One step. With origin (a prepared action the user approved) it is a
     write: journaled and sent at most once for that origin (core/effects.py)."""
-    from .actions import _myapi_execute
     if service == "gmail" and method in ("GMAIL_FETCH_EMAILS", "GMAIL_LIST_THREADS") and args.get("query"):
         # Finding mail goes through the search that relaxes human words and keeps
         # Gmail's filters (live 2026-09-30: "Chris Watson flooring quote" as a
@@ -228,7 +231,21 @@ def _call(service: str, method: str, args: dict, origin: str = "") -> ActionResu
         from .actions.myapi_tools import myapi_write_execute
         with effects.origin(origin):
             return myapi_write_execute(service, method, args)
-    return _myapi_execute(service, method, args)
+    return _read(service, method, args)
+
+
+def _read(service: str, method: str, args: dict) -> ActionResult:
+    """A read step, retried by core/retry.py's policy when the failure is
+    transient. The myapi tool's cancel token (its deadline, the user's stop)
+    ends the retries."""
+    from .. import myapi
+    from .actions.myapi_tools import myapi_execute_request
+    try:
+        result = retry.run(lambda: myapi_execute_request(service, method, args), effect_class=retry.READ,
+                           policy=READ_RETRY, name=f"myapi {method}")
+    except myapi.MyApiError as exc:
+        return ActionResult(False, f"MyApi action failed: {exc}")
+    return ActionResult(True, json.dumps(result))
 
 
 # -- the steps -----------------------------------------------------------------

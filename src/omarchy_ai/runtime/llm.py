@@ -35,9 +35,13 @@ import tempfile
 import threading
 import time
 
+from ..core import retry
+
 log = logging.getLogger(__name__)
 
-_TRANSIENT = re.compile(r"HTTP (429|500|502|503|504|529)\b|timed out|temporarily unavailable|unavailable", re.I)
+# A transient API failure is retried by core/retry.py's policy within the
+# call's deadline: ~0.8 s, then ~1.6 s.
+_API_RETRY = retry.Policy(base=0.8, factor=2.0)
 
 
 class WorkerModelError(RuntimeError):
@@ -198,8 +202,9 @@ class WorkerModel:
                     models.report_unavailable(model)
                     swapped = True
                     continue
-                if attempt < retries and _TRANSIENT.search(last_error):
-                    time.sleep(min(0.8 * 2 ** attempt, max(0, deadline - time.monotonic())))
+                failure = retry.classify(exc)
+                if attempt < retries and retry.should_retry(failure.kind, retry.READ) and \
+                        _API_RETRY.wait(attempt, failure, deadline=deadline):
                     attempt += 1
                     continue
                 raise WorkerModelError(last_error) from exc

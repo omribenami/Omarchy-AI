@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from omarchy_ai.core import agenda, schedule
+from omarchy_ai.core import agenda, retry, schedule
 from omarchy_ai.execution import actions
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.verified_input import writes_externally
@@ -67,7 +67,7 @@ class ActionTests(unittest.TestCase):
         patch.object(agenda, "JOBS_PATH", base / "agenda.json").start()
         patch.object(agenda, "INBOX_PATH", base / "inbox.jsonl").start()
         patch.object(agenda, "_registry", return_value=REGISTRY).start()
-        patch.object(agenda, "STEP_RETRY_DELAYS", (0.0, 0.0)).start()
+        patch.object(agenda, "STEP_RETRY", retry.Policy(base=0.0, jitter=0.0)).start()
         self.notify = patch.object(agenda, "notify").start()
         patch.object(agenda, "_refresh_routines_hud").start()
         self.run_action = patch("omarchy_ai.execution.actions.run_action").start()

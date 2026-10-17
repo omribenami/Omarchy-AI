@@ -37,6 +37,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from ..config import MYAPI_IDENTITY_PATH
+from ..core.retry import retry_after_seconds
 
 log = logging.getLogger("omarchy_ai.myapi")
 
@@ -65,14 +66,22 @@ class MyApiError(Exception):
 
     maybe_sent is set when the request may have reached MyApi although no
     answer came back (a timeout, a dropped connection): a write may then
-    have happened, and core/effects.py does not send it again."""
+    have happened, and core/effects.py does not send it again.
+
+    status (the HTTP status MyApi answered with), retry_after (its
+    Retry-After, in seconds) and transport (no answer came back at all) let
+    core/retry.py tell a transient failure from one that would recur."""
 
     def __init__(self, message: str, *, reconnect_needed: bool = False, details: object = None,
-                 maybe_sent: bool = False) -> None:
+                 maybe_sent: bool = False, status: int | None = None, retry_after: float | None = None,
+                 transport: bool = False) -> None:
         super().__init__(message)
         self.reconnect_needed = reconnect_needed
         self.details = details
         self.maybe_sent = maybe_sent
+        self.status = status
+        self.retry_after = retry_after
+        self.transport = transport
 
 
 def _never_sent(reason: object) -> bool:
@@ -231,18 +240,22 @@ class MyApiClient:
             data_error = parsed.get("data", {}).get("error", {}) if isinstance(parsed.get("data"), dict) else {}
             if isinstance(data_error, dict) and data_error.get("errors"):
                 message = f"{message}: " + "; ".join(map(str, data_error["errors"]))
-            raise MyApiError(message, reconnect_needed=e.code in (401, 403), details=parsed) from e
+            raise MyApiError(message, reconnect_needed=e.code in (401, 403), details=parsed, status=e.code,
+                             retry_after=retry_after_seconds(e.headers.get("Retry-After") if e.headers else None)
+                             ) from e
         except urllib.error.URLError as e:
             raise MyApiError(f"could not reach myapiai.com: {e.reason}",
-                             maybe_sent=not _never_sent(e.reason)) from e
+                             maybe_sent=not _never_sent(e.reason), transport=True) from e
         # Real session 2026-09-28 17:29 (phone): a Gmail fetch timed out while
         # reading the response body. urlopen only wraps connect-time errors in
         # URLError, so the bare TimeoutError escaped every `except MyApiError`
         # and the action was reported as "crashed" instead of a retryable miss.
         except TimeoutError as e:
-            raise MyApiError(f"myapiai.com did not answer within {_TIMEOUT}s; try again", maybe_sent=True) from e
+            raise MyApiError(f"myapiai.com did not answer within {_TIMEOUT}s; try again", maybe_sent=True,
+                             transport=True) from e
         except OSError as e:
-            raise MyApiError(f"connection to myapiai.com failed: {e}", maybe_sent=not _never_sent(e)) from e
+            raise MyApiError(f"connection to myapiai.com failed: {e}", maybe_sent=not _never_sent(e),
+                             transport=True) from e
         if not raw:
             return {}
         try:

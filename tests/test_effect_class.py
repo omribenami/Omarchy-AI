@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from fakes.myapi_server import FakeMyApi, fake_identity
-from omarchy_ai.core import agenda, effects
+from omarchy_ai.core import agenda, effects, retry
 from omarchy_ai.execution import actions, tools
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.catalog import USE_TOOL
@@ -79,7 +79,7 @@ class AgendaRetryTests(unittest.TestCase):
         for target, value in (
             ("JOBS_PATH", base / "agenda.json"),
             ("INBOX_PATH", base / "inbox.jsonl"),
-            ("STEP_RETRY_DELAYS", (0.0, 0.0)),
+            ("STEP_RETRY", retry.Policy(base=0.0, jitter=0.0)),
         ):
             patcher = mock.patch.object(agenda, target, value)
             patcher.start()

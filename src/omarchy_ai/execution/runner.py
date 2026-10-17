@@ -54,6 +54,7 @@ import threading
 import time
 from typing import Any, AsyncIterator, Callable
 
+from ..core import retry
 from ..core.cancel import CURRENT, Cancelled, CancelToken, checkpoint, current
 from . import tools
 
@@ -440,7 +441,10 @@ class ToolRunner:
                 False,
                 _stopped_message(tool, error_class, reason, call.deadline),
                 error_class,
-                tool.reads,
+                retry.should_retry(
+                    retry.TIMEOUT if error_class == TIMEOUT else retry.CANCELLED,
+                    tool.effect_class,
+                ),
                 effect_id,
                 duration,
             )
@@ -449,7 +453,7 @@ class ToolRunner:
                 False,
                 _stopped_message(tool, WORKER_LOST, "", call.deadline),
                 WORKER_LOST,
-                tool.reads,
+                retry.should_retry(retry.TRANSPORT, tool.effect_class),
                 effect_id,
                 duration,
             )

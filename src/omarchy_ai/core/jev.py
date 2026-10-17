@@ -26,6 +26,8 @@ import re
 import threading
 import time
 
+from . import retry
+
 log = logging.getLogger(__name__)
 
 
@@ -34,6 +36,8 @@ class JevError(RuntimeError):
 
 
 _TRANSIENT = re.compile(r"HTTP (429|500|502|503|504|529)\b|timed out|temporarily unavailable", re.I)
+# A transient failure is retried by core/retry.py's policy: ~0.6 s, then ~1.2 s.
+_RETRY = retry.Policy(base=0.6, factor=2.0)
 _ROUNDING = 0.01 + 1e-9  # one step of Gateway's 2-decimal rounding
 
 
@@ -183,8 +187,9 @@ class Jev:
             except Exception as exc:
                 # TypeSafe asks for backoff on 429/529; Gateway also returned
                 # a transient 503 in a real heartbeat run (2026-09-22).
-                if attempt < retries and _TRANSIENT.search(str(exc)):
-                    time.sleep(0.6 * 2 ** attempt)
+                failure = retry.classify(exc)
+                if attempt < retries and retry.should_retry(failure.kind, retry.READ) and \
+                        _RETRY.wait(attempt, failure):
                     continue
                 if _DOWN.search(str(exc)):
                     BREAKER.failure()
