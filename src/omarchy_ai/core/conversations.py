@@ -437,10 +437,14 @@ ACTION = "action:"
 
 
 def _card_status(card: dict, tasks) -> str:
-    if card.get("kind") == "confirm":
+    if card.get("kind") in ("confirm", "uncertain"):
+        # confirm: waits for Send or Cancel until it expires; uncertain (it may
+        # have been sent, core/pending_actions.py): for check, resend or drop.
         from . import pending_actions
         action = pending_actions.get((card.get("action") or {}).get("id"))
-        return "waiting" if action and action.get("status") == "waiting" else "done"
+        if not action or action.get("status") != ("waiting" if card["kind"] == "confirm" else "uncertain"):
+            return "done"
+        return "done" if pending_actions.expired(action) else "waiting"
     if str(card.get("task_id", "")).startswith(ACTION):
         return "done"
     if str(card.get("task_id", "")).startswith(TOOL_INSTALL):
@@ -471,9 +475,12 @@ def _with_status(conv: dict, tasks) -> list[dict]:
             line["status"] = "done"
         elif line.get("role") == "card":
             line["status"] = _card_status(line, tasks) if latest.get(line.get("task_id")) == i else "done"
-            if line.get("kind") == "confirm":
+            if line.get("kind") in ("confirm", "uncertain"):
                 from . import pending_actions
-                line["outcome"] = (pending_actions.get((line.get("action") or {}).get("id")) or {}).get("outcome", "")
+                action = pending_actions.get((line.get("action") or {}).get("id")) or {}
+                line["outcome"] = action.get("outcome", "")
+                if action and line["kind"] == "confirm":
+                    line["expires_at"] = pending_actions.expires_at(action)
     # Events are hints, not the source of truth: another runtime process or
     # a restart can leave the conversation cache without the final event.
     # Project persisted task state on every read, without rewriting history.

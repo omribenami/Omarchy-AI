@@ -425,6 +425,10 @@ def task_respond(args: dict) -> ActionResult:
     if task_id and task_id.startswith("action:"):
         # A prepared MyApi action (execution/myapi_agent.py): the user's yes in its chat sends it.
         from ..execution import myapi_agent
+        if args.get("answer") in myapi_agent.CHOICES:
+            # One that may already have been sent (core/pending_actions.py): check, resend or drop.
+            ok, message = myapi_agent.resolve(task_id[len("action:"):], args["answer"], "by voice in the chat")
+            return ActionResult(ok, message)
         if approve is None:
             return ActionResult(False, "Answer the prepared action with approve=true (send it) or false (cancel).")
         ok, message = myapi_agent.decide(task_id[len("action:"):], approve, "by voice in the chat")
@@ -463,7 +467,7 @@ def _in_this_conversation(runtime, task_id):
     installs = [line for line in (conversations.get(current) or {}).get("lines", [])
                 if line.get("role") == "card" and line.get("status") == "waiting"
                 and (str(line.get("task_id", "")).startswith(conversations.TOOL_INSTALL)
-                     or line.get("kind") == "confirm")]
+                     or line.get("kind") in ("confirm", "uncertain"))]
     if len(waiting) + len(installs) == 1:
         return (waiting[0].id if waiting else installs[0]["task_id"]), None
     if not waiting and not installs:
