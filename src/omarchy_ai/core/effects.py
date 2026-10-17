@@ -62,7 +62,7 @@ from typing import Any, Callable, Iterator, TypeVar
 import uuid
 
 from .. import config
-from . import cancel, statefile
+from . import cancel, logs, statefile
 from .crashpoints import crashpoint
 
 log = logging.getLogger("omarchy_ai.core.effects")
@@ -196,6 +196,9 @@ def _journal(entry: dict, key: str, note: str = "") -> None:
         record["result"] = canonical(result)[:600]
     if note:
         record["note"] = note
+    ids = logs.current()  # the session, turn, tool call or task it came from
+    if ids:
+        record["log"] = ids
     try:
         statefile.append_jsonl(journal_path(), json.dumps(record, ensure_ascii=False))
     except OSError:
@@ -545,23 +548,27 @@ def perform(
     if token is not None:
         token.effect_ids.append(effect.effect_id)
         token.on_cancel(functools.partial(_abandon, key, token))
-    try:
-        crashpoint("effects.before_dispatch")
-        if not _dispatching(key, token):
-            raise cancel.Cancelled(token.reason if token is not None else "cancelled")
+    # Log lines while it is dispatched carry its effect_id (core/logs.py).
+    with logs.bind(effect_id=effect.effect_id):
         try:
-            result = dispatch(key)
-        except Uncertain as exc:
+            crashpoint("effects.before_dispatch")
+            if not _dispatching(key, token):
+                raise cancel.Cancelled(
+                    token.reason if token is not None else "cancelled"
+                )
+            try:
+                result = dispatch(key)
+            except Uncertain as exc:
+                crashpoint("effects.after_dispatch_before_record")
+                _set(key, UNCERTAIN, store(exc.result), "no answer came back")
+                crashpoint("effects.after_record")
+                return exc.result
+            except Exception as exc:
+                _set(key, UNCERTAIN, None, f"{type(exc).__name__}: {str(exc)[:200]}")
+                raise
             crashpoint("effects.after_dispatch_before_record")
-            _set(key, UNCERTAIN, store(exc.result), "no answer came back")
+            _finish(key, CONFIRMED if is_ok(result) else FAILED, store(result), token)
             crashpoint("effects.after_record")
-            return exc.result
-        except Exception as exc:
-            _set(key, UNCERTAIN, None, f"{type(exc).__name__}: {str(exc)[:200]}")
-            raise
-        crashpoint("effects.after_dispatch_before_record")
-        _finish(key, CONFIRMED if is_ok(result) else FAILED, store(result), token)
-        crashpoint("effects.after_record")
-        return result
-    finally:
-        _done(key)
+            return result
+        finally:
+            _done(key)

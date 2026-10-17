@@ -54,7 +54,7 @@ import threading
 import time
 from typing import Any, AsyncIterator, Callable
 
-from ..core import retry
+from ..core import logs, retry
 from ..core.cancel import CURRENT, Cancelled, CancelToken, checkpoint, current
 from . import tools
 
@@ -178,6 +178,8 @@ class _Call:
         self.spec = spec
         self.owner = owner
         self.tag = tag
+        # The model's call id when it has one: the log correlation ID (core/logs.py).
+        self.tool_call_id = str(tag) if tag else logs.new_id()
         self.deadline = deadline
         self.token = CancelToken()
         self.started = time.monotonic()
@@ -387,7 +389,9 @@ class ToolRunner:
 
         with self._lock:
             self._running.add(call)
-        _threads.submit(contextvars.copy_context(), body)
+        context = contextvars.copy_context()
+        context.run(logs.set_ids, tool_call_id=call.tool_call_id)
+        _threads.submit(context, body)
         return call
 
     def _route(
@@ -426,6 +430,22 @@ class ToolRunner:
         return routed
 
     def _result(self, call: _Call) -> ToolResult:
+        result = self._outcome(call)
+        logs.tool_result(
+            call.spec.name,
+            ok=result.ok,
+            error_class=result.error_class,
+            duration=result.duration,
+            tool_call_id=call.tool_call_id,
+            effect_id=result.effect_id,
+            effect_class=call.spec.effect_class,
+            deadline_s=call.deadline,
+            worker=call.spec.worker and self.pool is not None,
+            retriable=result.retriable,
+        )
+        return result
+
+    def _outcome(self, call: _Call) -> ToolResult:
         with self._lock:
             self._running.discard(call)
         tool, token = call.spec, call.token
@@ -510,7 +530,11 @@ class _Worker:
             stdout=subprocess.PIPE,
             start_new_session=True,
             bufsize=0,
-            env={**os.environ, "OMARCHY_WORKER_LOG_LEVEL": str(level)},
+            env={
+                **os.environ,
+                "OMARCHY_WORKER_LOG_LEVEL": str(level),
+                **logs.worker_env(),
+            },
         )
         self._buffer = b""
 
@@ -679,6 +703,7 @@ class WorkerPool:
             "args": args,
             "origin": effects.ORIGIN.get(),
             "conversation": conversations.CURRENT.get(),
+            "log": logs.current(),  # the call's IDs, for the worker's log lines
         }
         try:
             worker.send(request)

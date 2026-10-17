@@ -1016,6 +1016,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"sdp": answer_sdp, "conversation_id": conversation})
 
     def _handle_tool(self) -> None:
+        from ..core import logs
+        with logs.bind(session_id=None, turn_id=None):  # what it binds ends with the request
+            self._handle_tool_bound()
+
+    def _handle_tool_bound(self) -> None:
         try:
             data = self._read_json_body()
             name = data["name"]
@@ -1023,6 +1028,9 @@ class _Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, KeyError):
             self._send_json(400, {"error": "expected {\"name\": \"...\", \"arguments\": {...}}"})
             return
+        from ..core import logs
+        # This request's thread: its log lines carry the phone conversation (core/logs.py).
+        logs.set_ids(session_id=str(data.get("conversation_id") or "phone-bridge"), turn_id=None)
         log.info("phone bridge tool call: %s(%s)", name, args)
         if name == "share_file":
             from ..core import conversations

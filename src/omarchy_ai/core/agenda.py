@@ -42,7 +42,7 @@ import time
 import uuid
 
 from ..config import STATE_DIR
-from . import retry, schedule, statefile
+from . import logs, retry, schedule, statefile
 from .jev import Jev, JevError, boolean, choice
 
 log = logging.getLogger("omarchy_ai.core.agenda")
@@ -768,7 +768,8 @@ def _run_action(job, now, jev):
     _update(job["id"], started_at=now, next_run=schedule.next_run(job["schedule"], now))
     results, failed = [], None
     for number, step in enumerate(job["steps"], 1):
-        result, why, attempts = _call(step, f"agenda:{job['id']}:{now}:{number}", job["id"])
+        with logs.bind(step_id=number):
+            result, why, attempts = _call(step, f"agenda:{job['id']}:{now}:{number}", job["id"])
         line = {"tool": step["tool"], "ok": why is None, "result": result.message[:600], "attempts": attempts}
         results.append(line)
         log.info("agenda: %s step %d/%d %s -> %s%s", job["id"], number, len(job["steps"]), step["tool"],
@@ -915,6 +916,12 @@ def _missed(job: dict, now: float) -> bool:
 
 def run_job(job: dict, jev: Jev | None = None, now: float | None = None) -> None:
     now = time.time() if now is None else now
+    # This run's log lines (core/logs.py); the pool thread starts with none bound.
+    with logs.bind(run_id=f"{job.get('id')}@{now:.0f}", task_id=None, step_id=None):
+        _run_job(job, jev, now)
+
+
+def _run_job(job: dict, jev: Jev | None, now: float) -> None:
     from . import identities
     # It runs as whoever asked for it (MyApi is the owner's: core/identities.py).
     token = identities.set_current(identities.Identity(job.get("requester"), job.get("requester_how")))

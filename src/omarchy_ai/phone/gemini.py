@@ -152,6 +152,8 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
     # over the LAN or Tailscale, where host candidates are all that is used.
     peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     adapter = GeminiLiveSession(config)
+    from ..core import logs
+    logs.set_ids(session_id=adapter._audit_session)  # this call's log lines (core/logs.py)
     adapter._splice_abort_rms = PHONE_SPLICE_ABORT_RMS
     adapter.from_paired_phone = True  # only started for a paired session (/api/live/offer)
     adapter.channel = 'phone-voice'  # core/origin.py, when there is no conversation to say it

@@ -682,6 +682,8 @@ class Satellite:
         # them in the conversation the user started.
         waiting, self._waiting = self._waiting, []
         adapter = GeminiLiveSession(self.config, announcements=waiting if proactive else None)
+        from ..core import logs
+        logs.set_ids(session_id=adapter._audit_session)  # this task's log lines (core/logs.py)
         for entry in [] if proactive else waiting:
             adapter.announce(entry)
         adapter.on_message = self._on_message
