@@ -357,14 +357,8 @@ ACTIONS.update(desktop_task=desktop_task, search_os_knowledge=search_os_knowledg
                task_respond=_task_tool("task_respond"))
 
 
-def run_action(name: str, args: dict) -> ActionResult:
-    fn = ACTIONS.get(name)
-    if fn is None:
-        from .. import user_tools
-        if user_tools.exists(name):
-            return user_tools.run(name, args)
-        log.error("no such action: %s", name)
-        return ActionResult(False, f"unknown action '{name}'")
+def myapi_refused(name: str) -> ActionResult | None:
+    """The refusal when the current identity may not use this MyApi tool."""
     if name == "myapi" or name.startswith("myapi_"):
         # The owner's account (core/identities.py), checked at each call: the
         # voice speaking can change in the middle of a conversation.
@@ -373,6 +367,20 @@ def run_action(name: str, args: dict) -> ActionResult:
         if refusal:
             log.info("refused %s for %s", name, identities.current())
             return ActionResult(False, refusal)
+    return None
+
+
+def run_action(name: str, args: dict) -> ActionResult:
+    fn = ACTIONS.get(name)
+    if fn is None:
+        from .. import user_tools
+        if user_tools.exists(name):
+            return user_tools.run(name, args)
+        log.error("no such action: %s", name)
+        return ActionResult(False, f"unknown action '{name}'")
+    refused = myapi_refused(name)
+    if refused is not None:
+        return refused
     try:
         return fn(args)
     except Exception:  # noqa: BLE001

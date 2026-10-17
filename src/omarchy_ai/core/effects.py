@@ -28,6 +28,11 @@ What a second call with the same key gets:
 - `proposed` whose process is gone (it died before dispatching): it runs.
 - in flight in a live process: it waits for that result (up to `wait`).
 
+A call cancelled by its deadline or by the user (core/cancel.py, set by
+execution/runner.py) never ends `confirmed`: what it dispatched becomes
+`uncertain` (the caller was told nothing was confirmed), and what it had not
+yet dispatched is not sent and ends `failed`.
+
 States: proposed -> dispatched -> confirmed | failed | uncertain.
 
 Storage, under STATE_DIR (core/statefile.py: flock + atomic writes):
@@ -44,6 +49,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import contextvars
+import functools
 from dataclasses import dataclass
 import hashlib
 import json
@@ -56,7 +62,7 @@ from typing import Any, Callable, Iterator, TypeVar
 import uuid
 
 from .. import config
-from . import statefile
+from . import cancel, statefile
 from .crashpoints import crashpoint
 
 log = logging.getLogger("omarchy_ai.core.effects")
@@ -414,6 +420,50 @@ def _set(key: str, state: str, result: dict | None = None, note: str = "") -> No
         _journal(entry, key, note)
 
 
+def _dispatching(key: str, token: cancel.CancelToken | None) -> bool:
+    """proposed -> dispatched, unless the call was cancelled first (then
+    failed: it never went out). Under the index lock, so a cancel is seen
+    either before this or as `dispatched` by _abandon."""
+    with _index() as doc:
+        entry = _entries(doc.data).get(key)
+        if not isinstance(entry, dict):
+            return token is None or not token.cancelled
+        if token is not None and token.cancelled:
+            entry.update(state=FAILED, updated=time.time())
+            _journal(entry, key, f"stopped before it was sent ({token.reason})")
+            return False
+        entry.update(state=DISPATCHED, updated=time.time())
+        _journal(entry, key)
+        return True
+
+
+def _finish(
+    key: str, state: str, result: dict | None, token: cancel.CancelToken | None
+) -> None:
+    """The final state, or uncertain when the call was cancelled meanwhile."""
+    with _index() as doc:
+        entry = _entries(doc.data).get(key)
+        if not isinstance(entry, dict):
+            return
+        note = ""
+        if token is not None and token.cancelled:
+            state, note = UNCERTAIN, f"stopped while it ran ({token.reason})"
+        entry.update(state=state, updated=time.time())
+        if result is not None:
+            entry["result"] = result
+        _journal(entry, key, note)
+
+
+def _abandon(key: str, token: cancel.CancelToken) -> None:
+    """The call this effect belongs to was cancelled (deadline, stop): the
+    caller was told nothing was confirmed, so neither may the journal be."""
+    with _index() as doc:
+        entry = _entries(doc.data).get(key)
+        if isinstance(entry, dict) and entry.get("state") in (DISPATCHED, CONFIRMED):
+            entry.update(state=UNCERTAIN, updated=time.time())
+            _journal(entry, key, f"its call was stopped ({token.reason})")
+
+
 def _done(key: str) -> None:
     with _lock:
         event = _inflight.pop(key, None)
@@ -491,9 +541,14 @@ def perform(
         if time.monotonic() >= deadline:
             return unsure(effect, IN_PROGRESS)
         _wait(key, effect, deadline)
+    token = cancel.current()
+    if token is not None:
+        token.effect_ids.append(effect.effect_id)
+        token.on_cancel(functools.partial(_abandon, key, token))
     try:
         crashpoint("effects.before_dispatch")
-        _set(key, DISPATCHED)
+        if not _dispatching(key, token):
+            raise cancel.Cancelled(token.reason if token is not None else "cancelled")
         try:
             result = dispatch(key)
         except Uncertain as exc:
@@ -505,7 +560,7 @@ def perform(
             _set(key, UNCERTAIN, None, f"{type(exc).__name__}: {str(exc)[:200]}")
             raise
         crashpoint("effects.after_dispatch_before_record")
-        _set(key, CONFIRMED if is_ok(result) else FAILED, store(result))
+        _finish(key, CONFIRMED if is_ok(result) else FAILED, store(result), token)
         crashpoint("effects.after_record")
         return result
     finally:
