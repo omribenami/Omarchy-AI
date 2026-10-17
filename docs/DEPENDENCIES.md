@@ -11,7 +11,9 @@ packages, PipeWire, GStreamer, or an Android SDK.
 `scripts/install-dependencies.sh`, then runs the dependency checks and locked
 Python setup. It includes `pipewire-audio` (WebRTC echo/noise processor),
 `pipewire-pulse` and `libpulse` (`pactl`), `uv`, `python-gobject`, GStreamer,
-`android-tools`, and `qrencode`. The Google GenAI SDK is installed from
+`android-tools`, `qrencode`, and `bubblewrap` with `xdg-dbus-proxy` (the command
+sandbox, `runtime/sandbox.py`; without them commands run unsandboxed with a
+warning). The Google GenAI SDK is installed from
 `uv.lock`. No API keys or personal settings are included in the release.
 
 Desktop Gemini creates session-owned echo/noise cancellation devices;

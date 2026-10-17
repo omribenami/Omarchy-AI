@@ -106,6 +106,18 @@ def _is_fake(program: str, env) -> bool:
 
 def check(args, shell: bool = False, env=None) -> None:
     """Raise LiveDesktopCall if ``args`` would run a real desktop or device binary."""
+    if (
+        isinstance(args, (list, tuple))
+        and args
+        and os.path.basename(os.fsdecode(args[0])) == "bwrap"
+        and "--" in args
+    ):
+        # The sandbox (runtime/sandbox.py) runs harmless commands for real in
+        # tests; what it runs inside is checked like any other command.
+        inner = list(args[list(args).index("--") + 1 :])
+        if inner:
+            check(inner, env=env)
+        return
     program = _program(args, shell)
     name = os.path.basename(program)
     if (name in DESKTOP_BINARIES or name.startswith("omarchy-")) and not _is_fake(

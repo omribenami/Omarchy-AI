@@ -913,15 +913,23 @@ class WorkContextImpl:
             # The user just approved this exact install; the CLI must not ask twice.
             from ..execution.user_tools import APPROVED_ENV
             env[APPROVED_ENV] = installs[0]
+        # Second layer (runtime/sandbox.py): what the command may read and
+        # write follows the risk it was allowed at; HIGH (a human tap) runs as is.
+        from . import sandbox
+        policy = sandbox.for_command(command, assessment.risk, cwd=cwd, workspace=self.task.workspace,
+                                     writes=assessment.writes)
+
         def execute(_key: str = "") -> shell.CommandResult:
             return shell.run(run_as, cwd, timeout=min(max(timeout, 1), 3600), stdin_text=stdin_text, cancel=event,
-                             output_dir=self.runtime.store.dir / self.task.id, env=env)
+                             output_dir=self.runtime.store.dir / self.task.id, env=env, sandbox=policy)
 
         if assessment.risk >= Risk.ELEVATED:
             result = self._journaled_command(command, cwd, execute)
         else:
             result = execute()
         result.output = passwords.redact(result.output)  # e.g. a vault token a command printed
+        if not result.ok and (hint := sandbox.explain_failure(result.output, policy)):
+            result.output = f"{result.output.rstrip()}\n{hint}"
         data = result.as_dict()
         record.update(exit_code=result.exit_code, timed_out=result.timed_out, duration=round(result.duration, 2),
                       output=result.output[-3000:], full_output_path=result.full_output_path)

@@ -59,6 +59,10 @@ class Assessment:
     # Asks the user whatever task_auto_approve says (installing a tool the
     # assistant wrote itself: the user wanted every one approved).
     always_ask: bool = False
+    # Paths the command names as write targets (redirects, cp/mv/mkdir/tee...,
+    # the parent of a deleted path): the sandbox makes these writable
+    # (runtime/sandbox.py); everything else outside the workspace stays read-only.
+    writes: list[Path] = field(default_factory=list)
 
     def raise_to(self, risk: Risk, reason: str) -> None:
         if risk > self.risk:
@@ -72,6 +76,7 @@ class Assessment:
         if other.risk > self.risk:
             self.risk = other.risk
         self.always_ask = self.always_ask or other.always_ask
+        self.writes.extend(w for w in other.writes if w not in self.writes)
 
     def as_dict(self) -> dict:
         return {"risk": self.risk.name, "reasons": self.reasons[:6], **({"always_ask": True} if self.always_ask else {})}
@@ -600,7 +605,9 @@ def _classify_one(sub: str, cwd: Path, scope: Scope) -> Assessment:
     for target in _redirect_targets(sub):
         if target.startswith("&"):
             continue
-        risk, why = write_risk(scope.resolve(target, cwd), scope)
+        path = scope.resolve(target, cwd)
+        result.writes.append(path)
+        risk, why = write_risk(path, scope)
         result.raise_to(risk, why or ("writes a file" if risk > Risk.LOW else ""))
     raw = _tokens(re.sub(r"(?:[0-9]|&)?>>?\|?\s*[^\s;&|<>]+|<\s*[^\s;&|<>]+", " ", sub))
     tokens, wrappers = unwrap(raw)
@@ -639,7 +646,9 @@ def _classify_one(sub: str, cwd: Path, scope: Scope) -> Assessment:
             for t in targets:
                 if word == "gio" and t in ("remove", "trash"):
                     continue
-                risk, why = write_risk(scope.resolve(t, cwd), scope, delete=True, recursive=recursive)
+                path = scope.resolve(t, cwd)
+                result.writes.append(path.parent)
+                risk, why = write_risk(path, scope, delete=True, recursive=recursive)
                 if re.search(r"[*?]", t) and risk < Risk.ELEVATED and recursive:
                     risk, why = Risk.ELEVATED, f"recursive glob delete {t}"
                 result.raise_to(risk, why or f"deletes {t}")
@@ -859,7 +868,9 @@ def _classify_writer(word, args, sub, cwd, scope, result):
         if re.fullmatch(r"[\w.-]+@[\w.-]+:.*|[\w.-]+:.+", t) and word in ("rsync", "scp"):
             result.raise_to(Risk.NORMAL, f"copies to remote {t}")
             continue
-        risk, why = write_risk(scope.resolve(t, cwd), scope)
+        path = scope.resolve(t, cwd)
+        result.writes.append(path.parent if word == "mv" and t in positional[:-1] else path)
+        risk, why = write_risk(path, scope)
         result.raise_to(max(risk, Risk.NORMAL) if risk is not Risk.LOW else risk, why or f"{word} writes {t}")
 
 

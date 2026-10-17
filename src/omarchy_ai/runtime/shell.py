@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 
+from . import sandbox as _sandbox
 from .permissions import scrubbed_env
 
 MAX_OUTPUT_CHARS = 12_000      # what an agent sees (tail)
@@ -95,15 +96,25 @@ def _base_env() -> dict:
 
 def run(command: str | list[str], cwd: str | Path | None = None, *, timeout: float = DEFAULT_TIMEOUT,
         stdin_text: str | None = None, cancel: threading.Event | None = None,
-        output_dir: Path | None = None, env: dict | None = None) -> CommandResult:
-    """`command` is bash text, or an argv list run without a shell."""
+        output_dir: Path | None = None, env: dict | None = None,
+        sandbox: "_sandbox.Policy | None" = None) -> CommandResult:
+    """`command` is bash text, or an argv list run without a shell. With
+    `sandbox`, it runs under that bubblewrap policy (runtime/sandbox.py)."""
     cwd = str(Path(cwd or Path.home()).expanduser())
     started = time.time()
     argv = ["bash", "-c", command] if isinstance(command, str) else list(command)
     command = command if isinstance(command, str) else " ".join(command)[:2000]
+    env = env or _base_env()
+    with _sandbox.wrapped(argv, sandbox, env=env, cwd=cwd) as argv:
+        return _run(argv, command, cwd, env, started, timeout=timeout, stdin_text=stdin_text, cancel=cancel,
+                    output_dir=output_dir)
+
+
+def _run(argv: list[str], command: str, cwd: str, env: dict, started: float, *, timeout: float,
+         stdin_text: str | None, cancel: threading.Event | None, output_dir: Path | None) -> CommandResult:
     try:
         proc = subprocess.Popen(
-            argv, cwd=cwd, env=env or _base_env(),
+            argv, cwd=cwd, env=env,
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
