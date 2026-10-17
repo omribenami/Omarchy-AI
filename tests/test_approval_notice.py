@@ -7,12 +7,15 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import no_live_desktop
 from omarchy_ai.core import agenda
 from omarchy_ai.display import assistant_huds
 from omarchy_ai.runtime import service
 from omarchy_ai.runtime.executors.base import NEEDS_APPROVAL, Report
 
 from test_task_runtime import RuntimeHarness, ScriptedJev, ScriptExecutor, git_repo
+
+setUpModule, tearDownModule = no_live_desktop.without_session_probe()
 
 
 class ApprovalNoticeTests(RuntimeHarness):

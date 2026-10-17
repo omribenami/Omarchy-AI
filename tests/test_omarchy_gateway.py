@@ -82,6 +82,10 @@ class OmarchyGatewayTests(unittest.TestCase):
 
 
 class OmarchyVisualizerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Actions report to the live watchdog overlay (omarchy-shell -q watchdog event ...).
+        self.enterContext(patch("omarchy_ai.voice.watchdog._ipc"))
+
     async def capture(self, scores, max_seconds=20):
         session = OmarchySession(SimpleNamespace(omarchy_end_silence_ms=480, omarchy_max_utterance_seconds=max_seconds))
         session._vad = SimpleNamespace(reset_states=Mock(), predict=Mock(side_effect=scores))

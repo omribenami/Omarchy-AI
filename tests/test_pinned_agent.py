@@ -5,12 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import no_live_desktop
 from omarchy_ai.runtime import service
 from omarchy_ai.runtime.executors.base import DONE, Assignment, Report
 from omarchy_ai.runtime.executors.coding_agents import ClaudeCode, Codex
 from omarchy_ai.voice.switchboard import Context, Switchboard
 
 from test_task_runtime import RuntimeHarness, ScriptedJev, ScriptExecutor
+
+setUpModule, tearDownModule = no_live_desktop.without_session_probe()
 
 SAID = "Open a terminal and cd to Git/Omarchy-AI, in it open codex --yolo and ask him as follows: fix the tests"
 

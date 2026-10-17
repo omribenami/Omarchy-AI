@@ -5,12 +5,24 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import no_live_desktop
 from omarchy_ai.execution import actions, catalog, user_tools
 from omarchy_ai.runtime import permissions
 
 from fakes.effects_journal import isolate_journal  # noqa: E402
 
-setUpModule, tearDownModule = isolate_journal()
+_isolate_journal, _restore_journal = isolate_journal()
+_no_session_probe, _restore_session_probe = no_live_desktop.without_session_probe()
+
+
+def setUpModule():
+    _isolate_journal()
+    _no_session_probe()
+
+
+def tearDownModule():
+    _restore_journal()
+    _restore_session_probe()
 
 
 def make_tool(folder: Path, name="wifi_health", test_exit=0, description="Counts iwlwifi firmware errors this boot."):

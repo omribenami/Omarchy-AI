@@ -47,8 +47,8 @@ class RunTests(unittest.TestCase):
             result = actions._run([path], timeout=0.5)
             self.assertLess(time.monotonic() - started, 3)
             self.assertEqual((result.ok, result.message), (False, f"{path} timed out"))
-            result = actions._run(["omarchy-ai-no-such-program-x"])
-        self.assertEqual((result.ok, result.message), (False, "omarchy-ai-no-such-program-x is not installed"))
+            result = actions._run(["no-such-program-for-omarchy-ai-tests"])
+        self.assertEqual((result.ok, result.message), (False, "no-such-program-for-omarchy-ai-tests is not installed"))
 
 
 if __name__ == "__main__":
