@@ -8,6 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import no_live_desktop
 from omarchy_ai.core.jev import Jev
 from omarchy_ai.runtime import shell
 from omarchy_ai.runtime.control import MAX_BRIEF_CHARS, ControlPlane, brief
@@ -22,7 +23,18 @@ from omarchy_ai.runtime.task import Task, TaskStore
 
 from fakes.effects_journal import isolate_journal  # noqa: E402
 
-setUpModule, tearDownModule = isolate_journal()
+_isolate_journal, _restore_journal = isolate_journal()
+_no_session_probe, _restore_session_probe = no_live_desktop.without_session_probe()
+
+
+def setUpModule():
+    _isolate_journal()
+    _no_session_probe()
+
+
+def tearDownModule():
+    _restore_journal()
+    _restore_session_probe()
 
 
 # --------------------------------------------------------------- fakes
@@ -1322,7 +1334,9 @@ class SystemAgentTests(unittest.TestCase):
              "test_commands": ["wpctl get-volume @DEFAULT_AUDIO_SOURCE@"]},
         ])
         ctx = FakeCtx()
-        report = SystemAgent(model).run(self.assignment(), ctx)
+        help_text = {"tool": "wpctl", "ok": True, "text": "usage: wpctl set-volume"}  # never the real wpctl --help
+        with patch("omarchy_ai.runtime.discovery.tool_help", return_value=help_text):
+            report = SystemAgent(model).run(self.assignment(), ctx)
         self.assertEqual(report.status, "done")
         self.assertEqual(ctx.commands, ["wpctl status", "journalctl --user -n 5"])
         self.assertEqual(report.test_commands, ["wpctl get-volume @DEFAULT_AUDIO_SOURCE@"])

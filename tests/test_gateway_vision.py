@@ -145,6 +145,7 @@ class GatewayVisionTests(unittest.TestCase):
     def test_describe_screen_requires_gateway_and_uses_jev_look(self):
         cfg = SimpleNamespace(vercel_gateway_api_key_path=str(self.base / "missing"))
         with patch("omarchy_ai.config.load_config", return_value=cfg), \
+                patch("omarchy_ai.execution.actions.desktop._terminal_text_hint", return_value=""), \
                 patch("omarchy_ai.execution.vision._capture") as capture:
             result = describe_screen({"question": "How many cars?"})
         self.assertFalse(result.ok)

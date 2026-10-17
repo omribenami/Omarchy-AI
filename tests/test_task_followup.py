@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import no_live_desktop
 from omarchy_ai.core import agenda
 from omarchy_ai.runtime import service
 from omarchy_ai.runtime.executors.base import DONE, Report
@@ -13,6 +14,8 @@ from omarchy_ai.runtime.executors.coding_agents import ClaudeCode
 from omarchy_ai.runtime.task import Task
 
 from test_task_runtime import FakeModel, RuntimeHarness, ScriptedJev, ScriptExecutor
+
+setUpModule, tearDownModule = no_live_desktop.without_session_probe()
 
 
 class FollowUpTests(RuntimeHarness):

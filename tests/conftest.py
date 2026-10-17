@@ -5,7 +5,8 @@ nor touch their saved skills (~/.config/omarchy-ai/skills), state
 Module-level paths (config.STATE_DIR, agenda.JOBS_PATH, history.HISTORY_PATH, ...)
 are computed from the XDG variables at import time, so those variables are
 pointed at a throwaway directory here, before anything imports omarchy_ai.
-XDG_RUNTIME_DIR is redirected too, so no test can reach the live daemon's socket.
+XDG_RUNTIME_DIR is redirected too, so no test can reach the live daemon's socket,
+and tests/no_live_desktop.py stops any test from running a real desktop command.
 
 Under CI (the CI environment variable is set), tests marked ``live`` (real
 network services) or ``hardware`` (audio, Wayland, GPU, phone, TV) are skipped.
@@ -24,6 +25,7 @@ for _var in ("XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_DATA_HO
 
 import pytest  # noqa: E402
 
+import no_live_desktop  # noqa: E402  (no test runs a real desktop or device command)
 from omarchy_ai import config  # noqa: E402
 from omarchy_ai.core import skills  # noqa: E402
 from omarchy_ai.voice import extensions  # noqa: E402

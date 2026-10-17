@@ -157,6 +157,8 @@ class RuntimeSshTests(RuntimeHarness):
             patcher = patch.object(passwords, target, side_effect=value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Commands run without asking Hyprland for the live session (hyprctl instances).
+        self.enterContext(patch("omarchy_ai.execution.actions.base.desktop_env", lambda: dict(os.environ)))
 
     def test_worker_sshpass_runs_after_approval_without_the_password_anywhere(self):
         ran = []
