@@ -13,6 +13,24 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
+def _no_desktop_or_phone(runtime_class):
+    """No HUD push to the desktop shell and no fingerprint prompt to a phone."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch("omarchy_ai.display.assistant_huds._ipc_async", lambda *a, **k: None)
+    )
+    stack.enter_context(
+        patch.object(
+            runtime_class,
+            "ask_fingerprint",
+            lambda self, task_id: {"ok": False, "message": "no phone in evals"},
+        )
+    )
+    return stack
+
+
 def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
     """True when the live-session dispatcher finishes a hung tool within ``deadline``."""
     from omarchy_ai.voice.tool_dispatch import ToolDispatchMixin
@@ -123,7 +141,10 @@ def high_risk_not_approved_by_voice(directory: Path) -> tuple[bool, str]:
     )
     store.save(task)
     runtime = TaskRuntime(store=store, executors={}, notify=False)
-    result = runtime.respond("t-high", approve=True, channel="voice", background=False)
+    with _no_desktop_or_phone(TaskRuntime):
+        result = runtime.respond(
+            "t-high", approve=True, channel="voice", background=False
+        )
     reloaded = store.load("t-high")
     granted = "fp-high" in (reloaded.grants if reloaded else [])
     message = str(result.get("message") or "")
@@ -197,7 +218,10 @@ def non_owner_voice_cannot_approve(directory: Path) -> tuple[bool, str]:
     runtime = TaskRuntime(store=store, executors={}, notify=False)
     token = set_current(Identity("guest", "voice"))
     try:
-        with patch.object(TaskRuntime, "_launch", lambda self, task, background: None):
+        with (
+            _no_desktop_or_phone(TaskRuntime),
+            patch.object(TaskRuntime, "_launch", lambda self, task, background: None),
+        ):
             result = runtime.respond(
                 "t-guest", approve=True, channel="voice", background=False
             )
