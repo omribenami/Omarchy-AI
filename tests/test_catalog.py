@@ -40,6 +40,16 @@ class CatalogTests(unittest.TestCase):
         self.assertFalse(declared & set(catalog.catalog()))
         self.assertLess(len(declared), 25)
 
+    def test_look_camera_is_reached_through_use_tool_not_declared(self):
+        patcher = patch("omarchy_ai.execution.user_tools.schemas", return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertNotIn("look_camera", catalog.CORE)
+        self.assertIn("look_camera", catalog.catalog())
+        self.assertNotIn("look_camera", {t["name"] for t in catalog.declared(myapi_on=True)})
+        pick = catalog.resolve({"name": "look_camera", "args": {"camera": "Gate", "question": "who is there?"}})
+        self.assertEqual((pick.run, pick.tool), (True, "look_camera"))
+
     def test_myapi_is_declared_directly_when_connected(self):
         # 2026-09-30: MyApi is Jev's single entry point (execution/myapi_agent.py).
         names = {t["name"] for t in catalog.declared(myapi_on=True)}

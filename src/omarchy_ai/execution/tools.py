@@ -66,7 +66,7 @@ TOOLS: list[dict] = [
             "for_minutes": {"type": "number", "description": "watch: the time frame in minutes, instead of expires_in_hours. Required for a camera or the screen."},
             "announce_on_speaker": {"type": "boolean", "description": "remind, asked on the speaker, due later today: the user said yes to also hearing it on the speaker."},
         }, "required": ["title", "kind"]}),
-    _tool("watch_camera", "Start a background watch that keeps checking a home camera for a time frame and alerts the user if something happens; never for one look at what a camera shows now. For kids playing outside, danger, a delivery, a car, an animal. Use it for 'watch', 'keep an eye on', 'monitor' or 'tell me if' on a camera; a single look with another tool cannot keep that promise. Until the time frame ends, the camera's current frame and the condition go to the image decision model again and again, in the background, even after this conversation; the user is alerted each time the condition becomes true and told when the watch ends. `for_minutes` is the time frame the user said: when they said none, ask them how long before calling, never guess one. Stop it early with cancel_scheduled_task.", {
+    _tool("watch_camera", "Start a background watch that keeps checking a home camera for a time frame and alerts the user if something happens; never for one look at what a camera shows now. For kids playing outside, danger, a delivery, a car, an animal. Use it for 'watch', 'keep an eye on', 'monitor' or 'tell me if' on a camera; a single look with look_camera cannot keep that promise. Until the time frame ends, the camera's current frame and the condition go to the image decision model again and again, in the background, even after this conversation; the user is alerted each time the condition becomes true and told when the watch ends. `for_minutes` is the time frame the user said: when they said none, ask them how long before calling, never guess one. Stop it early with cancel_scheduled_task.", {
         "type": "object", "properties": {
             "camera": {"type": "string", "description": "The camera's name; a wrong name returns the real ones."},
             "condition": {"type": "string", "description": "The complete statement to detect, judged from one picture by a model that knows nothing else: name who or what is watched and spell out vague words as things one can see. For 'watch the kids, tell me if anything is dangerous' write 'a child is in the street or near a moving vehicle, has fallen or looks hurt, is climbing something high, is near fire or deep water, or is with an adult stranger', never just 'anything dangerous'. Add whatever the user named."},
@@ -74,6 +74,11 @@ TOOLS: list[dict] = [
             "every_minutes": {"type": "number", "description": "Only when the user asked for a pace: minutes between looks (1 is the fastest)."},
             "title": {"type": "string", "description": "Short label for the alerts, in the user's language."},
         }, "required": ["camera", "condition"]}),
+    _tool("look_camera", "One look now at a home camera to answer what it shows. A wrong camera name returns the real names. To keep watching over time, use watch_camera.", {
+        "type": "object", "properties": {
+            "camera": {"type": "string", "description": "The camera's name."},
+            "question": {"type": "string", "description": "What the user wants to know about the picture, in their words."},
+        }, "required": ["camera", "question"]}),
     _tool("list_scheduled_tasks", "List scheduled tasks and watches with their schedule, next_run and last_result.", {
         "type": "object", "properties": {"include_finished": {"type": "boolean"}}, "required": []}),
     _tool("show_routines_hud", "Show the desktop HUD listing all active scheduled/cron routines. Use when the user asks to see/show/open routines, schedules, or cron jobs."),
@@ -920,6 +925,7 @@ EFFECT_CLASSES = {
     "desktop_task": REVERSIBLE, "start_task": IRREVERSIBLE, "task_status": READ, "task_respond": IRREVERSIBLE,
     "show_tasks_hud": REVERSIBLE, "hide_tasks_hud": REVERSIBLE, "search_os_knowledge": READ,
     "get_release_notes": READ, "schedule_task": IRREVERSIBLE, "watch_camera": IRREVERSIBLE,
+    "look_camera": READ,
     "list_scheduled_tasks": READ, "show_routines_hud": REVERSIBLE, "hide_routines_hud": REVERSIBLE,
     "cancel_scheduled_task": REVERSIBLE, "run_scheduled_task_now": IRREVERSIBLE, "find_skill": READ,
     "load_skill": READ, "run_skill": IRREVERSIBLE, "save_skill": REVERSIBLE, "list_skills": READ,
@@ -1012,6 +1018,8 @@ DEADLINES = {
     ), 60.0),
     # capture 10 s, question planning 12 s, two 20 s Jev judgments
     "describe_screen": 90.0,
+    # the camera program's list and snapshot (30 s each), then describe_screen's planning and judgments
+    "look_camera": 150.0,
     # MyApi: 30 s per request; a Gmail search retries broader queries
     **dict.fromkeys(("myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply"), 90.0),
     **dict.fromkeys(("myapi_gmail_download_attachment", "check_assistant_updates", "get_release_notes",
@@ -1037,7 +1045,7 @@ DEADLINES = {
 # apps, the assistant's browser and terminals, files, audio and display all
 # interact (open_browser then type_text, write_file then open_editor), so
 # anything not clearly independent of the screen is on it.
-DESKTOP, MYAPI, ASSISTANT = "desktop", "myapi", "assistant"
+DESKTOP, MYAPI, ASSISTANT, CAMERA = "desktop", "myapi", "assistant", "camera"
 RESOURCES = {
     **dict.fromkeys((
         "desktop_task", "show_tasks_hud", "hide_tasks_hud", "show_routines_hud", "hide_routines_hud",
@@ -1070,6 +1078,8 @@ RESOURCES = {
         "delete_skill", "check_assistant_updates", "update_assistant", "get_update_status", "report_issue",
         "remember_preference",
     ), ASSISTANT),
+    # the user's camera program only: a look never waits behind the screen
+    "look_camera": CAMERA,
 }
 
 # Tools run in a killable worker process (execution/worker_main.py): network
