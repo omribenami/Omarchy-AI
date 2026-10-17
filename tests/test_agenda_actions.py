@@ -10,6 +10,10 @@ from omarchy_ai.execution import actions
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.verified_input import writes_externally
 
+from fakes.effects_journal import isolate_journal  # noqa: E402
+
+setUpModule, tearDownModule = isolate_journal()
+
 
 def _schema(name, props, required=()):
     return {"name": name, "description": name, "parameters": {
@@ -67,6 +71,8 @@ class ActionTests(unittest.TestCase):
         self.notify = patch.object(agenda, "notify").start()
         patch.object(agenda, "_refresh_routines_hud").start()
         self.run_action = patch("omarchy_ai.execution.actions.run_action").start()
+        # "device" stands for a tool the user added (smart home): reversible, so retried.
+        patch("omarchy_ai.execution.user_tools.exists", side_effect=lambda name: name == "device").start()
         self.addCleanup(patch.stopall)
         self.heard = []
         agenda.listeners.append(self.heard.append)

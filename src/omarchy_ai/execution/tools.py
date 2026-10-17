@@ -902,3 +902,79 @@ MYAPI_TOOLS: list[dict] = [
         }, "required": ["message_id", "attachment_id", "filename"]},
     ),
 ]
+
+
+# --- what calling a tool does to the world ----------------------------------
+# Every tool the live and text sessions can call has an effect class. It is
+# kept here, beside the schemas, rather than in them: these dicts go to the
+# model providers as they are, and an unknown key can be rejected there.
+#   read          changes nothing.
+#   reversible    a repeat leaves things as one call does (set, show, focus,
+#                 switch): safe to retry after a failure.
+#   irreversible  a repeat does something again: it sends, posts, types,
+#                 runs, toggles, deletes, or starts work. Never retried on its
+#                 own (core/agenda.py), and journaled once (core/effects.py).
+READ, REVERSIBLE, IRREVERSIBLE = "read", "reversible", "irreversible"
+EFFECT_CLASSES = {
+    # Task Runtime, skills, schedules, updates
+    "desktop_task": REVERSIBLE, "start_task": IRREVERSIBLE, "task_status": READ, "task_respond": IRREVERSIBLE,
+    "show_tasks_hud": REVERSIBLE, "hide_tasks_hud": REVERSIBLE, "search_os_knowledge": READ,
+    "get_release_notes": READ, "schedule_task": IRREVERSIBLE, "watch_camera": IRREVERSIBLE,
+    "list_scheduled_tasks": READ, "show_routines_hud": REVERSIBLE, "hide_routines_hud": REVERSIBLE,
+    "cancel_scheduled_task": REVERSIBLE, "run_scheduled_task_now": IRREVERSIBLE, "find_skill": READ,
+    "load_skill": READ, "run_skill": IRREVERSIBLE, "save_skill": REVERSIBLE, "list_skills": READ,
+    "delete_skill": IRREVERSIBLE, "check_assistant_updates": READ, "update_assistant": IRREVERSIBLE,
+    "get_update_status": READ, "report_issue": IRREVERSIBLE, "remember_preference": REVERSIBLE,
+    "run_mission": IRREVERSIBLE,
+    # bar, audio, display, power
+    "list_bar_icons": READ, "open_bar_panel": REVERSIBLE, "close_bar_panel": REVERSIBLE,
+    "volume_up": REVERSIBLE, "volume_down": REVERSIBLE, "volume_mute_toggle": IRREVERSIBLE,
+    "volume_set": REVERSIBLE, "mic_mute_toggle": IRREVERSIBLE, "brightness_up": REVERSIBLE,
+    "brightness_down": REVERSIBLE, "brightness_set": REVERSIBLE, "screenshot": READ,
+    "lock_screen": REVERSIBLE, "unlock_screen": REVERSIBLE, "bluetooth_toggle": IRREVERSIBLE,
+    "nightlight_toggle": IRREVERSIBLE, "battery_status": READ, "run_omarchy_command": IRREVERSIBLE,
+    # apps, browser, files
+    "github_upload_attachment": IRREVERSIBLE, "open_terminal": REVERSIBLE, "open_browser": REVERSIBLE,
+    "inspect_browser": READ, "browser_control": IRREVERSIBLE, "show_browser": REVERSIBLE,
+    "browser_task": IRREVERSIBLE, "open_files": REVERSIBLE, "open_editor": REVERSIBLE, "list_files": READ,
+    "read_file": READ, "write_file": IRREVERSIBLE, "edit_file": IRREVERSIBLE,
+    # windows, input, terminals
+    "read_tile_log": READ, "workspace_switch": REVERSIBLE, "workspace_next": IRREVERSIBLE,
+    "workspace_prev": IRREVERSIBLE, "close_window": IRREVERSIBLE, "window_fullscreen_toggle": IRREVERSIBLE,
+    "list_windows": READ, "list_commands": READ, "execute_command": IRREVERSIBLE, "type_text": IRREVERSIBLE,
+    "press_key": IRREVERSIBLE, "submit_sudo_password": IRREVERSIBLE, "get_recent_actions": READ,
+    "describe_screen": READ, "terminal_task": IRREVERSIBLE, "terminal_read": READ,
+    "terminal_type": IRREVERSIBLE, "terminal_sudo": IRREVERSIBLE, "terminal_show": REVERSIBLE,
+    "terminal_hide": REVERSIBLE, "terminal_close": IRREVERSIBLE, "move_window_to_workspace": REVERSIBLE,
+    "focus_window": REVERSIBLE, "show_window_labels": REVERSIBLE, "hide_window_labels": REVERSIBLE,
+    # media, casting, reminders
+    "media_play_pause": IRREVERSIBLE, "media_next": IRREVERSIBLE, "media_prev": IRREVERSIBLE,
+    "start_casting": REVERSIBLE, "stop_casting": REVERSIBLE, "list_cast_targets": READ,
+    "install_receiver_on_tv": REVERSIBLE, "set_reminder": IRREVERSIBLE, "list_reminders": READ,
+    "clear_reminders": IRREVERSIBLE,
+    # MyApi
+    "myapi": IRREVERSIBLE, "myapi_vault_list": READ, "myapi_list_services": READ,
+    "myapi_service_methods": READ, "myapi_call": READ, "myapi_write": IRREVERSIBLE,
+    "myapi_execute": IRREVERSIBLE, "myapi_gmail_send": IRREVERSIBLE, "myapi_gmail_reply": IRREVERSIBLE,
+    "myapi_gmail_search": READ, "myapi_gmail_search_attachments": READ,
+    "myapi_gmail_download_attachment": REVERSIBLE,
+    # declared by the sessions themselves (execution/catalog.py, voice/, phone/)
+    "use_tool": IRREVERSIBLE, "end_conversation": IRREVERSIBLE, "remember_voice": REVERSIBLE,
+    "share_file": IRREVERSIBLE,
+}
+
+
+def effect_class(name: str) -> str:
+    """A tool's effect class. A tool the user added (execution/user_tools.py)
+    is `reversible`, as it was retried before; any other unknown name is
+    `irreversible`."""
+    known = EFFECT_CLASSES.get(name)
+    if known is not None:
+        return known
+    try:
+        from . import user_tools
+        if user_tools.exists(name):
+            return REVERSIBLE
+    except Exception:  # noqa: BLE001 -- unknown stays the safe answer
+        pass
+    return IRREVERSIBLE

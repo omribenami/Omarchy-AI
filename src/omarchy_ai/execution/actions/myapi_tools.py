@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ... import myapi
 from ...config import load_config
+from ...core import effects
 from ...myapi import usage as myapi_usage
 from .. import files as local_files
 from .base import ActionResult
@@ -284,36 +285,64 @@ def myapi_write(args: dict) -> ActionResult:
         return ActionResult(False, "query must be an object")
     if body is not None and not isinstance(body, dict):
         return ActionResult(False, "body must be an object")
+    service, path = service.strip(), path.strip()
+
+    def dispatch(key: str) -> ActionResult:
+        started = time.monotonic()
+        ok = False
+        try:
+            result = myapi.MyApiClient().call_service(
+                service, path, method, query=query, body=body, idempotency_key=key,
+            )
+            ok = True
+            return ActionResult(True, json.dumps(result))
+        except myapi.MyApiError as exc:
+            failed = ActionResult(False, f"MyApi action failed: {exc}")
+            if exc.maybe_sent:
+                raise effects.Uncertain(failed) from exc
+            return failed
+        finally:
+            myapi_usage.record(service=service, path=path, method=method,
+                               ok=ok, duration_ms=(time.monotonic() - started) * 1000)
+
+    return effects.perform("myapi_write", "myapi_write",
+                           {"service": service, "path": path, "method": method, "query": query, "body": body},
+                           dispatch, target=f"{service}:{method} {path}")
+
+
+def _myapi_execute(service: str, operation: str, arguments: dict, idem_key: str | None = None) -> ActionResult:
+    """One /execute call. With idem_key (a journaled write, core/effects.py)
+    it carries the Idempotency-Key header, and a call that may have reached
+    MyApi without an answer raises effects.Uncertain instead of returning."""
     started = time.monotonic()
     ok = False
     try:
-        result = myapi.MyApiClient().call_service(
-            service.strip(), path.strip(), method, query=query, body=body,
-        )
-        ok = True
-        return ActionResult(True, json.dumps(result))
-    except myapi.MyApiError as exc:
-        return ActionResult(False, f"MyApi action failed: {exc}")
-    finally:
-        myapi_usage.record(service=service.strip(), path=path.strip(), method=method,
-                           ok=ok, duration_ms=(time.monotonic() - started) * 1000)
-
-
-def _myapi_execute(service: str, operation: str, arguments: dict) -> ActionResult:
-    started = time.monotonic()
-    ok = False
-    try:
+        extra = {"idempotency_key": idem_key} if idem_key else {}
         result = myapi.MyApiClient().request(
             "POST", f"/services/{service}/execute",
-            body={"method": operation, "params": {"arguments": arguments}},
+            body={"method": operation, "params": {"arguments": arguments}}, **extra,
         )
         ok = True
         return ActionResult(True, json.dumps(result))
     except myapi.MyApiError as exc:
-        return ActionResult(False, f"MyApi action failed: {exc}")
+        failed = ActionResult(False, f"MyApi action failed: {exc}")
+        if idem_key and exc.maybe_sent:
+            raise effects.Uncertain(failed) from exc
+        return failed
     finally:
         myapi_usage.record(service=service, path=f"/execute:{operation}", method="POST(write)", ok=ok,
                            duration_ms=(time.monotonic() - started) * 1000)
+
+
+def myapi_write_execute(service: str, operation: str, arguments: dict) -> ActionResult:
+    """A state-changing /execute call, journaled and sent at most once per
+    origin (core/effects.py). Gmail's GMAIL_SEND_EMAIL / GMAIL_REPLY_TO_THREAD
+    take only recipients, subject and body (no custom headers), so the key
+    cannot be put into the email itself; it travels as the Idempotency-Key
+    header to MyApi."""
+    return effects.perform("myapi_execute", operation, {"service": service, "arguments": arguments},
+                           lambda key: _myapi_execute(service, operation, arguments, key),
+                           target=f"{service}:{operation}")
 
 
 def myapi_execute(args: dict) -> ActionResult:
@@ -326,7 +355,7 @@ def myapi_execute(args: dict) -> ActionResult:
         return ActionResult(False, "no operation given")
     if not isinstance(arguments, dict):
         return ActionResult(False, "arguments must be an object")
-    return _myapi_execute(service.strip(), operation.strip(), arguments)
+    return myapi_write_execute(service.strip(), operation.strip(), arguments)
 
 
 def myapi_gmail_send(args: dict) -> ActionResult:
@@ -335,7 +364,7 @@ def myapi_gmail_send(args: dict) -> ActionResult:
         return ActionResult(False, "recipient_email, subject, and body are required")
     arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
     arguments["user_id"] = "me"
-    return _myapi_execute("gmail", "GMAIL_SEND_EMAIL", arguments)
+    return myapi_write_execute("gmail", "GMAIL_SEND_EMAIL", arguments)
 
 
 def myapi_gmail_reply(args: dict) -> ActionResult:
@@ -344,7 +373,7 @@ def myapi_gmail_reply(args: dict) -> ActionResult:
         return ActionResult(False, "thread_id, recipient_email, and message_body are required")
     arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
     arguments["user_id"] = "me"
-    return _myapi_execute("gmail", "GMAIL_REPLY_TO_THREAD", arguments)
+    return myapi_write_execute("gmail", "GMAIL_REPLY_TO_THREAD", arguments)
 
 
 def _gmail_execute(method: str, arguments: dict) -> dict:

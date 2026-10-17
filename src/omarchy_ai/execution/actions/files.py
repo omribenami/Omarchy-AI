@@ -5,9 +5,11 @@ Split out of the former execution/actions.py; see execution/actions/__init__.py.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import re
 
 from ...config import load_config
+from ...core import effects
 from .. import files as local_files
 from .. import sudo_approval
 from .base import ActionResult
@@ -74,6 +76,31 @@ def _looks_like_script(text: str, path: str = "") -> bool:
 
 
 def write_file(args: dict) -> ActionResult:
+    return effects.perform("file", "write_file", _file_args(args, ("content", "overwrite")),
+                           lambda _key: _write_file(args), target=f"file:{args.get('path')}")
+
+
+def edit_file(args: dict) -> ActionResult:
+    return effects.perform("file", "edit_file",
+                           _file_args(args, ("old_text", "new_text", "expected_replacements", "privileged")),
+                           lambda _key: _edit_file(args), target=f"file:{args.get('path')}")
+
+
+def _file_args(args: dict, keys: tuple[str, ...]) -> dict:
+    """What makes two calls the same change: the arguments, and the file as
+    it is now. A repeat of a write that went through finds the file changed,
+    so it runs again as before (A, then B, then A again in one turn still
+    ends at A); only calls racing on the same unchanged file are one write."""
+    material = {key: args.get(key) for key in ("path", *keys)}
+    try:
+        stat = Path(str(args.get("path") or "")).expanduser().stat()
+        material["before"] = [stat.st_ino, stat.st_size, stat.st_mtime_ns]
+    except (OSError, ValueError):
+        material["before"] = None
+    return material
+
+
+def _write_file(args: dict) -> ActionResult:
     try:
         path = local_files.write_file(
             args.get("path"), args.get("content"), load_config(), bool(args.get("overwrite")),
@@ -83,7 +110,7 @@ def write_file(args: dict) -> ActionResult:
         return ActionResult(False, str(exc))
 
 
-def edit_file(args: dict) -> ActionResult:
+def _edit_file(args: dict) -> ActionResult:
     try:
         config = load_config()
         privileged = bool(args.get("privileged"))

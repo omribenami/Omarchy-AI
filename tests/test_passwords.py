@@ -19,6 +19,10 @@ from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.runtime.permissions import Risk, Scope, classify
 from omarchy_ai.runtime.task import Task, TaskStore
 
+from fakes.effects_journal import isolate_journal  # noqa: E402
+
+setUpModule, tearDownModule = isolate_journal()
+
 # Fake values made at run time: no password-like literal is committed (a
 # secret scanner flagged a hard-coded fake one, 2026-09-28).
 def _fake(prefix="t"):

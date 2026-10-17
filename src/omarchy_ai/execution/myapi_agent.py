@@ -203,7 +203,9 @@ def _writes(name: str, method: dict, args: dict) -> bool:
         return True
 
 
-def _call(service: str, method: str, args: dict) -> ActionResult:
+def _call(service: str, method: str, args: dict, origin: str = "") -> ActionResult:
+    """One step. With origin (a prepared action the user approved) it is a
+    write: journaled and sent at most once for that origin (core/effects.py)."""
     from .actions import _myapi_execute
     if service == "gmail" and method in ("GMAIL_FETCH_EMAILS", "GMAIL_LIST_THREADS") and args.get("query"):
         # Finding mail goes through the search that relaxes human words and keeps
@@ -221,6 +223,11 @@ def _call(service: str, method: str, args: dict) -> ActionResult:
         except (myapi.MyApiError, ValueError) as exc:
             return ActionResult(False, f"Gmail search failed: {exc}")
         return ActionResult(True, json.dumps({"attempted": attempted, **result}, ensure_ascii=False))
+    if origin:
+        from ..core import effects
+        from .actions.myapi_tools import myapi_write_execute
+        with effects.origin(origin):
+            return myapi_write_execute(service, method, args)
     return _myapi_execute(service, method, args)
 
 
@@ -359,7 +366,9 @@ def decide(aid: str, go: bool, how: str) -> tuple[bool, str]:
     if not go:
         pending_actions.finish(aid, "cancelled", how)
         return True, "Cancelled."
-    result = _call(action["service"], action["method"], action["arguments"])
+    # The action itself is the origin: the same approved action is sent once,
+    # however often its Send is pressed or retried.
+    result = _call(action["service"], action["method"], action["arguments"], origin=f"pending:{aid}")
     ok = result.ok and _worked(action, result.message)
     message = (_sent_check(action) if ok and action["method"].startswith("GMAIL_") and
                action["method"] in ("GMAIL_SEND_EMAIL", "GMAIL_REPLY_TO_THREAD") else None)
