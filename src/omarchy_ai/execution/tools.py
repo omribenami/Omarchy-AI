@@ -978,3 +978,125 @@ def effect_class(name: str) -> str:
     except Exception:  # noqa: BLE001 -- unknown stays the safe answer
         pass
     return IRREVERSIBLE
+
+
+# --- how long a call may run, and what it holds ------------------------------
+# execution/runner.py stops a call at its deadline and answers "timed out
+# after N s; nothing was confirmed". Each deadline sits above what the tool
+# legitimately takes today, including its own internal waits (named beside
+# each group); it only cuts off a call that hangs.
+DEFAULT_DEADLINE = 600.0
+USER_TOOL_DEADLINE = 900.0  # a user tool waits up to 600 s for its install approval, then runs 120 s
+DEADLINES = {
+    # one or two hyprctl/wtype/wpctl/tmux calls (10 s each at most)
+    **dict.fromkeys((
+        "list_bar_icons", "open_bar_panel", "close_bar_panel", "volume_up", "volume_down", "volume_mute_toggle",
+        "volume_set", "mic_mute_toggle", "brightness_up", "brightness_down", "brightness_set", "screenshot",
+        "lock_screen", "unlock_screen", "bluetooth_toggle", "nightlight_toggle", "battery_status", "open_terminal",
+        "open_files", "open_editor", "read_tile_log", "workspace_switch", "workspace_next", "workspace_prev",
+        "window_fullscreen_toggle", "list_windows", "show_window_labels", "hide_window_labels",
+        "media_play_pause", "media_next", "media_prev", "set_reminder", "list_reminders", "clear_reminders",
+        "show_tasks_hud", "hide_tasks_hud", "show_routines_hud", "hide_routines_hud", "terminal_read",
+        "terminal_type", "terminal_show", "terminal_hide", "terminal_close", "task_status",
+        "list_scheduled_tasks", "cancel_scheduled_task", "list_skills", "load_skill", "save_skill",
+        "delete_skill", "get_update_status", "remember_preference", "search_os_knowledge",
+        "get_recent_actions", "end_conversation", "remember_voice", "share_file",
+    ), 30.0),
+    # several desktop commands plus a Jev pick (4-8 s), a tmux settle (8 s) or a browser start (12 s)
+    **dict.fromkeys((
+        "focus_window", "close_window", "move_window_to_workspace", "type_text", "press_key",
+        "submit_sudo_password", "list_commands", "execute_command", "run_omarchy_command", "terminal_task",
+        "terminal_sudo", "open_browser", "show_browser", "inspect_browser", "browser_control", "desktop_task",
+        "start_task", "task_respond", "schedule_task", "watch_camera", "find_skill", "list_cast_targets",
+        "stop_casting", "myapi_list_services", "myapi_service_methods", "myapi_vault_list",
+    ), 60.0),
+    # capture 10 s, question planning 12 s, two 20 s Jev judgments
+    "describe_screen": 90.0,
+    # MyApi: 30 s per request; a Gmail search retries broader queries
+    **dict.fromkeys(("myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply"), 90.0),
+    **dict.fromkeys(("myapi_gmail_download_attachment", "check_assistant_updates", "get_release_notes",
+                     "update_assistant", "report_issue", "run_skill", "run_scheduled_task_now"), 120.0),
+    **dict.fromkeys(("myapi_call", "myapi_gmail_search", "myapi_gmail_search_attachments"), 180.0),
+    "list_files": 150.0, "read_file": 150.0,
+    # a 90 s task budget plus starting the dedicated browser
+    "browser_task": 180.0,
+    # Jev picks and fills, the call, then up to four Sent-folder checks
+    "myapi": 300.0,
+    # a sudo write waits up to 130 s for each of two phone approvals
+    "write_file": 300.0, "edit_file": 300.0,
+    "github_upload_attachment": 360.0,  # a 300 s upload
+    # casting can build (300 s) and install (120 s) the receiver app first
+    "start_casting": 600.0, "run_mission": 600.0,
+    "install_receiver_on_tv": 900.0, "use_tool": USER_TOOL_DEADLINE,
+}
+
+# What a mutating call holds while it runs (execution/runner.py): mutating
+# calls on one resource run one at a time, in the order they were made, as
+# every call did before; a read waits only for mutations made before it on
+# its resource. "desktop" is deliberately wide: windows, focus, keyboard,
+# apps, the assistant's browser and terminals, files, audio and display all
+# interact (open_browser then type_text, write_file then open_editor), so
+# anything not clearly independent of the screen is on it.
+DESKTOP, MYAPI, ASSISTANT = "desktop", "myapi", "assistant"
+RESOURCES = {
+    **dict.fromkeys((
+        "desktop_task", "show_tasks_hud", "hide_tasks_hud", "show_routines_hud", "hide_routines_hud",
+        "run_mission", "list_bar_icons", "open_bar_panel", "close_bar_panel", "volume_up", "volume_down",
+        "volume_mute_toggle", "volume_set", "mic_mute_toggle", "brightness_up", "brightness_down",
+        "brightness_set", "screenshot", "lock_screen", "unlock_screen", "bluetooth_toggle", "nightlight_toggle",
+        "battery_status", "run_omarchy_command", "github_upload_attachment", "open_terminal", "open_browser",
+        "inspect_browser", "browser_control", "show_browser", "browser_task", "open_files", "open_editor",
+        "list_files", "read_file", "write_file", "edit_file", "read_tile_log", "workspace_switch",
+        "workspace_next", "workspace_prev", "close_window", "window_fullscreen_toggle", "list_windows",
+        "list_commands", "execute_command", "type_text", "press_key", "submit_sudo_password",
+        "get_recent_actions", "describe_screen", "terminal_task", "terminal_read", "terminal_type",
+        "terminal_sudo", "terminal_show", "terminal_hide", "terminal_close", "move_window_to_workspace",
+        "focus_window", "show_window_labels", "hide_window_labels", "media_play_pause", "media_next",
+        "media_prev", "start_casting", "stop_casting", "list_cast_targets", "install_receiver_on_tv",
+        "set_reminder", "list_reminders", "clear_reminders", "myapi_gmail_download_attachment", "use_tool",
+        "end_conversation", "remember_voice", "share_file",
+    ), DESKTOP),
+    # remote only: MyApi, and Gmail through it
+    **dict.fromkeys((
+        "myapi", "myapi_vault_list", "myapi_list_services", "myapi_service_methods", "myapi_call",
+        "myapi_write", "myapi_execute", "myapi_gmail_send", "myapi_gmail_reply", "myapi_gmail_search",
+        "myapi_gmail_search_attachments",
+    ), MYAPI),
+    # the assistant's own records: tasks, schedules, skills, memory, updates
+    **dict.fromkeys((
+        "start_task", "task_status", "task_respond", "search_os_knowledge", "get_release_notes",
+        "schedule_task", "watch_camera", "list_scheduled_tasks", "cancel_scheduled_task",
+        "run_scheduled_task_now", "find_skill", "load_skill", "run_skill", "save_skill", "list_skills",
+        "delete_skill", "check_assistant_updates", "update_assistant", "get_update_status", "report_issue",
+        "remember_preference",
+    ), ASSISTANT),
+}
+
+# Tools run in a killable worker process (execution/worker_main.py): network
+# reads that keep no state in the daemon. Everything else runs in the daemon,
+# where its state lives (the browser session, the assistant's terminals,
+# focus tracking, Jev's circuit breaker and quota alerts, calls in flight in
+# the effect journal); at its deadline the call is abandoned and answered.
+WORKER_TOOLS = frozenset({
+    "myapi_vault_list", "myapi_list_services", "myapi_service_methods", "myapi_call",
+    "myapi_gmail_search", "myapi_gmail_search_attachments",
+})
+
+
+def deadline(name: str) -> float:
+    """A tool's deadline in seconds."""
+    known = DEADLINES.get(name)
+    if known is not None:
+        return known
+    try:
+        from . import user_tools
+        if user_tools.exists(name):
+            return USER_TOOL_DEADLINE
+    except Exception:  # noqa: BLE001 -- the default is generous either way
+        pass
+    return DEFAULT_DEADLINE
+
+
+def resource(name: str) -> str:
+    """What a call holds while it runs; an unknown tool holds the desktop."""
+    return RESOURCES.get(name, DESKTOP)
