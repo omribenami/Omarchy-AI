@@ -169,6 +169,10 @@ class WorkerRecords(LogCase):
         names = mock.patch.object(tools, "WORKER_TOOLS", frozenset({"log_env"}))
         names.start()
         self.addCleanup(names.stop)
+        # A fake tool of the test's own: its result is not fenced (plan 2.1).
+        trusted = mock.patch.dict(tools.PROVENANCE, {"log_env": "system"})
+        trusted.start()
+        self.addCleanup(trusted.stop)
         self.pool = runner.WorkerPool(
             [
                 sys.executable,
