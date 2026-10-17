@@ -2,7 +2,9 @@
 import json
 import re
 import time
+import uuid
 
+from ..core import effects
 from .actions import ActionResult
 
 
@@ -75,6 +77,15 @@ class InputGuard:
         # it was blocked, and blocked -> asked -> answered.
         self._confirm_key, self._confirm_at, self._confirm_stage = None, 0.0, ""
         self._write_key, self._write_at, self._write_stage = None, 0.0, ""
+        # The user turn a tool call belongs to: what its side effects are
+        # caused by (core/effects.py). Every session calls heard_user() when
+        # the user speaks or types, so calls between two of them -- the
+        # model's retries included -- are one turn.
+        self._session, self._turn = uuid.uuid4().hex[:12], 0
+
+    @property
+    def turn_origin(self) -> str:
+        return f"turn:{self._session}:{self._turn}"
 
     def assistant_replied(self) -> None:
         """The assistant finished speaking (after a block: it asked)."""
@@ -85,6 +96,7 @@ class InputGuard:
 
     def heard_user(self) -> None:
         """The user spoke (after the question: they answered)."""
+        self._turn += 1
         if self._confirm_stage == "asked":
             self._confirm_stage = "answered"
         if self._write_stage == "asked":
@@ -146,6 +158,10 @@ class InputGuard:
         return window.get("address") if window else None
 
     def run(self, execute, name, args):
+        with effects.origin(self.turn_origin):
+            return self._run(execute, name, args)
+
+    def _run(self, execute, name, args):
         blocked_write = self._external_write_allowed(name, args)
         if blocked_write is not None:
             return blocked_write

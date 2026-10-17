@@ -20,6 +20,10 @@ from omarchy_ai.runtime import runtime as runtime_module
 from omarchy_ai.runtime.runtime import TaskRuntime
 from omarchy_ai.runtime.task import Task, TaskStore
 
+from fakes.effects_journal import isolate_journal  # noqa: E402
+
+setUpModule, tearDownModule = isolate_journal()
+
 
 # --------------------------------------------------------------- fakes
 def jev_answer(questions, picks):
