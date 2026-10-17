@@ -6,14 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text()
 GUIDE = (ROOT / "docs" / "getting-started.md").read_text()
-LISTING = (ROOT / "scripts" / "marketplace-plugin" / "templates" / "README.md").read_text()
+LISTING = (
+    ROOT / "scripts" / "marketplace-plugin" / "templates" / "README.md"
+).read_text()
 
 
 class GettingStartedDocsTests(unittest.TestCase):
     def test_readme_leads_with_the_gateway_key_steps(self):
         start = README.index("## Getting started")
         self.assertLess(start, README.index("**Omarchy AI** is an agentic"))
-        section = README[start:README.index("**Omarchy AI** is an agentic")]
+        section = README[start : README.index("**Omarchy AI** is an agentic")]
         self.assertIn("docs/getting-started.md", section)
         self.assertIn("omarchy pkg add omarchy-ai", section)
         self.assertIn("https://github.com/omacom/omarchy-pkgs/pull/1196", section)
@@ -51,7 +53,9 @@ class GettingStartedDocsTests(unittest.TestCase):
             self.assertIn(phrase, GUIDE, phrase)
 
     def test_listing_template_links_to_the_guide(self):
-        self.assertLess(LISTING.index("## Getting started"), LISTING.index("## Features"))
+        self.assertLess(
+            LISTING.index("## Getting started"), LISTING.index("## Features")
+        )
         self.assertIn(
             "https://github.com/omribenami/Omarchy-AI/blob/main/docs/getting-started.md",
             LISTING,
