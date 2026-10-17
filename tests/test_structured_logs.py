@@ -30,9 +30,12 @@ from google.genai import types as genai_types
 from omarchy_ai.config import Config
 from omarchy_ai.core import agenda, effects, logs
 from omarchy_ai.core.daemon import LOG_FORMAT
-from omarchy_ai.execution import passwords, runner, tools
+from omarchy_ai.execution import passwords, runner, tools, user_tools
 from omarchy_ai.execution.actions import ActionResult
+from omarchy_ai.runtime import sandbox, shell
+from omarchy_ai.runtime.permissions import Risk
 from omarchy_ai.voice.gemini_live import GeminiLiveSession
+from test_sandbox import FakeHome, needs_bwrap
 
 setUpModule, tearDownModule = isolate_journal()
 
@@ -510,6 +513,65 @@ class Seams(LogCase):
             (journal[0]["log"], journal[-1]["log"]["session_id"]),
             ({"session_id": "s-e", "tool_call_id": "c-e"}, "s-e"),
         )
+
+
+@needs_bwrap
+class SandboxedSubprocesses(FakeHome):
+    """Task Runtime commands and user tools run under bwrap
+    (runtime/sandbox.py) and still get the IDs in their environment."""
+
+    def test_a_sandboxed_task_command_gets_the_ids(self):
+        command = (
+            "printenv OMARCHY_LOG_SESSION_ID OMARCHY_LOG_TASK_ID OMARCHY_LOG_STEP_ID"
+        )
+        policy = sandbox.for_command(command, Risk.LOW, cwd=self.ws, workspace=self.ws)
+        self.assertIsNotNone(policy)
+        with (
+            patch("omarchy_ai.execution.actions._desktop_env", lambda: dict(self.env)),
+            logs.bind(session_id="s-b", task_id="task-b", step_id=2),
+        ):
+            result = shell.run(command, self.ws, timeout=20, sandbox=policy)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(result.output.split(), ["s-b", "task-b", "2"])
+
+    def test_a_sandboxed_user_tool_gets_the_ids(self):
+        tools_dir = self.home / "tools"
+        for attr, value in (
+            ("TOOLS_DIR", tools_dir),
+            ("PROPOSED_DIR", tools_dir / "_proposed"),
+            ("LEDGER", tools_dir / "approvals.json"),
+        ):
+            p = patch.object(user_tools, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+        folder = tools_dir / "ids_probe"
+        folder.mkdir(parents=True)
+        (folder / "tool.json").write_text(
+            json.dumps(
+                {
+                    "name": "ids_probe",
+                    "description": "Prints its log IDs for a test, nothing else.",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            )
+        )
+        (folder / "run").write_text("#!/bin/sh\nprintenv OMARCHY_LOG_TOOL_CALL_ID\n")
+        (folder / "test").write_text("#!/bin/sh\nexit 0\n")
+        for part in ("run", "test"):
+            (folder / part).chmod(0o755)
+        user_tools.LEDGER.write_text(
+            json.dumps(
+                {
+                    "ids_probe": {
+                        "approved_at": "now",
+                        "sha256": user_tools._hashes(folder),
+                    }
+                }
+            )
+        )
+        with logs.bind(tool_call_id="call-b"):
+            result = user_tools.run("ids_probe", {})
+        self.assertIn("call-b", result.message)
 
 
 if __name__ == "__main__":
