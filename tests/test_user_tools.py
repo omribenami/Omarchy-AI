@@ -63,6 +63,19 @@ class UserToolTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn('errors=0 args={"boot": 0}', result.message)
 
+    def test_value_outside_enum_names_the_allowed_ones_without_running(self):
+        make_tool(self.src)
+        spec = json.loads((self.src / "tool.json").read_text())
+        spec["parameters"]["properties"]["operation"] = {"type": "string", "enum": ["describe_camera", "status"]}
+        (self.src / "tool.json").write_text(json.dumps(spec))
+        self.assertTrue(user_tools.propose(self.src)[0])
+        self.assertTrue(user_tools.install("wifi_health")[0])
+        result = actions.run_action("wifi_health", {"operation": "look"})
+        self.assertFalse(result.ok)
+        self.assertIn("'look' is not one of: describe_camera, status", result.message)
+        self.assertNotIn("errors=0", result.message)                 # the tool itself never ran
+        self.assertTrue(actions.run_action("wifi_health", {"operation": "status"}).ok)
+
     def test_changed_after_approval_is_neither_offered_nor_run(self):
         make_tool(self.src)
         user_tools.propose(self.src)

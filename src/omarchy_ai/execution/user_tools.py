@@ -340,12 +340,29 @@ def exists(name: str) -> bool:
     return _approved(name) is not None
 
 
+def _not_a_choice(folder: Path, args: dict) -> str:
+    """An argument outside its schema's enum, named with the values that are
+    allowed. Live 2026-10-17: the model sent operation 'look' for a camera
+    and got only "unknown operation", so it never found 'describe_camera'."""
+    try:
+        spec = json.loads((folder / "tool.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    for key, prop in ((spec.get("parameters") or {}).get("properties") or {}).items():
+        allowed = prop.get("enum") if isinstance(prop, dict) else None
+        if allowed and key in (args or {}) and args[key] not in allowed:
+            return f"{key} {args[key]!r} is not one of: {', '.join(map(str, allowed))}. Call again with one of these."
+    return ""
+
+
 def run(name: str, args: dict):
     from .actions import ActionResult
     from ..runtime.permissions import scrubbed_env
     folder = _approved(name)
     if folder is None:
         return ActionResult(False, f"{name} is not an approved tool (or changed since it was approved)")
+    if problem := _not_a_choice(folder, args):
+        return ActionResult(False, f"{name}: {problem}")
     try:
         done = subprocess.run([str(folder / "run")], cwd=folder, input=json.dumps(args or {}), capture_output=True,
                               text=True, timeout=RUN_TIMEOUT, env=scrubbed_env())
