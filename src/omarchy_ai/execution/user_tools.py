@@ -26,9 +26,24 @@ Installed tools join the catalog (execution/catalog.py), which is read on
 every use_tool call: a tool approved mid-conversation works in that same
 conversation, and the task that asked for approval resumes and uses it.
 
-Caveat: this is a same-user boundary, not a sandbox. It reliably gates the
-normal flow and mistakes; a worker deliberately writing the ledger itself is
-not something a same-user check can stop.
+Caveat: the approval is a same-user boundary. It reliably gates the normal
+flow and mistakes; a worker deliberately writing the ledger itself is not
+something a same-user check can stop.
+
+Every `run` and `test` runs in a bubblewrap sandbox (runtime/sandbox.py
+for_tool): the system and home read-only, the tool's folder, the MyApi vault
+(`omarchy-ai-vault get NAME`: the way a tool gets a secret), writes only to
+/tmp and ~/.cache, the network, and no ~/.ssh, ~/.gnupg, browser profiles or
+the assistant's key files. tool.json can widen that, and the widening is
+pinned and approved with the rest of the file:
+
+    "sandbox": {"needs": ["assistant_keys"]}  the assistant's model API keys
+                                              (a tool that calls omarchy_ai's
+                                              own vision or model code)
+    "sandbox": {"needs": ["desktop"]}         Wayland, Hyprland, PipeWire and
+                                              the session D-Bus
+    "sandbox": {"network": false}             no network
+    "sandbox": false                          no sandbox at all (opt-out)
 """
 from __future__ import annotations
 
@@ -52,6 +67,8 @@ NAME = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
 RUN_TIMEOUT = 120
 TEST_TIMEOUT = 180
 OUTPUT_CHARS = 4000
+# What a tool.json "sandbox" field may add to the default tool sandbox.
+SANDBOX_NEEDS = frozenset({"assistant_keys", "desktop"})
 
 
 def _builtin_names() -> set[str]:
@@ -94,6 +111,11 @@ def validate(folder: Path) -> tuple[dict | None, list[str]]:
     reads = spec.get("read_operations", [])
     if not isinstance(reads, list) or not all(isinstance(r, str) for r in reads):
         problems.append('read_operations must be a list of `operation` values that only look things up')
+    box = spec.get("sandbox", True)
+    if not (isinstance(box, bool) or (isinstance(box, dict) and set(box) <= {"needs", "network"}
+                                      and set(box.get("needs") or []) <= SANDBOX_NEEDS)):
+        problems.append('sandbox must be false, or {"needs": [' + ", ".join(sorted(SANDBOX_NEEDS))
+                        + '], "network": true|false}')
     for part in ("run", "test"):
         path = folder / part
         if not path.is_file() or not path.stat().st_mode & 0o111:
@@ -102,11 +124,29 @@ def validate(folder: Path) -> tuple[dict | None, list[str]]:
     return spec, problems
 
 
-def _test(folder: Path) -> tuple[bool, str]:
-    from ..runtime.permissions import scrubbed_env
+def _spec(folder: Path) -> dict:
     try:
-        done = subprocess.run([str(folder / "test")], cwd=folder, capture_output=True, text=True,
-                              timeout=TEST_TIMEOUT, env=scrubbed_env())
+        spec = json.loads((folder / "tool.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return spec if isinstance(spec, dict) else {}
+
+
+def _sandboxed(folder: Path, program: str, *, input_text: str | None, timeout: float) -> subprocess.CompletedProcess:
+    """Run the tool's `run` or `test` under its sandbox (runtime/sandbox.py
+    for_tool; tool.json "sandbox" widens or turns it off)."""
+    from ..runtime import sandbox
+    from ..runtime.permissions import scrubbed_env
+    env = scrubbed_env()
+    policy = sandbox.for_tool(folder, _spec(folder))
+    with sandbox.wrapped([str(folder / program)], policy, env=env, cwd=folder) as argv:
+        return subprocess.run(argv, cwd=folder, input=input_text, capture_output=True, text=True, timeout=timeout,
+                              env=env)
+
+
+def _test(folder: Path) -> tuple[bool, str]:
+    try:
+        done = _sandboxed(folder, "test", input_text=None, timeout=TEST_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"test could not run: {exc}"
     output = (done.stdout + done.stderr).strip()[-1500:]
@@ -357,15 +397,13 @@ def _not_a_choice(folder: Path, args: dict) -> str:
 
 def run(name: str, args: dict):
     from .actions import ActionResult
-    from ..runtime.permissions import scrubbed_env
     folder = _approved(name)
     if folder is None:
         return ActionResult(False, f"{name} is not an approved tool (or changed since it was approved)")
     if problem := _not_a_choice(folder, args):
         return ActionResult(False, f"{name}: {problem}")
     try:
-        done = subprocess.run([str(folder / "run")], cwd=folder, input=json.dumps(args or {}), capture_output=True,
-                              text=True, timeout=RUN_TIMEOUT, env=scrubbed_env())
+        done = _sandboxed(folder, "run", input_text=json.dumps(args or {}), timeout=RUN_TIMEOUT)
     except subprocess.TimeoutExpired:
         return ActionResult(False, f"{name} timed out after {RUN_TIMEOUT}s")
     except OSError as exc:
