@@ -21,6 +21,7 @@ from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
 from .live import build_session_config, LiveSession
+from .prompt_version import resolve_prompt_version
 from .echo_cancel import EchoCancellation
 from . import escalation, extensions, fallback, speaker_id, switchboard
 from .myapi_refinement import refine_myapi_result
@@ -158,9 +159,13 @@ def build_live_config(config):
     shared = build_session_config(config)
     declared = shared["delegation"]["responses"]["tools"]
     instructions = shared["instructions"]
+    # Prompt v2 (voice/prompt_v2.py) already carries the catalog and speaker
+    # text in its own wording; only the legacy prompt gets these appended.
+    legacy = resolve_prompt_version(config) == "legacy"
     if getattr(config, "tool_picker", False):
         myapi_on = getattr(config, "myapi_enabled", False) and myapi.is_connected()
         declared = [t for t in declared if t["name"] == "end_conversation"] + catalog.declared(myapi_on)
+    if legacy and getattr(config, "tool_picker", False):
         instructions += (
             "\n\nTOOL CATALOG: Only your most used tools are declared directly. Every other tool named in these "
             "instructions (start_casting, set_reminder, run_omarchy_command, report_issue, list_commands, "
@@ -172,7 +177,7 @@ def build_live_config(config):
               "parameters_json_schema": t["parameters"],
               "behavior": "NON_BLOCKING" if t["name"] in NON_BLOCKING_ACTIONS else "BLOCKING"}
              for t in declared]
-    if getattr(config, "speaker_id_enabled", False):
+    if legacy and getattr(config, "speaker_id_enabled", False):
         instructions += (
             "\n\nWHO IS SPEAKING: this machine recognizes enrolled household members by their voice. A message "
             "that starts with [Speaker] names the person talking from then on, until another one arrives; it is "
@@ -193,6 +198,7 @@ def build_live_config(config):
                 speaker_id.describe(key, entry) for key, entry in household.items()) + ".")
         if style := speaker_id.house_style():
             instructions += "\nThe household's own words on how to be with them: " + style
+    if getattr(config, "speaker_id_enabled", False):
         tools.append({
             "name": "remember_voice",
             "description": ("Add what the person speaking has just said to their own voice recordings, so they are "

@@ -3,7 +3,9 @@
 # The gates start where the code already passes (see [tool.ruff] and
 # [tool.mypy] in pyproject.toml for the debt lists to shrink). Tests marked
 # `live` or `hardware` are skipped here (tests/conftest.py skips them when
-# CI is set); everything else runs, with coverage.
+# CI is set). The deterministic behavior evals in evals/ run with the unit
+# suite (pytest testpaths). Live-model evals stay skipped. Coverage is
+# reported for the Python tests.
 
 name: CI
 
@@ -58,7 +60,7 @@ jobs:
       - name: Mypy
         run: uv run --frozen mypy
 
-      - name: Python tests
+      - name: Python tests and deterministic evals
         run: |
           uv run --frozen coverage run -m pytest -ra -m "not live and not hardware"
           uv run --frozen coverage report
