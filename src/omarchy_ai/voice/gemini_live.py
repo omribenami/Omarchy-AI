@@ -16,6 +16,7 @@ from ..core import alert_clips, identities, quota, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
+from ..execution import runner
 from ..execution.actions import run_action, ActionResult
 from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
@@ -412,12 +413,15 @@ class GeminiLiveSession:
                     self._cancelled.update(message.tool_call_cancellation.ids or [])
                     from ..execution.browser_jev import cancel_browser_tasks
                     cancel_browser_tasks()
+                    runner.default_runner().cancel(owner=self, tags=set(message.tool_call_cancellation.ids or []),
+                                                   reason="cancelled by the conversation")
                 if message.tool_call:
                     self._replied()
                     for call in message.tool_call.function_calls or []:
                         if call.name == "end_conversation":
                             from ..execution.browser_jev import cancel_browser_tasks
                             cancel_browser_tasks()
+                            runner.default_runner().cancel(owner=self, reason="the conversation ended")
                             self._hangup.set()
                             return
                         if call.id not in self._seen:
@@ -597,7 +601,7 @@ class GeminiLiveSession:
             if self._overlay:
                 await asyncio.to_thread(watchdog.tool_call, tool, args)
             self._as_speaker()
-            result = await asyncio.to_thread(jev_fast.execute, tool, args)
+            result = await self._tool(tool, args, jev_fast.execute, guarded=False)
             self._jev_done = (tool, args, time.monotonic(), result.message, text) if result.ok else None
             log.info("Jev fast path: %r -> %s %s ok=%s %r evidence=%s total=%.0fms", text[:120], tool, args,
                      result.ok, result.message[:160], evidence, (time.monotonic() - started) * 1000)
@@ -1118,7 +1122,8 @@ class GeminiLiveSession:
                  "body": found.get("instructions") or found.get("body") or ""}
         if not await asyncio.to_thread(skills.wants_run, heard or asked, skill, asked=asked if heard else ""):
             return None
-        started = await asyncio.to_thread(run_action, "run_skill", {"name": name, "request": request})
+        started = await self._tool("run_skill", {"name": name, "request": request}, run_action, call.id,
+                                   guarded=False)
         log.info("Skill run: call=%s skill=%s request=%r -> ok=%s %r", call.id, name, request[:120], started.ok,
                  started.message[:160])
         if not started.ok:
@@ -1129,7 +1134,7 @@ class GeminiLiveSession:
     async def _escalate(self, goal: str, proactive: bool = False, unbacked: bool = False) -> None:
         log.info("Escalating to the Task Runtime: session=%s goal=%r", self._audit_session, goal[:600])
         self._as_speaker()  # the task runs as them (runtime/runtime.py)
-        result = await asyncio.to_thread(run_action, "start_task", {"goal": goal})
+        result = await self._tool("start_task", {"goal": goal}, run_action, guarded=False)
         try:
             started = json.loads(result.message) if result.ok else {}
         except ValueError:
@@ -1216,6 +1221,14 @@ class GeminiLiveSession:
         """Tools run from here on act as whoever is talking now (asyncio.to_thread
         copies this into their thread). Each worker task has its own context."""
         identities.set_current(self.identity())
+
+    async def _tool(self, name: str, args: dict, execute, call_id: str | None = None, *, guarded: bool = True):
+        """One tool call on the ToolRunner: its tool's deadline (a hung call
+        is answered "timed out after N s; nothing was confirmed"), cancelled
+        with this conversation or its call id. `guarded` runs it through
+        InputGuard, as the model's own calls always were."""
+        return await runner.default_runner().arun(
+            name, args, execute=execute, wrap=self._input_guard.run if guarded else None, owner=self, tag=call_id)
 
     def _run_tool(self, name: str, args: dict) -> ActionResult:
         """run_action, except unlock_screen from the paired phone (the only
@@ -1337,7 +1350,8 @@ class GeminiLiveSession:
             elif redirect is not None:
                 result = redirect
             elif call.name in self.extra_tools:
-                result = await asyncio.to_thread(self.extra_tools[call.name], dict(call.args or {}))
+                result = await self._tool(call.name, dict(call.args or {}),
+                                          lambda name, args: self.extra_tools[name](args), call.id, guarded=False)
             elif call.name == "run_mission":
                 result = await self._run_mission(session, call.args or {})
             elif call.name == "get_recent_actions":
@@ -1364,7 +1378,7 @@ class GeminiLiveSession:
                         "execute", tool, args, evidence={"picked": pick.evidence})))
                 else:
                     review = asyncio.create_task(self._review(call, tool, args))
-                early = (asyncio.create_task(asyncio.to_thread(self._input_guard.run, run_action, tool, args))
+                early = (asyncio.create_task(self._tool(tool, args, run_action, call.id))
                          if tool in switchboard.READ_ONLY else None)
                 verdict = await review
                 name, prefix = tool, ""
@@ -1387,7 +1401,7 @@ class GeminiLiveSession:
                         # semantic and multilingual. InputGuard still pins that
                         # approval to this exact payload before execution.
                         self._input_guard.approve_external_write(name, args)
-                    action = asyncio.create_task(asyncio.to_thread(self._input_guard.run, self._run_tool, name, args))
+                    action = asyncio.create_task(self._tool(name, args, self._run_tool, call.id))
                 try:
                     if action is not None:
                         result = await asyncio.shield(action)
@@ -1955,6 +1969,7 @@ class GeminiLiveSession:
                 self._tv_mic = None
             from ..execution.browser_jev import cancel_browser_tasks
             cancel_browser_tasks()
+            runner.default_runner().cancel(owner=self, reason="the conversation ended")
             self._hangup.set()
             for task in tasks:
                 task.cancel()

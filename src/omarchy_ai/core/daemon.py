@@ -341,6 +341,9 @@ def main() -> None:
     from ..execution.passwords import RedactingFilter
     for handler in logging.getLogger().handlers:
         handler.addFilter(RedactingFilter())
+    # MyApi/Gmail reads run in killable worker processes (execution/runner.py).
+    from ..execution import runner
+    runner.use_workers()
     daemon = OmaDaemon()
     try:
         asyncio.run(daemon.run())

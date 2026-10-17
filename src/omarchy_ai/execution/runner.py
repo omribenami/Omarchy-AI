@@ -171,9 +171,12 @@ class WorkerLost(Exception):
 class _Call:
     """One call in flight: whether it finished or was stopped, decided once."""
 
-    def __init__(self, spec: ToolSpec, owner: object, deadline: float) -> None:
+    def __init__(
+        self, spec: ToolSpec, owner: object, deadline: float, tag: object = None
+    ) -> None:
         self.spec = spec
         self.owner = owner
+        self.tag = tag
         self.deadline = deadline
         self.token = CancelToken()
         self.started = time.monotonic()
@@ -285,9 +288,10 @@ class ToolRunner:
         wrap: Wrap | None = None,
         owner: object = None,
         deadline: float | None = None,
+        tag: object = None,
     ) -> ToolResult:
         """Run one call and block until it ends (at most its deadline)."""
-        call = self._start(name, args, execute, wrap, owner, deadline)
+        call = self._start(name, args, execute, wrap, owner, deadline, tag)
         if not call.wait(call.deadline):
             call.stop(TIMEOUT, "timeout")
         return self._result(call)
@@ -301,6 +305,7 @@ class ToolRunner:
         wrap: Wrap | None = None,
         owner: object = None,
         deadline: float | None = None,
+        tag: object = None,
     ) -> ToolResult:
         """Run one call off the event loop; cancelling the awaiting task
         cancels the call."""
@@ -314,7 +319,7 @@ class ToolRunner:
         def wake() -> None:
             loop.call_soon_threadsafe(set_settled)
 
-        call = self._start(name, args, execute, wrap, owner, deadline)
+        call = self._start(name, args, execute, wrap, owner, deadline, tag)
         call.listen(wake)
         try:
             await asyncio.wait({settled}, timeout=call.deadline)
@@ -330,23 +335,26 @@ class ToolRunner:
         *,
         owner: object = None,
         names: set[str] | frozenset[str] | None = None,
+        tags: set | frozenset | None = None,
         reason: str = "stop",
     ) -> int:
         """Stop the running calls of `owner` (all owners when None), only
-        those of the tools in `names` when given. Returns how many."""
+        those of the tools in `names` / with the `tags` (e.g. call ids) when
+        given. Returns how many."""
         with self._lock:
             calls = [
                 c
                 for c in self._running
-                if (owner is None or c.owner is owner)
+                if (owner is None or c.owner == owner)
                 and (names is None or c.spec.name in names)
+                and (tags is None or c.tag in tags)
             ]
         return sum(call.stop(CANCELLED, reason) for call in calls)
 
     def running(self, owner: object = None) -> list[str]:
         with self._lock:
             return [
-                c.spec.name for c in self._running if owner is None or c.owner is owner
+                c.spec.name for c in self._running if owner is None or c.owner == owner
             ]
 
     # ------------------------------------------------------------- internals
@@ -359,9 +367,10 @@ class ToolRunner:
         wrap: Wrap | None,
         owner: object,
         deadline: float | None,
+        tag: object = None,
     ) -> _Call:
         tool = spec(name)
-        call = _Call(tool, owner, tool.deadline if deadline is None else deadline)
+        call = _Call(tool, owner, tool.deadline if deadline is None else deadline, tag)
         token = call.token
         token.on_cancel(lambda: _run_canceller(name))
         routed = self._route(execute, token, call)

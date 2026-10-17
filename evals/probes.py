@@ -32,7 +32,9 @@ def _no_desktop_or_phone(runtime_class):
 
 
 def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
-    """True when the live-session dispatcher finishes a hung tool within ``deadline``."""
+    """True when the live-session dispatcher answers a hung tool with a timeout
+    within ``deadline`` (the tool's own deadline is set to half of it)."""
+    from omarchy_ai.execution import tools
     from omarchy_ai.voice.tool_dispatch import ToolDispatchMixin
 
     stop = threading.Event()
@@ -45,7 +47,7 @@ def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
 
     class Session(ToolDispatchMixin):
         def __init__(self):
-            self._tool_lock = None
+            self._resources = None
             self._hangup = asyncio.Event()
             self._demo_waiting_for_action = asyncio.Event()
             self._watchdog_on = False
@@ -58,23 +60,31 @@ def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
         def _set_watchdog_state(self, state):
             return None
 
+        def _send_function_result(self, call_id, ok, message):
+            sent.append(message)
+
+    sent: list[str] = []
+
     async def probe() -> bool:
         session = Session()
-        with patch("omarchy_ai.voice.tool_dispatch.run_action", run_action):
+        with (
+            patch("omarchy_ai.voice.tool_dispatch.run_action", run_action),
+            patch.dict(tools.DEADLINES, {"browser_task": deadline / 2}),
+        ):
             task = asyncio.create_task(
                 session._run_tool_call("c1", "browser_task", {"goal": "hang"})
             )
             done, _pending = await asyncio.wait({task}, timeout=deadline)
             stop.set()  # release the fake tool so loop shutdown does not wait on it
             task.cancel()
-            return task in done
+            return task in done and not task.cancelled() and task.exception() is None
 
     try:
         finished = asyncio.run(probe())
     finally:
         stop.set()
-    if finished:
-        return True, f"hung tool finished within {deadline}s"
+    if finished and sent and "timed out" in sent[0]:
+        return True, f"hung tool answered within {deadline}s: {sent[0]}"
     return False, f"hung tool still running after {deadline}s; dispatch has no deadline"
 
 

@@ -43,6 +43,7 @@ from pathlib import Path
 
 from ..config import CONFIG_DIR, Config
 from . import cast_audio, flux_pairing, flux_settings, presence, wake_models
+from ..execution import runner
 from ..execution.actions import run_action, unlock_screen_for_paired_phone
 from ..execution import approval_pin, vision
 from ..voice.live import build_session_config
@@ -1046,7 +1047,10 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             # Paired phone only (checked before _handle_tool): the one caller
             # allowed to unlock; run_action refuses it for everyone else.
-            result = unlock_screen_for_paired_phone() if name == "unlock_screen" else run_action(name, args)
+            # On the ToolRunner: the tool's deadline answers a call that hangs.
+            result = runner.default_runner().run(
+                name, args,
+                execute=lambda n, a: unlock_screen_for_paired_phone() if n == "unlock_screen" else run_action(n, a))
         except Exception:  # noqa: BLE001
             log.exception("phone bridge: tool call %s failed", name)
             self._send_json(200, {"ok": False, "message": f"{name} failed unexpectedly"})

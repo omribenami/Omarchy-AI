@@ -31,6 +31,7 @@ from rapidfuzz import fuzz
 from ..config import Config
 from ..core.history import append_session, load_recent_context
 from ..core.memory import load_preferences
+from ..execution import runner
 from ..execution.actions import run_action
 from ..execution.tools import TOOLS
 from ..execution.verified_input import InputGuard
@@ -503,7 +504,8 @@ class OmarchySession:
             return {"ok": False, "message": "The model requested an unknown action or invalid arguments."}
         watchdog.tool_call(name, args)
         try:
-            result = await asyncio.to_thread(self._guard.run, run_action, name, args)
+            result = await runner.default_runner().arun(
+                name, args, execute=run_action, wrap=self._guard.run, owner=self)
             payload = {"ok": result.ok, "message": result.message}
         except Exception:
             log.exception("Action failed: %s", name)
@@ -561,6 +563,7 @@ class OmarchySession:
                 await self._speak(reply)
                 self._guard.assistant_replied()
         finally:
+            runner.default_runner().cancel(owner=self, reason="the conversation ended")
             status_icon.set_live(False)
             if self.config.watchdog_enabled:
                 watchdog.stop()
