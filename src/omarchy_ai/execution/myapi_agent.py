@@ -210,14 +210,16 @@ def _writes(name: str, method: dict, args: dict) -> bool:
 def _call(service: str, method: str, args: dict, origin: str = "") -> ActionResult:
     """One step. With origin (a prepared action the user approved) it is a
     write: journaled and sent at most once for that origin (core/effects.py)."""
-    if service == "gmail" and method in ("GMAIL_FETCH_EMAILS", "GMAIL_LIST_THREADS") and args.get("query"):
+    if service == "gmail" and method in ("GMAIL_FETCH_EMAILS", "GMAIL_LIST_THREADS"):
         # Finding mail goes through the search that relaxes human words and keeps
         # Gmail's filters (live 2026-09-30: "Chris Watson flooring quote" as a
-        # literal thread query found nothing, and the agent gave up).
+        # literal thread query found nothing, and the agent gave up). With no
+        # query it is the newest inbox mail: GMAIL_LIST_THREADS without one came
+        # back as a single empty message (live 2026-10-17).
         from .actions import _gmail_search_with_fallback
         from .. import myapi
         # from:Chris Watson -> from:"Chris Watson" (unquoted, Gmail reads the surname as a loose word).
-        query = re.sub(r'\b(from|to|cc):([A-Z][\w.\'-]*) ([A-Z][\w.\'-]*)\b', r'\1:"\2 \3"', str(args["query"]))
+        query = re.sub(r'\b(from|to|cc):([A-Z][\w.\'-]*) ([A-Z][\w.\'-]*)\b', r'\1:"\2 \3"', str(args.get("query") or "in:inbox"))
         try:
             # Five whole messages: each one comes with its payload, and ten took
             # 28 s through MyApi (live 2026-09-30); the newest few are what she needs.
@@ -226,11 +228,6 @@ def _call(service: str, method: str, args: dict, origin: str = "") -> ActionResu
         except (myapi.MyApiError, ValueError) as exc:
             return ActionResult(False, f"Gmail search failed: {exc}")
         return ActionResult(True, json.dumps({"attempted": attempted, **result}, ensure_ascii=False))
-    if service == "gmail" and method == "GMAIL_FETCH_EMAILS" and "include_payload" not in args:
-        # Sender, subject, preview and text without the raw MIME parts: four
-        # messages were 429k characters with them and 37k without (live
-        # 2026-10-17), and "check my last 4 emails" took over 20 s to read.
-        args = {**args, "include_payload": False}
     if origin:
         from ..core import effects
         from .actions.myapi_tools import myapi_write_execute
