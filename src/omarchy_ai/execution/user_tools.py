@@ -137,7 +137,8 @@ def _sandboxed(folder: Path, program: str, *, input_text: str | None, timeout: f
     for_tool; tool.json "sandbox" widens or turns it off)."""
     from ..runtime import sandbox
     from ..runtime.permissions import scrubbed_env
-    env = scrubbed_env()
+    from ..core import logs
+    env = {**scrubbed_env(), **logs.env()}  # the call's IDs (core/logs.py), inside the sandbox too
     policy = sandbox.for_tool(folder, _spec(folder))
     with sandbox.wrapped([str(folder / program)], policy, env=env, cwd=folder) as argv:
         return subprocess.run(argv, cwd=folder, input=input_text, capture_output=True, text=True, timeout=timeout,

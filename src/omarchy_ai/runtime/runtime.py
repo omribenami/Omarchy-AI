@@ -30,6 +30,7 @@ import threading
 import time
 from typing import Callable
 
+from ..core import logs
 from . import shell
 from ..execution import provenance
 from .control import LIVE_GAPS, ControlPlane
@@ -459,7 +460,9 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             if not background:
                 self._drive(task.id)
                 return
-            thread = threading.Thread(target=self._drive, args=(task.id,), name=f"task-{task.id}", daemon=True)
+            # The conversation and tool call that started it stay on its log lines (core/logs.py).
+            thread = threading.Thread(target=logs.carry(self._drive), args=(task.id,), name=f"task-{task.id}",
+                                      daemon=True)
             self._threads[task.id] = thread
             thread.start()
 
@@ -498,6 +501,10 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
 
     # -------------------------------------------------------------- driver
     def _drive(self, task_id: str) -> None:
+        with logs.bind(task_id=task_id, step_id=None):  # its log lines (core/logs.py)
+            self._drive_bound(task_id)
+
+    def _drive_bound(self, task_id: str) -> None:
         task = self.store.load(task_id)
         if task is None:
             return
@@ -657,7 +664,8 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
                                 timeout=dispatch.get("timeout", 600))
         ctx = WorkContextImpl(self, task, step["n"])
         try:
-            report = executor.run(assignment, ctx)
+            with logs.bind(step_id=step["n"]):
+                report = executor.run(assignment, ctx)
         except Exception as exc:  # noqa: BLE001
             log.exception("executor %s crashed", name)
             report = Report(R_FAILED, claim=f"{name} crashed: {type(exc).__name__}: {exc}")

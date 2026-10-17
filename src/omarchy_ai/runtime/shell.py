@@ -86,6 +86,8 @@ def _base_env() -> dict:
     except Exception:  # noqa: BLE001 -- desktop env is best effort outside a session
         env = dict(os.environ)
     env = scrubbed_env(env)
+    from ..core import logs
+    env.update(logs.env())  # the task, step and session IDs it runs for (core/logs.py), sandboxed or not
     env.setdefault("PAGER", "cat")
     env["SYSTEMD_PAGER"] = ""
     env["GIT_PAGER"] = "cat"
