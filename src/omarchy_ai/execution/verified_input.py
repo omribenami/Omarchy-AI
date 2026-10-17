@@ -5,6 +5,7 @@ import time
 import uuid
 
 from ..core import effects
+from . import provenance
 from .actions import ActionResult
 
 
@@ -82,6 +83,9 @@ class InputGuard:
         # the user speaks or types, so calls between two of them -- the
         # model's retries included -- are one turn.
         self._session, self._turn = uuid.uuid4().hex[:12], 0
+        # Untrusted content seen in this conversation, and the user's own
+        # words (execution/provenance.py): the taint check before every call.
+        self.taint = provenance.Taint()
 
     @property
     def turn_origin(self) -> str:
@@ -94,8 +98,10 @@ class InputGuard:
         if self._write_stage == "blocked":
             self._write_stage = "asked"
 
-    def heard_user(self) -> None:
-        """The user spoke (after the question: they answered)."""
+    def heard_user(self, text: str = "") -> None:
+        """The user spoke (after the question: they answered). `text` is
+        what they said, or a piece of it."""
+        self.taint.heard(text)
         self._turn += 1
         if self._confirm_stage == "asked":
             self._confirm_stage = "answered"
@@ -162,6 +168,23 @@ class InputGuard:
             return self._run(execute, name, args)
 
     def _run(self, execute, name, args):
+        why = provenance.approval_needed(name, args, tainted=self.taint.tainted, said=self.taint.said())
+        if why is not None:
+            from .myapi_agent import ask_tap
+            return ask_tap(name, args, why, self.taint.sources)
+        source = provenance.of(name, args)
+
+        def run(tool, tool_args):
+            # Only what the tool itself returned can carry content, not a block of ours.
+            result = execute(tool, tool_args)
+            if tool == name and provenance.untrusted(source) and getattr(result, "message", "") \
+                    and not getattr(result, "harness", False):
+                self.taint.mark(source)
+            return result
+
+        return self._guarded(run, name, args)
+
+    def _guarded(self, execute, name, args):
         blocked_write = self._external_write_allowed(name, args)
         if blocked_write is not None:
             return blocked_write

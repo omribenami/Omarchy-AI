@@ -147,3 +147,129 @@ def rewrap(text: str, change: Callable[[str], str]) -> str:
 def clip(text: str, limit: int) -> str:
     """At most about `limit` characters of a result, its fence kept whole."""
     return rewrap(text, lambda inner: inner[:limit])
+
+
+# ---------------------------------------------------------------- taint
+#
+# Enforced in code, not only in the prompt: once untrusted content entered a
+# conversation or task, it is tainted for good. While tainted, an
+# irreversible call aims only at targets the user said (or approved in a
+# plan); a target from anywhere else -- an email's "forward to x@evil", a
+# page's link, a log's path -- needs the user's tap. approval_needed() is the
+# whole decision (plan 2.4 will fold it into one approval policy); the
+# sessions turn a "needs approval" into the existing approval paths: a
+# confirm card (core/pending_actions.py) or a Task Runtime approval.
+
+# A key whose value is itself a target, wherever it sits in nested arguments.
+_TARGET_KEY = re.compile(
+    r"recipient|e?mail|^to$|^cc$|^bcc$|url|uri|link|href|path|file|dest|repo|amount|price|"
+    r"address|phone|account|command|cmd|channel|webhook|host",
+    re.IGNORECASE,
+)
+# Targets written inside free text.
+_EMBEDDED = re.compile(
+    r"(?:https?://|www\.)\S+"  # URLs
+    r"|[\w.+-]+@[\w-]+(?:\.[\w-]+)+"  # addresses
+    r"|(?:~|\.{1,2})?/[\w.~/-]*[\w~]"  # paths
+    r"|\b[\w-]+(?:\.[\w-]+)*\.[a-zA-Z][\w-]*\b"  # file and domain names
+    r"|[$€£₪]\s?\d[\d,.]*"  # amounts
+    r"|\b\d[\d,.]*\s?(?:usd|eur|gbp|ils|nis|dollars?|euros?|shekels?)\b",
+    re.IGNORECASE,
+)
+_TOKEN = re.compile(r"[^\W_]+")
+# Parts of a target nobody says aloud.
+_BOILERPLATE = frozenset(
+    {"http", "https", "www", "com", "org", "net", "io", "html", "htm", "php", "mailto"}
+)
+_SAID_KEPT = 4000  # characters of the user's words a session keeps
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t for t in _TOKEN.findall(text.lower()) if len(t) >= 2 and t not in _BOILERPLATE
+    }
+
+
+def _leaves(value: object, key: str = "") -> list[tuple[str, str]]:
+    """(key, text) of every string or number in a value, nested ones included."""
+    if isinstance(value, dict):
+        return [leaf for k, v in value.items() for leaf in _leaves(v, str(k))]
+    if isinstance(value, (list, tuple)):
+        return [leaf for v in value for leaf in _leaves(v, key)]
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        return [(key, str(value))]
+    return []
+
+
+def targets(name: str, args: dict) -> list[str]:
+    """What an irreversible call aims at, from tools.KEY_ARGS. A tool that
+    declares nothing (unknown) aims at everything it was given."""
+    from . import tools
+
+    spec = tools.KEY_ARGS.get(name)
+    args = args if isinstance(args, dict) else {}
+    if spec is None:
+        return [text for _, text in _leaves(args)]
+    found: list[str] = []
+    for arg in spec:
+        value = args.get(arg.rstrip("~"))
+        if value is None or value == "":
+            continue
+        if isinstance(value, (dict, list, tuple)):
+            for key, text in _leaves(value, arg):
+                found += [text] if _TARGET_KEY.search(key) else _EMBEDDED.findall(text)
+        elif arg.endswith("~"):
+            found += _EMBEDDED.findall(str(value))
+        else:
+            found.append(str(value))
+    return found
+
+
+def _home(text: str) -> str:
+    import os
+
+    home = os.path.expanduser("~")
+    return text.replace(home, "~") if home and home != "~" else text
+
+
+def approval_needed(name: str, args: dict, *, tainted: bool, said: str) -> str | None:
+    """None to run the call; otherwise why it needs the user's tap. Only a
+    tainted conversation or task is ever stopped, only for an irreversible
+    call, and only when one of its targets is not in `said` (the user's own
+    words and any plan they approved). Unsure is a tap."""
+    from . import tools
+
+    if not tainted or tools.effect_class(name) != tools.IRREVERSIBLE:
+        return None
+    heard = _tokens(_home(said))
+    missing = [aim for aim in targets(name, args) if not _tokens(_home(aim)) <= heard]
+    if not missing:
+        return None
+    shown = ", ".join(repr(m[:80]) for m in missing[:3])
+    return f"{shown} came from content, not from the user's own words"
+
+
+class Taint:
+    """One conversation's taint: whether untrusted content entered it, from
+    where, and what the user said in it."""
+
+    def __init__(self) -> None:
+        self.tainted = False
+        self.sources: list[str] = []
+        self._joined, self._spaced = "", ""
+
+    def mark(self, source: str) -> None:
+        self.tainted = True
+        if source and source not in self.sources:
+            self.sources = (self.sources + [source])[-5:]
+
+    def heard(self, text: str) -> None:
+        """The user's words: a whole turn, or one fragment of one (live
+        transcription arrives in pieces, so they are kept both joined and
+        apart)."""
+        if text:
+            self._joined = (self._joined + text)[-_SAID_KEPT:]
+            self._spaced = (self._spaced + " " + text)[-_SAID_KEPT:]
+
+    def said(self) -> str:
+        return self._joined + "\n" + self._spaced

@@ -301,7 +301,7 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
             display = text or ("Attached " + ", ".join(str(m.get('name')) for m in attachment_meta))
             adapter._transcript.append({'role': 'user', 'text': display, 'attachments': attachment_meta})
             adapter._capture_password(text)  # a typed "pass: X" goes to the keyring too
-            adapter._input_guard.heard_user()
+            adapter._input_guard.heard_user(text)
             emit({'type': 'response.event', 'event': {'type': 'response.created'}})
             if text:
                 parts.insert(0, {'text': text})

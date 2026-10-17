@@ -844,7 +844,7 @@ class LiveSession(ToolDispatchMixin):
             if not self._input_buffer:
                 self._turn_id = logs.new_id()  # the first words of a new utterance
             self._input_buffer += event.get("delta", "")
-            self._input_guard.heard_user()
+            self._input_guard.heard_user(event.get("delta", ""))
             if _is_capability_demo(self._input_buffer):
                 self._demo_waiting_for_action.set()
             if self._output_buffer:

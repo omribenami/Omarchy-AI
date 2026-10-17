@@ -198,6 +198,12 @@ def _reconcile(action: dict, now: float) -> dict | None:
         return {"status": UNCERTAIN, "outcome": UNCERTAIN, "effect_id": effect.effect_id if effect else "",
                 "message": f"I may have sent this ({title}): Omarchy AI stopped while sending it, before MyApi "
                            "answered. Check whether it went out, then resend or drop it."}
+    if action.get("tool"):
+        # A tapped tool call (execution/myapi_agent.ask_tap) keeps no MyApi
+        # record of its own here: unknown means it may have run.
+        return {"status": UNCERTAIN, "outcome": UNCERTAIN,
+                "message": f"{title} may have run: Omarchy AI stopped while running it. Check whether it "
+                           "happened, then resend or drop it."}
     return {"status": DONE, "outcome": "failed",
             "message": f"{title} was not sent: Omarchy AI stopped before sending it, so nothing went out. "
                        "Ask again to send it."}
