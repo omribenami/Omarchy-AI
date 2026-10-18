@@ -108,6 +108,7 @@ TOOLS: list[dict] = [
     _tool("check_assistant_updates", "Check GitHub for a newer stable Omarchy AI install bundle. Returns installed and latest versions or an honest network error. Does not install anything."),
     _tool("update_assistant", "Update Omarchy AI itself from its verified GitHub bundle. Call ONLY when the user explicitly says to update/install the assistant update, never just because an update exists or they ask about it. Runs separately, preserves settings and previous installation, and restarts the assistant. Tell the user the conversation will disconnect at restart. A successful tool result means started, NOT completed. Do not run git pull or terminal install commands instead."),
     _tool("get_update_status", "Read progress/result of the assistant self-update. Report preparing/installing/completed/failed accurately; a queued or running update is not complete."),
+    _tool("run_diagnostics", "Check the assistant's own health (keys, Gateway, MyApi, audio, wake word, desktop, service, stuck work, disk, version). Problems first, each with a fix."),
     _tool("report_issue", "File a new GitHub issue as the user (their logged-in gh CLI, or the token in Assistant Settings) on any GitHub repo: 'omarchy' = the Omarchy OS itself (omacom/omarchy, the default for OS, kernel, driver, desktop or hardware problems), 'omarchy-ai' = this assistant (omribenami/Omarchy-AI, the default when repo is empty), or any owner/name. This is the way to open a GitHub issue -- never the browser. Only call it when the user asks to report/file an issue, or agrees when you offer. Write the issue in English with the real evidence you have (log lines, versions, hardware, steps) even if the conversation is in another language. It is public: say the repo and title in one sentence and file it once the user says yes. If the result is a failure, say exactly why.", {
         "type": "object", "properties": {
             "repo": {"type": "string", "description": "'omarchy', 'omarchy-ai', or owner/name. Empty = omarchy-ai."},
@@ -934,7 +935,7 @@ EFFECT_CLASSES = {
     "cancel_scheduled_task": REVERSIBLE, "run_scheduled_task_now": IRREVERSIBLE, "find_skill": READ,
     "load_skill": READ, "run_skill": IRREVERSIBLE, "save_skill": REVERSIBLE, "list_skills": READ,
     "delete_skill": IRREVERSIBLE, "check_assistant_updates": READ, "update_assistant": IRREVERSIBLE,
-    "get_update_status": READ, "report_issue": IRREVERSIBLE, "remember_preference": REVERSIBLE,
+    "get_update_status": READ, "run_diagnostics": READ, "report_issue": IRREVERSIBLE, "remember_preference": REVERSIBLE,
     "run_mission": IRREVERSIBLE,
     # bar, audio, display, power
     "list_bar_icons": READ, "open_bar_panel": REVERSIBLE, "close_bar_panel": REVERSIBLE,
@@ -989,7 +990,7 @@ PROVENANCE = {
     "cancel_scheduled_task": _LOCAL, "run_scheduled_task_now": _LOCAL, "find_skill": _LOCAL,
     "load_skill": _LOCAL, "run_skill": _LOCAL, "save_skill": _LOCAL, "list_skills": _LOCAL,
     "delete_skill": _LOCAL, "check_assistant_updates": "external:github", "update_assistant": _SYS,
-    "get_update_status": _LOCAL, "report_issue": _SYS, "remember_preference": _LOCAL,
+    "get_update_status": _LOCAL, "run_diagnostics": _LOCAL, "report_issue": _SYS, "remember_preference": _LOCAL,
     "run_mission": _SYS,
     # bar, audio, display, power
     "list_bar_icons": _SYS, "open_bar_panel": _SYS, "close_bar_panel": _SYS,
@@ -1104,6 +1105,7 @@ DEADLINES = {
         "terminal_sudo", "open_browser", "show_browser", "inspect_browser", "browser_control", "desktop_task",
         "start_task", "task_respond", "schedule_task", "watch_camera", "find_skill", "list_cast_targets",
         "stop_casting", "myapi_list_services", "myapi_service_methods", "myapi_vault_list",
+        "run_diagnostics",
     ), 60.0),
     # capture 10 s, question planning 12 s, two 20 s Jev judgments
     "describe_screen": 90.0,
@@ -1165,7 +1167,7 @@ RESOURCES = {
         "schedule_task", "watch_camera", "list_scheduled_tasks", "cancel_scheduled_task",
         "run_scheduled_task_now", "find_skill", "load_skill", "run_skill", "save_skill", "list_skills",
         "delete_skill", "check_assistant_updates", "update_assistant", "get_update_status", "report_issue",
-        "remember_preference",
+        "remember_preference", "run_diagnostics",
     ), ASSISTANT),
     # the user's camera program only: a look never waits behind the screen
     "look_camera": CAMERA,
