@@ -49,6 +49,13 @@ Rules for every release:
   what they're doing, change what one is looking for, or stop it. Each one
   tells you its result once.
 
+### Fixes
+
+- In the typed chat, when a smart-home switch or another background job
+  finished and I said nothing about it, you were never told. Now I tell you
+  once, in the chat as well as by voice; an empty reply no longer counts as
+  having told you.
+
 ### Under the hood
 
 - `runtime/workers.py`: `delegate(kind=research|browser|files, brief)`, a

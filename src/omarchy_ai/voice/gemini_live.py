@@ -349,6 +349,9 @@ class GeminiLiveSession:
         self._unspoken: dict = {}
         self._last_call_at = 0.0  # monotonic start of her latest tool call
         self._last_audio_at = 0.0
+        # Her latest words: output transcription with text in it. Audio alone,
+        # or a turn that completes empty, is not her telling the user anything.
+        self._last_words_at = 0.0
         self._last_turn_done_at = 0.0
         self._forced_turn_closures = 0
         # Jev fast path (voice/jev_fast.py): the current utterance, whether
@@ -450,6 +453,8 @@ class GeminiLiveSession:
                 for role, transcription in (("user", server.input_transcription), ("assistant", server.output_transcription)):
                     if transcription and transcription.text:
                         self._transcript.append({"role": role, "text": transcription.text})
+                        if role == "assistant" and transcription.text.strip():
+                            self._last_words_at = time.monotonic()
                         if role == "user":
                             if not self._turn_open:
                                 self._turn_id, self._turn_open = logs.new_id(), True
@@ -849,12 +854,23 @@ class GeminiLiveSession:
                 if self._last_turn_done_at <= r["sent"]:
                     continue
                 r["busy"], r["sent"] = False, self._last_turn_done_at
-            if self._last_audio_at > r["sent"] or self._last_call_at > r["sent"]:
-                self._unspoken.pop(call_id, None)  # she spoke or acted after it: hers to tell
+            # Only words count. Typed chat 2026-10-18 14:09:07-14:09:10: the fan's
+            # result came back, her next turn completed with no words at all,
+            # and counting that turn as speech left the user never told.
+            if self._last_words_at > r["sent"] or self._last_call_at > r["sent"]:
+                self._unspoken.pop(call_id, None)  # she said something or acted after it: hers to tell
                 continue
             if now - r["sent"] >= self.RESULT_UNSPOKEN_SECONDS and self._idle():
                 return call_id
         return None
+
+    async def _result_watch(self, session) -> None:
+        """Result delivery alone, for a conversation that runs no _task_status
+        (the typed chat: no clips, no spoken progress)."""
+        while not self._hangup.is_set():
+            await asyncio.sleep(0.2)
+            if (unheard := self._result_due(time.monotonic())) is not None:
+                await self._deliver_result(session, unheard)
 
     async def _deliver_result(self, session, call_id: str) -> None:
         from google.genai import types
