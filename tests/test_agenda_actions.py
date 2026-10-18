@@ -173,8 +173,8 @@ class ActionTests(unittest.TestCase):
     def test_a_run_cut_off_by_a_crash_is_reported_once_and_not_repeated(self):
         job = self.action()
         agenda._update(job["id"], started_at=at(18, 30), next_run=None)
-        agenda.tick(at(18, 30) + agenda.STALE_RUN_SECONDS + 1, wait=True)
-        agenda.tick(at(18, 30) + agenda.STALE_RUN_SECONDS + 120, wait=True)
+        agenda.tick(at(18, 30) + 1, wait=True)  # at startup: no live process holds it
+        agenda.tick(at(18, 30) + 120, wait=True)
         self.run_action.assert_not_called()
         self.assertEqual([e["outcome"] for e in self.heard], ["interrupted"])
 

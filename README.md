@@ -505,6 +505,16 @@ About 90 typed tools plus Omarchy's full command set:
   watches, scheduled desktop goals, background commands, and "assistant"
   jobs that need the assistant's reasoning later. They run on a heartbeat between
   conversations.
+- **If the computer was asleep** at a job's time, its catch-up policy,
+  chosen when it is scheduled and read back to you, decides: `skip`
+  (reported as missed; the default for anything that changes something) or
+  `run_once_late` (done once, said to be late; the default for reminders
+  and reads). Missed runs are never all replayed.
+- **Event triggers** (`schedule_task` with `on`) start a reminder, action or
+  command when a file changes, a new email matches a Gmail search, a
+  process exits, a device comes online (ping or a check command) or a
+  calendar event is about to start. Each event fires once, bursts are
+  debounced, and optional quiet hours hold or drop events.
 - **Watches** follow one of your terminals, one of the assistant's, a file or a
   command. Jev judges when your condition is true ("the build finished",
   "Claude is waiting for my approval", "tests failed") and quotes the real
