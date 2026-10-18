@@ -8,19 +8,25 @@ Core Python code lives under `src/omarchy_ai/`. Keep features within the existin
 
 - `bash install.sh` installs native dependencies, creates the project environment, and configures the user service.
 - `uv sync --locked` synchronizes Python dependencies from `uv.lock` (the installed environment requires the setup script's system-site-packages configuration).
-- `.venv/bin/python -m unittest discover -s tests` runs the Python test suite.
+- `uv sync --frozen --group dev` installs the dev tools (pytest, ruff, mypy, coverage) that the CI gates use.
+- Run the CI gates (`.github/workflows/ci.yml`) before a pull request: `uv lock --check`, `uv run --frozen ruff check`, `uv run --frozen ruff format --check`, `uv run --frozen mypy`, `CI=1 uv run --frozen pytest -q`. `CI=1` skips tests marked `live` or `hardware`; pytest also collects `evals/`.
+- `.venv/bin/python -m unittest discover -s tests` still runs the Python test suite (the XDG isolation in `tests/conftest.py` applies only under pytest).
 - `node --test tests/phone_text.test.cjs` runs the phone-page JavaScript tests.
+- `uv run --frozen pytest tests/chaos -m chaos` runs the fault-injection tests (`core/crashpoints.py`, `tests/chaos/harness.py`, `tests/fakes/myapi_server.py`). `OMARCHY_CHAOS_RUNS=<n>` lengthens the randomized crash loop (CI runs 9).
+- `uv run --frozen python -m evals compare` scores the behavior evals for the legacy prompt and prompt v2 against `evals/baselines/deterministic.json` (`--update` rewrites it). The injection suite is `evals/injection/`. See `evals/README.md`.
 - `uv build` creates Python distributions.
 - `cd android-receiver && mise exec -- ./gradlew :app:assembleDebug` builds the debug APK with the pinned JDK/SDK environment.
 - `bash scripts/build-install-package.sh` creates a release bundle; use a clean, committed checkout.
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation and standard Python conventions: `snake_case` for functions/modules, `PascalCase` for classes, and uppercase constants. Preserve type hints where present and favor small, testable helpers around system boundaries. Shell scripts should use strict mode (`set -euo pipefail`) and quote expansions. Follow existing QML and Kotlin formatting in adjacent files. No repository-wide formatter or linter is configured, so keep diffs focused and stylistically consistent.
+Use four-space indentation and standard Python conventions: `snake_case` for functions/modules, `PascalCase` for classes, and uppercase constants. Preserve type hints where present and favor small, testable helpers around system boundaries. Shell scripts should use strict mode (`set -euo pipefail`) and quote expansions. Follow existing QML and Kotlin formatting in adjacent files. Ruff and mypy are configured in `pyproject.toml`. `ruff format` applies to every file not listed in `[tool.ruff.format] exclude`, and mypy checks every module not in the `ignore_errors` override; both lists are existing debt, so a file you fix leaves the list in the same change. New modules must pass both. Keep diffs focused and stylistically consistent.
 
 ## Testing Guidelines
 
-Python tests use `unittest`, including `unittest.mock`; name files `test_*.py` and methods `test_<behavior>`. Add regression coverage for fixes, especially subprocess, configuration, and session-state changes. Mock external services and desktop commands; document any validation requiring real PipeWire, Hyprland, phone, or TV hardware.
+Python tests use `unittest`, including `unittest.mock`; name files `test_*.py` and methods `test_<behavior>`. Add regression coverage for fixes, especially subprocess, configuration, and session-state changes. Mock external services and desktop commands; document any validation requiring real PipeWire, Hyprland, phone, or TV hardware. Mark tests that need a real network service `live` and tests that need real hardware `hardware`.
+
+Tests never touch the live desktop or the user's state. `tests/conftest.py` points the XDG directories at a throwaway directory before `omarchy_ai` is imported. `tests/no_live_desktop.py` raises `LiveDesktopCall` when a test starts a desktop or device binary (`hyprctl`, `omarchy*`, `wtype`, `wl-copy`, `wpctl`, `pactl`, `notify-send`, `systemctl`, `tmux`, `secret-tool`, `adb` and others) and stands in for the keyring; a fake binary inside a temp dir or the repo still runs. When a test trips the guard, mock the call at its patch target. Generate test secrets at run time; never commit a secret-looking literal.
 
 ## Commit & Pull Request Guidelines
 

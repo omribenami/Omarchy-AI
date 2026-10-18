@@ -115,3 +115,6 @@ Claude: …" had been classed `whole_task` 0.95; now `terminal` 0.99).
   one (the `run_mission` call is).
 - Thresholds are code constants in `switchboard.py`; retune them from the
   `Switchboard:` log lines, not by feel.
+- Since 2026-10-18 an execute verdict is not an approval for a send. Sends
+  wait on a confirm card under `core/approvals.py`; the switchboard's
+  reject and ask verdicts still block.

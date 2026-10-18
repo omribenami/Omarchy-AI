@@ -44,7 +44,25 @@ applicable. Actual receipt retrieval, authentication, and final report
 contents require separate live verification; a worker's completion claim
 does not establish that the report exists or is correct.
 
-Future work can strengthen provider health persistence across daemon restarts,
-per-tool idempotency keys, and cancellation/deadline propagation through all
-browser and API adapters. The current deadline bounds model retries and shell
-batches; it does not forcibly interrupt arbitrary synchronous tool adapters.
+Future work listed here on 2026-10-02, and where it landed since:
+
+- Provider health persistence across daemon restarts: done.
+  `core/provider_health.py` keeps worker-backend, coding-agent, quota,
+  voice-model and Gateway-breaker cooldowns in
+  `STATE_DIR/provider_health.json` until they expire.
+- Per-tool idempotency keys: done. `core/effects.py` journals every external
+  or irreversible change with a key from its origin (turn, pending action,
+  agenda step, task step), tool and arguments. A retry of a confirmed key
+  returns the stored result; a key that was dispatched with no answer is
+  `uncertain` and is not sent again. Every tool declares an effect class in
+  `execution/tools.py`, and `core/retry.py` retries by it. This is still not
+  exactly-once at the provider: an uncertain send is reported to the user
+  (`core/pending_actions.py` recovery), not reconciled.
+- Cancellation and deadlines through browser and API adapters: done for the
+  live paths. `execution/runner.py` runs every live, phone and Task Runtime
+  tool call with a per-tool deadline and a `core/cancel.py` token. The
+  MyApi and Gmail reads run in a worker process group that is killed at the
+  deadline. Other synchronous adapters still cannot be interrupted
+  forcibly: they are cancelled through their own canceller where one exists
+  (browser, desktop), or abandoned at the deadline with the result dropped
+  and any dispatched effect marked `uncertain`.
