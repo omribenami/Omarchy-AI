@@ -59,14 +59,33 @@ CHANGELOG = """# Changelog
 """
 
 
-class UpdateTests(unittest.TestCase):
+class _UpdateIsolation(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        self.patch = patch.object(updates, 'STATE', self.base / 'state')
+        self.patch = patch.object(updates, 'STATE', self.base / 'state/omarchy-ai/updates')
         self.patch.start()
         self.addCleanup(self.patch.stop)
+        # Never touch the real ~/.local/share/omarchy-ai, the real service,
+        # or this repository's own checkout state (tests run from one).
+        share = self.base / 'share'
+        isolation = {
+            'DATA': share, 'RELEASES': share / 'releases', 'VERSIONS': share / 'versions',
+            'CURRENT': share / 'current', 'WATCH_SECONDS': 0,
+        }
+        for name, value in isolation.items():
+            started = patch.object(updates, name, value)
+            started.start()
+            self.addCleanup(started.stop)
+        for name, kwargs in {
+            '_unit_state': {'return_value': 'active'},
+            '_trusted_keys': {'return_value': []},
+            'is_dev_checkout': {'side_effect': lambda root=None: root is not None and (Path(root) / '.git').exists()},
+        }.items():
+            started = patch.object(updates, name, **kwargs)
+            started.start()
+            self.addCleanup(started.stop)
         package = 'omarchy-ai-0.4.0-linux-x86_64.tar.gz'
         self.release = {
             'latest_version': '0.4.0', 'commit': None, 'tag': 'v0.4.0', 'package': package,
@@ -86,6 +105,8 @@ class UpdateTests(unittest.TestCase):
         return {'tag_name': tag if tag is not None else f'v{version}', 'draft': draft,
                 'prerelease': prerelease, 'assets': assets}
 
+
+class UpdateTests(_UpdateIsolation):
     def test_numeric_order_and_ignore_unpaired_or_non_versioned_files(self):
         names = ['omarchy-ai-0.9.0-linux-x86_64.tar.gz', 'omarchy-ai-0.10.0-linux-x86_64.tar.gz',
                  'omarchy-ai-9.0.0-linux-x86_64.tar.gz', 'demo-media', 'omarchy-ai-1.0.0-rc1-linux-x86_64.tar.gz']
@@ -342,9 +363,9 @@ class UpdateTests(unittest.TestCase):
         commands = []
         def command(args, **kwargs):
             commands.append(args)
-            if args == ['bash', 'scripts/setup.sh']:
+            if args == ['bash', str(updates.CURRENT / 'scripts/setup.sh')]:
                 raise RuntimeError('plugin installation failed')
-        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download'), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, '_command', side_effect=command), patch.object(updates, '_snapshot', return_value=['backup']), patch.object(updates, '_restore') as restore, patch.object(updates, '_healthy'), patch.object(updates.time, 'sleep'):
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download'), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, 'verify_release', return_value='SHA-256 verified'), patch.object(updates, '_command', side_effect=command), patch.object(updates, '_snapshot', return_value=['backup']), patch.object(updates, '_restore') as restore, patch.object(updates, '_healthy'), patch.object(updates.time, 'sleep'):
             with self.assertRaisesRegex(RuntimeError, 'plugin installation failed'):
                 updates.install('0.4.0', old)
         restore.assert_called_once_with(['backup'])
@@ -365,7 +386,7 @@ class UpdateTests(unittest.TestCase):
             urls.append(url)
             path.write_bytes(b'x')
 
-        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download', side_effect=download), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, '_command'), patch.object(updates, '_snapshot', return_value=[]), patch.object(updates, '_healthy'), patch.object(updates.time, 'sleep'):
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download', side_effect=download), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, 'verify_release', return_value='SHA-256 verified'), patch.object(updates, '_command'), patch.object(updates, '_snapshot', return_value=[]), patch.object(updates, '_healthy'), patch.object(updates.time, 'sleep'):
             updates.install('0.4.0', old)
         self.assertEqual(urls, [self.release['package_url'], self.release['checksum_url']])
 
@@ -442,7 +463,7 @@ class UpdateTests(unittest.TestCase):
         (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
         new = self.base / 'new'
         new.mkdir()
-        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download'), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, '_command') as command, patch.object(updates, '_snapshot', return_value=[]), patch.object(updates, '_healthy') as healthy, patch.object(updates.time, 'sleep'):
+        with patch.object(updates, 'RELEASES', self.base / 'releases'), patch.object(updates, 'discover', return_value=self.release), patch.object(updates, '_download'), patch.object(updates, 'unpack_verified', return_value=new), patch.object(updates, 'verify_release', return_value='SHA-256 verified'), patch.object(updates, '_command') as command, patch.object(updates, '_snapshot', return_value=[]), patch.object(updates, '_healthy') as healthy, patch.object(updates.time, 'sleep'):
             updates.install('0.4.0', old)
         self.assertEqual(updates.update_status()['state'], 'completed')
         self.assertTrue((old / 'pyproject.toml').exists())
@@ -478,6 +499,309 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual((shell / 'shell.json').read_text(), 'old layout')
         self.assertEqual((home / '.bashrc').read_text(), 'user customizations')
         self.assertFalse((home / '.zshrc').exists())
+
+
+class SideBySideUpdateTests(_UpdateIsolation):
+    """Release 3.6: versions/<v> trees, the `current` switch, the
+    post-update doctor check and automatic rollback."""
+
+    def _old_tree(self, path, version='0.3.0'):
+        path.mkdir(parents=True)
+        (path / 'pyproject.toml').write_text(f'[project]\nversion="{version}"')
+        return path
+
+    def _new_tree(self):
+        new = self.base / 'unpacked/omarchy-ai-0.4.0-linux-x86_64'
+        new.mkdir(parents=True)
+        (new / 'pyproject.toml').write_text('[project]\nversion="0.4.0"')
+        return new
+
+    def _install(self, previous, *, doctor=None, watch=None, commands=None, release=None, verify='SHA-256 verified'):
+        commands = [] if commands is None else commands
+        def command(args, **kwargs):
+            commands.append(args)
+        doctor = doctor or (lambda root: None)
+        new = self._new_tree()
+        with patch.object(updates, 'discover', return_value=release or self.release), patch.object(updates, '_download'), \
+                patch.object(updates, 'verify_release', return_value=verify), patch.object(updates, 'unpack_verified', return_value=new), \
+                patch.object(updates, '_command', side_effect=command), patch.object(updates, '_snapshot', return_value=['backup']), \
+                patch.object(updates, '_restore') as restore, patch.object(updates, '_healthy'), patch.object(updates.time, 'sleep'), \
+                patch.object(updates, '_doctor_quick', side_effect=doctor), \
+                patch.object(updates, '_watch', side_effect=watch), \
+                patch.object(updates, '_report_failure', return_value=(None, 'no token')):
+            try:
+                updates.install('0.4.0', previous)
+            finally:
+                self.restore = restore
+        return commands
+
+    def test_installs_side_by_side_and_switches_current(self):
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.parent.mkdir(parents=True, exist_ok=True)
+        updates.CURRENT.symlink_to(old)
+        commands = self._install(old)
+        target = updates.VERSIONS / '0.4.0'
+        self.assertTrue(updates.CURRENT.is_symlink())
+        self.assertEqual(updates.CURRENT.resolve(), target.resolve())
+        self.assertEqual(updates.installed_version(target), '0.4.0')
+        self.assertTrue((old / 'pyproject.toml').exists())
+        stop = commands.index(['systemctl', '--user', 'stop', updates.SERVICE])
+        setup = commands.index(['bash', str(updates.CURRENT / 'scripts/setup.sh')])
+        start = commands.index(['systemctl', '--user', 'start', updates.SERVICE])
+        self.assertLess(commands.index(['uv', 'sync', '--locked']), stop)
+        self.assertLess(stop, setup)
+        self.assertLess(setup, start)
+        status = updates.update_status()
+        self.assertEqual(status['state'], 'completed')
+        self.assertEqual(status['verification'], 'SHA-256 verified')
+        self.assertEqual(sorted(p.name for p in updates.VERSIONS.iterdir()), ['0.3.0', '0.4.0'])
+        self.assertFalse(any(p.name.startswith('.staging-') for p in updates.VERSIONS.iterdir()))
+
+    def test_keeps_only_the_last_two_versions(self):
+        self._old_tree(updates.VERSIONS / '0.2.0', '0.2.0')
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.symlink_to(old)
+        legacy = self._old_tree(updates.RELEASES / '0.1.0-abc/omarchy-ai-0.1.0-linux-x86_64', '0.1.0')
+        self._install(old)
+        self.assertEqual(sorted(p.name for p in updates.VERSIONS.iterdir()), ['0.3.0', '0.4.0'])
+        self.assertTrue(legacy.exists())  # outside versions/: never pruned
+
+    def test_legacy_install_migrates_once_and_rolls_back_to_its_tree(self):
+        legacy = self._old_tree(self.base / 'extracted/omarchy-ai-0.3.0-linux-x86_64')
+        self._install(legacy)
+        self.assertEqual(updates.CURRENT.resolve(), (updates.VERSIONS / '0.4.0').resolve())
+        self.assertTrue(legacy.exists())
+        # A second, failing update from the migrated install goes back to it.
+        updates.CURRENT.unlink()
+        legacy2 = self._old_tree(self.base / 'extracted2/omarchy-ai-0.3.0-linux-x86_64')
+        with self.assertRaises(RuntimeError):
+            self._install(legacy2, watch=RuntimeError('entered crash-loop safe mode'))
+        self.assertEqual(updates.CURRENT.resolve(), legacy2.resolve())
+        self.restore.assert_called_once_with(['backup'])
+
+    def test_failed_post_update_doctor_rolls_back(self):
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.symlink_to(old)
+        reports = iter([
+            {'systemd': {'status': 'green', 'reason': 'active'}, 'api_keys': {'status': 'red', 'reason': 'no key'}},
+            {'systemd': {'status': 'red', 'reason': 'not running'}, 'api_keys': {'status': 'red', 'reason': 'no key'}},
+        ])
+        commands = []
+        with self.assertRaisesRegex(RuntimeError, 'Post-update check failed: systemd'):
+            self._install(old, doctor=lambda root: next(reports), commands=commands)
+        self.assertEqual(updates.CURRENT.resolve(), old.resolve())
+        self.restore.assert_called_once_with(['backup'])
+        self.assertFalse((updates.VERSIONS / '0.4.0').exists())
+        self.assertEqual(commands[-1][:3], ['omarchy-shell', 'shell', 'rescanPlugins'])
+        self.assertIn(['systemctl', '--user', 'start', updates.SERVICE], commands[commands.index(['systemctl', '--user', 'daemon-reload']):])
+        status = updates.update_status()
+        self.assertEqual(status['state'], 'failed')
+        self.assertIn('rolled back', status['message'])
+        self.assertNotIn('api_keys', status['message'])  # already red before: not the update's doing
+
+    def test_reds_that_were_already_there_do_not_roll_back(self):
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.symlink_to(old)
+        report = {'api_keys': {'status': 'red', 'reason': 'no key'}, 'systemd': {'status': 'green', 'reason': ''}}
+        self._install(old, doctor=lambda root: report)
+        self.assertEqual(updates.update_status()['state'], 'completed')
+        self.assertEqual(updates.CURRENT.resolve(), (updates.VERSIONS / '0.4.0').resolve())
+
+    def test_doctor_that_cannot_run_before_the_switch_stops_the_update_untouched(self):
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.symlink_to(old)
+        def broken(root):
+            raise RuntimeError('omarchy-ai-doctor --quick did not produce a report')
+        commands = []
+        with self.assertRaisesRegex(RuntimeError, 'did not produce a report'):
+            self._install(old, doctor=broken, commands=commands)
+        self.assertNotIn(['systemctl', '--user', 'stop', updates.SERVICE], commands)
+        self.assertEqual(updates.CURRENT.resolve(), old.resolve())
+
+    def test_safe_mode_within_the_watch_rolls_back(self):
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.symlink_to(old)
+        with self.assertRaisesRegex(RuntimeError, 'safe mode'):
+            self._install(old, watch=RuntimeError('The updated assistant entered crash-loop safe mode 4 min after the update'))
+        self.assertEqual(updates.CURRENT.resolve(), old.resolve())
+        self.assertIn('rolled back', updates.update_status()['message'])
+
+    def _health(self, data):
+        path = updates._health_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'schema_version': 1, **data}))
+
+    def test_watch_raises_on_safe_mode_after_the_switch(self):
+        switched_at = 1000.0
+        clock = iter([1000.0 + 60 * minute for minute in range(20)])
+        sleeps = []
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 4:  # 4 min after the switch the new version starts crash-looping
+                self._health({'safe_mode': {'since': switched_at + 240, 'crashes': 3}, 'crashes': [1, 2, 3]})
+        self._health({})
+        with self.assertRaisesRegex(RuntimeError, 'safe mode 4 min after'):
+            updates._watch(switched_at, seconds=600, interval=60, clock=lambda: next(clock), sleep=sleep)
+
+    def test_watch_ignores_older_safe_mode_and_ends_after_ten_minutes(self):
+        switched_at = 1000.0
+        self._health({'safe_mode': {'since': switched_at - 30, 'crashes': 3}})
+        now = [switched_at]
+        def sleep(seconds):
+            now[0] += seconds
+        updates._watch(switched_at, seconds=600, interval=60, clock=lambda: now[0], sleep=sleep)
+        self.assertEqual(now[0], switched_at + 600)
+
+    def test_watch_raises_when_the_unit_fails(self):
+        self._health({})
+        with patch.object(updates, '_unit_state', return_value='failed'):
+            with self.assertRaisesRegex(RuntimeError, 'service failed'):
+                updates._watch(1000.0, seconds=600, interval=60, clock=lambda: 1000.0, sleep=lambda s: None)
+
+    def test_doctor_quick_reads_the_trees_own_json_report(self):
+        root = self.base / 'tree'
+        self.assertIsNone(updates._doctor_quick(root))  # a tree from before the doctor existed
+        doctor = root / '.venv/bin/omarchy-ai-doctor'
+        doctor.parent.mkdir(parents=True)
+        report = {'checks': [{'id': 'systemd', 'status': 'red', 'reason': 'not running'}]}
+        doctor.write_text('#!/bin/sh\n[ "$1 $2" = "--quick --json" ] || exit 9\n'
+                          f"cat <<'EOF'\n{json.dumps(report)}\nEOF\nexit 1\n")
+        doctor.chmod(0o755)
+        self.assertEqual(updates._doctor_quick(root), {'systemd': {'status': 'red', 'reason': 'not running'}})
+        doctor.write_text('#!/bin/sh\necho Traceback\nexit 1\n')
+        with self.assertRaisesRegex(RuntimeError, 'did not produce a report'):
+            updates._doctor_quick(root)
+
+    def test_switch_resets_the_crash_counter_for_the_new_version(self):
+        old = self._old_tree(updates.VERSIONS / '0.3.0')
+        updates.CURRENT.symlink_to(old)
+        self._health({'safe_mode': {'since': 1.0, 'crashes': 3}, 'crashes': [1.0, 2.0, 3.0]})
+        self._install(old)
+        from omarchy_ai.core import health
+        self.assertEqual(health.status(updates._health_file()), {'safe_mode': False, 'since': None, 'crashes': 0})
+
+    def test_source_checkout_is_never_converted(self):
+        checkout = self._old_tree(self.base / 'checkout')
+        (checkout / '.git').write_text('gitdir: elsewhere\n')  # a worktree has a .git file
+        commands = []
+        with patch.object(updates, 'discover') as discover:
+            self._install(checkout, commands=commands)
+        discover.assert_not_called()
+        self.assertEqual(commands, [])
+        self.assertFalse(updates.CURRENT.exists())
+        self.assertFalse(updates.VERSIONS.exists())
+        status = updates.update_status()
+        self.assertEqual(status['state'], 'refused')
+        self.assertIn('source checkout', status['message'])
+
+    def test_source_checkout_does_not_start_the_worker(self):
+        with patch.object(updates, 'is_dev_checkout', return_value=True), \
+                patch.object(updates, 'check_updates', return_value={**self.release, 'ok': True, 'available': True, 'current_version': '0.3.0'}), \
+                patch.object(updates.subprocess, 'run') as run:
+            ok, message = updates.request_update()
+        self.assertFalse(ok)
+        self.assertIn('git pull', message)
+        run.assert_not_called()
+
+    def test_worker_runs_as_a_module_from_the_physical_tree(self):
+        with patch.object(updates, 'check_updates', return_value={**self.release, 'ok': True, 'available': True}), \
+                patch.object(updates.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            updates.request_update()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index('-m') + 1], 'omarchy_ai.core.updates')
+        self.assertIn('--working-directory=' + str(updates.ROOT), argv)
+
+
+class ReleaseSignatureTests(_UpdateIsolation):
+    """Signature policy (verify_release) and the asset names it relies on."""
+
+    def setUp(self):
+        super().setUp()
+        from test_release_signing import ThrowawayKey
+        self.key = ThrowawayKey()
+        self.archive, self.checksum = bundle(self.base)
+        self.signature = self.archive.with_name(self.archive.name + '.minisig')
+
+    def test_old_asset_names_still_found_and_signature_is_optional(self):
+        package = 'omarchy-ai-0.5.0-linux-x86_64.tar.gz'
+        old_style = self._github_release('0.5.0')
+        signed = self._github_release('0.6.0', assets=[
+            {'name': 'omarchy-ai-0.6.0-linux-x86_64.tar.gz'}, {'name': 'omarchy-ai-0.6.0-linux-x86_64.tar.gz.sha256'},
+            {'name': 'omarchy-ai-0.6.0-linux-x86_64.tar.gz.minisig'}])
+        unsigned, newer = updates.candidates_from_releases([old_style, signed])
+        self.assertEqual(unsigned['package'], package)
+        self.assertIsNone(unsigned['signature_url'])
+        self.assertEqual(newer['signature_url'],
+                         'https://github.com/omribenami/Omarchy-AI/releases/download/v0.6.0/omarchy-ai-0.6.0-linux-x86_64.tar.gz.minisig')
+        self.assertTrue(updates._bundle_url_ok(newer['signature_url'], 'omarchy-ai-0.6.0-linux-x86_64.tar.gz.minisig'))
+        self.assertFalse(updates._bundle_url_ok(newer['signature_url'], 'omarchy-ai-0.6.0-linux-x86_64.tar.gz.sig'))
+        # A signature alone is not a bundle: the two original names are required.
+        only_sig = self._github_release('0.7.0', assets=[{'name': 'omarchy-ai-0.7.0-linux-x86_64.tar.gz'},
+                                                         {'name': 'omarchy-ai-0.7.0-linux-x86_64.tar.gz.minisig'}])
+        self.assertEqual(updates.candidates_from_releases([only_sig]), [])
+        self.assertEqual(updates.bundle_names('0.6.0'), ('omarchy-ai-0.6.0-linux-x86_64.tar.gz',
+                                                       'omarchy-ai-0.6.0-linux-x86_64.tar.gz.sha256'))
+
+    def test_valid_signature_is_accepted(self):
+        self.signature.write_text(self.key.sign(self.archive))
+        note = updates.verify_release(self.archive, self.checksum, self.signature, '0.4.0', keys=[self.key.public()])
+        self.assertIn('signature verified', note)
+
+    def test_invalid_signature_is_refused(self):
+        from test_release_signing import ThrowawayKey
+        self.signature.write_text(ThrowawayKey().sign(self.archive))
+        with self.assertRaisesRegex(ValueError, 'signature refused'):
+            updates.verify_release(self.archive, self.checksum, self.signature, '0.4.0', keys=[self.key.public()])
+
+    def test_signature_of_a_corrupt_archive_never_gets_checked(self):
+        self.signature.write_text(self.key.sign(self.archive))
+        self.archive.write_bytes(self.archive.read_bytes() + b'x')
+        with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+            updates.verify_release(self.archive, self.checksum, self.signature, '0.4.0', keys=[self.key.public()])
+
+    def test_unsigned_release_is_sha256_only_until_a_key_is_pinned(self):
+        self.assertIn('not signed', updates.verify_release(self.archive, self.checksum, None, '0.4.0', keys=[]))
+        with self.assertRaisesRegex(ValueError, 'not signed'):
+            updates.verify_release(self.archive, self.checksum, None, '0.4.0', keys=[self.key.public()])
+
+    def test_signed_release_without_a_pinned_key_is_sha256_only(self):
+        self.signature.write_text(self.key.sign(self.archive))
+        note = updates.verify_release(self.archive, self.checksum, self.signature, '0.4.0', keys=[])
+        self.assertIn('pins no release key', note)
+
+    def test_install_downloads_and_checks_the_signature(self):
+        old = self.base / 'old'
+        old.mkdir()
+        (old / 'pyproject.toml').write_text('[project]\nversion="0.3.0"')
+        signed = {**self.release, 'signature_url': self.release['package_url'] + '.minisig'}
+        urls = []
+        def download(url, path, limit):
+            urls.append(url)
+            path.write_bytes(b'x')
+        with patch.object(updates, 'discover', return_value=signed), patch.object(updates, '_download', side_effect=download), \
+                patch.object(updates, 'verify_release', side_effect=ValueError('Release signature refused: bad')) as verify, \
+                patch.object(updates, '_command') as command, patch.object(updates, '_report_failure', return_value=(None, 'x')):
+            with self.assertRaisesRegex(ValueError, 'signature refused'):
+                updates.install('0.4.0', old)
+        self.assertEqual(urls[-1], signed['signature_url'])
+        self.assertTrue(verify.call_args.args[2].name.endswith('.minisig'))
+        command.assert_not_called()
+        self.assertFalse(updates.CURRENT.exists())
+
+    def test_pinned_key_hides_a_newer_unsigned_release(self):
+        with patch.object(updates, '_trusted_keys', return_value=[self.key.public()]), \
+                patch.object(updates, 'installed_version', return_value='0.3.0'), \
+                patch.object(updates, 'discover', return_value={**self.release, 'signature_url': None}):
+            result = updates.check_updates(force=True)
+            self.assertFalse(result['available'])
+            self.assertTrue(result['unsigned'])
+            self.assertFalse(updates.check_updates()['available'])  # the cached answer too
+            self.assertEqual(updates.wake_notice(), '')
+            with patch.object(updates.subprocess, 'run') as run:
+                ok, message = updates.request_update()
+        self.assertFalse(ok)
+        self.assertIn('not signed', message)
+        run.assert_not_called()
 
 
 class UpdateAnnouncementTests(unittest.IsolatedAsyncioTestCase):

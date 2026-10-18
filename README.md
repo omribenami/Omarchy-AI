@@ -835,8 +835,9 @@ its rules must allow TCP 8766. Restart the service if Tailscale connects after
 it started, to refresh the certificate, and pair again after a hostname or IP
 change.
 
-**7. Android receiver** (casting only): the release package includes the APK.
-From source it is built on the first `install_receiver_on_tv` call, or with
+**7. Android receiver** (casting only): locally built release packages include
+the APK. Otherwise (CI-built releases, source checkouts) it is built on the
+first `install_receiver_on_tv` call, or with
 `cd android-receiver && mise exec -- ./gradlew :app:assembleDebug` (run
 `mise install` there first for the pinned JDK/SDK).
 
@@ -860,20 +861,49 @@ check (2-second limit) and mentions a newer version in its first reply.
 Offline checks never block a conversation.
 
 Say **"Check for updates"**, **"Update yourself"** or **"What's the update
-status?"**. Only an explicit request installs. The updater verifies the
-checksum, unpacks the bundle and prepares a new environment before stopping
-the assistant, keeping your keys, settings, history and source checkout. It
-runs in `omarchy-ai-update.service`, keeps the previous install, and restores
-it if setup or startup fails. Progress is in
-`~/.local/state/omarchy-ai/updates/install.json`, output in
+status?"**. Only an explicit request installs. It runs in
+`omarchy-ai-update.service` and keeps your keys, settings and history:
+
+1. **Verify:** the `.sha256`, then the minisign signature (`.minisig`) when
+   the release has one, against the keys pinned in the running install
+   (`src/omarchy_ai/core/release-keys.pub`). A signature that does not verify
+   is refused. Unsigned releases are accepted by SHA-256 alone only while the
+   running install pins no key; once it pins one, newer releases must be
+   signed.
+2. **Install side by side** into `~/.local/share/omarchy-ai/versions/<version>`
+   and prepare its environment while the assistant keeps running.
+3. **Switch:** stop the assistant, point `~/.local/share/omarchy-ai/current`
+   at the new version, run its setup (the unit and plugins name `current`),
+   start it.
+4. **Check:** the startup check, then `omarchy-ai-doctor --quick`. A check that
+   turns red with the new version fails the update; reds that were already
+   there (a missing key, no microphone) do not.
+5. **Watch:** for 10 minutes, crash-loop safe mode or a failed unit also fails
+   it.
+
+Any failure after the switch **rolls back** on its own: `current` points at
+the previous version again, the previous unit file, plugins and shell hooks
+are restored, and the assistant restarts. The last two versions are kept.
+Progress is in `~/.local/state/omarchy-ai/updates/install.json`, output in
 `journalctl --user -u omarchy-ai-update.service`. Missing system packages are
 reported rather than prompting for sudo from a background session. Android
 receiver updates are separate.
 
+**Source checkouts are never self-updated.** When the service runs from a
+git checkout (`install.sh` from a clone), "update yourself" says so and
+leaves it alone; use `git pull --ff-only` and `bash install.sh`.
+
+**Older installs.** An install unpacked before `versions/` existed moves to
+it on its first update, once: the new version goes into `versions/`, the unit
+is repointed at `current`, and the old tree stays where it is as the
+rollback target (a rollback restores the old unit file). To undo it by hand,
+run `bash install.sh` from the old tree. Updaters up to 0.15.0 only know the
+`.tar.gz` and `.sha256` assets, which every release keeps publishing, so they
+keep updating and ignore the signature.
+
 Only Release assets are offered: the 0.2.0-0.4.0 bundles once committed
 under `dist/` are no longer tracked on `main` (they stay in git history),
-and the highest version wins. Integrity is the SHA-256 file shipped as a Release asset
-(not a separate publisher signature).
+and the highest version wins.
 
 **Issue reporting.** With a GitHub token configured, a failed self-update
 files an issue with the details, and *"file an issue about this"* works for
@@ -892,12 +922,57 @@ GITHUB_ISSUE_TOKEN=<a fine-grained PAT, Issues: write only on omribenami/Omarchy
 
 ## Maintainers: build and publish a release
 
-Build from a clean, committed checkout; the tarball is a Release asset, not a
-git commit.
+Releases are built, signed and published by CI
+(`.github/workflows/release.yml`):
 
 1. Bump `version` in `pyproject.toml`, run `uv lock`, and rename
    `## [Unreleased]` in `CHANGELOG.md` to `## [<version>] - <date>` (its
-   `### Highlights` are what the assistant reads aloud as "what's new"). Commit and push.
+   `### Highlights` are what the assistant reads aloud as "what's new"). Merge
+   it to `main`.
+2. Tag that commit and push the tag:
+
+   ```bash
+   git tag v<version> && git push origin v<version>
+   ```
+
+The workflow checks that the tag matches `pyproject.toml`, builds the bundle
+with `scripts/build-install-package.sh --skip-android` (which also refuses a
+stale `uv.lock` or missing CHANGELOG highlights), checks the SHA-256, signs
+the tarball with minisign, verifies the signature with the updater's own code,
+adds a build provenance attestation (`gh attestation verify <tarball> --repo
+omribenami/Omarchy-AI`), and creates Release `v<version>` with the
+`.tar.gz`, `.sha256` and `.minisig`. It never replaces a published release; a
+broken one gets a new version. Pull requests that touch the release files run
+the same build as a dry run with a throwaway key, and publish nothing.
+
+CI bundles leave out the receiver APK: it is a debug build signed with the
+building machine's keystore, which a CI-built APK would not match. The
+assistant builds the APK from the bundled sources when it installs the
+receiver; a local build (below, without `--skip-android`) still bundles it.
+
+**Signing key (one-time setup).** Until it exists, tag releases are published
+unsigned (SHA-256 and attestation only) with a warning:
+
+```bash
+minisign -G -W -p omarchy-ai-release.pub -s omarchy-ai-release.key   # -W: no password, CI cannot type one
+gh secret set MINISIGN_SECRET_KEY --repo omribenami/Omarchy-AI < omarchy-ai-release.key
+sed -n 2p omarchy-ai-release.pub >> src/omarchy_ai/core/release-keys.pub   # commit this
+```
+
+Keep the secret key offline (or delete it; a new key can be added the same
+way). The pinned key protects updates from the first release that ships it:
+installs running that release refuse newer unsigned releases. A key pinned
+without the secret, or a secret whose key is not pinned, fails the release
+before anything is published. To rotate, add the new key line, release once
+signed with the old key, then switch the secret and remove the old line.
+
+### Local build and publish
+
+`scripts/publish-github-release.py` still works from a machine with `gh`, for
+when CI is unavailable. Build from a clean, committed checkout; the tarball is
+a Release asset, not a git commit.
+
+1. Bump the version and CHANGELOG as above; commit and push.
 2. Build:
 
    ```bash
@@ -909,8 +984,11 @@ git commit.
    and its `.sha256`: the Python wheel and sdist, a fresh receiver APK
    (`--skip-android` omits it) and all tracked runtime files. `dist/` is
    gitignored; don't `git add` new tarballs.
-3. Publish tag `v<version>` with both files. HEAD must be `origin/main`.
-   Dry-run prints the `gh` command and REST steps; `--publish` uploads.
+3. Sign it, if a key is pinned (installs that pin one refuse unsigned
+   releases): `minisign -S -s omarchy-ai-release.key -m dist/omarchy-ai-<version>-linux-x86_64.tar.gz`.
+4. Publish tag `v<version>` with the files (the `.minisig` too when present).
+   HEAD must be `origin/main`. Dry-run prints the `gh` command and REST steps;
+   `--publish` uploads.
 
    ```bash
    .venv/bin/python scripts/publish-github-release.py          # inspect
@@ -918,7 +996,7 @@ git commit.
    ```
 
 The publisher uses `gh` when available, otherwise `GH_TOKEN`/`GITHUB_TOKEN`
-(contents: write) against the REST API; re-running replaces the two assets.
+(contents: write) against the REST API; re-running replaces the assets.
 Download counts are `assets[].download_count` on the release, or:
 
 ```bash
