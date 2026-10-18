@@ -300,6 +300,23 @@ class AckTests(OutboxCase):
         self.assertIsNone(outbox.ack_phrase(["Call me 'boss' always."]))
         self.assertIsNone(outbox.ack_phrase([]))
 
+    def test_only_an_acknowledgement(self):
+        for text in (
+            "On it.",
+            "Okay, done!",
+            "על זה!",
+            "בסדר, רגע",
+            "Right away!",
+            "ok ok",
+        ):
+            self.assertTrue(outbox.only_ack(text, "Right away!"), text)
+        for text in (
+            "The fan is on.",
+            "על זה! כיביתי את המאוורר בחצר.",
+            "Done: you have 4 new emails",
+        ):
+            self.assertFalse(outbox.only_ack(text, "Right away!"), text)
+
     def test_the_ack_clip_uses_those_words_once_rendered(self):
         from omarchy_ai.voice import fallback
 
