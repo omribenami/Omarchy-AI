@@ -34,6 +34,14 @@ request: none when the model already spoke for it. Progress is coalesced and
 rate-limited per origin (progress()). A background result the model has not
 spoken within a few seconds is delivered once through once().
 
+Attachments (harness item 4.7): an `attachment` message carries one file
+({name, mime, path, size, preview, inline, untrusted}; core/outputs.py
+describe()). Its chat gets the file (copied in when it is a known type within
+the phone's 20 MB limit, else a line with its desktop path); the desktop
+opens it (a text file, in the editor) or reveals it in the file manager; a
+voice conversation hears a short summary (name, type, size), never the
+contents. Dedupe as for a result: one delivery per origin and file.
+
 Every delivery is logged ("outbox: ...") and kept in a short audit ring.
 """
 
@@ -56,15 +64,16 @@ from .crashpoints import crashpoint
 
 log = logging.getLogger(__name__)
 
-ACK, PROGRESS, QUESTION, APPROVAL, RESULT, ALERT = (
+ACK, PROGRESS, QUESTION, APPROVAL, RESULT, ALERT, ATTACHMENT = (
     "ack",
     "progress",
     "question",
     "approval",
     "result",
     "alert",
+    "attachment",
 )
-KINDS = (ACK, PROGRESS, QUESTION, APPROVAL, RESULT, ALERT)
+KINDS = (ACK, PROGRESS, QUESTION, APPROVAL, RESULT, ALERT, ATTACHMENT)
 VOICE, CHAT, PUSH, DESKTOP, HUD, SPEAKER, INBOX = (
     "voice",
     "chat",
@@ -125,10 +134,13 @@ class Message:
     desktop_title: str = ""  # when the desktop shows another title than the phone
     actions: dict[str, str] | None = None  # desktop notification buttons {id: label}
     on_action: Callable[[str], Any] | None = None
+    attachment: dict | None = None  # kind attachment: core/outputs.py describe()
 
     def key(self) -> str:
         if self.dedupe_key:
             return self.dedupe_key
+        if self.kind == ATTACHMENT and self.attachment:
+            return f"{self.origin_id}:{ATTACHMENT}:{self.attachment.get('path', '')}"
         return (
             f"{self.origin_id}:{RESULT}"
             if self.kind == RESULT and self.origin_id
@@ -335,6 +347,8 @@ def route(msg: Message) -> tuple[str, ...]:
     if msg.kind in (ACK, PROGRESS) or not msg.title:
         return (VOICE,) if voice_open() else ()
     where = presence()
+    if msg.kind == ATTACHMENT:
+        return _attachment_route(msg, where)
     if where == AT_VOICE:
         return (VOICE,)
     if msg.priority == URGENT:
@@ -344,6 +358,33 @@ def route(msg: Message) -> tuple[str, ...]:
     if where == AT_DESK:
         return (DESKTOP,)
     return (DESKTOP, PUSH) + ((CHAT,) if msg.conversation else ())
+
+
+def _attachment_route(msg: Message, where: str) -> tuple[str, ...]:
+    """A file goes into its chat whenever it has one (the chat is its record),
+    plus the surface the user is on: said in voice (and revealed on the
+    desktop when that conversation is at the desk), pushed to the phone, or
+    revealed on the desktop."""
+    chat = (CHAT,) if msg.conversation else ()
+    if where == AT_VOICE:
+        return (
+            (VOICE,)
+            + chat
+            + ((DESKTOP,) if _at_desk_conversation(msg.conversation) else ())
+        )
+    if where in (AT_PHONE, AWAY):
+        return chat + (PUSH,)
+    if where == AT_DESK:
+        return (DESKTOP,) + chat
+    return (DESKTOP, PUSH) + chat
+
+
+def _at_desk_conversation(cid: str) -> bool:
+    if not cid:
+        return True  # the desktop text chat keeps no conversation
+    from . import conversations
+
+    return conversations.source(cid) == "desktop-voice"
 
 
 # ---------------------------------------------------------------- transports
@@ -428,6 +469,26 @@ def _chat(title: str, kind: str, conversation: str) -> None:
     )
 
 
+def _reveal(meta: dict) -> bool:
+    """Open a text file in the editor, else reveal the file in the file
+    manager (execution/actions/desktop.py open_editor, open_files)."""
+    from ..execution.actions import desktop
+
+    args = {"path": str(meta.get("path") or "")}
+    mime = str(meta.get("mime") or "")
+    text = mime.startswith("text/") or mime == "application/json"
+    result = desktop.open_editor(args) if text else desktop.open_files(args)
+    return bool(result.ok)
+
+
+def _attach(msg: Message) -> None:
+    """The file into its chat (core/conversations.py deliver_file)."""
+    from . import conversations
+
+    conversations.deliver_file(msg.conversation, dict(msg.attachment or {}), msg.body)
+    _chat(msg.title, msg.push_kind, msg.conversation)
+
+
 def _say(entry: dict, wake: bool = False) -> bool:
     """In the open conversation; with `wake` and none open, the voice hook may start one."""
     with _lock:
@@ -447,6 +508,20 @@ def _say(entry: dict, wake: bool = False) -> bool:
 
 
 def _entry(msg: Message) -> dict:
+    if msg.kind == ATTACHMENT and msg.entry is None:
+        from . import outputs
+
+        meta = msg.attachment or {}
+        where = "in the chat" if msg.conversation else "on the desktop"
+        return {
+            "id": msg.msg_id,
+            "title": msg.title,
+            # A summary, never the file's contents (which may be untrusted).
+            "detail": f"{outputs.summary(meta)}, {where}. Say this in a few words; "
+            "do not read the file aloud unless asked.",
+            "outcome": ATTACHMENT,
+            "urgent": False,
+        }
     return msg.entry or {
         "id": msg.msg_id,
         "title": msg.title,
@@ -488,7 +563,9 @@ def send(msg: Message) -> tuple[str, ...]:
         # Kept in the inbox; with no conversation open it may wake her to say it.
         _wake(msg.entry)
         used.append(INBOX)
-    if msg.title:
+    if msg.title and msg.kind == ATTACHMENT:
+        used += _send_attachment(msg, channels)
+    elif msg.title:
         if DESKTOP in channels:
             try:
                 title = msg.desktop_title or msg.title
@@ -519,6 +596,69 @@ def send(msg: Message) -> tuple[str, ...]:
                 log.debug("outbox: phone push unavailable", exc_info=True)
     _record(msg.kind, msg.origin_id, key, used, msg.msg_id)
     return tuple(used)
+
+
+def _send_attachment(msg: Message, channels: tuple[str, ...]) -> list[str]:
+    used: list[str] = []
+    meta = msg.attachment or {}
+    if DESKTOP in channels:
+        try:
+            if _reveal(meta):
+                used.append(DESKTOP)
+        except Exception:  # noqa: BLE001 -- the other channels still go out
+            log.warning(
+                "outbox: could not reveal the file on the desktop", exc_info=True
+            )
+    if CHAT in channels and msg.conversation:
+        try:
+            _attach(msg)
+            used.append(CHAT)
+        except Exception:  # noqa: BLE001
+            log.warning("outbox: could not add the file to its chat", exc_info=True)
+    if PUSH in channels:
+        try:
+            _push(
+                msg.title,
+                msg.body or str(meta.get("name") or ""),
+                msg.push_kind,
+                _devices(msg.person),
+            )
+            used.append(PUSH)
+        except Exception:  # noqa: BLE001
+            log.debug("outbox: phone push unavailable", exc_info=True)
+    return used
+
+
+def attachment(
+    path: str,
+    *,
+    origin_id: str,
+    conversation: str = "",
+    label: str = "",
+    untrusted: bool = False,
+    person: str | None = None,
+    channels: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """Hand the user one file, once per origin. Empty when it is gone or was delivered."""
+    from . import outputs
+
+    try:
+        meta = outputs.describe(path, untrusted=untrusted)
+    except (OSError, ValueError):
+        _record(ATTACHMENT, origin_id, "", (), note="no such file")
+        return ()
+    return send(
+        Message(
+            ATTACHMENT,
+            f"File ready: {meta['name']}"[:120],
+            label[:400],
+            origin_id=origin_id,
+            channels=channels,
+            person=person,
+            conversation=conversation,
+            attachment=meta,
+        )
+    )
 
 
 def _wake(entry: dict) -> None:

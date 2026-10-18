@@ -137,12 +137,30 @@ def unlock_screen_for_paired_phone() -> ActionResult:
     return ActionResult(False, "typed the saved password but the screen is still locked (wrong saved password?)")
 
 
+def _existing(args: dict) -> Path | None:
+    raw = str((args or {}).get("path") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.exists() else None
+
+
 def open_files(args: dict) -> ActionResult:
-    return _run_detached(["omarchy-launch-nautilus"])
+    """The file manager; with `path`, a window with that file selected (a file the
+    assistant hands over, core/outbox.py)."""
+    path = _existing(args)
+    if path is None:
+        return _run_detached(["omarchy-launch-nautilus"])
+    argv = ["nautilus", "--new-window", "--select", str(path)] if path.is_file() else ["nautilus", "--new-window", str(path)]
+    if shutil.which("uwsm-app"):
+        argv = ["uwsm-app", "--", *argv]
+    return _run_detached(argv)
 
 
 def open_editor(args: dict) -> ActionResult:
-    return _run_detached(["omarchy-launch-editor"])
+    """The default editor; with `path`, that file opened in it."""
+    path = _existing(args)
+    return _run_detached(["omarchy-launch-editor"] + ([str(path)] if path is not None and path.is_file() else []))
 
 
 def list_bar_icons(args: dict) -> ActionResult:

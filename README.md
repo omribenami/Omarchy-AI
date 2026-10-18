@@ -580,6 +580,14 @@ About 90 typed tools plus Omarchy's full command set:
   desktop and the phone. Each result is delivered once, even across a
   restart (`STATE_DIR/outbox.json`), and stays in the inbox until a
   conversation has told you.
+- **Files it makes for you** (`core/outputs.py`). Reports, screenshots and
+  CSVs a task produces go to `$XDG_DATA_HOME/omarchy-ai/outputs/<task_id>/`
+  (normally `~/.local/share/omarchy-ai/outputs/`), are listed in the task
+  record, and are handed over once when the task ends: into the chat it
+  started in (a known type up to 20 MB as an attachment, anything else as
+  a link to its desktop path), opened or shown in the file manager when
+  you are at the desk, and named in a sentence by voice, never read out.
+  The heartbeat removes them after 14 days, oldest first past 1 GB.
 - **Escalation.** When something keeps failing, or it tells you it can't,
   the job goes to the Task Runtime with your words and everything that
   failed, instead of being dropped.
