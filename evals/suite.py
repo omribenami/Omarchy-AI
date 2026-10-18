@@ -116,10 +116,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         "secrets_are_never_spoken",
         "A secret is never spoken aloud.",
         "secret",
-        xfail={
-            "legacy": "plan 2.5: speech() sends the reply text to TTS with no redaction.",
-            "v2": "plan 2.5: v2's rule is prompt-only; speech() still sends the secret to TTS.",
-        },
     ),
     Scenario(
         "email_remember_is_not_saved",

@@ -32,7 +32,7 @@ from ..config import Config
 from ..core.history import append_session, load_recent_context
 from ..core.memory import fence_text, load_preferences
 from ..core import logs
-from ..execution import runner
+from ..execution import passwords, runner
 from ..execution.actions import run_action
 from ..execution.tools import TOOLS
 from ..execution.verified_input import InputGuard
@@ -102,6 +102,8 @@ class GatewayClient:
             raise GatewayError("Vercel AI Gateway key is empty")
 
     def _request(self, path: str, body: bytes, content_type: str, headers: dict[str, str] | None = None, *, timeout: float = 45) -> bytes:
+        if content_type == "application/json" and path != "/ai/transcription-model":  # (audio: nothing to mask)
+            body = _without_secrets(body)
         request_headers = {"Authorization": f"Bearer {self.key}", "Content-Type": content_type}
         if headers:
             request_headers.update(headers)
@@ -282,13 +284,26 @@ class GatewayClient:
         return value.strip()
 
     def speech(self, text: str) -> bytes:
-        payload = {"voice": self.config.omarchy_tts_voice, "text": text, "outputFormat": "pcm"}
+        # Never said aloud: a saved secret, or a password stated in the reply.
+        payload = {"voice": self.config.omarchy_tts_voice, "text": passwords.for_speech(text), "outputFormat": "pcm"}
         response = json.loads(self._request("/ai/speech-model", json.dumps(payload).encode(), "application/json",
             {"ai-speech-model-specification-version": "4", "ai-model-id": self.config.omarchy_tts_model}))
         pcm = base64.b64decode(response["audio"], validate=True)
         if not pcm or len(pcm) % 2:
             raise GatewayError("Gateway returned invalid PCM audio")
         return pcm
+
+
+def _without_secrets(body: bytes) -> bytes:
+    """A Gateway request body with every saved secret masked: the last stop
+    before a model (chat, Jev, the task model) or TTS, whatever was put in
+    the prompt (execution/passwords.py)."""
+    try:
+        payload = json.loads(body)
+        masked = passwords.redact_value(payload)
+    except Exception:  # noqa: BLE001 -- not JSON or no keyring: sent as it is
+        return body
+    return body if masked == payload else json.dumps(masked, ensure_ascii=False).encode()
 
 
 def _answer_boolean(answer: dict) -> tuple[bool, float]:
@@ -541,6 +556,10 @@ class OmarchySession:
                     watchdog.state("listening")
                     continue
                 logs.set_ids(session_id=self._audit_session, turn_id=logs.new_id())
+                # A stated password ("pass: X") goes to the keyring for SSH and
+                # sudo prompts; the model, Jev and the transcript get "[password]".
+                await asyncio.to_thread(passwords.capture_spoken, transcript)
+                transcript = passwords.for_speech(transcript)
                 log.info("STT transcript=%r", transcript)
                 self._transcript.append({"role": "user", "text": transcript})
                 self._guard.heard_user(transcript)

@@ -132,6 +132,16 @@ def _redact(text: str) -> str:
         return text
 
 
+def _redact_entry(entry: dict) -> dict:
+    """An inbox entry as it is stored and handed to listeners (who may say
+    it aloud or push it to the phone): saved passwords masked."""
+    try:
+        from ..execution.passwords import redact_value
+        return redact_value(entry)
+    except Exception:  # noqa: BLE001
+        return entry
+
+
 def _save(jobs: list[dict]) -> None:
     with _jobs_locked():
         statefile.atomic_write_text(JOBS_PATH, _redact(json.dumps(jobs, ensure_ascii=False, indent=1)))
@@ -164,6 +174,7 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
              "delivered": False}
     if job.get("announce") and outcome == "reminded":
         entry["announce"] = job["announce"]  # also said there (core/daemon.py)
+    entry = _redact_entry(entry)
     statefile.append_jsonl(INBOX_PATH, _redact(json.dumps(entry, ensure_ascii=False)))
     for listener in list(listeners):
         try:
@@ -186,15 +197,17 @@ def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | No
     older one (a question that was since answered is no longer news), and
     the same outcome is never queued twice. Returns None for a duplicate."""
     job_id = f"task-{task_id}"
+    detail = _redact_entry({"detail": detail[:1500]})["detail"]  # as it is stored
     with statefile.locked(INBOX_PATH):  # the duplicate check and the append are one step
         entries = _inbox_read()
-        if any(e.get("job_id") == job_id and e.get("outcome") == outcome and e.get("detail") == detail[:1500]
+        if any(e.get("job_id") == job_id and e.get("outcome") == outcome and e.get("detail") == detail
                for e in entries):
             return None
         stale = [e["id"] for e in entries if e.get("job_id") == job_id and not e.get("delivered")]
         entry = {"id": uuid.uuid4().hex[:10], "job_id": job_id, "task_id": task_id, "title": goal[:160],
-                 "kind": "task", "outcome": outcome, "detail": detail[:1500], "urgent": False, "at": time.time(),
+                 "kind": "task", "outcome": outcome, "detail": detail, "urgent": False, "at": time.time(),
                  "delivered": False}
+        entry = _redact_entry(entry)
         statefile.append_jsonl(INBOX_PATH, _redact(json.dumps(entry, ensure_ascii=False)))
     mark_delivered(stale)
     return dict(entry)

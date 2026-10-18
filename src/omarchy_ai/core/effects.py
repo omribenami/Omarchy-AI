@@ -39,7 +39,8 @@ Storage, under STATE_DIR (core/statefile.py: flock + atomic writes):
 - effects.jsonl -- append-only, one line per state change (no arguments,
   only their hash: email bodies and commands' secrets stay out of it).
 - effects_index.json -- the latest state of each key, with its result.
-Both keep 30 days.
+Both keep 30 days. Saved secrets are masked in both (results, targets and
+notes: execution/passwords.py), so a replayed result is the masked one.
 
 Crashpoints (core/crashpoints.py): effects.before_dispatch,
 effects.after_dispatch_before_record, effects.after_record.
@@ -177,6 +178,17 @@ def _owner_alive(entry: dict, key: str) -> bool:
     return owner_alive(owner)
 
 
+def _masked(value: Any) -> Any:
+    """`value` with saved secrets masked (a password a command printed, a
+    vault token in a MyApi answer). Never fails: the record matters more."""
+    try:
+        from ..execution.passwords import redact_value
+
+        return redact_value(value)
+    except Exception:  # noqa: BLE001
+        return value
+
+
 def _journal(entry: dict, key: str, note: str = "") -> None:
     record = {
         "effect_id": entry["effect_id"],
@@ -199,6 +211,7 @@ def _journal(entry: dict, key: str, note: str = "") -> None:
     ids = logs.current()  # the session, turn, tool call or task it came from
     if ids:
         record["log"] = ids
+    record = _masked(record)
     try:
         statefile.append_jsonl(journal_path(), json.dumps(record, ensure_ascii=False))
     except OSError:
@@ -394,7 +407,7 @@ def _claim(
             else uuid.uuid4().hex,
             "kind": kind,
             "tool": tool,
-            "target": target,
+            "target": _masked(target),
             "args_hash": args_hash(args),
             "origin": origin_id,
             "correlation_id": correlation_id,
@@ -419,7 +432,7 @@ def _set(key: str, state: str, result: dict | None = None, note: str = "") -> No
             return
         entry.update(state=state, updated=time.time())
         if result is not None:
-            entry["result"] = result
+            entry["result"] = _masked(result)
         _journal(entry, key, note)
 
 
@@ -453,7 +466,7 @@ def _finish(
             state, note = UNCERTAIN, f"stopped while it ran ({token.reason})"
         entry.update(state=state, updated=time.time())
         if result is not None:
-            entry["result"] = result
+            entry["result"] = _masked(result)
         _journal(entry, key, note)
 
 

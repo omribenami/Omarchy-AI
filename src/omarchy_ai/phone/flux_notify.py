@@ -35,10 +35,17 @@ def send(title: str, body: str = "", *, kind: str = "other", conversation: str =
     With a `conversation`, a tap on it opens that chat in Flux."""
     if not title or not _enabled():
         return
+    title, body = _masked(title), _masked(body)
     if conversation:
         from ..core import conversations
         conversations.notified(_titled(title, kind)[:120], conversation)
     threading.Thread(target=deliver, args=(title, body, kind, devices), daemon=True, name="flux-notify").start()
+
+
+def _masked(text: str) -> str:
+    """A phone notification never carries a saved secret (execution/passwords.py)."""
+    from ..execution.passwords import for_speech
+    return for_speech(text)
 
 
 def _titled(title: str, kind: str) -> str:
@@ -50,7 +57,7 @@ def _titled(title: str, kind: str) -> str:
 def deliver(title: str, body: str = "", kind: str = "other", devices: list[str] | None = None) -> int:
     """Sends now and returns how many phones got it (for tests and callers that wait)."""
     from ..execution.flux_approve import Fluxd
-    title = _titled(title, kind)
+    title, body = _titled(_masked(title), kind), _masked(body)
     try:
         fluxd = Fluxd(timeout=2)
     except OSError:

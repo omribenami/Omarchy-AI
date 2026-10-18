@@ -96,7 +96,8 @@ async def _attachment_parts(config, conversation: str, attachment_ids: list[str]
         note = f"[Attached file: {meta.get('name')} ({mime}, {meta.get('size')} bytes); stored at {path}]"
         if mime.startswith('text/'):
             content = path.read_text(errors='replace')
-            parts.append({'text': note + '\n' + content[:200_000]})
+            from ..execution.passwords import redact
+            parts.append({'text': note + '\n' + redact(content[:200_000])})  # no saved secret reaches the model
         elif mime.startswith('image/'):
             judgment = await asyncio.to_thread(
                 vision.look,
@@ -194,7 +195,8 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
             return
         for name, transcript in (('input', content.input_transcription), ('output', content.output_transcription)):
             if transcript and transcript.text:
-                emit({'type': f'session.{name}_transcript.delta', 'delta': transcript.text})
+                from ..execution.passwords import redact
+                emit({'type': f'session.{name}_transcript.delta', 'delta': redact(transcript.text)})
         if content.turn_complete or content.interrupted:
             emit({'type': 'response.event', 'event': {'type': 'response.completed'}})
     adapter.on_message = notify
@@ -298,9 +300,11 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
             attachment_meta, parts = await _attachment_parts(
                 config, conversation, attachment_ids, text
             )
+            adapter._capture_password(text)  # a typed "pass: X" goes to the keyring too
+            from ..execution.passwords import for_speech
+            text = for_speech(text)  # ...and reaches the model and transcript as "[password]"
             display = text or ("Attached " + ", ".join(str(m.get('name')) for m in attachment_meta))
             adapter._transcript.append({'role': 'user', 'text': display, 'attachments': attachment_meta})
-            adapter._capture_password(text)  # a typed "pass: X" goes to the keyring too
             adapter._input_guard.heard_user(text)
             emit({'type': 'response.event', 'event': {'type': 'response.created'}})
             if text:

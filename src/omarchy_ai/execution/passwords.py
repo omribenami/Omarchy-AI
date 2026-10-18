@@ -16,6 +16,16 @@ not use it (no sshpass; the saved Sudo Access password only fed `sudo -S`).
   with the spoken password, else the saved Sudo Access password (the user's
   "same password as root"). The password never enters a command line, a
   model tool argument, or a file.
+
+What is masked (`known_secrets`): the saved Sudo Access password, the spoken
+password, every MyApi vault value handed to a program on this machine, and
+the assistant's own API key files (`key_files`). Where (`redact`, and
+`redact_value` for JSON-shaped data): every log sink, the effect journal,
+each tool result before a model sees it (execution/runner.py), every Gateway
+request (chat, Jev, TTS: voice/omarchy.py), the task model's prompts
+(runtime/llm.py), typed chat lines, phone pushes and replies, task files and
+saved command output, the agenda and its inbox, and the conversation
+history. If one leaked anyway, `rotate_on_leak()` says what to change.
 """
 
 from __future__ import annotations
@@ -36,6 +46,7 @@ _SPOKEN_ATTRIBUTES = ("application", "omarchy-ai", "purpose", "spoken-password")
 _SPOKEN_LABEL = "Omarchy AI password the user gave for a login"
 MASK = "[password]"
 _MIN_SECRET = 4
+_MIN_KEY = 12  # an API key file's value; shorter content is not a key
 _CACHE_SECONDS = 60
 
 # "pass: X", "password is X", "pwd=X", "contraseña: X", "пароль: X". Without an
@@ -107,10 +118,42 @@ def ssh_password() -> str | None:
     return sudo_approval.retrieve()
 
 
+def key_files() -> list[Path]:
+    """The assistant's own API key files (the OpenAI, Gemini and Gateway
+    keys, any other *key* file in its config dir). Tests replace this
+    (tests/no_live_desktop.py), so no test reads the user's real keys."""
+    from .. import config
+    found = [config.OMARCHY_KEY_PATH, config.GEMINI_KEY_PATH, config.VERCEL_GATEWAY_KEY_PATH,
+             config.LEGACY_KEY_PATH]
+    try:
+        found += sorted(p for p in config.CONFIG_DIR.glob("*key*") if p.is_file())
+    except OSError:
+        pass
+    return list(dict.fromkeys(found))
+
+
+def _key_values() -> list[str]:
+    values = []
+    for path in key_files():
+        try:
+            if not path.is_file() or path.stat().st_size > 8192:
+                continue
+            value = path.read_text(errors="replace").strip()
+        except OSError:
+            continue
+        if len(value) >= _MIN_KEY and not any(c.isspace() for c in value):
+            values.append(value)
+    return values
+
+
 def _read_secrets() -> None:
     global _cache, _loaded, _refreshing
     try:
         values = []
+        try:
+            values += _key_values()
+        except Exception:  # noqa: BLE001
+            pass
         for getter in (sudo_approval.retrieve, spoken_password):
             try:
                 value = getter()
@@ -184,6 +227,56 @@ def redact(text: str, *, speech: bool = False) -> str:
         if escaped != secret:
             text = text.replace(escaped, MASK)
     return text
+
+
+def redact_value(value, *, speech: bool = False):
+    """`redact` on every string in JSON-shaped data (dict keys are left as
+    they are), for a payload that is sent or stored as structured data."""
+    if isinstance(value, str):
+        return redact(value, speech=speech)
+    if isinstance(value, dict):
+        return {k: redact_value(v, speech=speech) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(redact_value(v, speech=speech) for v in value)
+    return value
+
+
+def for_speech(text: str) -> str:
+    """What may be said aloud, shown on a screen or put in front of a model
+    as the user's words: saved secrets and a stated password ("pass: X")
+    masked. Never fails (keyring trouble must not stop a reply)."""
+    try:
+        return redact(text, speech=True)
+    except Exception:  # noqa: BLE001
+        return text
+
+
+# ── If one leaked ──────────────────────────────────────────────────────────
+
+LEAK_SOURCES = ("sudo", "spoken", "vault", "api_key")
+_ROTATE = {
+    "sudo": "The Sudo Access password: change it with `passwd`, then save the new one in Assistant Settings > "
+            "Sudo Access (or turn Sudo Access off).",
+    "spoken": "A password you said or typed for a login: change it on that machine or account, then forget the "
+              "old one here: `secret-tool clear application omarchy-ai purpose spoken-password`.",
+    "vault": "A MyApi vault token: revoke it at its service and store the new value in the MyApi vault "
+             "(myapiai.com); then refresh the cached copy: `omarchy-ai-vault get --fresh NAME`.",
+    "api_key": "An API key (OpenAI, Gemini, Vercel AI Gateway): revoke it in the provider's dashboard, create a "
+               "new one and save it in Assistant Settings, which restarts the assistant with it.",
+}
+
+
+def rotate_on_leak(sources=None) -> str:
+    """What to do when a secret may have leaked (for `omarchy-ai doctor`):
+    rotate it at its source, then clear the copies the assistant keeps.
+    `sources`: some of LEAK_SOURCES (all when None)."""
+    chosen = [s for s in (sources or LEAK_SOURCES) if s in _ROTATE] or list(LEAK_SOURCES)
+    lines = ["A secret may have leaked. Rotate it first: masking stops new copies, not old ones."]
+    lines += [f"- {_ROTATE[s]}" for s in chosen]
+    lines.append("- Then delete the old copies: the logs (~/.local/state/omarchy-ai/logs and "
+                 "`journalctl --user -u omarchy-ai`), and conversation_history.jsonl, conversations/, tasks/, "
+                 "agenda_inbox.jsonl and effects.jsonl under ~/.local/state/omarchy-ai.")
+    return "\n".join(lines)
 
 
 def capture_spoken(text: str) -> bool:
@@ -279,13 +372,13 @@ class RedactingFilter(logging.Filter):
             return True
         try:
             message = record.getMessage()
-            masked = redact(message)
+            masked = redact(message, speech=True)  # a stated "pass: X" too, before it is captured
             if masked != message:
                 record.msg, record.args = masked, None
             if record.exc_info and not record.exc_text:
                 record.exc_text = logging.Formatter().formatException(record.exc_info)
             if record.exc_text:
-                record.exc_text = redact(record.exc_text)
+                record.exc_text = redact(record.exc_text, speech=True)
             record.omarchy_redacted = True
         except Exception:  # noqa: BLE001 -- logging must never fail
             pass
