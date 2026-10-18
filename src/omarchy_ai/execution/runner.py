@@ -373,6 +373,22 @@ class ToolRunner:
             ]
         return sum(call.stop(CANCELLED, reason) for call in calls)
 
+    def responsive(self, timeout: float = 2.0) -> str | None:
+        """None when a call could start now: the runner's lock is free and a
+        call thread runs a no-op within `timeout`. Otherwise what is stuck
+        (core/health.py's watchdog check)."""
+        if not self._lock.acquire(timeout=timeout):
+            return "tool runner lock held"
+        self._lock.release()
+        ran = threading.Event()
+        try:
+            _threads.submit(contextvars.copy_context(), ran.set)
+        except RuntimeError as exc:  # can't start new thread
+            return f"tool runner cannot start a call: {exc}"
+        if not ran.wait(timeout):
+            return f"tool runner did not start a call within {timeout:g} s"
+        return None
+
     def running(self, owner: object = None) -> list[str]:
         with self._lock:
             return [

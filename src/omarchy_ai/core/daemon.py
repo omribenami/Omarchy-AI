@@ -10,10 +10,11 @@ import json
 import logging
 import signal
 import threading
+import time
 
 from ..config import Config, ensure_dirs, load_config
 from ..execution import tile_logs
-from . import logs, updates
+from . import health, logs, updates
 from ..phone import presence as phone_presence
 from ..phone import server as phone_server
 from ..voice import feedback, control
@@ -26,6 +27,9 @@ log = logging.getLogger("omarchy_ai.core.daemon")
 
 
 class OmaDaemon:
+    # main() turns this on: crash counting and safe mode (core/health.py).
+    track_health = False
+
     def __init__(self) -> None:
         ensure_dirs()
         # Any files already in the tile-log cache dir are from a previous
@@ -104,6 +108,9 @@ class OmaDaemon:
             # logged nothing (2026-09-22). If shutdown stalls again, dump
             # every thread's stack to the journal so the blocker is visible.
             log.info("SIGTERM received; shutting down")
+            health.sd_notify("STOPPING=1")
+            if self.track_health:
+                health.on_clean_stop()  # a stop or restart on purpose: not a crash
             faulthandler.dump_traceback_later(10, exit=False)
             self.stop()
             task.cancel()
@@ -127,7 +134,6 @@ class OmaDaemon:
                 except Exception:
                     log.warning("Update check unavailable", exc_info=True)
                 await asyncio.sleep(updates.CACHE_SECONDS)
-        update_checker = asyncio.create_task(refresh_updates())
         async def recover_pending():
             # Prepared actions a dead process left running, or that expired
             # while it was down, are settled now and the user is told; none is
@@ -153,6 +159,7 @@ class OmaDaemon:
             from . import agenda
             from ..runtime import models as worker_models
             while True:
+                self._heart_beat_at = time.monotonic()  # the watchdog's agenda check
                 # Daily Gateway catalog check; re-qualifies the task worker
                 # model in its own thread when the catalog changed.
                 if getattr(self.config, "task_agent_model", "auto") in (None, "auto"):
@@ -179,7 +186,6 @@ class OmaDaemon:
                 if until is not None:
                     wait = min(wait, max(0.5, until + 0.2))
                 await asyncio.to_thread(agenda.changed.wait, wait)
-        heart = asyncio.create_task(heartbeat()) if self.config.heartbeat_enabled else None
         async def handover():
             # Co-pilot: work started in the background while the user was
             # busy moves onto their screen once they stop touching it.
@@ -202,28 +208,84 @@ class OmaDaemon:
                         log.info("handover: background browser task -> user's screen")
                 except Exception:
                     log.warning("handover check failed", exc_info=True)
-        handing = asyncio.create_task(handover())
+        background: list[asyncio.Task] = []
+        heart = None
+        def start_background():
+            # What crash-loop safe mode holds back (core/health.py): scheduled
+            # actions and watches, co-pilot handover, update checks.
+            nonlocal heart
+            background.append(asyncio.create_task(refresh_updates()))
+            background.append(asyncio.create_task(handover()))
+            if self.config.heartbeat_enabled:
+                self._heart_beat_at = time.monotonic()
+                heart = asyncio.create_task(heartbeat())
+        if health.active:
+            log.warning("safe mode: scheduled actions, watches, task resume, handover and update checks are off")
+        else:
+            start_background()
+        async def leave_safe_mode():
+            # Stable for long enough: forget the crashes; in safe mode, start
+            # what was held back.
+            await asyncio.sleep(health.STABLE_SECONDS)
+            was_safe = await asyncio.to_thread(health.mark_stable)
+            if health.active:
+                health.active = False
+                log.info("stable for %d s: leaving safe mode", health.STABLE_SECONDS)
+                health.sd_notify("STATUS=Running")
+                start_background()
+            elif was_safe:
+                log.info("stable for %d s: crash history cleared", health.STABLE_SECONDS)
+        stable = asyncio.create_task(leave_safe_mode()) if self.track_health else None
         # A voice satellite in another room (voice/satellite.py): its own
         # turns, beside the desktop conversation loop. None when not set up.
         from ..voice import satellite as voice_satellite
         satellite = await voice_satellite.start(self.config)
         from . import agenda
         agenda.listeners.append(lambda entry: loop.call_soon_threadsafe(self._on_agenda_result, entry))
+        # systemd (Type=notify): started. Pings go out only while the loop,
+        # the agenda heartbeat and the tool runner all respond.
+        health.sd_notify("READY=1\nSTATUS=" + ("Safe mode: voice only" if health.active else "Running"))
+        watchdog = health.start_watchdog([health.loop_check(loop), self._heartbeat_check, self._runner_check])
         try:
             async with server:
                 await self._run_sessions()
         finally:
+            if watchdog is not None:
+                watchdog.stop()
             if satellite is not None:
                 await satellite.stop()
-            update_checker.cancel()
-            handing.cancel()
+            if stable is not None:
+                stable.cancel()
+            for job in background:
+                job.cancel()
             if heart is not None:
                 heart.cancel()
                 agenda.changed.set()  # release the heartbeat's waiting thread now, not after its timeout
             recovering.cancel()
-            await asyncio.gather(update_checker, recovering, *([heart] if heart else []), return_exceptions=True)
+            await asyncio.gather(recovering, *background, *([heart] if heart else []),
+                                 *([stable] if stable else []), return_exceptions=True)
             loop.remove_signal_handler(signal.SIGTERM)
             control.socket_path().unlink(missing_ok=True)
+
+    # Seconds past its longest sleep before a silent agenda heartbeat counts
+    # as hung (a tick's own work runs in threads and returns quickly).
+    HEARTBEAT_GRACE = 300.0
+
+    def _heartbeat_check(self):
+        """The watchdog's agenda check: None while the heartbeat loop keeps
+        coming round (or is not running: disabled, or safe mode)."""
+        if health.active or not self.config.heartbeat_enabled:
+            return None
+        last = getattr(self, '_heart_beat_at', None)
+        if last is None:
+            return None
+        limit = max(15, self.config.heartbeat_seconds) + self.HEARTBEAT_GRACE
+        quiet = time.monotonic() - last
+        return f"agenda heartbeat silent for {quiet:.0f} s" if quiet > limit else None
+
+    def _runner_check(self):
+        from ..execution import runner
+        return runner.default_runner().responsive()
 
     def _on_agenda_result(self, entry: dict) -> None:
         """Jev's heartbeat produced a result: tell the user now. Real gap
@@ -353,9 +415,26 @@ def main() -> None:
     # from now on): a backend that just failed is not tried first again.
     from . import provider_health
     provider_health.enable()
+    # A start after a crash counts toward safe mode (core/health.py).
+    try:
+        started = health.on_start()
+    except Exception:  # noqa: BLE001 -- an unreadable health file must not stop the daemon
+        log.warning("crash tracking unavailable", exc_info=True)
+        started = {"safe_mode": False, "entered": False, "crashes": 0}
+    health.active = started["safe_mode"]
+    if started["entered"]:
+        log.error("%d crashes in %d s: starting in safe mode", started["crashes"], health.CRASH_WINDOW)
+        threading.Thread(target=health.notify_safe_mode, args=(started["crashes"],),
+                         name="safe-mode-notice", daemon=True).start()
+    elif health.active:
+        log.warning("still in safe mode (since a crash loop); it clears after %d s without a crash",
+                    health.STABLE_SECONDS)
     daemon = OmaDaemon()
+    daemon.track_health = True
     try:
         asyncio.run(daemon.run())
     except (KeyboardInterrupt, asyncio.CancelledError):
         daemon.stop()
+    health.sd_notify("STOPPING=1")
+    health.on_clean_stop()
     log.info("event loop finished; exiting")

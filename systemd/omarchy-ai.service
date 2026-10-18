@@ -6,13 +6,26 @@ Description=Omarchy AI — voice assistant daemon
 Documentation=https://github.com/omribenami/omarchy-ai
 After=pipewire.service
 Wants=pipewire.service
+# Give up after 5 starts in 2 minutes (the unit shows as failed). Crash-loop
+# safe mode (core/health.py) begins at the 3rd crash in 5 minutes, before
+# this limit, so a crash in scheduled work leaves voice running.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
-Type=simple
+# The daemon sends READY=1 once it listens, and WATCHDOG=1 only while its
+# event loop, agenda heartbeat and tool runner respond (core/health.py). A
+# hang stops the pings; systemd kills it (SIGABRT) and restarts it.
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
 ExecStart=@VENV@/bin/python -m omarchy_ai
 WorkingDirectory=@PROJECT_DIR@
-Restart=on-failure
+Restart=always
 RestartSec=2
+# Back off from 2 s to 30 s over repeated restarts (systemd >= 254).
+RestartSteps=5
+RestartMaxDelaySec=30
 # gpt-live-1 needs a real API key. The key file itself
 # (~/.config/omavoice/key by default) is read directly by the daemon, not
 # loaded into the unit's environment — same reasoning as omavoice/jarvisd:
@@ -21,6 +34,36 @@ RestartSec=2
 Environment=PATH=@PATH@
 # The shell IPC helper requires this even outside an interactive session.
 Environment=OMARCHY_PATH=@OMARCHY_PATH@
+
+# Hardening. Each option was tried in a transient user unit on Omarchy
+# (systemd 261) against what the daemon's children need: bwrap
+# --unshare-user (runtime/sandbox.py), PipeWire, the session D-Bus,
+# secret-tool (GNOME Keyring) and sudo.
+#
+# Kept:
+# - MemoryMax: a runaway (the daemon plus the tasks, browsers and workers it
+#   starts) is killed and restarted instead of pushing the desktop into swap.
+#   Measured: typical peak 0.4 GB, 90th percentile 1.1 GB, highest 6.9 GB
+#   across 349 runs (systemd's "memory peak", page cache included).
+MemoryMax=10G
+#
+# Not used, because sudo must keep working: the daemon runs `sudo -S` itself
+# for privileged file edits (execution/files.py); task commands run as its
+# children (runtime/shell.py); and the assistant terminals' tmux server is
+# started by the daemon (execution/workbench.py), so sudo typed there
+# (terminal_sudo) is its descendant too.
+# - NoNewPrivileges: sudo refuses to run ("no new privileges" flag is set).
+# - RestrictSUIDSGID, LockPersonality: in a user unit both imply
+#   NoNewPrivileges (same sudo failure); RestrictSUIDSGID also broke
+#   bwrap --unshare-user.
+# - ProtectKernelTunables, ProtectKernelModules, PrivateTmp: a user unit
+#   gets these through a private user namespace, where root is unmapped and
+#   sudo fails ("/etc/sudo.conf is owned by uid 65534"). PrivateTmp would
+#   also hide the daemon's /tmp (a file-access root the user is told about)
+#   from desktop apps started through uwsm, which run outside the unit.
+# - RestrictNamespaces: bwrap needs user namespaces.
+# - ProtectSystem=strict: deferred until sudo moves out of the daemon's
+#   process tree (harness plan 3.3).
 
 [Install]
 WantedBy=default.target
