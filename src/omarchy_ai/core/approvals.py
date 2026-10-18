@@ -219,6 +219,12 @@ def decide(
             VOICE, "an external send waits for the user's yes on its confirm card"
         )
     if kind in (READ, REVERSIBLE):
+        if name == "myapi_call" and tainted:
+            from ..execution import provenance
+
+            why = provenance.read_query_needed(args, said=said)
+            if why is not None:
+                return Verdict(TAP, why)
         verdict = Verdict(AUTO)
     else:
         verdict = _irreversible(name, args, tainted, said)

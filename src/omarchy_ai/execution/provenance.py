@@ -104,14 +104,19 @@ def of(name: str, args: dict | None = None) -> str:
     return declared
 
 
+# The brackets a control token is built from, shown as HTML entities so the
+# token is visible as text but no longer the token (angle brackets for
+# <|im_start|> and Gemma/Llama <<SYS>>; square brackets for Llama [INST]).
+_BRACKETS = {ord("<"): "&lt;", ord(">"): "&gt;", ord("["): "&#91;", ord("]"): "&#93;"}
+
+
 def escape(text: str) -> str:
     """Content made safe to sit inside a fence: a look-alike of the fence
-    tag or a control token is shown as text and cannot end the fence."""
+    tag or a control token is shown as text and cannot end the fence or pose
+    as a model's control token."""
     text = _C0.sub("", text)
     text = _FENCE_TAG.sub(lambda m: "&lt;" + m.group(1) + "untrusted", text)
-    return _CONTROL.sub(
-        lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"), text
-    )
+    return _CONTROL.sub(lambda m: m.group(0).translate(_BRACKETS), text)
 
 
 def _attribute(value: str) -> str:
@@ -235,21 +240,55 @@ def _home(text: str) -> str:
     return text.replace(home, "~") if home and home != "~" else text
 
 
+# Irreversible calls whose own effect is the risk, with no argument to point
+# at: entering the saved password, posting an issue publicly. The target
+# check below finds nothing to flag in them, so a tainted conversation would
+# let them through. Once untrusted content is in the conversation, each needs
+# the user's tap whatever its arguments.
+_SELF_ACTING = {
+    "submit_sudo_password": "the saved password would be entered after outside content entered this conversation",
+    "terminal_sudo": "the saved password would be entered after outside content entered this conversation",
+    "report_issue": "it would post publicly after outside content entered this conversation",
+}
+
+
+def _unsaid(aims: list[str], said: str) -> list[str]:
+    heard = _tokens(_home(said))
+    return [aim for aim in aims if aim and not _tokens(_home(aim)) <= heard]
+
+
 def approval_needed(name: str, args: dict, *, tainted: bool, said: str) -> str | None:
     """None to run the call; otherwise why it needs the user's tap. Only a
     tainted conversation or task is ever stopped, only for an irreversible
     call, and only when one of its targets is not in `said` (the user's own
-    words and any plan they approved). Unsure is a tap."""
+    words and any plan they approved), or the call is self-acting. Unsure is
+    a tap."""
     from . import tools
 
     if not tainted or tools.effect_class(name) != tools.IRREVERSIBLE:
         return None
-    heard = _tokens(_home(said))
-    missing = [aim for aim in targets(name, args) if not _tokens(_home(aim)) <= heard]
+    if name in _SELF_ACTING:
+        return _SELF_ACTING[name]
+    missing = _unsaid(targets(name, args), said)
     if not missing:
         return None
     shown = ", ".join(repr(m[:80]) for m in missing[:3])
     return f"{shown} came from content, not from the user's own words"
+
+
+def read_query_needed(args: dict, *, said: str) -> str | None:
+    """Why a read whose arguments leave the machine (myapi_call's query)
+    needs the user's tap in a tainted conversation, or None. A query value
+    the user never said could carry data -- a canary, an id, an address --
+    out to the service as a URL parameter, so it falls to a tap."""
+    query = args.get("query") if isinstance(args, dict) else None
+    if not query:
+        return None
+    missing = _unsaid([text for _key, text in _leaves(query)], said)
+    if not missing:
+        return None
+    shown = ", ".join(repr(m[:80]) for m in missing[:3])
+    return f"a myapi_call query built from content ({shown}) would leave the machine"
 
 
 class Taint:
