@@ -162,6 +162,7 @@ class OmaDaemon:
             # Scheduled tasks and watches run here, conversation or not.
             from . import agenda
             from ..runtime import models as worker_models
+            outputs_swept = -1e9
             while True:
                 self._heart_beat_at = time.monotonic()  # the watchdog's agenda check
                 # Daily Gateway catalog check; re-qualifies the task worker
@@ -182,6 +183,14 @@ class OmaDaemon:
                     await asyncio.to_thread(conversations.sync_installs)  # a tool install to approve, in its chat
                 except Exception:
                     log.warning("Approval tidy failed", exc_info=True)
+                if time.monotonic() - outputs_swept > 3600:
+                    outputs_swept = time.monotonic()
+                    try:
+                        from . import outputs
+                        # Files tasks made for the user: 14 days, 1 GB in all.
+                        await asyncio.to_thread(outputs.cleanup)
+                    except Exception:
+                        log.warning("Task outputs cleanup failed", exc_info=True)
                 # Sleep until the next job is due (exact to the second, not
                 # the next tick); a new or changed job wakes it early.
                 agenda.changed.clear()

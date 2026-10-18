@@ -133,8 +133,10 @@ def desktop(source: str = "desktop-voice") -> str:
     return create(source)
 
 
-def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = None) -> None:
-    """A piece of what was said. Pieces of one side's turn join one line."""
+def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = None, *,
+             separate: bool = False) -> None:
+    """A piece of what was said. Pieces of one side's turn join one line
+    (`separate`: this one is a line of its own, as a file link is)."""
     text = str(text or "")
     attachments = [dict(item) for item in (attachments or []) if isinstance(item, dict)]
     if not text and not attachments:
@@ -146,7 +148,7 @@ def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = No
             return
         lines = conv["lines"]
         now = time.time()
-        if lines and lines[-1].get("role") == role and not attachments:
+        if lines and lines[-1].get("role") == role and not attachments and not separate:
             lines[-1]["text"] += text
         else:
             line = {"role": role, "text": text, "at": now}
@@ -219,7 +221,7 @@ def _safe_name(name: str) -> str:
 
 
 def store_attachment(cid: str, name: str, mime: str, body: bytes, *, role: str | None = None,
-                     text: str = "") -> dict:
+                     text: str = "", untrusted: bool = False) -> dict:
     """Keep one chat attachment under its conversation and return public metadata."""
     if not exists(cid):
         raise KeyError("no such conversation")
@@ -240,6 +242,8 @@ def store_attachment(cid: str, name: str, mime: str, body: bytes, *, role: str |
         mime = "application/octet-stream"
     meta = {"id": aid, "name": clean, "mime": mime,
             "size": len(body), "url": f"/api/conversations/{cid}/attachments/{aid}", "path": str(target)}
+    if untrusted:
+        meta["untrusted"] = True  # made from outside content (a page, a mail, command output)
     with _lock:
         conv = _load(cid)
         if conv is None:
@@ -265,6 +269,27 @@ def share_file(cid: str, path: str, label: str = "") -> dict:
     meta = store_attachment(cid, source.name, mimetypes.guess_type(source.name)[0] or "application/octet-stream",
                             source.read_bytes(), role="assistant", text=label.strip() or source.name)
     return meta
+
+
+def deliver_file(cid: str, meta: dict, label: str = "") -> dict:
+    """A file the assistant made (core/outputs.py describe()) into a chat:
+    copied in as an attachment when `meta["inline"]`, else a line naming
+    its desktop path (an unknown type or one over 20 MB is never inlined)."""
+    if not exists(cid):
+        raise KeyError("no such conversation")
+    untrusted = bool(meta.get("untrusted"))
+    text = label.strip() or str(meta.get("name") or "file")
+    if meta.get("inline"):
+        source = Path(str(meta["path"]))
+        return store_attachment(cid, source.name, str(meta.get("mime") or ""), source.read_bytes(),
+                                role="assistant", text=text, untrusted=untrusted)
+    from .outputs import human_size
+    note = (f"{text}\nFile on the desktop: {meta.get('path')} ({meta.get('mime')}, "
+            f"{human_size(int(meta.get('size') or 0))})")
+    if untrusted:
+        note += " [untrusted content]"
+    add_line(cid, "assistant", note, separate=True)
+    return {"name": meta.get("name"), "path": meta.get("path"), "link": True}
 
 
 def attachment(cid: str, aid: str) -> tuple[Path, dict] | None:
@@ -297,7 +322,8 @@ def delete(cid) -> bool:
 def render_line(line: dict) -> str:
     """One line of a conversation as the model reads it ("User: ...", "[Task t1 approval] ...")."""
     attached = ", ".join(
-        f"{item.get('name')} ({item.get('mime')}; desktop path {item.get('path')})"
+        f"{item.get('name')} ({item.get('mime')}; desktop path {item.get('path')}"
+        f"{'; untrusted content' if item.get('untrusted') else ''})"
         for item in line.get("attachments", []) if isinstance(item, dict)
     )
     if line.get("role") == "card" and line.get("kind") == "note":
