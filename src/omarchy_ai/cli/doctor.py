@@ -1279,10 +1279,7 @@ def check_agenda(ctx: Context) -> Result:
             if owner_alive({"pid": lease["pid"], "start": lease.get("start_time")}):
                 hung.append(job)  # alive past its lease
                 continue
-        if (
-            job.get("started_at")
-            and ctx.now - float(job["started_at"]) > agenda.STALE_RUN_SECONDS
-        ):
+        if job.get("started_at"):  # no live process holds it: interrupted
             stale.append(job)
     details = {
         "jobs": len(jobs),

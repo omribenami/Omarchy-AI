@@ -48,6 +48,18 @@ Rules for every release:
   keep talking with you while it works. Up to three run at once; ask me
   what they're doing, change what one is looking for, or stop it. Each one
   tells you its result once.
+- When you schedule something, I tell you what happens if the computer is
+  asleep or off at that time. Things that change something, like switching
+  a light, are skipped and I tell you they were missed. Reminders and
+  look-ups still happen once, late, and I say they're late.
+- Routines can now start on an event instead of a time: a file changing, a
+  new email matching a search, a program finishing, a device coming
+  online, or a calendar event about to start. Each one fires once per
+  event, waits for a burst of changes to settle, and can hold or drop
+  events during quiet hours you set.
+- If I was stopped in the middle of a scheduled action, I tell you as soon
+  as I'm back instead of half an hour later, step by step: which steps were
+  done, which may have happened and which never started.
 - When a task makes a file for you, like a report, a screenshot or a
   spreadsheet, I hand it over once when the task is done: it lands in the
   chat the task started in, opens or shows up in the file manager when
@@ -72,6 +84,22 @@ Rules for every release:
   `worker:<id>:result`, also across restarts) and the agenda inbox; the
   report is untrusted (`external:worker`, fenced) and the worker inherits
   the delegating turn's taint. Records: `STATE_DIR/workers.json`.
+- `core/triggers.py` (new): event triggers for agenda jobs (`schedule_task`
+  `on`: `file_changed`, `email`, `process_exited`, `device_online`,
+  `calendar`), polled on the heartbeat (stat, `/proc`, ping or a check
+  command, MyApi Gmail `GMAIL_FETCH_EMAILS` and a Calendar proxy GET, both
+  read-only, at least 5 minutes apart per trigger and 30 s apart per
+  process). Dedupe, debounce and quiet-hours state live in
+  `STATE_DIR/triggers.json` and are saved before the job runs (at most
+  once). Email and calendar text reaches the model fenced.
+- Agenda catch-up policy (`catch_up`: `skip` or `run_once_late`; `run_all`
+  is refused). Jobs without one, including every existing job, default from
+  their kind and their steps' effect class; agenda.json is not rewritten.
+  `list_scheduled_tasks` shows it as `if_missed`.
+- Interrupted agenda runs are reported once no live process holds their
+  lease (`STALE_RUN_SECONDS` is gone), with each step's state from the
+  effects journal. The legacy prompt pin moved for the `schedule_task`
+  catalog signature (`catch_up`, `on`).
 - Outbox message kind `attachment` (`outbox.attachment()`): one file
   (`{name, mime, path, size, preview, inline, untrusted}` from
   `core/outputs.py describe()`), deduped per origin and path. Chat gets it

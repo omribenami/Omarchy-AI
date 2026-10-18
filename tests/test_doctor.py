@@ -585,7 +585,7 @@ class StateTests(DoctorCase):
         result = self.check(doctor.check_agenda)
         self.assertEqual(result.status, GREEN)
         self.assertEqual(result.details["running"], 1)
-        job.update(started_at=now - agenda.STALE_RUN_SECONDS - 60, running_by=None)
+        job.update(started_at=now - 60, running_by=None)
         path.write_text(json.dumps([job]))
         self.assertEqual(self.check(doctor.check_agenda).status, YELLOW)
 
