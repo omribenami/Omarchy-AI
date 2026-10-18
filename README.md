@@ -564,6 +564,22 @@ About 90 typed tools plus Omarchy's full command set:
   always keep talking; quick actions just say "done"; it ends on "bye" in
   any language. It double-checks what it heard when speech recognition
   garbles Hebrew into another language.
+- **Acknowledged at once, answered once.** A request that will take a while
+  (a task, a browser action, MyApi or Gmail, anything expected to take more
+  than 5 s) is acknowledged within about a second and a half, unless it
+  already said something for it: in your own words when a standing rule
+  quotes them (for example "acknowledge with an assertive 'Right away!'",
+  rendered once in your voice's language), otherwise "On it, one moment."
+  One acknowledgement per request. A background result it has not spoken a
+  few seconds after it came back is told to you once.
+- **One place for everything it tells you** (`core/outbox.py`). Results,
+  questions, approvals and alerts go to the surface you are on: said in an
+  open conversation (desktop, phone call, typed chat, speaker) and nowhere
+  else; a phone push when you are away from the desk or on the phone page;
+  a desktop notification when you are at it. Urgent ones reach both the
+  desktop and the phone. Each result is delivered once, even across a
+  restart (`STATE_DIR/outbox.json`), and stays in the inbox until a
+  conversation has told you.
 - **Escalation.** When something keeps failing, or it tells you it can't,
   the job goes to the Task Runtime with your words and everything that
   failed, instead of being dropped.

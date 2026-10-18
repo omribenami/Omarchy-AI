@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 import numpy as np
 from .. import myapi
-from ..core import alert_clips, identities, logs, quota, retry, updates
+from ..core import alert_clips, identities, logs, outbox, quota, retry, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
@@ -342,6 +342,12 @@ class GeminiLiveSession:
         self._silent_acked = False
         self._splices = 0
         self._working = {}  # background call id -> what/started/heard_at/noted/notes (_task_status)
+        # Acknowledge-first (core/outbox.py): calls expected to be slow, by id
+        # -> started/heard_at/tool; background results not yet spoken, by id
+        # -> sent/what/name/busy.
+        self._slow: dict = {}
+        self._unspoken: dict = {}
+        self._last_call_at = 0.0  # monotonic start of her latest tool call
         self._last_audio_at = 0.0
         self._last_turn_done_at = 0.0
         self._forced_turn_closures = 0
@@ -687,6 +693,9 @@ class GeminiLiveSession:
             # Her turn that started the task must be over, or the prompt cuts it off.
             if self._last_turn_done_at < max(w["started"], w["noted"]):
                 continue
+            if not w["noted"] and outbox.acked(self._turn_origin(w["heard_at"])):
+                w["noted"] = now  # this request was acknowledged already (the clip, or her own words)
+                continue
             if not w["noted"]:
                 if self._last_audio_at > w["heard_at"]:
                     w["noted"] = w["started"]  # she already said something about it
@@ -707,6 +716,7 @@ class GeminiLiveSession:
 
     def _silent_work_due(self, now: float) -> bool:
         if (not self.ack_silent_work or self._silent_acked or not self._silent_since
+                or outbox.acked(self._turn_origin(self._last_user_speech))
                 or not self._running_blocking or not self._audio.empty()
                 or now - self._silent_since < self.ACK_AFTER_SECONDS):
             return False
@@ -718,11 +728,20 @@ class GeminiLiveSession:
         """Say "heard you, on it" when a background task starts silently, and
         "still on it" while it runs long."""
         from google.genai import types
+        if self.ack_silent_work:  # decoded now, so the first acknowledgement is not late
+            asyncio.get_running_loop().run_in_executor(None, fallback.ack_pcm)
         while not self._hangup.is_set():
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
             now = time.monotonic()
+            if (ack := self._ack_due(now)) is not None:
+                await self._say_ack(*ack)
+                continue
+            if (unheard := self._result_due(now)) is not None:
+                await self._deliver_result(session, unheard)
+                continue
             if self._silent_work_due(now):
                 self._silent_acked = True
+                outbox.ack(self._turn_origin(self._last_user_speech), lambda: None)
                 log.info("Silent work acknowledged: session=%s after=%.1fs", self._audit_session,
                          now - self._silent_since)
                 await self._say_clip("working")
@@ -731,6 +750,13 @@ class GeminiLiveSession:
             if due is None:
                 continue
             call_id, kind, w = due
+            origin = self._turn_origin(w["heard_at"])
+            if kind == "ack" and not outbox.ack(origin, lambda: None):
+                w["noted"] = now  # acknowledged already: one per request
+                continue
+            if kind == "progress" and not outbox.progress(f"{origin}:{call_id}", w["what"], lambda _: None,
+                                                          every=self.PROGRESS_EVERY_SECONDS * 0.9, now=now):
+                continue
             if kind == "ack":
                 text = (f"[Automatic status, not from the user] You started this and it is still running: "
                         f"{w['what']}. Tell the user in one short sentence, in their language, that you heard "
@@ -745,6 +771,107 @@ class GeminiLiveSession:
                                               turn_complete=True)
             log.info("Task status prompted: session=%s call=%s kind=%s after=%.1fs",
                      self._audit_session, call_id, kind, now - w["started"])
+
+    # Acknowledge-first (core/outbox.py, DoD-7). A request whose call is
+    # expected to take more than outbox.SLOW_SECONDS (or goes to a task, a
+    # browser action, MyApi) is acknowledged within outbox.ACK_WITHIN_SECONDS
+    # by a pre-rendered clip -- the user's own words when a learned rule
+    # quotes them -- unless she spoke for the request herself first. Live
+    # problem (2026-10-18): "check my last 4 emails", first words 15-25 s later.
+    ACK_GRACE_SECONDS = 0.6
+    # A background (WHEN_IDLE) result she has not spoken this long after it
+    # came back, while nobody talks, is prompted once (live 2026-10-18: the
+    # fan turned on, and she said nothing more).
+    RESULT_UNSPOKEN_SECONDS = 6.0
+    # Lookups whose result feeds her next call, not the user.
+    _LOOKUPS = frozenset({"list_commands", "find_skill", "myapi_list_services", "myapi_service_methods",
+                          "myapi_vault_list", "list_cast_targets"})
+
+    def _turn_origin(self, heard_at: float) -> str:
+        """The outbox's origin for one request: this conversation and the user's words."""
+        return f"{self._audit_session}:{heard_at:.3f}"
+
+    @staticmethod
+    def _what(call) -> str:
+        return str((call.args or {}).get("request") or call.name.replace("_", " "))[:160]
+
+    def _note_slow(self, call_id: str, tool: str) -> None:
+        if call_id not in self._slow and outbox.needs_ack(tool):
+            self._slow[call_id] = {"started": time.monotonic(), "heard_at": self._last_user_speech, "tool": tool}
+
+    def _ack_due(self, now: float) -> tuple[str, str] | None:
+        """(call id, origin) of a slow request to acknowledge now."""
+        if not self.ack_silent_work:
+            return None
+        for call_id, w in list(self._slow.items()):
+            heard = w["heard_at"]
+            if not heard or now - heard > self.SILENT_WORK_HEARD_SECONDS:
+                continue  # typed, or her own heartbeat: no spoken words to acknowledge
+            origin = self._turn_origin(heard)
+            if outbox.acked(origin):
+                continue
+            if self._last_audio_at > heard:
+                outbox.model_acked(origin)  # she spoke for it herself: no second acknowledgement
+                continue
+            if (now - w["started"] < self.ACK_GRACE_SECONDS or not self._audio.empty()
+                    or self._display_state(now) == "speaking"):
+                continue
+            return call_id, origin
+        return None
+
+    async def _say_ack(self, call_id: str, origin: str) -> None:
+        data = await asyncio.to_thread(fallback.ack_pcm)
+        if self._last_audio_at > self._slow.get(call_id, {}).get("heard_at", 0.0):
+            outbox.model_acked(origin)  # her words arrived while the clip was fetched
+            return
+        generation = self._generation
+
+        def deliver():
+            if data:
+                self._audio.put_nowait((generation, data))
+        if outbox.ack(origin, deliver):
+            self._silent_acked = True
+            w = self._slow.get(call_id)
+            log.info("Acknowledged: session=%s call=%s tool=%s after=%.2fs", self._audit_session, call_id,
+                     w and w["tool"], time.monotonic() - w["started"] if w else -1)
+
+    def _result_due(self, now: float) -> str | None:
+        for call_id, r in list(self._unspoken.items()):
+            if r["busy"]:
+                # She was mid-turn when it came back: count from that turn's end.
+                if self._last_turn_done_at <= r["sent"]:
+                    continue
+                r["busy"], r["sent"] = False, self._last_turn_done_at
+            if self._last_audio_at > r["sent"] or self._last_call_at > r["sent"]:
+                self._unspoken.pop(call_id, None)  # she spoke or acted after it: hers to tell
+                continue
+            if now - r["sent"] >= self.RESULT_UNSPOKEN_SECONDS and self._idle():
+                return call_id
+        return None
+
+    async def _deliver_result(self, session, call_id: str) -> None:
+        from google.genai import types
+        r = self._unspoken.pop(call_id)
+        if not outbox.once(f"call:{self._audit_session}:{call_id}", lambda: None, origin_id=call_id):
+            return
+        await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
+            f"[Automatic result notice, not from the user] The result of your background call {r['name']} "
+            f"({r['what']}) came back and the user has not heard it. Tell the user now, briefly, in their "
+            "language, what it found or did. Do not call any tool."))]), turn_complete=True)
+        self._claim_checked = self._user_mark()  # her next turn answers this, not the user
+        log.info("Unspoken result delivered: session=%s call=%s name=%s", self._audit_session, call_id, r["name"])
+
+    def _report_lost(self, call, ran: str, response: dict) -> None:
+        """A background result whose conversation connection was gone: once,
+        through the outbox (said on the reconnected conversation, else shown)."""
+        what, ok = self._what(call), bool(response.get("ok"))
+        reason = " ".join(provenance.unfence(str(response.get("message", ""))).split())[:200]
+        detail = ("It finished; its result came back after the connection it was asked on had closed."
+                  if ok else f"It failed: {reason}")
+        outbox.send(outbox.Message(
+            outbox.RESULT, ("Done: " if ok else "Failed: ") + what[:100], "It finished." if ok else reason,
+            origin_id=f"call:{self._audit_session}:{call.id}",
+            entry={"id": f"call-{call.id}", "title": what, "detail": detail, "outcome": "completed" if ok else "failed"}))
 
     async def _say_clip(self, kind: str, model: str | None = None) -> None:
         """A pre-rendered notice (voice/fallback.py), heard where she is heard."""
@@ -1382,6 +1509,8 @@ class GeminiLiveSession:
                  self._audit_session, call.id, call.name, call.args or {})
         self._gemini_inflight = self._gemini_inflight[-20:] + [(call.name, dict(call.args or {}), time.monotonic())]
         background = call.name in NON_BLOCKING_ACTIONS
+        self._note_slow(call.id, call.name)
+        self._last_call_at = time.monotonic()
         if background:
             self._running_background += 1
             args = call.args or {}
@@ -1423,6 +1552,7 @@ class GeminiLiveSession:
                 if call.name == "use_tool":
                     tool, args = pick.tool, dict(pick.args)
                     ran = tool
+                    self._note_slow(call.id, tool)
                 # Second pass: Jev makes the final routing decision on every
                 # call -- except a tool Jev itself just picked for this request.
                 # A read-only call starts at once and is only used if Jev lets
@@ -1524,6 +1654,7 @@ class GeminiLiveSession:
             # In the result she is reading now, not a prompt rule (see _SCRIPT_HINT).
             response = {**response, "message": response["message"] + note}
             log.info("Self-check delivered: session=%s call=%s", self._audit_session, call.id)
+        self._slow.pop(call.id, None)
         if background:
             self._running_background -= 1
             self._working.pop(call.id, None)
@@ -1549,8 +1680,15 @@ class GeminiLiveSession:
                 # background result can outlive it.
                 log.warning("Gemini tool response lost: session=%s call=%s: %s", self._audit_session, call.id,
                             str(exc)[:160])
+                if background and not response["message"].startswith(_NOT_RUN):
+                    self._report_lost(call, ran, response)
                 self._call_done(call.id)
                 return
+            if (background and ran not in self._LOOKUPS and not response["message"].startswith(_NOT_RUN)
+                    and call.id not in self._interrupted_calls):
+                # WHEN_IDLE: she folds it in when she has nothing else to say -- or, seen live, never.
+                self._unspoken[call.id] = {"sent": time.monotonic(), "what": self._what(call), "name": ran,
+                                           "busy": self._last_audio_at > self._last_turn_done_at}
             log.info("Gemini tool response delivered: session=%s call=%s interrupted=%s",
                      self._audit_session, call.id, call.id in self._interrupted_calls)
         self._call_done(call.id)

@@ -985,8 +985,7 @@ class TaskRuntimeTests(RuntimeHarness):
     def test_same_task_question_notified_once_across_retries(self):
         task = Task(id="question", goal="x", workspace=str(self.ws), status="waiting_user", question="which file?")
         runtime = self.runtime([], ScriptedJev())
-        with patch("omarchy_ai.runtime.runtime._phone") as phone, \
-                patch("omarchy_ai.runtime.runtime.subprocess.Popen"):
+        with patch("omarchy_ai.core.outbox._push") as phone:  # presence unknown in tests: desktop and phone
             runtime_module._notify(runtime, task, "waiting_user")
             runtime_module._notify(runtime, task, "waiting_user")
         phone.assert_called_once()
@@ -998,8 +997,9 @@ class TaskRuntimeTests(RuntimeHarness):
                                       ("certified", "", False)):
             task = Task(id=f"end-{status}-{click}", goal="x", workspace=str(self.ws), status=status, result="42")
             done = threading.Event()
-            with patch("omarchy_ai.runtime.runtime._phone"), \
-                    patch("omarchy_ai.runtime.runtime.subprocess.run",
+            import no_live_desktop
+            with patch("omarchy_ai.core.outbox._desktop", no_live_desktop.REAL_OUTBOX["desktop"]), \
+                    patch("omarchy_ai.core.outbox.subprocess.run",
                           return_value=SimpleNamespace(stdout=click + "\n")) as sent, \
                     patch("omarchy_ai.runtime.runtime.subprocess.Popen",
                           side_effect=lambda *a, **k: done.set()) as terminal:

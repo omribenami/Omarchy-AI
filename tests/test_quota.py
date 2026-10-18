@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from omarchy_ai.core import alert_clips, quota
-from omarchy_ai.phone import flux_notify
+from omarchy_ai.core import alert_clips, outbox, quota
+
 
 
 # Real error text from this machine's logs (see core/quota.py).
@@ -45,7 +45,12 @@ class AlertTests(unittest.TestCase):
         # Real bug (2026-10-10): only _run was stubbed, so every run of these
         # tests sent "OpenAI credits used up" to the user's real phone.
         self.phone = []
-        p = patch.object(flux_notify, "send", side_effect=lambda title, body="", **_: self.phone.append((title, body)))
+        p = patch.object(outbox, "_push", side_effect=lambda title, body="", *_: self.phone.append((title, body)))
+        p.start()
+        self.addCleanup(p.stop)
+        self.desktop = []
+        p = patch.object(outbox, "_desktop", side_effect=lambda title, body, urgent: self.desktop.append(
+            (title, urgent)))
         p.start()
         self.addCleanup(p.stop)
         self.addCleanup(setattr, quota, "speaker", None)
@@ -61,12 +66,12 @@ class AlertTests(unittest.TestCase):
                 patch.object(alert_clips, "LOCAL", Path(tempfile.mkdtemp())):
             self.assertTrue(self.alert_now("openai"))
         tools = [argv[0] for argv in self.runs]
-        self.assertEqual(tools, ["omarchy-shell", "notify-send", "pw-play"])
+        self.assertEqual(tools, ["omarchy-shell", "pw-play"])
         self.assertEqual(json.loads(self.runs[0][-1]), {"provider": "OpenAI", "message": "credits used up"})
-        self.assertIn("-u", self.runs[1])
+        self.assertEqual(self.desktop, [("$ OpenAI credits used up", True)])  # urgent: desktop and phone
         self.assertEqual([title for title, _ in self.phone], ["OpenAI credits used up"])
         # No French clip rendered on this machine yet: the shipped English one.
-        self.assertTrue(self.runs[2][1].endswith("quota-openai-en.ogg"))
+        self.assertTrue(self.runs[1][1].endswith("quota-openai-en.ogg"))
 
     def test_every_shipped_clip_exists(self):
         for provider in quota.MESSAGES:

@@ -1229,6 +1229,29 @@ def deadline(name: str) -> float:
     return DEFAULT_DEADLINE
 
 
+# How long a call usually takes, in seconds (the deadline above is its
+# limit). core/outbox.py acknowledges a request at once when its call is
+# expected to take longer than outbox.SLOW_SECONDS. Measured or described
+# beside each tool (gemini_live.NON_BLOCKING_ACTIONS, the tool descriptions);
+# a tool not named here is quick.
+QUICK_SECONDS = 1.0
+EXPECTED = {
+    "desktop_task": 25.0, "browser_task": 40.0, "run_mission": 60.0, "start_task": 6.0, "run_skill": 20.0,
+    "myapi": 15.0, "myapi_call": 8.0, "myapi_write": 8.0, "myapi_execute": 8.0, "myapi_gmail_send": 8.0,
+    "myapi_gmail_reply": 8.0, "myapi_gmail_search": 12.0, "myapi_gmail_search_attachments": 12.0,
+    "myapi_gmail_download_attachment": 10.0, "myapi_service_methods": 3.2, "myapi_list_services": 3.0,
+    "myapi_vault_list": 3.0, "describe_screen": 2.8, "look_camera": 10.0, "start_casting": 8.0,
+    "list_cast_targets": 4.5, "install_receiver_on_tv": 60.0, "update_assistant": 30.0, "report_issue": 6.0,
+    "run_scheduled_task_now": 10.0, "github_upload_attachment": 20.0, "terminal_task": 6.0, "open_browser": 2.6,
+    "list_commands": 1.7, "find_skill": 3.0, "use_tool": 3.0,
+}
+
+
+def expected(name: str) -> float:
+    """A tool's usual duration in seconds."""
+    return EXPECTED.get(name, QUICK_SECONDS)
+
+
 def resource(name: str) -> str:
     """What a call holds while it runs; an unknown tool holds the desktop."""
     return RESOURCES.get(name, DESKTOP)

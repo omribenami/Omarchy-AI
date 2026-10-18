@@ -18,6 +18,7 @@ from fakes.myapi_server import FakeMyApi, fake_identity
 from omarchy_ai import config
 from omarchy_ai.core import (
     agenda,
+    outbox,
     approvals,
     conversations,
     identities,
@@ -71,7 +72,7 @@ class Isolated(unittest.TestCase):
                 pending_actions, "PATH", self.tmp / "pending_actions.json"
             ),
             mock.patch.object(agenda, "JOBS_PATH", self.tmp / "agenda.json"),
-            mock.patch.object(agenda, "notify", lambda *a, **k: None),
+            mock.patch.object(outbox, "_desktop", lambda *a, **k: None),
             mock.patch.object(agenda, "_refresh_routines_hud", lambda: None),
             mock.patch.object(agenda, "_inbox_add", lambda *a, **k: None),
             mock.patch.object(identities, "PATH", people),

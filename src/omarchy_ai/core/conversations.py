@@ -425,10 +425,13 @@ def sync_installs() -> None:
                        "reasons": [request["summary"][:300]], "fingerprint": request["id"]})
         try:
             from ..execution import flux_approve
-            from ..phone import flux_notify
+            from . import outbox
             how = ("Open the chat and tap Approve for your fingerprint prompt, or use the desktop notification."
                    if flux_approve.available() else "Approve it on the desktop notification.")
-            flux_notify.send(f"Install assistant tool: {request['name']}?", how, kind="approval", conversation=cid)
+            # The phone's notice opens the card's chat (the desktop has its own install prompt).
+            outbox.send(outbox.Message(outbox.APPROVAL, f"Install assistant tool: {request['name']}?", how,
+                                       origin_id=f"install:{request['id']}", channels=(outbox.PUSH, outbox.CHAT),
+                                       push_kind="approval", conversation=cid))
         except Exception:  # noqa: BLE001 -- the card is there either way
             log.debug("tool install notice not sent", exc_info=True)
 

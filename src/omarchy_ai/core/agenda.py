@@ -42,7 +42,7 @@ import time
 import uuid
 
 from ..config import STATE_DIR
-from . import logs, retry, schedule, statefile
+from . import logs, outbox, retry, schedule, statefile
 from .jev import Jev, JevError, boolean, choice
 
 log = logging.getLogger("omarchy_ai.core.agenda")
@@ -168,7 +168,17 @@ def _refresh_routines_hud() -> None:
         log.debug("agenda: could not refresh routines HUD", exc_info=True)
 
 
-def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> None:
+# Outcomes the user must act on: sent as alerts, the rest as results.
+_ALERT_OUTCOMES = frozenset({"failed", "missed", "interrupted", "needs_you"})
+
+
+def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False, *, title: str = "", body: str = "",
+               notify_urgent: bool | None = None, person: str | None = None) -> dict:
+    """Keep a job's result in the inbox until a conversation says it, and send
+    it once through the outbox (core/outbox.py): said in an open conversation,
+    else shown as `title`/`body` where the user is (and the assistant may be
+    woken to say it). No title: said or kept only. `notify_urgent` is the
+    notice's urgency when it differs from the entry's."""
     entry = {"id": uuid.uuid4().hex[:10], "job_id": job["id"], "title": job["title"], "kind": job["kind"],
              "outcome": outcome, "detail": detail[:1500], "urgent": urgent, "at": time.time(),
              "delivered": False}
@@ -176,11 +186,14 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False) -> No
         entry["announce"] = job["announce"]  # also said there (core/daemon.py)
     entry = _redact_entry(entry)
     statefile.append_jsonl(INBOX_PATH, _redact(json.dumps(entry, ensure_ascii=False)))
-    for listener in list(listeners):
-        try:
-            listener(dict(entry))
-        except Exception:
-            log.warning("agenda: result listener failed", exc_info=True)
+    loud = urgent if notify_urgent is None else notify_urgent
+    # One occurrence of one job: its due time, else this entry.
+    run = job.get("next_run") or entry["id"]
+    outbox.send(outbox.Message(
+        outbox.ALERT if outcome in _ALERT_OUTCOMES else outbox.RESULT, title[:120], body[:400],
+        origin_id=f"agenda:{job['id']}", dedupe_key=f"agenda:{job['id']}:{run}:{outcome}",
+        priority=outbox.URGENT if loud else outbox.NORMAL, entry=dict(entry), wake=True, person=person))
+    return dict(entry)
 
 
 def _inbox_read(bad: list[str] | None = None) -> list[dict]:
@@ -213,41 +226,16 @@ def task_result(task_id: str, goal: str, outcome: str, detail: str) -> dict | No
     return dict(entry)
 
 
-# Conversations running on their own event loop (phone calls, one thread
-# each): the daemon only tracks its desktop session, so results reach a call
-# through here. session -> that call's loop.
-_calls: dict = {}
+# Conversations on their own event loop (phone calls, the text chat, the
+# speaker) attach here; the registry lives in the outbox, which says results
+# there (core/outbox.py). Kept under these names for those callers.
+_calls = outbox._calls
+attach_call, detach_call = outbox.attach_call, outbox.detach_call
+attached, announce_to_calls = outbox.attached, outbox.announce_to_calls
 
 
-def attach_call(session, loop) -> None:
-    with _lock:
-        _calls[session] = loop
-
-
-def detach_call(session) -> None:
-    with _lock:
-        _calls.pop(session, None)
-
-
-def attached(session) -> bool:
-    with _lock:
-        return session in _calls
-
-
-def announce_to_calls(entry: dict) -> bool:
-    """Hand a result to every open phone call. True if one will say it."""
-    with _lock:
-        calls = list(_calls.items())
-    heard = False
-    for session, loop in calls:
-        if not loop.is_closed():
-            loop.call_soon_threadsafe(session.announce, dict(entry))
-            heard = True
-    return heard
-
-
-# Called with every new result (the daemon wakes the assistant to say it).
-# Runs on the job's worker thread: listeners must hand off to their loop.
+# Called with a new result when no conversation is open and no voice hook is
+# registered (core/outbox.py). Runs on the job's worker thread.
 listeners: list = []
 
 # Ids folded into a session prompt but not yet confirmed as delivered.
@@ -571,31 +559,6 @@ def list_jobs(include_finished: bool = False) -> list[dict]:
 
 # ---------------------------------------------------------------- effects
 
-def notify(title: str, body: str = "", urgent: bool = False, person: str | None = None,
-           conversation: str = "") -> None:
-    """On the desktop and the phones; with a `person` who has attached
-    phones (core/identities.py), only on theirs. With a `conversation`, a tap
-    on the phone's notice opens that chat."""
-    try:
-        from ..phone import flux_notify
-        from . import identities
-        flux_notify.send(title[:120], body[:400],  # and on the phone, through Flux
-                         devices=identities.phones(person) or None, conversation=conversation)
-    except Exception:  # noqa: BLE001 -- the desktop notification must still go out
-        log.debug("flux notify unavailable", exc_info=True)
-    try:
-        from ..execution.desktop_env import desktop_env
-        env = desktop_env()
-    except Exception:
-        env = None
-    try:
-        subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "critical" if urgent else "normal",
-                        title[:120], body[:400]], timeout=5, check=False, env=env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        log.warning("agenda: notify-send unavailable")
-
-
 def _run_command(command: str, timeout: float = COMMAND_TIMEOUT) -> tuple[int | None, str]:
     try:
         proc = subprocess.run(["bash", "-lc", command], capture_output=True, text=True, timeout=timeout,
@@ -717,20 +680,19 @@ def _finish(job: dict, now: float, result: str, *, done: bool = False, **extra) 
 
 def _run_remind(job, now, jev):
     person = job.get("requester")
-    notify("Reminder", job["title"], **({"person": person} if person else {}))
     if person:
         from . import identities
         _inbox_add(job, "reminded", f"Reminder for {identities.name(person)} (say it to them by name): "
-                   + job["title"])
+                   + job["title"], title="Reminder", body=job["title"], person=person)
     else:
-        _inbox_add(job, "reminded", "Reminder shown: " + job["title"])
+        _inbox_add(job, "reminded", "Reminder shown: " + job["title"], title="Reminder", body=job["title"])
     _finish(job, now, "reminder shown")
 
 
 def _run_assistant(job, now, jev):
     # Needs words or reasoning Jev cannot supply: hand it to the live model.
-    notify("Task waiting for you", f"{job['title']} (start a conversation and I'll pick it up)")
-    _inbox_add(job, "due", "Scheduled request for you to carry out now: " + job.get("request", job["title"]))
+    _inbox_add(job, "due", "Scheduled request for you to carry out now: " + job.get("request", job["title"]),
+               title="Task waiting for you", body=f"{job['title']} (start a conversation and I'll pick it up)")
     _finish(job, now, "queued for the next conversation")
 
 
@@ -830,14 +792,14 @@ def _run_action(job, now, jev):
     done = json.dumps(results, ensure_ascii=False)[:1100]
     if failed is None:
         said = _brief(results[-1]["result"]) if results else ""
-        notify("Done: " + job["title"], said or "Done.")
-        _inbox_add(job, "completed", f"Scheduled action done as asked: {job['request']}. Tool results: {done}")
+        _inbox_add(job, "completed", f"Scheduled action done as asked: {job['request']}. Tool results: {done}",
+                   title="Done: " + job["title"], body=said or "Done.")
         _finish(job, now, "done: " + said, started_at=None)
     else:
         number, step, why = failed
-        notify("Failed: " + job["title"], f"{step['tool']}: {_brief(why, 250)}", urgent=True)
         _inbox_add(job, "failed", f"Scheduled action FAILED at step {number} of {len(job['steps'])} "
-                   f"({step['tool']}): {why[:400]}. Request: {job['request']}. Tool results: {done}", urgent=True)
+                   f"({step['tool']}): {why[:400]}. Request: {job['request']}. Tool results: {done}", urgent=True,
+                   title="Failed: " + job["title"], body=f"{step['tool']}: {_brief(why, 250)}")
         _finish(job, now, f"failed at step {number} ({step['tool']}): {why[:200]}", started_at=None)
 
 
@@ -853,15 +815,14 @@ def _run_desktop(job, now, jev):
     except ValueError:
         payload, status = {}, "failed"
     if result.ok and status == "completed":
-        notify("Done", job["title"])
-        _inbox_add(job, "completed", "Verified: " + job["goal"])
+        _inbox_add(job, "completed", "Verified: " + job["goal"], title="Done", body=job["title"])
         _finish(job, now, "completed (verified)")
     else:
         reason = payload.get("reason") or result.message
-        notify("Couldn't finish", f"{job['title']}. I'll bring it up next time we talk.")
         _inbox_add(job, "needs_you", f"Scheduled desktop goal not verified: {job['goal']}. Jev: {reason}. "
                    f"Verified steps: {json.dumps(payload.get('verified_steps', []), ensure_ascii=False)[:600]}",
-                   urgent=True)
+                   urgent=True, title="Couldn't finish", body=f"{job['title']}. I'll bring it up next time we talk.",
+                   notify_urgent=False)
         _finish(job, now, "handoff: " + reason)
 
 
@@ -876,13 +837,13 @@ def _run_command_job(job, now, jev):
             _finish(job, now, f"{status}; Jev unavailable")
             return
         if verdict["p"] >= WATCH_THRESHOLD:
-            notify(job["title"], verdict["evidence"] or status, verdict["urgent"])
             _inbox_add(job, "condition_met", f"`{job['command']}` {status}. Condition met: {job['condition']}. "
-                       f"Evidence: {verdict['evidence'] or 'n/a'}", verdict["urgent"])
+                       f"Evidence: {verdict['evidence'] or 'n/a'}", verdict["urgent"],
+                       title=job["title"], body=verdict["evidence"] or status)
         _finish(job, now, f"{status}; condition p={verdict['p']:.2f}")
         return
-    notify(job["title"], f"Command {status}", code != 0)
-    _inbox_add(job, status, f"`{job['command']}` {status}. Output tail:\n{output[-800:]}", code != 0)
+    _inbox_add(job, status, f"`{job['command']}` {status}. Output tail:\n{output[-800:]}", code != 0,
+               title=job["title"], body=f"Command {status}")
     _finish(job, now, status)
 
 
@@ -890,11 +851,11 @@ def _run_watch(job, now, jev):
     if job.get("expires_at") and now >= job["expires_at"]:
         fired = int(job.get("fired") or 0)
         if fired:
-            notify("Stopped watching", f"{job['title']}: the time is up. I alerted you {fired} time(s).")
-            _inbox_add(job, "expired", f"Watch ended after its time frame; it fired {fired} time(s): {job['condition']}")
+            _inbox_add(job, "expired", f"Watch ended after its time frame; it fired {fired} time(s): {job['condition']}",
+                       title="Stopped watching", body=f"{job['title']}: the time is up. I alerted you {fired} time(s).")
         else:
-            notify("Stopped watching", f"{job['title']}: nothing happened before it expired.")
-            _inbox_add(job, "expired", f"Watch expired without the condition being met: {job['condition']}")
+            _inbox_add(job, "expired", f"Watch expired without the condition being met: {job['condition']}",
+                       title="Stopped watching", body=f"{job['title']}: nothing happened before it expired.")
         _finish(job, now, "expired", done=True)
         return
     visual = bool(job.get("camera") or job.get("screen"))
@@ -934,9 +895,9 @@ def _run_watch(job, now, jev):
         verdict = dict(second, p=min(verdict["p"], second["p"]), urgent=verdict["urgent"] or second["urgent"])
     result = f"condition p={verdict['p']:.2f}"
     if met and not was_met:
-        notify(job["title"], verdict["evidence"] or job["condition"], verdict["urgent"])
         evidence = f"the frame saved at {verdict['frame']}" if verdict.get("frame") else verdict["evidence"] or "n/a"
-        _inbox_add(job, "condition_met", f"Watch fired: {job['condition']}. Evidence: {evidence}", verdict["urgent"])
+        _inbox_add(job, "condition_met", f"Watch fired: {job['condition']}. Evidence: {evidence}", verdict["urgent"],
+                   title=job["title"], body=verdict["evidence"] or job["condition"])
         if not job.get("repeat"):
             _finish(job, now, "fired: " + result, done=True, last_digest=digest, last_met=True)
             return
@@ -956,10 +917,9 @@ def _missed(job: dict, now: float) -> bool:
     if job.get("kind") not in EXACT_KINDS or due_at is None or now - due_at <= LATE_GRACE_SECONDS:
         return False
     when = schedule.describe(due_at)
-    notify("Missed: " + job["title"], f"It was due {when}; the assistant was not running then, so it was NOT done.",
-           urgent=True)
     _inbox_add(job, "missed", f"NOT done: '{job['title']}' was due {when} but the computer was asleep or the "
-               "assistant was off. Ask the user whether to do it now.", urgent=True)
+               "assistant was off. Ask the user whether to do it now.", urgent=True, title="Missed: " + job["title"],
+               body=f"It was due {when}; the assistant was not running then, so it was NOT done.")
     _finish(job, now, f"missed: due {when}, not run", done="at" in job.get("schedule", {}))
     return True
 
@@ -1055,10 +1015,10 @@ def _report_interrupted(now: float) -> None:
             _save(jobs)
             stale = reported
     for job in stale:
-        notify("Interrupted: " + job["title"], "The assistant stopped while doing it; check whether it happened.",
-               urgent=True)
         _inbox_add(job, "interrupted", f"'{job['title']}' started {schedule.describe(job['started_at'])} but the "
-                   "assistant stopped before it finished; it may be only partly done.", urgent=True)
+                   "assistant stopped before it finished; it may be only partly done.", urgent=True,
+                   title="Interrupted: " + job["title"],
+                   body="The assistant stopped while doing it; check whether it happened.")
 
 
 def seconds_until_next(now: float | None = None) -> float | None:

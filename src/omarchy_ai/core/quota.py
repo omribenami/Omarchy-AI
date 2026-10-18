@@ -110,13 +110,15 @@ def report(provider: str, detail: str = "", *, user_initiated: bool = False) -> 
 def _alert(provider: str) -> None:
     name, what, url = PROVIDERS[provider]
     _run(["omarchy-shell", "-q", "quotaAlert", "show", json.dumps({"provider": name, "message": what})])
-    _run(["notify-send", "-u", "critical", "-a", "Omarchy AI", f"$ {name} {what}",
-          f"Omarchy AI can't use {name} until this is fixed.\n{url}"])
     try:
-        from ..phone import flux_notify
-        flux_notify.send(f"{name} {what}", f"Omarchy AI can't use {name} until this is fixed.\n{url}")
+        # Urgent: on the desktop and the phone, wherever the user is (core/outbox.py).
+        from . import outbox
+        outbox.send(outbox.Message(outbox.ALERT, f"{name} {what}",
+                                   f"Omarchy AI can't use {name} until this is fixed.\n{url}",
+                                   origin_id=f"quota:{provider}", priority=outbox.URGENT,
+                                   desktop_title=f"$ {name} {what}"))
     except Exception:  # noqa: BLE001
-        log.debug("flux notify unavailable", exc_info=True)
+        log.debug("outbox unavailable", exc_info=True)
     said = False
     if speaker is not None:
         try:

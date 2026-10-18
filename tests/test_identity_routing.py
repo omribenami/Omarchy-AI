@@ -10,11 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from omarchy_ai.config import Config
-from omarchy_ai.core import agenda, identities
+from omarchy_ai.core import agenda, identities, outbox
 from omarchy_ai.core.identities import Identity
 from omarchy_ai.execution import actions, myapi_agent, provenance
 from omarchy_ai.execution.actions import ActionResult
-from omarchy_ai.phone import flux_notify, server
+from omarchy_ai.phone import server
 from omarchy_ai.voice import speaker_id
 from omarchy_ai.voice.gemini_live import GeminiLiveSession
 
@@ -237,11 +237,10 @@ class ReminderRoutingTests(Household):
             patch.object(agenda, "JOBS_PATH", self.root / "agenda.json"),
             patch.object(agenda, "INBOX_PATH", self.root / "inbox.jsonl"),
             patch.object(agenda, "_refresh_routines_hud"),
-            patch.object(agenda.subprocess, "run"),  # no desktop notification
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.send = patch.object(flux_notify, "send").start()
+        self.send = patch.object(outbox, "_push").start()
         self.addCleanup(patch.stopall)
 
     def fire(self, identity):
@@ -258,14 +257,14 @@ class ReminderRoutingTests(Household):
     def test_a_reminder_goes_to_the_phones_of_who_asked(self):
         job, entry = self.fire(Identity("person-b", "voice"))
         self.assertEqual((job["requester"], job["requester_how"]), ("person-b", "voice"))
-        self.assertEqual(self.send.call_args.kwargs["devices"], ["device-b"])
+        self.assertEqual(self.send.call_args.args[3], ["device-b"])
         self.assertIn("Reminder for Person B", entry["detail"])
 
     def test_unknown_or_phoneless_requesters_reach_every_phone(self):
         for identity in (Identity(), Identity("person-c", "voice")):
             with self.subTest(identity=identity):
                 job, entry = self.fire(identity)
-                self.assertIsNone(self.send.call_args.kwargs["devices"])
+                self.assertIsNone(self.send.call_args.args[3])
         self.assertNotIn("requester", self.fire(Identity())[0])
 
     def test_a_scheduled_job_runs_as_who_asked(self):

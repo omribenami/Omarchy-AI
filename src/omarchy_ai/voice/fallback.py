@@ -179,6 +179,45 @@ def texts(model: str) -> dict[str, str]:
             "fallback-failed": FAILED, "working": WORKING}
 
 
+def ack_texts() -> dict[str, str]:
+    """{clip stem: text} of the user's own acknowledgement (a learned rule
+    quoting it, core/outbox.py ack_phrase), rendered like the other clips."""
+    from ..core import outbox
+    phrase = outbox.ack_phrase()
+    return {outbox.ack_stem(phrase): phrase} if phrase else {}
+
+
+def ack_clip():
+    """The acknowledgement clip: the user's own words when a rule quotes them
+    and they were rendered, else "On it, one moment." in their language."""
+    from ..core import outbox
+    phrase = outbox.ack_phrase()
+    if phrase:
+        found = alert_clips.find([outbox.ack_stem(phrase)], outbox.phrase_language(phrase))
+        if found is not None:
+            return found
+    return alert_clips.find(["working"])
+
+
+_ack_pcm: tuple[str, bytes] = ("", b"")
+
+
+def ack_pcm(rate: int = 24000) -> bytes:
+    """The acknowledgement as mono s16 PCM for the conversation's own audio
+    queue (decoded once per clip, so it plays within the ack deadline)."""
+    global _ack_pcm
+    path = ack_clip()
+    if path is None:
+        log.error("No acknowledgement clip")
+        return b""
+    if _ack_pcm[0] == str(path) and _ack_pcm[1]:
+        return _ack_pcm[1]
+    data = _decode(path, rate)
+    if data:
+        _ack_pcm = (str(path), data)
+    return data
+
+
 def clip(kind: str, model: str | None = None):
     """The notice in the user's language, else English; a "switching" clip
     for this model before the generic one."""
@@ -208,14 +247,19 @@ def pcm(kind: str, model: str | None = None, rate: int = 24000) -> bytes:
     if path is None:
         log.error("No fallback clip for %s (%s)", kind, model)
         return b""
+    out = _decode(path, rate)
+    if out:
+        log.info("Fallback notice sent to the call: %s", path.name)
+    return out
+
+
+def _decode(path, rate: int) -> bytes:
     try:
-        out = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1",
-                              "-ar", str(rate), "-"], capture_output=True, timeout=10, check=True).stdout
+        return subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(path), "-f", "s16le", "-ac", "1",
+                               "-ar", str(rate), "-"], capture_output=True, timeout=10, check=True).stdout
     except (OSError, subprocess.SubprocessError):
         log.exception("Could not decode %s", path)
         return b""
-    log.info("Fallback notice sent to the call: %s", path.name)
-    return out
 
 
 STALLED = ("[Turn recovery] The voice connection stopped answering the user and was restarted just now. This is "

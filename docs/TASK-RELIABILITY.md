@@ -66,3 +66,9 @@ Future work listed here on 2026-10-02, and where it landed since:
   forcibly: they are cancelled through their own canceller where one exists
   (browser, desktop), or abandoned at the deadline with the result dropped
   and any dispatched effect marked `uncertain`.
+- One delivery path for results (2026-10-18): the spoken-result listener
+  above, the task notifications and the agenda's notices now all go
+  through `core/outbox.py`. A task outcome said in an open conversation is
+  no longer also raised as a desktop notification and a phone push: both
+  senders use the same dedupe key, claimed in `STATE_DIR/outbox.json`
+  before delivery, so a restart mid-delivery does not repeat it.
