@@ -34,7 +34,12 @@ GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # Re-pinned for plan 3.2 (doctor): the TOOL CATALOG signature line gained
 # "run_diagnostics(), " after get_update_status(); the declared tools did
 # not change.
-LEGACY_LIVE_SHA256 = "38b2cf94b8565c18d8463ba1867b16b0b8c2dc3106dc28f79931de77a11be486"
+# Re-pinned for plan 4.4 (recall): the TOOL CATALOG signature line now reads
+# "remember_preference(preference*, confirmed, kind, keep_both), recall(query*), "
+# (facts and procedures are saved through remember_preference and found with
+# the catalog tool recall); nothing else in the prompt or the declared tools
+# changed. With no saved notes the prompt gains nothing (notes_hint is "").
+LEGACY_LIVE_SHA256 = "cc5fd56c369f3a547005d4ec7bed67f98e12f0610e9af23756c91ba61c4326fc"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
@@ -53,6 +58,8 @@ def _pinned(*, myapi_on=False, preferences=(), context=""):
         "omarchy_ai.voice.live.load_recent_context": context,
         "omarchy_ai.voice.prompt_v2.load_preferences": list(preferences),
         "omarchy_ai.voice.prompt_v2.load_recent_context": context,
+        "omarchy_ai.voice.live.notes_hint": "",
+        "omarchy_ai.voice.prompt_v2.notes_hint": "",
         "omarchy_ai.core.updates.wake_notice": "",
         "omarchy_ai.core.agenda.briefing": [],
         "omarchy_ai.core.skills.index_text": "",

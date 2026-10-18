@@ -41,10 +41,16 @@ Commands:
                                  GITHUB_ISSUE_TOKEN) used to file issues on
                                  this project's repo (see core/issues.py)
   forget-github-issue-token  -> delete the saved GitHub issue token
-  memory-list                -> standing rules and proposals (core/memory.py):
-                                 {"memory": {"active", "proposed", "cap", "review"}}
-  memory-add <text> / memory-edit <id> <text> / memory-forget <id> /
-  memory-confirm <id>        -> change one record; each prints {"memory": ...}
+  memory-list                -> standing rules, notes and proposals (core/memory.py):
+                                 {"memory": {"active", "notes", "proposed", "cap",
+                                 "review", "stale", "embeddings"}}
+  memory-add [--kind K] <text> / memory-edit <id> <text> / memory-forget <id> /
+  memory-confirm [--keep-both] <id>
+                             -> change one record; each prints {"memory": ...}
+                                 (K: preference, the default, fact or procedure)
+  memory-recall <query>      -> the saved notes that match: {"results": [...]}
+  memory-stale [--days N]    -> notes not recalled for N (90) days: {"stale"}
+  memory-embeddings on|off   -> optional Gateway embeddings for recall (off)
   select-cast-target <addr>  -> manual click in the omarchy-ai.tv-discovery
                                  overlay; runs the real start_casting
   refresh-cast-targets       -> the overlay's "Refresh" button
@@ -210,13 +216,17 @@ def _memory() -> dict:
         records = memory.load_records()
     except Exception as exc:  # noqa: BLE001 -- one broken file must not blank the whole panel
         return {"error": f"could not read memory: {exc}", "active": [], "proposed": []}
-    active = [r for r in records if r.get("confirmed")]
+    active = [r for r in records if r.get("confirmed") and not memory.is_note(r)]
     return {
         "active": active,
+        # facts and procedures: found with recall, never in the prompt
+        "notes": [r for r in records if r.get("confirmed") and memory.is_note(r)],
         "proposed": [r for r in records if not r.get("confirmed")],
         "cap": memory.MAX_ACTIVE,
         # Nothing is dropped past the cap: these are offered for review.
         "review": memory.review(records) if len(active) >= memory.MAX_ACTIVE else [],
+        "stale": memory.stale(records),
+        "embeddings": memory.embeddings_enabled(),
     }
 
 
@@ -232,16 +242,24 @@ def cmd_memory(args: argparse.Namespace) -> dict:
     from ..core import memory
     if args.command == "memory-list":
         return {"memory": _memory()}
+    if args.command == "memory-recall":
+        from ..core import memory_index
+        return {"ok": True, "results": memory_index.search(args.query)}
+    if args.command == "memory-stale":
+        return {"ok": True, "stale": memory.stale(days=args.days)}
+    if args.command == "memory-embeddings":
+        memory.set_embeddings(args.state == "on")
+        return {"ok": True, "memory": _memory()}
     if args.command == "memory-forget":
         if not memory.forget(args.id):
             return {"error": _MEMORY_ERRORS["missing"], "memory": _memory()}
         return {"ok": True, "memory": _memory()}
     if args.command == "memory-add":
-        outcome = memory.add_preference(args.text)
+        outcome = memory.add_preference(args.text, kind=getattr(args, "kind", "preference"))
     elif args.command == "memory-edit":
         outcome = memory.edit(args.id, args.text)
     else:  # memory-confirm: the user's own approval of a proposal
-        outcome = memory.confirm(args.id)
+        outcome = memory.confirm(args.id, keep_both=bool(getattr(args, "keep_both", False)))
     status = outcome["status"]
     if status in _MEMORY_ERRORS and not (status == "duplicate" and args.command != "memory-edit"):
         return {"error": _MEMORY_ERRORS[status], "memory": _memory()}
@@ -920,12 +938,19 @@ def main(argv: list[str] | None = None) -> int:
     p_select_cast.add_argument("address")
     sub.add_parser("refresh-cast-targets")
     sub.add_parser("memory-list")
-    sub.add_parser("memory-add").add_argument("text")
+    p_memory_add = sub.add_parser("memory-add")
+    p_memory_add.add_argument("--kind", choices=("preference", "fact", "procedure"), default="preference")
+    p_memory_add.add_argument("text")
     p_memory = sub.add_parser("memory-edit")
     p_memory.add_argument("id")
     p_memory.add_argument("text")
     sub.add_parser("memory-forget").add_argument("id")
-    sub.add_parser("memory-confirm").add_argument("id")
+    p_memory_confirm = sub.add_parser("memory-confirm")
+    p_memory_confirm.add_argument("--keep-both", action="store_true")
+    p_memory_confirm.add_argument("id")
+    sub.add_parser("memory-recall").add_argument("query")
+    sub.add_parser("memory-stale").add_argument("--days", type=int, default=90)
+    sub.add_parser("memory-embeddings").add_argument("state", choices=("on", "off"))
 
     args = parser.parse_args(argv)
     handler = {
@@ -963,7 +988,8 @@ def main(argv: list[str] | None = None) -> int:
         "restart": cmd_restart,
         "test-quota-alert": cmd_test_quota_alert,
         **{name: cmd_memory for name in ("memory-list", "memory-add", "memory-edit",
-                                         "memory-forget", "memory-confirm")},
+                                         "memory-forget", "memory-confirm", "memory-recall",
+                                         "memory-stale", "memory-embeddings")},
     }[args.command]
     result = handler(args)
     sys.stdout.buffer.write(_response_bytes(result))
