@@ -711,24 +711,40 @@ class Satellite:
             live_config["system_instruction"] += SATELLITE_NOTE + origin_note(conversation)
             built = time.monotonic()
             client = gemini_client(self.config)
-            async with live_connect(client, self.config, self.config.gemini_model, live_config) as session:
-                agenda.mark_briefed()  # this prompt carried the pending results
-                agenda.attach_call(adapter, asyncio.get_running_loop())
-                log.info("satellite conversation started: session=%s model=%s (conversation %.1fs, prompt %.1fs, "
-                         "connect %.1fs)", adapter._audit_session, self.config.gemini_model, prepared - woke,
-                         built - prepared, time.monotonic() - built)
-                workers = [self._send_audio(adapter, session), adapter._receive(session), adapter._tools(session),
-                           adapter._announcer(session), adapter._stuck_turn_recovery(session),
-                           adapter._task_status(session), adapter._speaker_watch(session),
-                           self._drain_audio(adapter), self._speech_watch(),
-                           self._silence_watch(adapter, time.monotonic()), adapter._hangup.wait()]
-                if self.config.jev_fast_path:
-                    workers.append(adapter._fast_path())
-                tasks = [asyncio.create_task(worker) for worker in workers]
-                done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds,
-                                             return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
-                    task.result()
+            attempt = 0
+            while True:
+                try:
+                    async with live_connect(client, self.config, self.config.gemini_model, live_config) as session:
+                        if attempt:
+                            await adapter._carry_over(session)  # she says she lost the connection
+                        else:
+                            agenda.mark_briefed()  # this prompt carried the pending results
+                            agenda.attach_call(adapter, asyncio.get_running_loop())
+                            log.info("satellite conversation started: session=%s model=%s (conversation %.1fs, "
+                                     "prompt %.1fs, connect %.1fs)", adapter._audit_session,
+                                     self.config.gemini_model, prepared - woke, built - prepared,
+                                     time.monotonic() - built)
+                        workers = [self._send_audio(adapter, session), adapter._receive(session),
+                                   adapter._tools(session), adapter._announcer(session),
+                                   adapter._stuck_turn_recovery(session), adapter._task_status(session),
+                                   adapter._speaker_watch(session), self._drain_audio(adapter), self._speech_watch(),
+                                   self._silence_watch(adapter, time.monotonic()), adapter._hangup.wait()]
+                        if self.config.jev_fast_path:
+                            workers.append(adapter._fast_path())
+                        tasks = [asyncio.create_task(worker) for worker in workers]
+                        done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds,
+                                                     return_when=asyncio.FIRST_COMPLETED)
+                        for task in done:
+                            task.result()
+                    break
+                except Exception as error:  # noqa: BLE001 -- a transient close reconnects once, else as before
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    tasks = []
+                    attempt += 1
+                    if not adapter._resume_dropped(error):
+                        raise
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001

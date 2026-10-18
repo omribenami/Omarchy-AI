@@ -102,6 +102,21 @@ class InProcess(unittest.TestCase):
             (failed.ok, failed.message, failed.error_class), (False, "nope", "failed")
         )
 
+    def test_a_silent_success_is_confirmed_but_an_empty_read_stays_empty(self):
+        # Journal 2026-10-17: volume_up through use_tool reached Gemini as message=''.
+        silent = self.runner.run(
+            "volume_up", {}, execute=lambda n, a: ActionResult(True, "")
+        )
+        self.assertEqual((silent.ok, silent.message), (True, runner.DONE))
+        failed = self.runner.run(
+            "volume_up", {}, execute=lambda n, a: ActionResult(False, "")
+        )
+        self.assertEqual((failed.ok, failed.message), (False, ""))
+        read = self.runner.run(
+            "list_windows", {}, execute=lambda n, a: ActionResult(True, "")
+        )
+        self.assertEqual(read.message, "")  # an empty answer is the content
+
     def test_the_default_execute_is_run_action(self):
         with mock.patch.object(
             actions, "run_action", return_value=ActionResult(True, "ran")

@@ -440,3 +440,54 @@ class SiteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveCloseTests(unittest.TestCase):
+    """classify_live: which ends of a Gemini Live session reconnect once."""
+
+    def api_error(self, code, message):
+        from google.genai import errors
+
+        return errors.APIError(code, {"error": {"message": message}})
+
+    def test_transient_closes(self):
+        # The journal's own error (2026-10-17 08:09 and 09:50), and its cause.
+        from websockets.exceptions import ConnectionClosedError
+        from websockets.frames import Close
+
+        closed = ConnectionClosedError(
+            Close(1011, "Internal error encountered."), Close(1011, "x"), True
+        )
+        for error in (
+            self.api_error(1011, "Internal error encountered."),
+            self.api_error(1006, "Abnormal closure."),
+            self.api_error(1001, "Going away."),
+            closed,
+            ConnectionResetError("connection reset by peer"),
+            ConnectionError("Gemini receive stream closed without a turn"),
+        ):
+            failure = retry.classify_live(error)
+            self.assertTrue(retry.live_transient(failure), (error, failure))
+        self.assertEqual(retry.close_code(closed), 1011)
+        self.assertEqual(
+            retry.classify_live(self.api_error(1011, "x")).detail, "1011 internal error"
+        )
+
+    def test_not_transient(self):
+        for error, kind in (
+            (
+                self.api_error(1011, "Resource has been exhausted (e.g. check quota)."),
+                retry.RATE_LIMITED,
+            ),
+            (self.api_error(1008, "Policy violation."), retry.PERMANENT),
+            (
+                self.api_error(1007, "Request contains an invalid argument."),
+                retry.PERMANENT,
+            ),
+            (ConnectionError("HTTP 403 forbidden"), retry.PERMANENT),
+            (RuntimeError("API key not valid"), retry.PERMANENT),
+            (ValueError("bug"), retry.FAILED),
+        ):
+            failure = retry.classify_live(error)
+            self.assertEqual(failure.kind, kind, error)
+            self.assertFalse(retry.live_transient(failure), error)

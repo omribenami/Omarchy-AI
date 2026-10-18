@@ -107,6 +107,12 @@ class FallbackTests(unittest.TestCase):
         self.assertIn("user: Did you check?", text)
         self.assertIn("ask them to say it again", fallback.carry_over([], stalled=True))
 
+    def test_carry_over_after_a_drop_says_she_is_back(self):
+        text = fallback.carry_over([{"role": "user", "text": "Turn on the fan"}], dropped=True)
+        self.assertTrue(text.startswith(fallback.DROPPED))
+        self.assertIn("user: Turn on the fan", text)
+        self.assertIn("say that again", fallback.carry_over([], dropped=True))
+
 
 class SessionFallbackTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -162,6 +168,23 @@ class SessionFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await s._start_models(), ["openai/gpt-realtime-2"])
         s._say_clip.assert_not_awaited()
 
+    async def test_a_transient_close_reconnects_once_until_a_turn_completes(self):
+        drop = api_error(1011, "Internal error encountered.")
+        self.assertTrue(self.s._resume_dropped(drop))
+        self.assertEqual(self.s._dropped_restart, "1011")
+        self.assertFalse(self.s._resume_dropped(drop))  # the reconnect failed too: _fall_back decides
+        self.s._drop_restarts = 0  # what a completed turn on the new connection does (_receive)
+        self.assertTrue(self.s._resume_dropped(ConnectionResetError("network blip")))
+
+    async def test_quota_policy_auth_and_hangups_do_not_reconnect(self):
+        for error in (api_error(1011, "Resource has been exhausted (e.g. check quota)."),
+                      api_error(1008, "Policy violation"), api_error(1007, "Invalid argument"),
+                      ConnectionError("HTTP 401 unauthorized"), ValueError("bug"),
+                      fallback.Reconnect("handled by _resume_stalled")):
+            self.assertFalse(self.s._resume_dropped(error), error)
+        self.s._hangup.set()
+        self.assertFalse(self.s._resume_dropped(api_error(1011, "Internal error encountered.")))
+
     async def test_next_call_starts_on_the_fallback(self):
         fallback.mark_down("gemini-3.8-live", RuntimeError("1011"))
         self.assertEqual((await self.s._start_models())[0], self.models[1])
@@ -172,7 +195,9 @@ class SessionFallbackTests(unittest.IsolatedAsyncioTestCase):
 class RunLoopFallbackTests(unittest.IsolatedAsyncioTestCase):
     """The desktop run loop against a fake Live API: the default model dies
     mid-call with the real 1011, the conversation continues on the next."""
-    async def test_mid_call_1011_reconnects_on_the_fallback_with_context(self):
+    async def run_desktop(self, fails):
+        """s.run() where connection number n (0-based) to `model` raises the
+        real 1011 when fails(n, model); the others end the conversation."""
         import asyncio
         from contextlib import asynccontextmanager
         from types import SimpleNamespace
@@ -186,9 +211,11 @@ class RunLoopFallbackTests(unittest.IsolatedAsyncioTestCase):
         connected, sessions = [], []
 
         def fake_session(model):
+            n = len(sessions)
+
             async def receive():
                 await asyncio.sleep(0.05)
-                if model == config.gemini_model:
+                if fails(n, model):
                     raise api_error(1011, "Internal error encountered.")
                 s._hangup.set()
                 await asyncio.sleep(3600)
@@ -218,11 +245,29 @@ class RunLoopFallbackTests(unittest.IsolatedAsyncioTestCase):
                 patch("omarchy_ai.core.conversations.DIR", Path(tempfile.mkdtemp())), \
                 patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mic)):
             await asyncio.wait_for(s.run(), 5)
+        return config, s, connected, sessions
+
+    async def test_mid_call_1011_reconnects_once_then_moves_to_the_fallback_with_context(self):
+        config, s, connected, sessions = await self.run_desktop(lambda n, model: model == Config().gemini_model)
+        # One reconnect to the same model; it fails again before a turn, so
         # Google's outage is answered by another company's model, on the Gateway key.
-        self.assertEqual(connected, [config.gemini_model, "openai/gpt-realtime-2"])
+        self.assertEqual(connected, [config.gemini_model, config.gemini_model, "openai/gpt-realtime-2"])
         s._say_clip.assert_awaited_once_with("switching", config.gemini_model)
-        carried = sessions[1].send_client_content.call_args.kwargs["turns"]["parts"][0]["text"]
+        carried = sessions[2].send_client_content.call_args.kwargs["turns"]["parts"][0]["text"]
         self.assertIn("user: Check the email from Alex", carried)
+
+    async def test_a_single_1011_reconnects_to_the_same_model_and_says_she_is_back(self):
+        # Journal 2026-10-17 08:09 and 09:50: one 1011 in the middle of a conversation.
+        with self.assertLogs("omarchy_ai.voice.gemini", "WARNING") as logged:
+            config, s, connected, sessions = await self.run_desktop(lambda n, model: n == 0)
+        self.assertEqual(connected, [config.gemini_model] * 2)
+        self.assertEqual(fallback.chain(config)[0], config.gemini_model)  # not marked as failing
+        s._say_clip.assert_not_awaited()
+        kwargs = sessions[1].send_client_content.call_args.kwargs
+        self.assertTrue(kwargs["turn_complete"])  # she speaks first: "lost the connection, say that again?"
+        self.assertTrue(kwargs["turns"]["parts"][0]["text"].startswith(fallback.DROPPED))
+        self.assertIn("user: Check the email from Alex", kwargs["turns"]["parts"][0]["text"])
+        self.assertTrue(any("Gemini session reconnected after 1011" in line for line in logged.output))
 
     async def test_a_stalled_turn_reconnects_on_the_same_model_and_asks_for_the_answer(self):
         # Journal 2026-10-05 18:37:24 (phone): a forced closure, then 52s of nothing.

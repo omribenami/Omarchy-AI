@@ -392,7 +392,7 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
                 await asyncio.gather(*session_tasks, return_exceptions=True)
                 tasks = list(peer_tasks)
                 attempt += 1
-                if adapter._resume_stalled(error):
+                if adapter._resume_stalled(error) or adapter._resume_dropped(error):
                     continue
                 index = await adapter._fall_back(models, index, error)
                 if index is None:
@@ -407,8 +407,11 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
             answer.set_exception(error)
         else:
             log.exception('Phone Gemini session failed')
+            from ..voice.fallback import ended_reason
+            why = ended_reason(error)
             emit({'type': 'error', 'error': {'message': 'Voice model quota used up.' if out_of_quota
-                                             else 'Gemini connection ended. Please reconnect.'}})
+                                             else 'Gemini connection ended' + (f' ({why})' if why else '')
+                                             + '. Please reconnect.'}})
     finally:
         try:
             from ..core import agenda

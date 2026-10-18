@@ -17,6 +17,14 @@ a restarted shell or a lost update never leaves it out of step.
 The session connects on the first message and closes after
 text_chat_idle_minutes without activity; the next message reconnects, and
 the archived transcript (context_retention_hours) keeps the thread.
+
+A connection Gemini closes for a transient reason (core/retry.py
+classify_live: 1011 internal error, 1006, 1001, a network blip) is opened
+again once, with the same config and this session's turns carried over
+(voice/fallback.py carry_over), and the typed line it never answered is sent
+again -- unless a tool call for it had started, which may have acted: then
+the user is told instead. Journal 2026-10-17 08:09 and 09:50: two 1011s
+each lost the user's line ("Turn on the backyard fan").
 """
 from __future__ import annotations
 
@@ -27,7 +35,7 @@ import subprocess
 import time
 
 from ..core import logs
-from . import extensions
+from . import extensions, fallback
 
 log = logging.getLogger("omarchy_ai.voice.text_chat")
 
@@ -64,6 +72,15 @@ def _connect(config, live_config):
     return client, live_connect(client, config, config.gemini_model, live_config)
 
 
+def ended_message(error: BaseException, *, retried: bool = False) -> str:
+    """What the user reads when the session ended for good, with the reason."""
+    why = fallback.ended_reason(error)
+    head = "Connection to Gemini ended" + (f" ({why})" if why else "")
+    if retried:
+        head += " and reconnecting did not help"
+    return head + ". Send again to reconnect."
+
+
 class TextChat:
     def __init__(self, config, *, push=push_to_hud, connect=_connect):
         self.config = config
@@ -79,6 +96,10 @@ class TextChat:
         self._push_pending = False
         self._last_activity = 0.0
         self._loop: asyncio.AbstractEventLoop | None = None
+        # The typed line Gemini has not answered yet (its transcript entry),
+        # and how many tool calls the session had seen when it went out.
+        self._unanswered: dict | None = None
+        self._calls_at = 0
         # A skill saved from here is noted in the log (core/conversations.py
         # add_note). This chat has no saved conversation, so its notes are the
         # ones with no conversation id; they arrive on worker threads.
@@ -160,6 +181,7 @@ class TextChat:
         out = content.output_transcription
         if out and out.text:
             self._last_activity = time.monotonic()
+            self._unanswered = None
             if self._open_reply and self.messages and self.messages[-1]["role"] == "assistant":
                 self.messages[-1]["text"] += out.text
             else:
@@ -187,7 +209,9 @@ class TextChat:
                     self.status = "ready"
                 self._schedule_push()
                 continue
-            adapter._transcript.append({"role": "user", "text": text})
+            entry = {"role": "user", "text": text}
+            adapter._transcript.append(entry)
+            self._unanswered, self._calls_at = entry, len(adapter._seen)
             adapter._turn_id = logs.new_id()  # each typed line is a user turn (core/logs.py)
             adapter._capture_password(text)
             adapter._input_guard.heard_user(text)
@@ -195,6 +219,28 @@ class TextChat:
             # it count as heard (acknowledged_ids), as speech does in a call.
             adapter.user_spoke_at = adapter._last_user_speech = time.monotonic()
             await session.send_client_content(turns={"role": "user", "parts": [{"text": text}]}, turn_complete=True)
+
+    async def _reconnected(self, adapter, session, queue: asyncio.Queue, resend: dict | None) -> None:
+        """The new connection after a drop: this session's turns as context,
+        then the unanswered line (`resend`) as the next typed turn."""
+        reason, adapter._dropped_restart = adapter._dropped_restart, ""
+        if resend is not None:
+            # The sender adds it again when it goes out.
+            for i in range(len(adapter._transcript) - 1, -1, -1):
+                if adapter._transcript[i] is resend:
+                    del adapter._transcript[i]
+                    break
+        if context := fallback.carry_over(adapter._transcript):
+            await session.send_client_content(turns={"role": "user", "parts": [{"text": context}]},
+                                              turn_complete=False)
+        if resend is not None:
+            waiting = [resend["text"]]
+            while not queue.empty():
+                waiting.append(queue.get_nowait())
+            for text in waiting:
+                queue.put_nowait(text)
+        log.warning("Gemini session reconnected after %s: session=%s (text chat; resent the unanswered line: %s)",
+                    reason or "a drop", adapter._audit_session, resend is not None)
 
     async def _idle_watch(self, adapter) -> None:
         limit = max(1, int(getattr(self.config, "text_chat_idle_minutes", 10))) * 60
@@ -222,6 +268,8 @@ class TextChat:
         self._schedule_push()
         tasks: list[asyncio.Task] = []
         client = None
+        attempt = 0
+        resend: dict | None = None
         try:
             from .prompt_version import prompt_surface
 
@@ -231,22 +279,52 @@ class TextChat:
             if who := identities.describe(adapter.known_identity):
                 live_config["system_instruction"] += "\n\nWHO IS TYPING: " + who
             client, connection = self._connect(self.config, live_config)
-            async with connection as session:
-                agenda.mark_briefed()  # this prompt carried the pending results
-                agenda.attach_call(adapter, asyncio.get_running_loop())
-                log.info("text chat connected: session=%s model=%s", adapter._audit_session, self.config.gemini_model)
-                if self.status == "connecting":
-                    self.status = "thinking"
-                self._schedule_push()
-                tasks = [asyncio.create_task(c) for c in (
-                    self._sender(adapter, session, queue), adapter._receive(session), adapter._tools(session),
-                    adapter._announcer(session), self._drain_audio(adapter), self._idle_watch(adapter),
-                    adapter._hangup.wait())]
-                done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds,
-                                             return_when=asyncio.FIRST_COMPLETED)
-                adapter._hangup.set()  # from here on a new message starts a new session
-                for task in done:
-                    task.result()
+            while True:
+                try:
+                    async with connection as session:
+                        if attempt:
+                            await self._reconnected(adapter, session, queue, resend)
+                        else:
+                            agenda.mark_briefed()  # this prompt carried the pending results
+                            agenda.attach_call(adapter, asyncio.get_running_loop())
+                            log.info("text chat connected: session=%s model=%s", adapter._audit_session,
+                                     self.config.gemini_model)
+                        if self.status == "connecting":
+                            self.status = "thinking"
+                        self._schedule_push()
+                        tasks = [asyncio.create_task(c) for c in (
+                            self._sender(adapter, session, queue), adapter._receive(session),
+                            adapter._tools(session), adapter._announcer(session), self._drain_audio(adapter),
+                            self._idle_watch(adapter), adapter._hangup.wait())]
+                        done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds,
+                                                     return_when=asyncio.FIRST_COMPLETED)
+                        if not any(not t.cancelled() and t.exception() is not None for t in done):
+                            adapter._hangup.set()  # from here on a new message starts a new session
+                        for task in done:
+                            task.result()
+                    break
+                except Exception as error:  # noqa: BLE001 -- a transient close reconnects once, else below
+                    # A call for the unanswered line had started: it may have acted, so it is not sent again.
+                    started = len(adapter._seen) > self._calls_at
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    tasks = []
+                    attempt += 1
+                    if not adapter._resume_dropped(error):
+                        raise
+                    resend = None if started else self._unanswered
+                    if self._unanswered is not None and started:
+                        self._add("note", "Lost the connection to Gemini while that was being done; it may or "
+                                          "may not have finished. Reconnected: check before sending it again.")
+                        self._open_reply = False
+                        self.status = "ready"
+                        self._schedule_push()
+                    self._unanswered = None
+                    if client is not None:
+                        await client.aio.aclose()
+                    client = None
+                    client, connection = self._connect(self.config, live_config)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001
@@ -256,7 +334,7 @@ class TextChat:
                 quota.report("gemini", f"text chat: {error}", user_initiated=True)
                 self._fail("Gemini quota used up.")
             else:
-                self._fail("Connection to Gemini ended. Send again to reconnect.")
+                self._fail(ended_message(error, retried=attempt > 1))  # attempt counts the failed connections
         finally:
             adapter._hangup.set()
             agenda.detach_call(adapter)

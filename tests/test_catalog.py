@@ -196,10 +196,11 @@ class UseToolDispatchTests(unittest.TestCase):
         s._escalator = escalation.Escalator(lambda reply, latest: (False, False))  # no network in tests
         return s
 
-    def dispatch(self, s, args, pick):
+    def dispatch(self, s, args, pick, result=None):
         session = SimpleNamespace(send_tool_response=AsyncMock())
+        result = result if result is not None else ActionResult(True, "done")
         with patch("omarchy_ai.voice.gemini_live.catalog.resolve", return_value=pick), \
-                patch("omarchy_ai.voice.gemini_live.run_action", return_value=ActionResult(True, "done")) as run, \
+                patch("omarchy_ai.voice.gemini_live.run_action", return_value=result) as run, \
                 patch("omarchy_ai.voice.gemini_live.LiveSession._current_window", return_value={}):
             async def call():
                 await s._run_call(session, SimpleNamespace(id="c1", name="use_tool", args=args))
@@ -248,6 +249,15 @@ class UseToolDispatchTests(unittest.TestCase):
         run.assert_called_once_with("nightlight_toggle", {})
         self.assertEqual(reviewed, [])
         self.assertTrue(response["ok"])
+
+    def test_a_silent_success_through_use_tool_is_confirmed(self):
+        # Journal 2026-10-17 07:56 and 09:49: use_tool volume_up/volume_down
+        # reached Gemini as ok=True message='' (the volume script prints nothing).
+        s = self.session(lambda tool, args, ctx: switchboard.Verdict("execute", tool, args))
+        pick = catalog.Resolution(True, "volume_up", {}, evidence={"by": "name"})
+        run, response = self.dispatch(s, {"name": "volume_up"}, pick, ActionResult(True, ""))
+        run.assert_called_once_with("volume_up", {})
+        self.assertEqual(response, {"ok": True, "message": "done"})
 
     def test_named_call_is_reviewed_as_the_inner_tool(self):
         reviewed = []
