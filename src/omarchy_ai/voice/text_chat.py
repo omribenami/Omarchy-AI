@@ -35,6 +35,7 @@ import subprocess
 import time
 
 from ..core import logs
+from ..execution import passwords
 from . import extensions, fallback
 
 log = logging.getLogger("omarchy_ai.voice.text_chat")
@@ -209,11 +210,14 @@ class TextChat:
                     self.status = "ready"
                 self._schedule_push()
                 continue
+            # A typed "pass: X" goes to the keyring; the model and the
+            # transcript get "[password]" (execution/passwords.py).
+            adapter._capture_password(text)
+            text = passwords.for_speech(text)
             entry = {"role": "user", "text": text}
             adapter._transcript.append(entry)
             self._unanswered, self._calls_at = entry, len(adapter._seen)
             adapter._turn_id = logs.new_id()  # each typed line is a user turn (core/logs.py)
-            adapter._capture_password(text)
             adapter._input_guard.heard_user(text)
             # A typed line is the user answering: announcements said before
             # it count as heard (acknowledged_ids), as speech does in a call.

@@ -190,7 +190,10 @@ def _save_full(text: str, output_dir: Path | None) -> str | None:
         directory.mkdir(parents=True, exist_ok=True)
         fd, path = tempfile.mkstemp(prefix="cmd-", suffix=".log", dir=directory)
         with os.fdopen(fd, "w") as f:
-            f.write(text)
+            # The full output is read back by tasks and models: a vault token
+            # or password a command printed is masked here too.
+            from ..execution.passwords import redact
+            f.write(redact(text))
         return path
     except OSError:
         return None

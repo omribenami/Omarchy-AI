@@ -30,7 +30,7 @@ differ from `baselines/deterministic.json`.
 
 Pytest collects the same scenarios, one cell per scenario and prompt. A cell
 that documents behavior the current code does not have yet is a strict
-**xfail** whose reason names the harness plan item (1.4, 2.1, 2.2, 2.4, 2.5).
+**xfail** whose reason names the harness plan item (1.4, 2.1, 2.2, 2.4).
 An xfail that starts passing fails the run, so the marker in `suite.py` and
 the baseline (`python -m evals compare --update`) are updated on purpose.
 The whole suite runs in about two seconds and never reads the user's config

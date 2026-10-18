@@ -58,7 +58,7 @@ from typing import Any, AsyncIterator, Callable
 
 from ..core import logs, retry
 from ..core.cancel import CURRENT, Cancelled, CancelToken, checkpoint, current
-from . import provenance, tools
+from . import passwords, provenance, tools
 
 __all__ = [
     "CANCELLERS",
@@ -512,6 +512,9 @@ class ToolRunner:
             bool(getattr(value, "ok", False)),
             str(getattr(value, "message", "")),
         )
+        # No saved secret reaches a model, whatever the tool printed (a vault
+        # token in a MyApi result, a password in a terminal's scrollback).
+        message = passwords.redact(message)
         outcome: str | None = None if ok else FAILED
         unsure = None if ok else _not_dispatched(message)
         if unsure is not None:
