@@ -57,6 +57,13 @@ Rules for every release:
   as I'm back instead of half an hour later, step by step: which steps were
   done, which may have happened and which never started.
 
+### Fixes
+
+- In the typed chat, when a smart-home switch or another background job
+  finished and I said nothing about it, you were never told. Now I tell you
+  once, in the chat as well as by voice; an empty reply no longer counts as
+  having told you.
+
 ### Under the hood
 
 - `core/triggers.py` (new): event triggers for agenda jobs (`schedule_task`
