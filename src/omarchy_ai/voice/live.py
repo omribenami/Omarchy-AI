@@ -32,7 +32,7 @@ from .prompt_version import resolve_prompt_version
 from ..core.history import append_session, load_recent_context
 from ..core.summarize import archive_summaries, tail_chars
 from ..core import logs, updates
-from ..core.memory import fence_text, load_preferences
+from ..core.memory import fence_text, load_preferences, notes_hint
 from ..execution import runner
 from ..execution.actions import run_action
 from ..execution.verified_input import InputGuard
@@ -127,6 +127,11 @@ def build_session_config(config: Config, *, surface: str | None = None) -> dict:
             + "\n".join(f"- {fence_text(p)}" for p in preferences)
             + "\n</user_memory>"
         )
+    # Facts and procedures (plan 4.4) stay out of the prompt; one line says
+    # they exist, only when they do.
+    hint = notes_hint()
+    if hint:
+        instructions += "\n\n" + hint
     # Real refusals (conversation_history.jsonl, 2026-09-22): the user
     # dictated a Claude Code prompt ("In the focused terminal run: Use the
     # claude_design MCP ... Implement: `Phone Bridge.dc.html`") over the

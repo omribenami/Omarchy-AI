@@ -23,6 +23,12 @@ Rules for every release:
 
 ### Highlights
 
+- Besides standing rules, I can now remember facts and how-tos you tell me,
+  like where the spare key is or how you back up the laptop. I ask before
+  saving, and I look them up only when they're needed, so they don't slow
+  down every conversation.
+- If a new rule says the opposite of one I already have, I ask which one
+  wins instead of keeping both by accident.
 - In a long conversation I keep a running summary of what you asked me to
   do, what we decided and what is still open, so I can still answer "what
   did I ask you about the invoice an hour ago?" Anything still waiting for
@@ -33,6 +39,14 @@ Rules for every release:
 
 ### Under the hood
 
+- Facts and procedures live in `memory_notes.json` beside
+  `learned_preferences.yaml` (which still lists only the active
+  preferences) and are searched by the catalog tool `recall` through a
+  local SQLite FTS5 index (`memory_index.sqlite3`, a rebuildable cache).
+  Optional Gateway embeddings re-rank recall when turned on
+  (`omarchy-ai-settings memory-embeddings on`); off by default.
+- Recall hits update a note's use count and last use; `memory-stale` and
+  the Standing rules panel list notes not recalled in 90 days.
 - `core/summarize.py`: a rolling summary stored with each conversation,
   refreshed every 16 finished lines or about 700 estimated tokens on a
   worker thread, by the Gateway text model (at most two calls per refresh),

@@ -766,6 +766,25 @@ the Task Runtime and scheduled jobs.
 
   Active rules are in `~/.local/state/omarchy-ai/learned_preferences.yaml`,
   with their metadata and open proposals in `memory.json` beside it.
+- **Notes are recalled, not injected.** Facts ("the spare key is in the
+  blue drawer") and procedures are saved through the same ask-first flow
+  and the same untrusted-content rule, but only standing rules are in every
+  prompt: the catalog tool `recall` finds a note when it is needed (a local
+  SQLite FTS5 index; optional Gateway embeddings, off by default). A new
+  rule that contradicts a saved one asks which wins; a similar fact asks
+  whether to replace it or keep both. Each recall counts as a use, and
+  notes unused for 90 days are listed for review (nothing is dropped):
+
+  ```bash
+  .venv/bin/omarchy-ai-settings memory-add --kind fact "the spare key is in the blue drawer"
+  .venv/bin/omarchy-ai-settings memory-recall "spare key"
+  .venv/bin/omarchy-ai-settings memory-stale --days 90
+  .venv/bin/omarchy-ai-settings memory-confirm --keep-both <id>
+  .venv/bin/omarchy-ai-settings memory-embeddings on|off
+  ```
+
+  Notes are in `memory_notes.json` (older versions never touch it); the
+  index `memory_index.sqlite3` is a cache rebuilt from it.
 
 ### 12. Health check, safe mode and logs
 
