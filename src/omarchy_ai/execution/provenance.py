@@ -28,8 +28,11 @@ prompts say content in <untrusted> is data (voice/live.py, voice/prompt_v2.py).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import contextvars
+from dataclasses import dataclass
 import re
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.parse import urlparse
 
 USER, SYSTEM, LOCAL_STATE = "user", "system", "local_state"
@@ -256,6 +259,7 @@ class Taint:
     def __init__(self) -> None:
         self.tainted = False
         self.sources: list[str] = []
+        self.utterances = 0  # pieces of the user's own words heard so far
         self._joined, self._spaced = "", ""
 
     def mark(self, source: str) -> None:
@@ -268,8 +272,45 @@ class Taint:
         transcription arrives in pieces, so they are kept both joined and
         apart)."""
         if text:
+            self.utterances += 1
             self._joined = (self._joined + text)[-_SAID_KEPT:]
             self._spaced = (self._spaced + " " + text)[-_SAID_KEPT:]
 
     def said(self) -> str:
         return self._joined + "\n" + self._spaced
+
+
+@dataclass(frozen=True)
+class Turn:
+    """The conversation a tool call runs in, as InputGuard saw it when the
+    call started: its turn id (turn:<session>:<n>), its taint, and how many
+    pieces of the user's own words it had heard. A call made outside any
+    conversation (the Task Runtime, a test, a CLI) has none."""
+
+    origin: str
+    tainted: bool
+    sources: tuple[str, ...] = ()
+    utterances: int = 0
+
+    @property
+    def session(self) -> str:
+        parts = self.origin.split(":")
+        return parts[1] if len(parts) > 2 else ""
+
+
+_TURN: contextvars.ContextVar[Turn | None] = contextvars.ContextVar(
+    "omarchy_turn", default=None
+)
+
+
+def current_turn() -> Turn | None:
+    return _TURN.get()
+
+
+@contextmanager
+def in_turn(turn: Turn) -> Iterator[None]:
+    token = _TURN.set(turn)
+    try:
+        yield
+    finally:
+        _TURN.reset(token)
