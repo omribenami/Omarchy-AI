@@ -42,7 +42,7 @@ import time
 import uuid
 
 from ..config import STATE_DIR
-from . import logs, outbox, retry, schedule, statefile
+from . import logs, outbox, retry, schedule, statefile, triggers
 from .jev import Jev, JevError, boolean, choice
 
 log = logging.getLogger("omarchy_ai.core.agenda")
@@ -51,14 +51,23 @@ JOBS_PATH = STATE_DIR / "agenda.json"
 INBOX_PATH = STATE_DIR / "agenda_inbox.jsonl"
 KINDS = ("remind", "watch", "desktop", "command", "assistant", "action")
 MAX_STEPS = 10
-# Something that changes the world (an action, a desktop goal, a command)
-# runs on time or not at all: a device switched on at 3 a.m. because the
-# laptop was asleep at 18:30 is worse than a "missed" notice.
-EXACT_KINDS = ("action", "desktop", "command")
+# What happens to a run that was due while the computer was asleep or the
+# assistant was off (more than LATE_GRACE_SECONDS late) is the job's
+# `catch_up`, chosen when it is made and shown to the user:
+#   skip           reported as missed, not run late. The default for what
+#                  changes the world (an action with a step that is not a
+#                  read, a desktop goal, a command): a device switched on at
+#                  3 a.m. because the laptop was asleep at 18:30 is worse than
+#                  a "missed" notice.
+#   run_once_late  run once when the assistant is back, said to be late. The
+#                  default for reminders, watches, assistant requests and
+#                  actions that only read.
+# Never every missed occurrence: a recurring job that missed three runs
+# catches up (or is reported) once. Jobs made before `catch_up` existed get
+# the default for their kind and steps, without rewriting agenda.json.
+CATCH_UP = ("skip", "run_once_late")
+EXACT_KINDS = ("action", "desktop", "command")  # skip by default (an action unless it only reads)
 LATE_GRACE_SECONDS = 15 * 60
-# A job whose run started but never finished (the daemon died mid-run) is
-# reported, never silently re-run: actions are at most once.
-STALE_RUN_SECONDS = 30 * 60
 # A run holds its job through `running_by` in agenda.json ({pid, start_time,
 # lease_until}), so the daemon and a CLI process never run one job twice at
 # once. The lease ends when the run does, or when its process is gone; one
@@ -179,6 +188,7 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False, *, ti
     else shown as `title`/`body` where the user is (and the assistant may be
     woken to say it). No title: said or kept only. `notify_urgent` is the
     notice's urgency when it differs from the entry's."""
+    detail, body = _annotated(job, detail, body)
     entry = {"id": uuid.uuid4().hex[:10], "job_id": job["id"], "title": job["title"], "kind": job["kind"],
              "outcome": outcome, "detail": detail[:1500], "urgent": urgent, "at": time.time(),
              "delivered": False}
@@ -194,6 +204,28 @@ def _inbox_add(job: dict, outcome: str, detail: str, urgent: bool = False, *, ti
         origin_id=f"agenda:{job['id']}", dedupe_key=f"agenda:{job['id']}:{run}:{outcome}",
         priority=outbox.URGENT if loud else outbox.NORMAL, entry=dict(entry), wake=True, person=person))
     return dict(entry)
+
+
+def _annotated(job: dict, detail: str, body: str) -> tuple[str, str]:
+    """A run's result says what fired it (an event trigger) and whether it is
+    late (catch_up run_once_late). An email's or event's words are someone
+    else's: fenced in the detail the model reads (execution/provenance.py)."""
+    late, event = job.get("_late"), job.get("_event")
+    if late:
+        when = schedule.describe(late)
+        note = f" It was due {when}; the assistant was not running then, so this is late."
+        detail = detail[:1500 - len(note)] + note
+        body = f"{body} (late: was due {when})" if body else body
+    if event:
+        text = "; ".join(event)[:600]
+        shown = text
+        if job.get("on") and triggers.untrusted(job["on"]):
+            from ..execution import provenance
+            shown = provenance.fence(text, "external:" + job["on"]["event"])
+        note = " Triggered by: " + shown
+        detail = detail[:max(0, 1500 - len(note))] + note
+        body = f"{body} ({text[:150]})" if body else body
+    return detail, body
 
 
 def _inbox_read(bad: list[str] | None = None) -> list[dict]:
@@ -416,6 +448,48 @@ def _approval_at_creation(steps: list[dict], now: float) -> dict | None:
     return {"by": by, "at": now, "keys": keys}
 
 
+def _trigger_from(job: dict, args: dict, now: float) -> None:
+    """A job run by an event (core/triggers.py) instead of a time: polled at
+    its event's pace, repeating unless `repeat` is false (or its event stops
+    after one firing by default)."""
+    if job["kind"] == "watch":
+        raise ValueError("A watch has its own source; `on` is for remind, action, command, assistant or desktop")
+    if any(args.get(k) not in (None, "") for k in ("at", "in_minutes", "cron")):
+        raise ValueError("Give either a timing or `on`, not both")
+    job["on"] = triggers.parse(args["on"])
+    job["schedule"] = {"every_minutes": triggers.poll_minutes(job["on"], args.get("every_minutes"))}
+    repeat = args.get("repeat")
+    job["repeat"] = (not triggers.once_by_default(job["on"])) if repeat in (None, "") else bool(repeat)
+    if args.get("for_minutes") not in (None, ""):
+        job["expires_at"] = now + 60 * min(max(float(args["for_minutes"]), 1.0), 60 * 24 * 366)
+    elif args.get("expires_in_hours") not in (None, ""):
+        job["expires_at"] = now + 3600 * min(max(float(args["expires_in_hours"]), 0.1), 24 * 366)
+
+
+def _default_catch_up(job: dict) -> str:
+    """The policy a job gets when none was chosen (also every job made before
+    policies existed): see CATCH_UP."""
+    kind = job.get("kind")
+    if kind == "action":
+        try:
+            from ..execution.tools import READ, effect_class
+            reads = all(effect_class(str(s.get("tool"))) == READ for s in job.get("steps") or [])
+        except Exception:  # noqa: BLE001 -- unknown: the safe side
+            reads = False
+        return "run_once_late" if reads and job.get("steps") else "skip"
+    return "skip" if kind in EXACT_KINDS else "run_once_late"
+
+
+def catch_up(job: dict) -> str:
+    chosen = job.get("catch_up")
+    return chosen if chosen in CATCH_UP else _default_catch_up(job)
+
+
+_CATCH_UP_WORDS = {"skip": "skip: if the computer is off or asleep then, it is reported as missed, not done late",
+                   "run_once_late": "run_once_late: if the computer is off or asleep then, it runs once when "
+                                    "the assistant is back"}
+
+
 def create(args: dict, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     kind = str(args.get("kind") or "").strip()
@@ -426,7 +500,10 @@ def create(args: dict, now: float | None = None) -> dict:
         raise ValueError("title is required")
     job = {"id": "t-" + uuid.uuid4().hex[:6], "title": title, "kind": kind, "created_at": now,
            "status": "active", "runs": 0}
-    job["schedule"] = _schedule_from(args, kind, now)
+    if args.get("on") not in (None, "", {}):
+        _trigger_from(job, args, now)
+    else:
+        job["schedule"] = _schedule_from(args, kind, now)
     if kind == "watch":
         sources = {k: _text(args, k, 1000) for k in ("window", "terminal", "path", "command", "camera")}
         sources = {k: v for k, v in sources.items() if v}
@@ -490,7 +567,15 @@ def create(args: dict, now: float | None = None) -> dict:
         approved = _approval_at_creation(job["steps"], now)
         if approved:
             job["approved"] = approved
-    job["next_run"] = now if kind == "watch" and "every_minutes" in job["schedule"] else \
+    asked = _text(args, "catch_up", 20)
+    if asked == "run_all":
+        raise ValueError("catch_up run_all is not offered: a missed run is done at most once (run_once_late) "
+                         "or reported (skip)")
+    if asked and asked not in CATCH_UP:
+        raise ValueError(f"catch_up must be one of {', '.join(CATCH_UP)}")
+    if not job.get("on"):
+        job["catch_up"] = asked or _default_catch_up(job)
+    job["next_run"] = now if (kind == "watch" and "every_minutes" in job["schedule"]) or job.get("on") else \
         job["schedule"]["at"] if "at" in job["schedule"] else schedule.next_run(job["schedule"], now)
     if job["next_run"] is None:
         raise ValueError(f"That time has already passed (it is now {schedule.describe(now)})")
@@ -527,6 +612,8 @@ def cancel(job_id: str) -> dict | None:
         return None
     job = _update(job_id, status="cancelled", next_run=None)
     if job:
+        if job.get("on"):
+            triggers.forget(job_id)
         _refresh_routines_hud()
         _sync_motion()
     return job
@@ -541,6 +628,11 @@ def summary(job: dict) -> dict:
     out["schedule"] = (f"once at {schedule.describe(sched['at'])}" if "at" in sched else
                        f"every {sched['every_minutes']:g} min" if "every_minutes" in sched else
                        f"cron {sched.get('cron')}")
+    if job.get("on"):
+        out["schedule"] = (triggers.describe(job["on"]) + f" (checked every {sched.get('every_minutes', 1):g} min"
+                           + (", until cancelled)" if job.get("repeat") else ", once)"))
+    elif job.get("kind") != "watch":
+        out["if_missed"] = _CATCH_UP_WORDS[catch_up(job)]
     if job.get("steps"):
         out["steps"] = job["steps"]
     out["next_run"] = schedule.describe(job.get("next_run"))
@@ -664,8 +756,15 @@ def _look(job: dict) -> dict:
 
 # ---------------------------------------------------------------- runners
 
-def _finish(job: dict, now: float, result: str, *, done: bool = False, **extra) -> None:
-    changes = {"last_run": now, "last_result": result[:500], "runs": job.get("runs", 0) + 1, **extra}
+def _finish(job: dict, now: float, result: str, *, done: bool = False, count: bool = True, **extra) -> None:
+    """Record a run (or, with count=False, a trigger's check that fired
+    nothing) and move the job to its next time."""
+    changes = {"last_result": result[:500], **extra}
+    if count:
+        changes.update(last_run=now, runs=job.get("runs", 0) + 1)
+    else:
+        changes["last_checked"] = now
+    done = done or bool(job.get("_once") and count)  # a trigger that fires once
     if done:
         changes.update(status="done", next_run=None)
     else:
@@ -675,6 +774,8 @@ def _finish(job: dict, now: float, result: str, *, done: bool = False, **extra) 
         elif job.get("expires_at"):
             changes["next_run"] = min(changes["next_run"], job["expires_at"])  # a watch ends on time
     _update(job["id"], **changes)
+    if job.get("on") and changes.get("status") == "done":
+        triggers.forget(job["id"])
     _refresh_routines_hud()
 
 
@@ -765,7 +866,7 @@ def _call(step: dict, origin: str = "", job_id: str = ""):
 
 def _run_action(job, now, jev):
     # At most once: the next run is committed before anything executes, so a
-    # crash mid-run can never repeat a step (STALE_RUN_SECONDS reports it).
+    # crash mid-run can never repeat a step (_report_interrupted reports it).
     _update(job["id"], started_at=now, next_run=schedule.next_run(job["schedule"], now))
     from . import approvals
     from ..execution.actions import ActionResult
@@ -911,16 +1012,42 @@ RUNNERS = {"remind": _run_remind, "assistant": _run_assistant, "desktop": _run_d
 
 
 def _missed(job: dict, now: float) -> bool:
-    """A world-changing job far past its time (asleep, daemon down) is
-    reported as missed and moved to its next occurrence, never run late."""
+    """A job far past its time (asleep, daemon down) is handled by its
+    catch_up: `skip` is reported as missed and moved to its next occurrence,
+    never run late; `run_once_late` runs now, once, and says it is late (the
+    runner moves a recurring one on from now, so missed occurrences in
+    between are not repeated). A trigger's check is never late: it looks at
+    what happened, whenever it runs."""
     due_at = job.get("next_run")
-    if job.get("kind") not in EXACT_KINDS or due_at is None or now - due_at <= LATE_GRACE_SECONDS:
+    if job.get("on") or due_at is None or now - due_at <= LATE_GRACE_SECONDS:
+        return False
+    if catch_up(job) == "run_once_late":
+        if job.get("kind") != "watch":
+            job["_late"] = due_at  # said with its result (_annotated)
         return False
     when = schedule.describe(due_at)
     _inbox_add(job, "missed", f"NOT done: '{job['title']}' was due {when} but the computer was asleep or the "
                "assistant was off. Ask the user whether to do it now.", urgent=True, title="Missed: " + job["title"],
                body=f"It was due {when}; the assistant was not running then, so it was NOT done.")
     _finish(job, now, f"missed: due {when}, not run", done="at" in job.get("schedule", {}))
+    return True
+
+
+def _triggered(job: dict, now: float) -> bool:
+    """An event trigger's check (core/triggers.py): True, with the events in
+    job["_event"], when the job should run now; else it waits for the next
+    check (or ends, when its time frame is over)."""
+    if job.get("expires_at") and now >= job["expires_at"]:
+        _inbox_add(job, "expired", f"Stopped waiting {triggers.describe(job['on'])}: its time frame ended.")
+        _finish(job, now, "expired", done=True, count=False)
+        return False
+    fired, note = triggers.check(job, now)
+    if not fired:
+        _finish(job, now, note, count=False)
+        return False
+    job["_event"] = fired
+    if not job.get("repeat"):
+        job["_once"] = True
     return True
 
 
@@ -937,6 +1064,8 @@ def _run_job(job: dict, jev: Jev | None, now: float) -> None:
     token = identities.set_current(identities.Identity(job.get("requester"), job.get("requester_how")))
     try:
         if _missed(job, now):
+            return
+        if job.get("on") and not _triggered(job, now):
             return
         RUNNERS[job["kind"]](job, now, jev or Jev())
     except Exception as exc:  # a broken job must never stop the heartbeat
@@ -999,15 +1128,35 @@ def due(now: float) -> list[dict]:
             and j["next_run"] <= now and not _lease_held(j)]
 
 
+_STEP_STATES = {"confirmed": "done", "failed": "failed", "dispatched": "may have happened (no answer came back)",
+                "uncertain": "may have happened (no answer came back)", "proposed": "not sent"}
+
+
+def _steps_report(job: dict) -> str:
+    """What each step of an interrupted run did, from the side-effect journal
+    (core/effects.py): every step was journaled under its run's origin."""
+    from . import effects
+    lines = []
+    for number, step in enumerate(job.get("steps") or [], 1):
+        key = effects.idem_key(f"agenda:{job['id']}:{job['started_at']}:{number}", step["tool"], step["args"])
+        try:
+            effect = effects.lookup(key)
+        except Exception:  # noqa: BLE001 -- the report still goes out
+            effect = None
+        lines.append(f"step {number} ({step['tool']}): "
+                     + (_STEP_STATES.get(effect.state, effect.state) if effect else "not started"))
+    return "; ".join(lines)
+
+
 def _report_interrupted(now: float) -> None:
     """An action whose run started and never finished: the daemon died
-    mid-run. Its steps may or may not have happened, so say so once. The
-    run is cleared under the file lock first, so two processes never both
-    report it."""
+    mid-run. Reported on the first heartbeat after it (at startup), not
+    re-run: a run is interrupted as soon as no live process holds its lease.
+    Each step's fate comes from the effects journal. The run is cleared
+    under the file lock first, so two processes never both report it."""
     with _jobs_locked():
         jobs = _load()
-        stale = [j for j in jobs if j.get("started_at") and not _lease_held(j)
-                 and now - j["started_at"] > STALE_RUN_SECONDS]
+        stale = [j for j in jobs if j.get("started_at") and not _lease_held(j)]
         if stale:
             reported = [dict(j) for j in stale]
             for job in stale:
@@ -1015,8 +1164,10 @@ def _report_interrupted(now: float) -> None:
             _save(jobs)
             stale = reported
     for job in stale:
+        steps = _steps_report(job)
         _inbox_add(job, "interrupted", f"'{job['title']}' started {schedule.describe(job['started_at'])} but the "
-                   "assistant stopped before it finished; it may be only partly done.", urgent=True,
+                   "assistant stopped before it finished; it may be only partly done."
+                   + (f" From the journal: {steps}." if steps else ""), urgent=True,
                    title="Interrupted: " + job["title"],
                    body="The assistant stopped while doing it; check whether it happened.")
 

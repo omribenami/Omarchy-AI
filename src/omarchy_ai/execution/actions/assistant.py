@@ -98,6 +98,11 @@ def schedule_task(args: dict) -> ActionResult:
     if job["kind"] == "action":
         note = ("At that time these exact tool calls run unattended, and the user is told the result (done or "
                 "failed) by notification and by you. Read back what will happen and when (`when`).")
+    if job.get("on"):
+        note = ("It runs each time the event in `schedule` happens (" + ("until cancelled" if job.get("repeat")
+                else "once") + "), unattended, and the user is told. Read back what will happen and on what.")
+    elif summary.get("if_missed"):
+        note += " Say what happens if it is missed (`if_missed`)."
     out = {"scheduled": summary, "now": schedule.describe(time.time()), "note": note}
     if job.get("replaces"):
         out["replaced"] = job["replaces"] + " (cancelled; this task takes its place)"

@@ -153,7 +153,7 @@ class AgendaLeaseTests(unittest.TestCase):
         self.assertIn("crashed", self.on_disk()["last_result"])
 
     def test_an_interrupted_run_is_reported_once_and_not_while_its_process_lives(self):
-        started = time.time() - agenda.STALE_RUN_SECONDS - 60
+        started = time.time() - 60
         _, owner = self.other_process()
         self.write(
             _job(

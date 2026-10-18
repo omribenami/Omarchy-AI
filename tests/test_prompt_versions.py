@@ -39,7 +39,10 @@ GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # (facts and procedures are saved through remember_preference and found with
 # the catalog tool recall); nothing else in the prompt or the declared tools
 # changed. With no saved notes the prompt gains nothing (notes_hint is "").
-LEGACY_LIVE_SHA256 = "cc5fd56c369f3a547005d4ec7bed67f98e12f0610e9af23756c91ba61c4326fc"
+# Re-pinned for plan 4.5 (triggers and catch-up): the TOOL CATALOG signature
+# line for schedule_task gained ", catch_up, on" after announce_on_speaker;
+# nothing else in the prompt or the declared tools changed.
+LEGACY_LIVE_SHA256 = "1cebcc1926f4f0f0b84744bb3aad73c6b97eebb4ef21aa10863a146e96ac573b"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
