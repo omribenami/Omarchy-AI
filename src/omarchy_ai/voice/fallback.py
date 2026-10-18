@@ -32,7 +32,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..core import alert_clips
+from ..core import alert_clips, retry
 from ..core.quota import is_quota_error
 
 log = logging.getLogger("omarchy_ai.voice.fallback")
@@ -86,6 +86,22 @@ def is_provider_failure(error: BaseException) -> bool:
     if isinstance(error, Reconnect):
         return False
     return bool(_FAILURE.search(str(error))) or is_quota_error(str(error)) or isinstance(error, (OSError, TimeoutError))
+
+
+def ended_reason(error: BaseException) -> str:
+    """Why a live session ended, in a few words for the user (core/retry.py
+    classify_live), or "" when nothing more is known."""
+    failure = retry.classify_live(error)
+    code = retry.close_code(error)
+    if code in retry.TRANSIENT_CLOSE:
+        return f"Gemini closed it: {code} {retry.TRANSIENT_CLOSE[code]}"
+    return {
+        retry.PERMANENT: f"Gemini refused it: {code}" if code else "the provider refused the request",
+        retry.TIMEOUT: "the provider did not answer in time",
+        retry.TRANSPORT: "the network connection broke",
+        retry.NOT_SENT: "the provider could not be reached",
+        retry.SERVER: "the provider failed on its side",
+    }.get(failure.kind, "")
 
 
 def via_gateway(model: str) -> bool:
@@ -196,10 +212,22 @@ STALLED = ("[Turn recovery] The voice connection stopped answering the user and 
            "language, that you lost them for a moment and ask them to say it again. Do not greet.")
 
 
-def carry_over(transcript: list[dict], stalled: bool = False) -> str | None:
+# Said on the new connection after the old one closed mid-conversation
+# (core/retry.py classify_live: 1011, 1006, 1001, a network blip). Audio
+# already sent cannot be replayed, so she asks for it again.
+DROPPED = ("[Turn recovery] The connection dropped for a moment and was restored just now. This is the same "
+           "conversation. In one short sentence, in the language the user was speaking, tell them you lost the "
+           "connection for a moment and you are back, and ask them to say that again if their last request is "
+           "still unanswered. If an action was already running when it dropped, it may or may not have finished: "
+           "say so and do not run it again unless they ask. Do not greet.")
+
+
+def carry_over(transcript: list[dict], stalled: bool = False, dropped: bool = False) -> str | None:
     """Context for the fallback model: what was said before the switch.
     `stalled`: the same model on a new connection after it stopped
-    answering (gemini_live.StuckTurn); the user has heard nothing."""
+    answering (gemini_live.StuckTurn); the user has heard nothing.
+    `dropped`: the same model on a new connection after the old one closed
+    (gemini_live._resume_dropped); she says she is back."""
     # Live transcription arrives in fragments: one line per speaker turn.
     turns: list[list] = []
     for t in transcript:
@@ -211,8 +239,8 @@ def carry_over(transcript: list[dict], stalled: bool = False) -> str | None:
             turns.append([t.get("role"), t["text"]])
     text = "\n".join(f"{role}: {' '.join(said.split())}" for role, said in turns[-CARRY_OVER_TURNS:])
     text = text[-CARRY_OVER_CHARS:]
-    if stalled:
-        return STALLED + ("\nConversation so far:\n" + text if text else "")
+    if stalled or dropped:
+        return (STALLED if stalled else DROPPED) + ("\nConversation so far:\n" + text if text else "")
     if not text:
         return None
     return ("[Context, not a request] The previous voice model connection failed and you are taking over this "

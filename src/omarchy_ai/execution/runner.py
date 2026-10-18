@@ -7,7 +7,8 @@
 Every call gets the deadline, resource and effect class its tool declares in
 execution/tools.py, and a CancelToken (core/cancel.py) that is current in
 the thread running it. A call ends in one of four ways, all as a ToolResult:
-- it returns (ok or not): its own result -- fenced as untrusted content
+- it returns (ok or not): its own result ("done" for an action that
+  succeeded without a word) -- fenced as untrusted content
   when its tool's provenance says so (execution/provenance.py);
 - its deadline passes: "<tool> timed out after N s; nothing was confirmed";
 - it is cancelled (the user's "stop", a hangup, a task cancel): likewise;
@@ -78,6 +79,13 @@ __all__ = [
 log = logging.getLogger("omarchy_ai.execution.runner")
 
 KILL_GRACE = 2.0
+
+# What the model is told when an action succeeded without a word: a volume
+# or brightness script prints nothing (omarchy-audio-output-volume), and an
+# empty message reached Gemini as `"message": ""` (journal 2026-10-17 07:56
+# and 09:49, use_tool volume_up/volume_down). A read keeps its empty answer:
+# an empty file or listing is the content.
+DONE = "done"
 
 # error_class values
 FAILED, TIMEOUT, CANCELLED, CRASHED, WORKER_LOST = (
@@ -517,6 +525,8 @@ class ToolRunner:
         )
         if untrusted:
             message = provenance.fence(message, source)
+        elif ok and not message.strip() and not tool.reads:
+            message = DONE
         return ToolResult(
             ok, message, outcome, False, effect_id, duration, source, untrusted
         )

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 import numpy as np
 from .. import myapi
-from ..core import alert_clips, identities, logs, quota, updates
+from ..core import alert_clips, identities, logs, quota, retry, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
@@ -331,6 +331,10 @@ class GeminiLiveSession:
         self._forced_at = 0.0      # a forced closure still waiting for her reply
         self._stall_restarts = 0
         self._stalled_restart = False
+        # Reconnects after the connection closed under her (_resume_dropped):
+        # one in a row, counted again once the new connection completes a turn.
+        self._drop_restarts = 0
+        self._dropped_restart = ""  # why the last one closed, until the new connection says so
         self.restart_stalled = False   # set where the caller reconnects on StuckTurn (run(), phone/gemini.py)
         self.ack_silent_work = False   # set where _say_clip is heard by the user (same two places)
         self._silent_since = 0.0   # start of her first blocking call since the user's latest words
@@ -515,6 +519,7 @@ class GeminiLiveSession:
                 if server.turn_complete or server.interrupted:
                     self._awaiting_since = 0.0
                 if server.turn_complete:
+                    self._drop_restarts = 0  # this connection works: a later drop may reconnect again
                     self._maybe_check_claim(bool(server.interrupted))  # reads the previous _last_turn_done_at
                     self._last_turn_done_at = time.monotonic()
                     self._turn_done.set()
@@ -789,12 +794,15 @@ class GeminiLiveSession:
 
     async def _carry_over(self, session) -> None:
         stalled, self._stalled_restart = self._stalled_restart, False
-        text = fallback.carry_over(self._transcript, stalled)
+        dropped, self._dropped_restart = self._dropped_restart, ""
+        if dropped:
+            log.warning("Gemini session reconnected after %s: session=%s", dropped, self._audit_session)
+        text = fallback.carry_over(self._transcript, stalled, dropped=bool(dropped))
         if text:
-            # After a stall she owes the user an answer: that one is a turn of its own.
+            # After a stall or a drop she owes the user an answer: that one is a turn of its own.
             await session.send_client_content(turns={"role": "user", "parts": [{"text": text}]},
-                                              turn_complete=stalled)
-            if stalled:
+                                              turn_complete=stalled or bool(dropped))
+            if stalled or dropped:
                 self._awaiting_since = time.monotonic()
 
     def _reset_stall(self) -> None:
@@ -815,6 +823,33 @@ class GeminiLiveSession:
         self._reset_stall()
         log.warning("Voice conversation reconnecting: session=%s stalled=%s restart=%d: %s", self._audit_session,
                     stalled, self._stall_restarts, str(error)[:120])
+        return True
+
+    MAX_DROP_RESTARTS = 1
+
+    def _resume_dropped(self, error: BaseException) -> bool:
+        """After the connection closed under the conversation for a
+        transient reason (core/retry.py classify_live: 1011, 1006, 1001, a
+        network blip; not quota, policy or auth): True to connect to the same
+        model once more, with the same config, and carry the conversation
+        over (fallback.DROPPED). Only once in a row: when that connection
+        fails before it completes a turn, _fall_back decides as before."""
+        if self._hangup.is_set() or isinstance(error, fallback.Reconnect):
+            return False
+        failure = retry.classify_live(error)
+        if not retry.live_transient(failure) or self._drop_restarts >= self.MAX_DROP_RESTARTS:
+            return False
+        self._drop_restarts += 1
+        self._dropped_restart = failure.detail.split(" ", 1)[0] if failure.detail[:1].isdigit() else failure.kind
+        self._reset_stall()
+        # The calls asked on the closed connection cannot be answered on the
+        # new one (a late background result is logged as lost), and the
+        # blocking one cancelled with its worker never counted itself down.
+        self._pending_calls.clear()
+        self._blocking_calls.clear()
+        self._running_blocking = 0
+        log.warning("Gemini session dropped: session=%s %s (%s); reconnecting once", self._audit_session,
+                    failure.kind, failure.detail[:120])
         return True
 
     def _idle(self) -> bool:
@@ -1971,7 +2006,7 @@ class GeminiLiveSession:
                     await asyncio.gather(*tasks, return_exceptions=True)
                     tasks = []
                     attempt += 1
-                    if self._resume_stalled(error):
+                    if self._resume_stalled(error) or self._resume_dropped(error):
                         continue
                     index = await self._fall_back(models, index, error)
                     if index is None:
