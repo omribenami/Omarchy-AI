@@ -31,7 +31,10 @@ GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # description and parameters changed; and saved preferences are fenced in
 # <user_memory> under a one-line guard, as prompt v2 already did. The golden
 # fixture (no saved preferences) is unchanged.
-LEGACY_LIVE_SHA256 = "70b9b61af0f7f71b243056274f9da79f99aca29693a49cefd0c2138672bc06be"
+# Re-pinned for plan 3.2 (doctor): the TOOL CATALOG signature line gained
+# "run_diagnostics(), " after get_update_status(); the declared tools did
+# not change.
+LEGACY_LIVE_SHA256 = "38b2cf94b8565c18d8463ba1867b16b0b8c2dc3106dc28f79931de77a11be486"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
@@ -190,6 +193,9 @@ class PromptV2Tests(unittest.TestCase):
 
     def test_claims_no_mechanism_that_does_not_exist(self):
         text = v2_session(speaker_id_enabled=True, myapi_on=True)["instructions"]
+        # run_diagnostics exists since plan 3.2 and is listed in the tool
+        # catalog like every catalog tool; the prose must still not claim it.
+        text = text.split("TOOL CATALOG:")[0]
         for missing in (
             "doctor",
             "run_diagnostics",

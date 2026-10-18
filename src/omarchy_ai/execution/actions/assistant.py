@@ -30,6 +30,12 @@ def get_update_status(args: dict) -> ActionResult:
     return ActionResult(True, json.dumps(updates.update_status()))
 
 
+def run_diagnostics(args: dict) -> ActionResult:
+    """cli/doctor.py's checks, summarized for the model (problems first)."""
+    from ...cli import doctor
+    return ActionResult(True, doctor.summary(doctor.run_checks()))
+
+
 def _resolve_scheduled(request: str) -> tuple[dict | None, str]:
     """({tool, args}, "") for a plain request, or (None, what to tell the
     model). Resolved now, while the user can still hear a read-back: the

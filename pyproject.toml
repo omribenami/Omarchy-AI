@@ -48,6 +48,9 @@ omarchy-ai-dashboard = "omarchy_ai.cli.dashboard:main"
 # MyApi token vault for programs (user tools, task commands) -- see
 # src/omarchy_ai/myapi/vault.py. Values never go to a model.
 omarchy-ai-vault = "omarchy_ai.myapi.vault:main"
+# Health checks, --trace and the support bundle -- see src/omarchy_ai/cli/doctor.py.
+# Also `omarchy-ai doctor`.
+omarchy-ai-doctor = "omarchy_ai.cli.doctor:main"
 
 [dependency-groups]
 dev = [
