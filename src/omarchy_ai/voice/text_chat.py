@@ -298,7 +298,8 @@ class TextChat:
                         self._schedule_push()
                         tasks = [asyncio.create_task(c) for c in (
                             self._sender(adapter, session, queue), adapter._receive(session),
-                            adapter._tools(session), adapter._announcer(session), self._drain_audio(adapter),
+                            adapter._tools(session), adapter._announcer(session), adapter._result_watch(session),
+                            self._drain_audio(adapter),
                             self._idle_watch(adapter), adapter._hangup.wait())]
                         done, _ = await asyncio.wait(tasks, timeout=self.config.max_session_seconds,
                                                      return_when=asyncio.FIRST_COMPLETED)
