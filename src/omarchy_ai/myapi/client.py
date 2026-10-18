@@ -84,6 +84,22 @@ class MyApiError(Exception):
         self.transport = transport
 
 
+def _injection_block(value: object, depth: int = 0) -> str:
+    """MyApi's prompt-injection scanner withheld the service's answer. It
+    comes back as a successful call whose nested data says so; read as
+    data it looked like an empty result (live 2026-10-17: "check my last 4
+    emails" became "I couldn't retrieve your emails"). MyApi says not to
+    retry: the same content is blocked again."""
+    if depth > 6 or not isinstance(value, dict):
+        return ""
+    if value.get("code") == "PROMPT_INJECTION_BLOCKED":
+        service = value.get("service") or "the service"
+        return (f"MyApi's prompt-injection scanner withheld this {service} answer: part of it looked like "
+                "instructions aimed at the assistant. Nothing is wrong with the connection, and asking again "
+                "returns the same block. Tell the user, and offer a narrower request (e.g. one sender or subject).")
+    return next((found for item in value.values() if (found := _injection_block(item, depth + 1))), "")
+
+
 def _never_sent(reason: object) -> bool:
     """A connection error that happened before any byte of the request left."""
     return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
@@ -268,8 +284,11 @@ class MyApiClient:
 
     def request(self, method: str, path: str, *, query: dict | None = None, body: object | None = None,
                 idempotency_key: str | None = None) -> dict:
-        return self._raw_request(method, path, query=query, body=body, signed=True,
-                                 idempotency_key=idempotency_key)
+        result = self._raw_request(method, path, query=query, body=body, signed=True,
+                                   idempotency_key=idempotency_key)
+        if blocked := _injection_block(result):
+            raise MyApiError(blocked, status=422, details=result)
+        return result
 
     # -- convenience wrappers over the service gateway --------------------
 
