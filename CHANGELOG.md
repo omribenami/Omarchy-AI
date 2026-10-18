@@ -67,7 +67,7 @@ Rules for every release:
 - In the typed chat, when a smart-home switch or another background job
   finished and I said nothing about it, you were never told. Now I tell you
   once, in the chat as well as by voice; an empty reply no longer counts as
-  having told you.
+  having told you, and neither does a late "on it" on its own.
 
 ### Under the hood
 

@@ -816,6 +816,65 @@ def ack_phrase(preferences: list[str] | None = None) -> str | None:
     return None
 
 
+# Words that only acknowledge (English and Hebrew), longest first. A reply
+# made of these and at most one other word does not tell the user a result:
+# conservative on purpose, a second mention beats silence.
+_GENERIC_ACKS = sorted(
+    {
+        "on it",
+        "okay",
+        "ok",
+        "done",
+        "sure",
+        "got it",
+        "one moment",
+        "right away",
+        "alright",
+        "all right",
+        "will do",
+        "no problem",
+        "yes",
+        "yeah",
+        "of course",
+        "just a moment",
+        "working on it",
+        "doing it now",
+        "על זה",
+        "בסדר",
+        "אוקיי",
+        "אוקי",
+        "סבבה",
+        "רגע",
+        "מיד",
+        "בטח",
+        "טוב",
+        "כן",
+        "בשמחה",
+        "עובדת על זה",
+        "עובד על זה",
+        "רק רגע",
+        "אין בעיה",
+        "מטפלת בזה",
+        "מטפל בזה",
+    },
+    key=len,
+    reverse=True,
+)
+_WORD = re.compile(r"\w+", re.UNICODE)
+MIN_TELLING_WORDS = 2
+
+
+def only_ack(text: str, phrase: str | None = None) -> bool:
+    """Whether `text` is nothing but an acknowledgement: the user's own
+    phrase (ack_phrase), generic acks, and fewer than MIN_TELLING_WORDS other words."""
+    rest = " " + " ".join(_WORD.findall(text.lower())) + " "
+    acks = ([" ".join(_WORD.findall(phrase.lower()))] if phrase else []) + _GENERIC_ACKS
+    for ack in acks:
+        while ack and f" {ack} " in rest:  # also adjacent repeats ("ok ok")
+            rest = rest.replace(f" {ack} ", " ")
+    return len(rest.split()) < MIN_TELLING_WORDS
+
+
 def phrase_language(text: str) -> str | None:
     """A language the script alone gives away (Hebrew, Arabic, Cyrillic, Greek), else None."""
     for low, high, lang in (

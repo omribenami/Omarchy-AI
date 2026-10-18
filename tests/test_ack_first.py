@@ -240,7 +240,9 @@ class ResultDeliveryTests(Simulated):
         self.assertTrue(
             await self.until(lambda: conn.send_tool_response.await_count == 1)
         )
-        s._last_words_at = time.monotonic() + 0.05  # she tells the user
+        s._words.append(
+            (time.monotonic() + 0.05, "The train times are open.")
+        )  # she tells the user
         await asyncio.sleep(0.8)
         self.assertEqual(self.notices(conn), [])
 
@@ -334,6 +336,34 @@ class EmptyTurnTests(Simulated):
         await asyncio.sleep(1.0)
         self.assertEqual(self.notices(conn), [])
         self.assertGreater(s._last_words_at, 0)
+
+    async def test_an_acknowledgement_said_after_the_result_is_not_telling_it(self):
+        # Live, typed chat 2026-10-18 18:18:07-18:18:17: the call, the result at
+        # 18:18:15.9, then her only words, the acknowledgement, and her turn's end.
+        for ack, phrase in (("על ", None), ("Right ", "Right away!")):
+            with (
+                self.subTest(phrase=phrase),
+                patch.object(outbox, "ack_phrase", return_value=phrase),
+            ):
+                s, conn = await self.fan(typed=True)
+                rest = "זה!" if phrase is None else "away!"
+                conn.server.put_nowait(server_message(text=ack))
+                conn.server.put_nowait(
+                    server_message(text=rest, audio=b"\0\0", turn_complete=True)
+                )
+                await asyncio.sleep(1.0)
+                self.assertEqual(len(self.notices(conn)), 1, "prompted once")
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(self.notices(conn)), 1, "and only once")
+
+    async def test_an_acknowledgement_followed_by_the_result_is_telling_it(self):
+        s, conn = await self.fan(typed=True)
+        conn.server.put_nowait(server_message(text="על זה! "))
+        conn.server.put_nowait(
+            server_message(text="הדלקתי את המאוורר בחצר.", turn_complete=True)
+        )
+        await asyncio.sleep(1.0)
+        self.assertEqual(self.notices(conn), [])
 
     async def test_blank_transcription_is_not_words(self):
         s, conn = await self.fan(typed=True)

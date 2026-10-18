@@ -352,6 +352,8 @@ class GeminiLiveSession:
         # Her latest words: output transcription with text in it. Audio alone,
         # or a turn that completes empty, is not her telling the user anything.
         self._last_words_at = 0.0
+        self._words: list[tuple[float, str]] = []  # (monotonic time, her transcribed words)
+        self._ack_phrase: str | None | bool = False  # the user's own acknowledgement words, read once
         self._last_turn_done_at = 0.0
         self._forced_turn_closures = 0
         # Jev fast path (voice/jev_fast.py): the current utterance, whether
@@ -455,6 +457,8 @@ class GeminiLiveSession:
                         self._transcript.append({"role": role, "text": transcription.text})
                         if role == "assistant" and transcription.text.strip():
                             self._last_words_at = time.monotonic()
+                            self._words.append((self._last_words_at, transcription.text))
+                            del self._words[:-200]
                         if role == "user":
                             if not self._turn_open:
                                 self._turn_id, self._turn_open = logs.new_id(), True
@@ -840,6 +844,15 @@ class GeminiLiveSession:
             log.info("Acknowledged: session=%s call=%s tool=%s after=%.2fs", self._audit_session, call_id,
                      w and w["tool"], time.monotonic() - w["started"] if w else -1)
 
+    def _told_since(self, since: float) -> bool:
+        """Whether her words after `since` say more than an acknowledgement."""
+        said = " ".join(text for at, text in self._words if at > since)
+        if not said.strip():
+            return False
+        if self._ack_phrase is False:
+            self._ack_phrase = outbox.ack_phrase()
+        return not outbox.only_ack(said, self._ack_phrase or None)
+
     def _result_due(self, now: float) -> str | None:
         for call_id, r in list(self._unspoken.items()):
             if r["busy"]:
@@ -847,10 +860,12 @@ class GeminiLiveSession:
                 if self._last_turn_done_at <= r["sent"]:
                     continue
                 r["busy"], r["sent"] = False, self._last_turn_done_at
-            # Only words count. Typed chat 2026-10-18 14:09:07-14:09:10: the fan's
-            # result came back, her next turn completed with no words at all,
-            # and counting that turn as speech left the user never told.
-            if self._last_words_at > r["sent"] or self._last_call_at > r["sent"]:
+            # Only words that say something count. Typed chat 2026-10-18
+            # 14:09:07-14:09:10: the fan's result came back and her next turn
+            # completed with no words at all; 18:18:15-18:18:17: her only words
+            # after it were her acknowledgement ('on it'), said late. Neither
+            # told the user the fan was on.
+            if self._last_call_at > r["sent"] or self._told_since(r["sent"]):
                 self._unspoken.pop(call_id, None)  # she said something or acted after it: hers to tell
                 continue
             if now - r["sent"] >= self.RESULT_UNSPOKEN_SECONDS and self._idle():
