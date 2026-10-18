@@ -76,17 +76,38 @@ class Simulated(unittest.IsolatedAsyncioTestCase):
             self.release.wait(10)
         return ActionResult(True, f"{name} done")
 
-    def session(self):
+    def session(self, typed=False):
+        """typed: the text chat's workers (voice/text_chat.py): no _task_status,
+        result delivery alone, and the server's messages through _receive."""
         s = GeminiLiveSession(Config())
-        s.ack_silent_work = True  # where the clip is heard (desktop, phone)
-        s._last_user_speech = time.monotonic()  # the user's spoken request just ended
+        s.ack_silent_work = not typed  # where the clip is heard (desktop, phone)
+        s._last_user_speech = 0.0 if typed else time.monotonic()
+        server: asyncio.Queue = asyncio.Queue()
+
+        async def receive():
+            while True:
+                yield await server.get()
+
         conn = SimpleNamespace(
-            send_tool_response=AsyncMock(), send_client_content=AsyncMock()
+            send_tool_response=AsyncMock(),
+            send_client_content=AsyncMock(),
+            receive=receive,
+            server=server,
         )
-        workers = [
-            asyncio.create_task(s._tools(conn)),
-            asyncio.create_task(s._task_status(conn)),
-        ]
+        workers = [asyncio.create_task(s._tools(conn))]
+        if typed:
+
+            async def drain():  # the chat plays no audio (TextChat._drain_audio)
+                while True:
+                    await s._audio.get()
+
+            workers += [
+                asyncio.create_task(s._result_watch(conn)),
+                asyncio.create_task(s._receive(conn)),
+                asyncio.create_task(drain()),
+            ]
+        else:
+            workers.append(asyncio.create_task(s._task_status(conn)))
         self.sessions.append(s)
 
         async def stop():
@@ -219,7 +240,7 @@ class ResultDeliveryTests(Simulated):
         self.assertTrue(
             await self.until(lambda: conn.send_tool_response.await_count == 1)
         )
-        s._last_audio_at = time.monotonic() + 0.05  # she tells the user
+        s._last_words_at = time.monotonic() + 0.05  # she tells the user
         await asyncio.sleep(0.8)
         self.assertEqual(self.notices(conn), [])
 
@@ -232,6 +253,95 @@ class ResultDeliveryTests(Simulated):
         )
         await asyncio.sleep(0.8)
         self.assertEqual(self.notices(conn), [])
+
+
+def server_message(text=None, audio=b"", turn_complete=False):
+    """One Live server message: her audio and output transcription, maybe the turn's end."""
+    parts = [SimpleNamespace(inline_data=SimpleNamespace(data=audio))] if audio else []
+    content = SimpleNamespace(
+        input_transcription=None,
+        output_transcription=SimpleNamespace(text=text) if text is not None else None,
+        interrupted=False,
+        turn_complete=turn_complete,
+        model_turn=SimpleNamespace(parts=parts) if parts else None,
+    )
+    return SimpleNamespace(
+        tool_call_cancellation=None, tool_call=None, server_content=content
+    )
+
+
+class EmptyTurnTests(Simulated):
+    """Live, typed chat 2026-10-18 14:08:58-14:09:30: "Turn on the backyard
+    fan"; the result came back at 14:09:07, her next turn completed at
+    14:09:10 with no words, and the result was never told."""
+
+    notices = staticmethod(ResultDeliveryTests.notices)
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.object(GeminiLiveSession, "RESULT_UNSPOKEN_SECONDS", 0.3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for target in ("_maybe_check_claim", "_maybe_escalate"):
+            patcher = patch.object(GeminiLiveSession, target, lambda self, *a: None)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    async def fan(self, typed):
+        s, conn = self.session(typed=typed)
+        s._last_user_speech = 0.0 if typed else time.monotonic() - 10
+        self.call(s, "fan", "use_tool", request="Turn on the backyard fan")
+        with patch.object(
+            s,
+            "_pick",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    run=True,
+                    tool="smart_home",
+                    args={"what": "fan on"},
+                    picked=True,
+                    evidence={},
+                )
+            ),
+        ):
+            self.assertTrue(
+                await self.until(lambda: conn.send_tool_response.await_count == 1)
+            )
+        return s, conn
+
+    async def test_an_empty_turn_after_the_result_is_not_her_telling_it(self):
+        for typed in (True, False):
+            with self.subTest(typed=typed):
+                s, conn = await self.fan(typed)
+                if typed:
+                    conn.server.put_nowait(
+                        server_message(audio=b"\0\0" * 10, turn_complete=True)
+                    )
+                else:
+                    s._last_audio_at = s._last_turn_done_at = (
+                        time.monotonic()
+                    )  # audio, no words
+                await asyncio.sleep(1.0)
+                self.assertEqual(len(self.notices(conn)), 1, "prompted once")
+                await asyncio.sleep(0.5)
+                self.assertEqual(len(self.notices(conn)), 1, "and only once")
+
+    async def test_her_words_after_the_result_are_hers_to_tell(self):
+        s, conn = await self.fan(typed=True)
+        conn.server.put_nowait(
+            server_message(text="The fan is on.", turn_complete=True)
+        )
+        await asyncio.sleep(1.0)
+        self.assertEqual(self.notices(conn), [])
+        self.assertGreater(s._last_words_at, 0)
+
+    async def test_blank_transcription_is_not_words(self):
+        s, conn = await self.fan(typed=True)
+        conn.server.put_nowait(
+            server_message(text="  ", audio=b"\0\0", turn_complete=True)
+        )
+        await asyncio.sleep(1.0)
+        self.assertEqual(len(self.notices(conn)), 1)
 
 
 if __name__ == "__main__":

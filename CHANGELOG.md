@@ -44,12 +44,18 @@ Rules for every release:
 - Reopening a chat or reconnecting after a dropped line sends that summary
   and the last few turns instead of the whole transcript, so each
   conversation costs fewer tokens.
-
 - When a task makes a file for you, like a report, a screenshot or a
   spreadsheet, I hand it over once when the task is done: it lands in the
   chat the task started in, opens or shows up in the file manager when
   you're at the desk, and by voice I just tell you what it is and where.
   I keep those files for two weeks.
+
+### Fixes
+
+- In the typed chat, when a smart-home switch or another background job
+  finished and I said nothing about it, you were never told. Now I tell you
+  once, in the chat as well as by voice; an empty reply no longer counts as
+  having told you.
 
 ### Under the hood
 
