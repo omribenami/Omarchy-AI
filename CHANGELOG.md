@@ -48,6 +48,11 @@ Rules for every release:
   keep talking with you while it works. Up to three run at once; ask me
   what they're doing, change what one is looking for, or stop it. Each one
   tells you its result once.
+- When a task makes a file for you, like a report, a screenshot or a
+  spreadsheet, I hand it over once when the task is done: it lands in the
+  chat the task started in, opens or shows up in the file manager when
+  you're at the desk, and by voice I just tell you what it is and where.
+  I keep those files for two weeks.
 
 ### Fixes
 
@@ -67,6 +72,19 @@ Rules for every release:
   `worker:<id>:result`, also across restarts) and the agenda inbox; the
   report is untrusted (`external:worker`, fenced) and the worker inherits
   the delegating turn's taint. Records: `STATE_DIR/workers.json`.
+- Outbox message kind `attachment` (`outbox.attachment()`): one file
+  (`{name, mime, path, size, preview, inline, untrusted}` from
+  `core/outputs.py describe()`), deduped per origin and path. Chat gets it
+  through `conversations.deliver_file` (the existing attachment format;
+  unknown types or files over 20 MB become a line with the desktop path),
+  the desktop through `open_editor`/`open_files`, which now take an
+  optional `path` (text opened, other files selected in Nautilus), and
+  voice a summary entry. Untrusted provenance is kept on the attachment
+  and shown in the model's view of the chat.
+- Task outputs: executors are told to write files for the user into
+  `outputs.task_dir(task_id)`; `_finish` lists them into `Task.artifacts`
+  and the terminal notice delivers up to 6 of them. Hourly heartbeat
+  cleanup: 14 days per task folder, 1 GB in all.
 - Facts and procedures live in `memory_notes.json` beside
   `learned_preferences.yaml` (which still lists only the active
   preferences) and are searched by the catalog tool `recall` through a

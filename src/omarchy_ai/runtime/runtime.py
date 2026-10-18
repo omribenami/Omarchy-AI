@@ -497,6 +497,17 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             self._threads[task.id] = thread
             thread.start()
 
+    @staticmethod
+    def _collect_outputs(task: Task) -> None:
+        """Link the files the task wrote for the user (core/outputs.py) from its record."""
+        try:
+            from ..core import outputs
+            for path in outputs.collect(task.id):
+                if path not in task.artifacts:
+                    task.artifacts.append(path)
+        except Exception:  # noqa: BLE001 -- bookkeeping must never fail a task
+            log.debug("could not list task outputs", exc_info=True)
+
     def _emit(self, task: Task, event: str) -> None:
         self._refresh_task_hud()
         for listener in list(self.listeners):
@@ -645,6 +656,15 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             "is not there, a 401/403, an account or project that may not use a model or endpoint, a login. That "
             "is the user's to grant: ask them with the exact error, and do not rewrite their project around it."
         )
+        try:
+            from ..core import outputs
+            instructions += (
+                f"\n\nFiles for the user: write any report, screenshot, CSV or other file the user should receive "
+                f"into {outputs.task_dir(task.id)} (create the folder). Files there are handed to the user when "
+                "the task ends; do not put anything else there."
+            )
+        except ValueError:
+            pass
         timeout = float(_config("task_coding_agent_timeout", 1200)) if executor in CODING else 600.0
         return {"executor": executor, "role": role, "directive": directive, "instructions": instructions,
                 "write": role in (IMPLEMENT, WORK), "timeout": timeout, "context": {}}
@@ -849,6 +869,7 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
                                f"'{learned['skill']['name']}'.")
             except Exception:  # noqa: BLE001 -- a skill not saved must never fail a task
                 log.warning("could not learn a skill from task %s", task.id, exc_info=True)
+        self._collect_outputs(task)
         task.status = status
         task.phase = "done"
         task.result = message[:1500]
@@ -1263,6 +1284,28 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
         # A click on a finished task's notification (or its Open button) shows the whole task.
         actions={"default": "Open task"} if event in TERMINAL else None,
         on_action=(lambda choice, task_id=task.id: _open_task(task_id) if choice == "default" else None)))
+    if event in TERMINAL:
+        _deliver_artifacts(task)
+
+
+def _deliver_artifacts(task: Task) -> None:
+    """Each file the task made for the user, once (core/outbox.py attachment)."""
+    from ..core import outbox, outputs
+    from ..core.conversations import MAX_ATTACHMENTS_PER_TURN
+    try:
+        base = outputs.task_dir(task.id).resolve()
+    except ValueError:
+        return
+    for path in task.artifacts[:MAX_ATTACHMENTS_PER_TURN]:
+        resolved = Path(path).resolve()
+        if base not in resolved.parents:
+            continue  # only what the task wrote into its own outputs folder
+        try:
+            outbox.attachment(str(resolved), origin_id=f"task-{task.id}", conversation=task.conversation or "",
+                              label=request_text(task.goal)[:120], untrusted=bool(task.tainted),
+                              person=task.person or None)
+        except Exception:  # noqa: BLE001 -- one file must not stop the others
+            log.warning("could not deliver task file %s", resolved.name, exc_info=True)
 
 
 NOTICE_TITLES = {"waiting_approval": "Omarchy task needs approval", "waiting_user": "Omarchy task has a question",
