@@ -29,6 +29,14 @@ Rules for every release:
   down every conversation.
 - If a new rule says the opposite of one I already have, I ask which one
   wins instead of keeping both by accident.
+- When something will take a while, like checking your email, I now
+  acknowledge it right away, in your own words if you gave me a rule for
+  that, and only once. If a background job finishes and I haven't told you,
+  I tell you.
+- You get each result once, where you are: said in our conversation if one
+  is open, on your phone when you're away from the desk, or as a desktop
+  notification when you're at it. No more hearing it and also getting two
+  pop-ups.
 - In a long conversation I keep a running summary of what you asked me to
   do, what we decided and what is still open, so I can still answer "what
   did I ask you about the invoice an hour ago?" Anything still waiting for
@@ -47,6 +55,19 @@ Rules for every release:
   (`omarchy-ai-settings memory-embeddings on`); off by default.
 - Recall hits update a note's use count and last use; `memory-stale` and
   the Standing rules panel list notes not recalled in 90 days.
+- `core/outbox.py` is the only path to the user: agenda results and
+  notices, task notices (`runtime/runtime.py`, `runtime/service.py`),
+  pending-action, safe-mode, quota and tool-install notices, and the
+  update announcement. `agenda.notify` and `flux_notify.send` are gone
+  (Flux stays as the push transport); the call registry moved there
+  (`agenda.attach_call` and friends still work). Results are deduped by
+  `(origin, kind)` in `STATE_DIR/outbox.json`, claimed before delivery.
+- Acknowledge-first in Gemini Live sessions (desktop and phone): calls
+  marked slow by `tools.expected()` (new) or going to a task, browser or
+  MyApi get a pre-rendered acknowledgement clip after 0.6 s of silence;
+  an unspoken NON_BLOCKING result is prompted once after 6 s. DoD-7 tests:
+  `tests/test_ack_first.py`, `tests/test_outbox.py`,
+  `tests/chaos/test_outbox.py`.
 - `core/summarize.py`: a rolling summary stored with each conversation,
   refreshed every 16 finished lines or about 700 estimated tokens on a
   worker thread, by the Gateway text model (at most two calls per refresh),

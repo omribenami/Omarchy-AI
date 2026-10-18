@@ -172,6 +172,36 @@ def _guarded_init(self, args, *pargs, **kwargs):
 subprocess.Popen.__init__ = _guarded_init  # type: ignore[method-assign]
 
 
+# Nor the outbox's delivery ledger (core/outbox.py): under `unittest discover`
+# STATE_DIR is the user's own. pytest isolates STATE_DIR per test already.
+from omarchy_ai import config as _config  # noqa: E402
+from omarchy_ai.core import outbox as _outbox  # noqa: E402
+
+if _config.STATE_DIR == Path("~/.local/state/omarchy-ai").expanduser():
+    _outbox.LEDGER_PATH = (
+        Path(tempfile.mkdtemp(prefix="omarchy-outbox-")) / "outbox.json"
+    )
+
+# Where the user is and the notification transports: no shell to ask (presence
+# unknown) and nothing shown, unless a test patches them. The real transports
+# stay reachable for the tests of them.
+REAL_OUTBOX = {
+    "desktop": _outbox._desktop,
+    "push": _outbox._push,
+    "desk_state": _outbox._desk_state,
+}
+_outbox._desk_state = lambda: None
+_outbox._desktop = lambda *a, **k: None
+_outbox._push = lambda *a, **k: None
+
+# Nor the user's own acknowledgement rule (read from learned preferences):
+# a test passes its rules in, or gets the default clip.
+_real_ack_phrase = _outbox.ack_phrase
+_outbox.ack_phrase = lambda preferences=None: (
+    None if preferences is None else _real_ack_phrase(preferences)
+)
+
+
 # Nor the network beyond this machine. Live 2026-10-18: a background
 # conversation title ran after its test had restored conversations.DIR,
 # called the Gateway with the user's key and saved a test talk into the

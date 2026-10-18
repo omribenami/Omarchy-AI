@@ -3,8 +3,8 @@
 The live voice model starts, checks and answers tasks through three small
 tools (start_task, task_status, task_respond); the work itself happens in
 runtime threads, so the conversation is never blocked. Results reach an
-open conversation through the daemon's announce hook and always arrive as
-a desktop notification.
+open conversation through the daemon's announce hook; otherwise they are
+shown where the user is (core/outbox.py), once.
 """
 from __future__ import annotations
 
@@ -534,7 +534,8 @@ def announce_to(session_getter, loop, wake=None) -> None:
     belongs to the daemon's event loop, so hand over with call_soon_threadsafe.
     `wake(entry)` (the daemon's _on_agenda_result) says a WAKE_EVENTS entry
     now: in the open conversation or phone call, else by starting one."""
-    from ..core import agenda
+    from ..core import outbox
+    from . import runtime as runtime_module
 
     def listener(task, event):
         # Progress already goes to the conversation card and task HUD through
@@ -547,11 +548,20 @@ def announce_to(session_getter, loop, wake=None) -> None:
         if wake is not None and event in WAKE_EVENTS:
             loop.call_soon_threadsafe(wake, entry)
             return
-        agenda.announce_to_calls(entry)  # a phone call hears it now too
         session = session_getter()
-        if session is None or not hasattr(session, "announce"):
-            return  # stays in the agenda inbox: the next conversation's prompt carries it
-        loop.call_soon_threadsafe(session.announce, entry)
+        has_session = session is not None and hasattr(session, "announce")
+        if not (has_session or outbox.calls_open()):
+            # Shown where the user is by runtime._notify; it also stays in the
+            # agenda inbox, so the next conversation's prompt carries it.
+            return
+
+        def say():
+            outbox.announce_to_calls(entry)  # a phone call hears it now too
+            if has_session:
+                loop.call_soon_threadsafe(session.announce, entry)
+        # Said here, so runtime._notify's notice with the same key is not shown as well.
+        _, _, fingerprint = runtime_module.notice(task, event)
+        outbox.once(runtime_module.outbox_key(task, fingerprint), say, origin_id=f"task-{task.id}")
     runtime = get_runtime()
     runtime.listeners.append(listener)
     # Tasks a restart cut off never emit an event (the runtime marks them

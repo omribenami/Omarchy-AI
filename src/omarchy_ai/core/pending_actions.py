@@ -265,5 +265,5 @@ def _tell(action: dict) -> None:
 
 
 def _notify(title: str, body: str, conversation: str) -> None:
-    from . import agenda
-    agenda.notify(title, body, urgent=title.startswith(_HEADINGS[UNCERTAIN]), conversation=conversation)
+    from . import outbox
+    outbox.alert(title, body, urgent=title.startswith(_HEADINGS[UNCERTAIN]), conversation=conversation)

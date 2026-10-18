@@ -36,9 +36,10 @@ def send(origin: str, subject: str = "Hello") -> dict:
 
 
 def _quiet_agenda():
-    from omarchy_ai.core import agenda
+    from omarchy_ai.core import agenda, outbox
 
-    agenda.notify = lambda *a, **k: None
+    outbox._desktop = lambda *a, **k: None
+    outbox._push = lambda *a, **k: None
     agenda._refresh_routines_hud = lambda: None
     return agenda
 

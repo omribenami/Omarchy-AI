@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, retry, schedule
 from omarchy_ai.execution import actions
 from omarchy_ai.execution.actions import ActionResult
@@ -68,7 +69,7 @@ class ActionTests(unittest.TestCase):
         patch.object(agenda, "INBOX_PATH", base / "inbox.jsonl").start()
         patch.object(agenda, "_registry", return_value=REGISTRY).start()
         patch.object(agenda, "STEP_RETRY", retry.Policy(base=0.0, jitter=0.0)).start()
-        self.notify = patch.object(agenda, "notify").start()
+        self.notify = patch.object(outbox, "_desktop").start()  # the desktop notice (presence unknown in tests)
         patch.object(agenda, "_refresh_routines_hud").start()
         self.run_action = patch("omarchy_ai.execution.actions.run_action").start()
         # "device" stands for a tool the user added (smart home): reversible, so retried.
@@ -97,7 +98,7 @@ class ActionTests(unittest.TestCase):
         self.run_action.assert_called_once_with("device", {"operation": "ask", "text": "turn on the fan"})
         done = self.job(job["id"])
         self.assertEqual((done["status"], done["runs"], done["next_run"]), ("done", 1, None))
-        self.notify.assert_called_once_with("Done: turn on the fan", "Turned on the fan")
+        self.notify.assert_called_once_with("Done: turn on the fan", "Turned on the fan", False)
         self.assertEqual([e["outcome"] for e in self.heard], ["completed"])
 
     def test_a_tool_that_exits_ok_but_reports_an_error_is_a_failure_and_is_retried(self):
@@ -108,10 +109,10 @@ class ActionTests(unittest.TestCase):
             ActionResult(True, '{"answer": "Sorry, I am not aware of any device called fan", "type": "error"}')]
         agenda.run_job(self.job(job["id"]), now=at(18, 30))
         self.assertEqual(self.run_action.call_count, 3)
-        title, body = self.notify.call_args.args
+        title, body, _ = self.notify.call_args.args
         self.assertEqual(title, "Failed: turn on the fan")
         self.assertIn("not aware of any device", body)
-        self.assertTrue(self.notify.call_args.kwargs["urgent"])
+        self.assertTrue(self.notify.call_args.args[2])
         self.assertEqual(self.heard[-1]["outcome"], "failed")
         self.assertTrue(self.heard[-1]["urgent"])
 

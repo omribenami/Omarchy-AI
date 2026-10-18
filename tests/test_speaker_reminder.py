@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from omarchy_ai.config import Config
+from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, conversations
 from omarchy_ai.execution import actions
 from omarchy_ai.voice import satellite as voice_satellite
@@ -26,7 +27,7 @@ class SpeakerReminderTests(unittest.TestCase):
         base = Path(temp.name)
         patch.object(agenda, "JOBS_PATH", base / "agenda.json").start()
         patch.object(agenda, "INBOX_PATH", base / "inbox.jsonl").start()
-        self.notify = patch.object(agenda, "notify").start()
+        self.notify = patch.object(outbox, "_desktop").start()  # the desktop notice (presence unknown in tests)
         patch.object(agenda, "_refresh_routines_hud").start()
         patch.object(agenda, "tick").start()
         patch("time.time", return_value=local_noon()).start()  # "later today" never crosses midnight
@@ -69,7 +70,7 @@ class SpeakerReminderTests(unittest.TestCase):
         heard = []
         patch.object(agenda, "listeners", [heard.append]).start()
         agenda.run_job(agenda._load()[0], now=time.time() + 1800)
-        self.notify.assert_called_once_with("Reminder", "Take the bread out")
+        self.notify.assert_called_once_with("Reminder", "Take the bread out", False)
         self.assertEqual((heard[0]["outcome"], heard[0]["announce"]), ("reminded", "satellite"))
 
 

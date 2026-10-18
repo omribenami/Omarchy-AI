@@ -1,15 +1,13 @@
-"""Omarchy AI's notifications on the phone, through Flux.
+"""The phone-push transport of the outbox (core/outbox.py), through Flux.
 
 Flux shows a notification on its paired phone for fluxd's `notify.send`
-(the call behind `flux-cli notify TITLE BODY`). Every desktop notification
-Omarchy raises for the user -- a task that needs approval or has a question,
-a finished or failed task, a routine, a provider out of credit, a tool that
-asks to be installed -- is sent there too, so it reaches the user away
-from the desk.
+(the call behind `flux-cli notify TITLE BODY`). Nothing calls this module to
+tell the user something: the outbox decides whether a message goes to the
+phone (the user is away from the desk, the phone page is open, or it is
+urgent) and calls deliver() off its caller's thread.
 
-Best effort and off the caller's thread: without Flux, or with no phone
-connected, nothing happens. `flux_notifications: false` in config.yaml
-turns it off.
+Best effort: without Flux, or with no phone connected, nothing happens.
+`flux_notifications: false` in config.yaml turns it off.
 """
 
 from __future__ import annotations
@@ -26,20 +24,6 @@ def _enabled() -> bool:
         return bool(getattr(load_config(), "flux_notifications", True))
     except Exception:  # noqa: BLE001 -- a notification must never break its caller
         return True
-
-
-def send(title: str, body: str = "", *, kind: str = "other", conversation: str = "",
-         devices: list[str] | None = None) -> None:
-    """Show `title` and `body` on every paired phone that Flux has connected now
-    (only those of `devices`, Flux device ids, when given and not empty).
-    With a `conversation`, a tap on it opens that chat in Flux."""
-    if not title or not _enabled():
-        return
-    title, body = _masked(title), _masked(body)
-    if conversation:
-        from ..core import conversations
-        conversations.notified(_titled(title, kind)[:120], conversation)
-    threading.Thread(target=deliver, args=(title, body, kind, devices), daemon=True, name="flux-notify").start()
 
 
 def _masked(text: str) -> str:

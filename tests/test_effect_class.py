@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from fakes.myapi_server import FakeMyApi, fake_identity
-from omarchy_ai.core import agenda, approvals, effects, retry
+from omarchy_ai.core import agenda, approvals, effects, outbox, retry
 from omarchy_ai.execution import actions, tools
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.catalog import USE_TOOL
@@ -84,8 +84,8 @@ class AgendaRetryTests(unittest.TestCase):
             patcher = mock.patch.object(agenda, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        for target in ("notify", "_refresh_routines_hud"):
-            patcher = mock.patch.object(agenda, target)
+        for owner, target in ((outbox, "_desktop"), (agenda, "_refresh_routines_hud")):
+            patcher = mock.patch.object(owner, target)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.fake = FakeMyApi()

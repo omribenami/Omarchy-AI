@@ -292,7 +292,7 @@ class PhoneInstallApprovalTests(unittest.TestCase):
         with patch("sys.stdin.isatty", return_value=False), \
                 patch.object(user_tools, "approval_summary", return_value="installs smart_home"), \
                 patch.object(user_tools.subprocess, "run", side_effect=FileNotFoundError), \
-                patch("omarchy_ai.phone.flux_notify.send"), \
+                patch("omarchy_ai.core.outbox._push"), \
                 patch("omarchy_ai.runtime.service.get_runtime") as runtime:
             runtime.return_value.store.list.return_value = []
             answering = threading.Thread(target=phone)

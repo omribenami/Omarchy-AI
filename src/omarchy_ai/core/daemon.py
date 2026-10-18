@@ -128,8 +128,12 @@ class OmaDaemon:
                     latest = result.get("latest_version") if result.get("available") else None
                     session = self._session
                     if latest and latest != announced and session is not None and hasattr(session, "announce"):
-                        session.announce({"id": f"update-{latest}", "title": "Update available",
-                                          "detail": updates.wake_notice()})
+                        # Said in the open conversation only, once per version (core/outbox.py).
+                        from . import outbox
+                        entry = {"id": f"update-{latest}", "title": "Update available",
+                                 "detail": updates.wake_notice()}
+                        outbox.once(f"update:{latest}", lambda entry=entry: session.announce(entry),
+                                    kind=outbox.ALERT, origin_id=f"update-{latest}")
                         announced = latest
                 except Exception:
                     log.warning("Update check unavailable", exc_info=True)
@@ -146,7 +150,7 @@ class OmaDaemon:
         recovering = asyncio.create_task(recover_pending())
         try:
             # Task Runtime events (done, needs approval, question) reach an
-            # open conversation; they always raise a desktop notification too.
+            # open conversation; otherwise the outbox shows them where the user is.
             from ..runtime import service as task_service
             # An approval wakes her to say it now (_on_agenda_result).
             task_service.announce_to(lambda: self._session, loop, wake=self._on_agenda_result)
@@ -240,8 +244,12 @@ class OmaDaemon:
         # turns, beside the desktop conversation loop. None when not set up.
         from ..voice import satellite as voice_satellite
         satellite = await voice_satellite.start(self.config)
-        from . import agenda
-        agenda.listeners.append(lambda entry: loop.call_soon_threadsafe(self._on_agenda_result, entry))
+        # The outbox (core/outbox.py) says results in this conversation while
+        # one is open, and may wake her to say an agenda result when none is.
+        from . import agenda, outbox
+        unregister_voice = outbox.register_voice(
+            lambda: self._session is not None and hasattr(self._session, "announce"),
+            lambda entry: loop.call_soon_threadsafe(self._on_agenda_result, entry))
         # systemd (Type=notify): started. Pings go out only while the loop,
         # the agenda heartbeat and the tool runner all respond.
         health.sd_notify("READY=1\nSTATUS=" + ("Safe mode: voice only" if health.active else "Running"))
@@ -250,6 +258,7 @@ class OmaDaemon:
             async with server:
                 await self._run_sessions()
         finally:
+            unregister_voice()
             if watchdog is not None:
                 watchdog.stop()
             if satellite is not None:

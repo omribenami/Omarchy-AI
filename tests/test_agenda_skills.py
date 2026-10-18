@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, skills
 from omarchy_ai.core.jev import Jev
 from omarchy_ai.execution.actions import ActionResult
@@ -39,7 +40,7 @@ class AgendaTests(unittest.TestCase):
             p = patch.object(agenda, name, value)
             p.start()
             self.addCleanup(p.stop)
-        self.notify = patch.object(agenda, "notify").start()
+        self.notify = patch.object(outbox, "_desktop").start()  # the desktop notice (presence unknown in tests)
         self.hud_refresh = patch.object(agenda, "_refresh_routines_hud").start()
         patch.object(agenda, "CONFIRM_DELAY_SECONDS", 0).start()
         self.address_for = patch("omarchy_ai.execution.tile_logs.address_for", return_value="0xc1a").start()
@@ -300,7 +301,7 @@ class AgendaTests(unittest.TestCase):
         job = agenda.create({"title": "Check CI", "kind": "remind", "cron": "0 9 * * 1-5"}, now=self.now)
         agenda.run_job(job, Jev(FakeGateway(lambda *a: 0)), job["next_run"])
         after = agenda._load()[0]
-        self.notify.assert_called_once_with("Reminder", "Check CI")
+        self.notify.assert_called_once_with("Reminder", "Check CI", False)
         self.assertGreater(after["next_run"], job["next_run"])
         self.assertEqual(after["status"], "active")
 

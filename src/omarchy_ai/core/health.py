@@ -260,10 +260,10 @@ SAFE_MODE_BODY = (
 
 
 def notify_safe_mode(crashes: int) -> None:
-    """The urgent desktop and phone notification for entering safe mode."""
-    from . import agenda
+    """The urgent notification for entering safe mode (core/outbox.py: desktop and phone)."""
+    from . import outbox
 
-    agenda.notify(
+    outbox.alert(
         SAFE_MODE_TITLE,
         SAFE_MODE_BODY.format(
             crashes=crashes,

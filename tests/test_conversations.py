@@ -324,12 +324,13 @@ class ScopedApprovalTests(unittest.TestCase):
     def test_a_tool_install_is_a_card_and_yes_sends_the_fingerprint_prompt(self):
         from omarchy_ai.execution import user_tools
         rid = user_tools._open_install_request("smart_home", "installs smart_home")
-        with patch("omarchy_ai.phone.flux_notify.send") as notify, \
+        with patch("omarchy_ai.core.outbox._chat") as notify, patch("omarchy_ai.core.outbox._push") as push, \
                 patch("omarchy_ai.execution.flux_approve.available", return_value=True):
             conversations.sync_installs()
             conversations.sync_installs()  # once only
         notify.assert_called_once()
-        system = notify.call_args.kwargs["conversation"]
+        push.assert_called_once()
+        system = notify.call_args.args[2]
         card = conversations.get(system, lambda _: None)["lines"][-1]
         self.assertEqual((card["kind"], card["status"], card["fingerprint"]), ("approval", "waiting", rid))
         with patch("omarchy_ai.execution.flux_approve.available", return_value=True), \

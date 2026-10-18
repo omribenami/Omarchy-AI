@@ -1218,9 +1218,7 @@ def _sudo(command: str) -> tuple[str, str | None]:
 
 
 def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
-    title = {"waiting_approval": "Omarchy task needs approval", "waiting_user": "Omarchy task has a question",
-             CERTIFIED: "Omarchy task done ✓", UNVERIFIED: "Omarchy task finished (unverified)",
-             FAILED: "Omarchy task failed"}.get(event)
+    title = NOTICE_TITLES.get(event)
     if not title:
         return
     if event == "waiting_approval" and task.pending_approval:
@@ -1246,37 +1244,45 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
             _phone(title, f"{request_text(task.goal)[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
                    "Approve it on the desktop.", kind="approval", conversation=task.conversation)
         return
-    body = f"{request_text(task.goal)[:120]}\n\n{(task.question if event == 'waiting_user' else task.result)[:400]}"
+    title, body, fingerprint = notice(task, event)
     # Notifications are delivery attempts, not task transitions. Store a
     # stable fingerprint before delivery so a reconnect/restart cannot repeat
     # an unchanged task question or outcome indefinitely. The step number
     # means a later, genuinely new question is still shown.
-    fingerprint = hashlib.sha1(f"{event}\x1f{len(task.steps)}\x1f{body}".encode()).hexdigest()
     if task.notifications.get(event) == fingerprint:
         return
     task.notifications[event] = fingerprint
     runtime.store.save(task)
-    _phone(title, body, conversation=task.conversation)
-    if event in TERMINAL:
-        threading.Thread(target=_finished_prompt, args=(task.id, title, body), daemon=True).start()
-        return
-    try:
-        subprocess.Popen(["notify-send", "-a", "Omarchy AI", "-u", "normal", title, body],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    except OSError:
-        pass
+    from ..core import outbox
+    # One message (core/outbox.py): said in an open conversation, else shown
+    # where the user is. The daemon's task listener (runtime/service.py)
+    # sends the same key first when a conversation can say it.
+    outbox.send(outbox.Message(
+        outbox.QUESTION if event == "waiting_user" else outbox.RESULT, title, body, origin_id=f"task-{task.id}",
+        dedupe_key=outbox_key(task, fingerprint), conversation=task.conversation or "",
+        # A click on a finished task's notification (or its Open button) shows the whole task.
+        actions={"default": "Open task"} if event in TERMINAL else None,
+        on_action=(lambda choice, task_id=task.id: _open_task(task_id) if choice == "default" else None)))
 
 
-def _finished_prompt(task_id: str, title: str, body: str) -> None:
-    """The finished task's notification; a click on it (the "default"
-    action) or on its Open button shows the whole task in a terminal."""
-    try:
-        proc = subprocess.run(["notify-send", "-a", "Omarchy AI", "-u", "normal", "-A", "default=Open task",
-                               title, body], capture_output=True, text=True, timeout=3600)
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    if proc.stdout.strip() == "default":
-        _open_task(task_id)
+NOTICE_TITLES = {"waiting_approval": "Omarchy task needs approval", "waiting_user": "Omarchy task has a question",
+                 CERTIFIED: "Omarchy task done ✓", UNVERIFIED: "Omarchy task finished (unverified)",
+                 FAILED: "Omarchy task failed"}
+
+
+def notice(task: Task, event: str) -> tuple[str, str, str]:
+    """(title, body, fingerprint) of a task question or outcome notice."""
+    title = NOTICE_TITLES.get(event, "")
+    said = (task.question if event == "waiting_user" else task.result) or ""
+    body = f"{request_text(task.goal)[:120]}\n\n{said[:400]}"
+    steps = len(getattr(task, "steps", None) or [])
+    fingerprint = hashlib.sha1(f"{event}\x1f{steps}\x1f{body}".encode()).hexdigest()
+    return title, body, fingerprint
+
+
+def outbox_key(task: Task, fingerprint: str) -> str:
+    """The outbox's dedupe key of one task notice: one delivery, whoever sends it."""
+    return f"task:{task.id}:{fingerprint}"
 
 
 def _open_task(task_id: str) -> None:
@@ -1289,12 +1295,14 @@ def _open_task(task_id: str) -> None:
 
 
 def _phone(title: str, body: str, *, kind: str = "other", conversation: str = "") -> None:
-    """The same notification on the phone, through Flux (phone/flux_notify.py)."""
+    """An approval's phone notice (its desktop prompt is the approval channel
+    itself): through the outbox, to the phone and its chat."""
     try:
-        from ..phone import flux_notify
-        flux_notify.send(title, body, kind=kind, conversation=conversation)
-    except Exception:  # noqa: BLE001 -- the desktop notification must still go out
-        log.debug("flux notify unavailable", exc_info=True)
+        from ..core import outbox
+        outbox.send(outbox.Message(outbox.APPROVAL, title, body, channels=(outbox.PUSH, outbox.CHAT),
+                                   push_kind=kind, conversation=conversation))
+    except Exception:  # noqa: BLE001 -- the desktop prompt must still go out
+        log.debug("phone notice unavailable", exc_info=True)
 
 
 def _allowed_now(task: Task, request: dict) -> bool:

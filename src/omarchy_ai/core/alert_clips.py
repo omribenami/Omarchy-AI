@@ -59,7 +59,7 @@ def texts(config) -> dict[str, str]:
     from . import quota
     from ..voice import fallback
     return {**{f"quota-{provider}": text for provider, text in quota.MESSAGES.items()},
-            **fallback.texts(config.gemini_model)}
+            **fallback.texts(config.gemini_model), **fallback.ack_texts()}
 
 
 def find(stems, lang: str | None = None) -> Path | None:

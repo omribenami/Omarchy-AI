@@ -243,12 +243,12 @@ class SafeModeTests(unittest.TestCase):
         self.assertFalse(result["entered"])
 
     def test_notification_is_urgent(self):
-        with mock.patch("omarchy_ai.core.agenda.notify") as notify:
+        with mock.patch("omarchy_ai.core.outbox._desktop") as notify:
             health.notify_safe_mode(3)
-        title, body = notify.call_args.args
+        title, body, urgent = notify.call_args.args
         self.assertEqual(title, health.SAFE_MODE_TITLE)
         self.assertIn("3 times", body)
-        self.assertTrue(notify.call_args.kwargs["urgent"])
+        self.assertTrue(urgent)
 
 
 class DaemonHeartbeatCheckTests(unittest.TestCase):

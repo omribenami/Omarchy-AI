@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, statefile
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -59,7 +60,9 @@ class AgendaLeaseTests(unittest.TestCase):
         self.base = Path(temp.name)
         patch.object(agenda, "JOBS_PATH", self.base / "agenda.json").start()
         patch.object(agenda, "INBOX_PATH", self.base / "inbox.jsonl").start()
-        self.notify = patch.object(agenda, "notify").start()
+        self.notify = patch.object(
+            outbox, "_desktop"
+        ).start()  # the desktop notice (presence unknown in tests)
         patch.object(agenda, "_refresh_routines_hud").start()
         self.addCleanup(patch.stopall)
 
