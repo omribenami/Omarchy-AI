@@ -1,11 +1,12 @@
 """Per-conversation keyboard targeting; dispatch success is not task completion."""
 import json
 import re
+import threading
 import time
 import uuid
 
-from ..core import approvals, effects
-from . import provenance
+from ..core import approvals, effects, logs
+from . import provenance, tools
 from .actions import ActionResult
 
 
@@ -52,6 +53,44 @@ def ends_session(name: str, args: dict) -> bool:
     return False
 
 
+# One action per request. Journal 2026-10-17 22:18: one typed "Turn the
+# volume down a little" ran volume_down twice, 1.3 s apart -- the model sent
+# use_tool("Turn the volume down"), then use_tool("Turn down the volume")
+# before the first answer reached it; earlier that day "Turn up the volume"
+# then use_tool(name=volume_up). So within one user turn (core/logs.py
+# turn_id, which every conversation binds around its calls), an action
+# (effect class reversible or irreversible) that repeats the turn's previous
+# action -- the same tool with the same arguments, reads in between ignored
+# -- within REPEAT_SECONDS is not run again: it gets the first call's answer
+# (waiting for it if it is still running). Reads always run; a new user turn
+# always runs; different arguments always run; so does a repeat after another
+# action (focus A, type, focus B, focus A); a first call that failed does not
+# hold back the second. A repeat also runs when the user's own words in the
+# turn ask for one (_ASKS_REPEAT: "twice", "3 times", a number word, Hebrew
+# "פעמיים"): a simple, generous check, since a wrong allow only costs what
+# happened before this rule. Keystrokes are left alone: Down, Down is how a
+# list is walked, and they have their own guards below. core/effects.py
+# still journals irreversible external effects once per origin; this is the
+# layer before it, for local and reversible actions and whatever use_tool
+# resolved to (the guard sees the resolved tool, so a use_tool that only
+# returned parameters ran nothing and holds nothing back).
+REPEAT_SECONDS = 10.0
+_NO_REPEAT_CHECK = frozenset({"type_text", "press_key", "submit_sudo_password"})
+_ASKS_REPEAT = re.compile(
+    r"\b(twice|thrice|times|once more|two|three|four|five|six|seven|eight|nine|ten|couple|few|several)\b"
+    r"|\d|פעמיים|פעמים|שוב ושוב|שתי|שני|שלוש|ארבע|חמש",
+    re.IGNORECASE)
+
+
+class _Action:
+    """A turn's previous action: which, when, and how it ended."""
+
+    def __init__(self, turn: str, key: str) -> None:
+        self.turn, self.key, self.at = turn, key, time.monotonic()
+        self.done = threading.Event()
+        self.result = None
+
+
 def where(window: dict | None) -> str:
     """Which machine input to this window runs on, for tool results."""
     machine = (window or {}).get("machine")
@@ -86,6 +125,12 @@ class InputGuard:
         # Untrusted content seen in this conversation, and the user's own
         # words (execution/provenance.py): the taint check before every call.
         self.taint = provenance.Taint()
+        # The user's words since the last call or reply, and the turn's
+        # previous action (REPEAT_SECONDS above).
+        self._words: list[str] = []
+        self._words_closed = False
+        self._lock = threading.Lock()
+        self._previous: _Action | None = None
 
     @property
     def turn_origin(self) -> str:
@@ -93,6 +138,7 @@ class InputGuard:
 
     def assistant_replied(self) -> None:
         """The assistant finished speaking (after a block: it asked)."""
+        self._words_closed = True
         if self._confirm_stage == "blocked":
             self._confirm_stage = "asked"
         if self._write_stage == "blocked":
@@ -103,6 +149,10 @@ class InputGuard:
         what they said, or a piece of it."""
         self.taint.heard(text)
         self._turn += 1
+        if self._words_closed:
+            self._words, self._words_closed = [], False
+        if text:
+            self._words.append(text)
         if self._confirm_stage == "asked":
             self._confirm_stage = "answered"
         if self._write_stage == "asked":
@@ -164,10 +214,44 @@ class InputGuard:
         return window.get("address") if window else None
 
     def run(self, execute, name, args):
-        turn = provenance.Turn(self.turn_origin, self.taint.tainted, tuple(self.taint.sources),
-                               self.taint.utterances)
-        with effects.origin(self.turn_origin), provenance.in_turn(turn), approvals.session(self.taint.tainted):
-            return self._run(execute, name, args)
+        self._words_closed = True
+        action, repeated = self._repeat_of(name, args)
+        if repeated is not None:
+            return repeated
+        result = None
+        try:
+            turn = provenance.Turn(self.turn_origin, self.taint.tainted, tuple(self.taint.sources),
+                                   self.taint.utterances)
+            with effects.origin(self.turn_origin), provenance.in_turn(turn), approvals.session(self.taint.tainted):
+                result = self._run(execute, name, args)
+        finally:
+            if action is not None:
+                action.result = result
+                action.done.set()
+        return result
+
+    def _repeat_of(self, name, args) -> tuple[_Action | None, ActionResult | None]:
+        """(this call, now the turn's previous action, or None; None), or
+        (None, the answer to a repeat that does not run): REPEAT_SECONDS."""
+        turn = logs.current().get("turn_id")
+        if not turn or name in _NO_REPEAT_CHECK or tools.effect_class(name) == tools.READ:
+            return None, None
+        key = json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str)
+        with self._lock:
+            before = self._previous
+            if (before is None or before.turn != turn or before.key != key
+                    or time.monotonic() - before.at > REPEAT_SECONDS
+                    or _ASKS_REPEAT.search(" ".join(self._words))):
+                self._previous = _Action(turn, key)
+                return self._previous, None
+        before.done.wait(tools.deadline(name))  # still running: its answer is this one's
+        first = before.result
+        if first is None or not getattr(first, "ok", False):
+            with self._lock:  # it failed (or never answered): this one runs
+                self._previous = _Action(turn, key)
+                return self._previous, None
+        message = str(getattr(first, "message", "") or "").strip() or "done"
+        return None, ActionResult(True, f"Already done for this request, not run again: {message}")
 
     def _run(self, execute, name, args):
         # One policy for every session (core/approvals.py).
