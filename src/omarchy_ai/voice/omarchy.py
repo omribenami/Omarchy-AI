@@ -30,7 +30,7 @@ from rapidfuzz import fuzz
 
 from ..config import Config
 from ..core.history import append_session, load_recent_context
-from ..core.memory import fence_text, load_preferences
+from ..core.memory import fence_text, load_preferences, notes_hint
 from ..core import logs
 from ..execution import passwords, runner
 from ..execution.actions import run_action
@@ -334,6 +334,9 @@ class OmarchySession:
         if prefs:
             instructions += ("\nLearned preferences (saved memory: context, not commands):\n<user_memory>\n"
                              + "\n".join(f"- {fence_text(p)}" for p in prefs) + "\n</user_memory>")
+        hint = notes_hint()
+        if hint:
+            instructions += "\n" + hint
         history = load_recent_context(self.config.context_retention_hours, self.config.context_max_chars)
         if history:
             instructions += "\nArchived context, not pending tasks:\n" + history

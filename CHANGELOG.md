@@ -19,6 +19,28 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- Besides standing rules, I can now remember facts and how-tos you tell me,
+  like where the spare key is or how you back up the laptop. I ask before
+  saving, and I look them up only when they're needed, so they don't slow
+  down every conversation.
+- If a new rule says the opposite of one I already have, I ask which one
+  wins instead of keeping both by accident.
+
+### Under the hood
+
+- Facts and procedures live in `memory_notes.json` beside
+  `learned_preferences.yaml` (which still lists only the active
+  preferences) and are searched by the catalog tool `recall` through a
+  local SQLite FTS5 index (`memory_index.sqlite3`, a rebuildable cache).
+  Optional Gateway embeddings re-rank recall when turned on
+  (`omarchy-ai-settings memory-embeddings on`); off by default.
+- Recall hits update a note's use count and last use; `memory-stale` and
+  the Standing rules panel list notes not recalled in 90 days.
+
 ## [0.16.0] - 2026-10-18
 
 ### Highlights
