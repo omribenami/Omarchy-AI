@@ -30,6 +30,7 @@ from .. import myapi
 from ..config import MYAPI_INSTRUCTIONS, Config
 from .prompt_version import resolve_prompt_version
 from ..core.history import append_session, load_recent_context
+from ..core.summarize import archive_summaries, tail_chars
 from ..core import logs, updates
 from ..core.memory import fence_text, load_preferences, notes_hint
 from ..execution import runner
@@ -379,7 +380,12 @@ def build_session_config(config: Config, *, surface: str | None = None) -> dict:
         "you saved or updated a skill. "
         + ("Saved skills:\n" + roster if roster else "No skills are saved yet.")
     )
-    recent_context = load_recent_context(config.context_retention_hours, config.context_max_chars)
+    # Rolling summaries of the recent conversations (core/summarize.py)
+    # stand in for their older turns, so fewer verbatim characters follow.
+    summaries = archive_summaries(config.context_retention_hours)
+    recent_context = load_recent_context(config.context_retention_hours,
+                                         tail_chars(config.context_max_chars, summaries))
+    recent_context = "\n".join(part for part in (summaries, recent_context) if part)
     if recent_context:
         # What was actually said in recent past sessions (within
         # context_retention_hours) — user explicitly asked for this: a new
