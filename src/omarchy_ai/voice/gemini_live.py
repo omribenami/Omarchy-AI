@@ -797,7 +797,8 @@ class GeminiLiveSession:
         dropped, self._dropped_restart = self._dropped_restart, ""
         if dropped:
             log.warning("Gemini session reconnected after %s: session=%s", dropped, self._audit_session)
-        text = fallback.carry_over(self._transcript, stalled, dropped=bool(dropped))
+        text = await asyncio.to_thread(fallback.carry_over, self._transcript, stalled, bool(dropped),
+                                       getattr(self._transcript, "conversation", ""))
         if text:
             # After a stall or a drop she owes the user an answer: that one is a turn of its own.
             await session.send_client_content(turns={"role": "user", "parts": [{"text": text}]},

@@ -19,6 +19,36 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- In a long conversation I keep a running summary of what you asked me to
+  do, what we decided and what is still open, so I can still answer "what
+  did I ask you about the invoice an hour ago?" Anything still waiting for
+  your approval is always in it.
+- Reopening a chat or reconnecting after a dropped line sends that summary
+  and the last few turns instead of the whole transcript, so each
+  conversation costs fewer tokens.
+
+### Under the hood
+
+- `core/summarize.py`: a rolling summary stored with each conversation,
+  refreshed every 16 finished lines or about 700 estimated tokens on a
+  worker thread, by the Gateway text model (at most two calls per refresh),
+  or by deterministic rules when the Gateway is unavailable. Pending
+  approvals, questions and confirm cards come from the cards and task
+  records, never from the model's text. Text from inside `<untrusted>`
+  fences, or copied from it by the model, stays fenced in the summary.
+- The archived-conversations section of both prompts puts the summaries of
+  the two newest conversations before fewer verbatim turns (2,000
+  characters instead of 4,000 when a summary is present). A reopened phone
+  conversation gets its summary and its last 12 lines instead of its last
+  8,000 characters. A reconnect of a session longer than 20 turns carries a
+  summary of the older turns. Measured on a synthetic 3,000-line
+  conversation with `count_tokens` (gemini-2.5-flash): prompt v2 6,990 ->
+  6,652 tokens, reopened-conversation context 2,465 -> 319 tokens.
+
 ## [0.16.0] - 2026-10-18
 
 ### Highlights

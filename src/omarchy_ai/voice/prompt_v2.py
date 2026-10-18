@@ -28,6 +28,7 @@ from .. import myapi
 from ..config import Config
 from ..core import agenda, skills, updates
 from ..core.history import load_recent_context
+from ..core.summarize import archive_summaries, tail_chars
 from ..core.memory import fence_text, load_preferences
 from ..execution import catalog
 from ..execution.tools import MYAPI_TOOLS, TOOLS
@@ -292,9 +293,12 @@ def _slots(config: Config, *, surface: str | None, myapi_on: bool) -> dict[str, 
         str(getattr(config, "assistant_name", None) or "Omarchy").strip() or "Omarchy"
     )
     preferences = load_preferences()
+    # Rolling summaries (core/summarize.py) first, then fewer verbatim turns.
+    summaries = archive_summaries(config.context_retention_hours)
     archive = load_recent_context(
-        config.context_retention_hours, config.context_max_chars
+        config.context_retention_hours, tail_chars(config.context_max_chars, summaries)
     ).strip()
+    archive = "\n".join(part for part in (summaries, archive) if part)
     owner = _owner_name()
     voice_approval = ""
     if getattr(config, "speaker_id_enabled", False):

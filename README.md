@@ -574,6 +574,15 @@ About 90 typed tools plus Omarchy's full command set:
   says the connection dropped and asks you to repeat. If that reconnect
   fails too, voice moves to the next model and the message names the
   reason. Quota and auth errors do not reconnect.
+- **Long conversations.** Each conversation keeps a rolling summary
+  (`core/summarize.py`): what you asked for, what was decided, what is still
+  open, the people, files, windows and devices involved, and anything
+  waiting for your approval, read from the task records each time. It is
+  refreshed in the background by the Gateway text model, or by rules when
+  the Gateway is unavailable. A new, reopened or reconnected session gets
+  the instructions, your saved memory, the summary, then the last turns
+  verbatim, so a long talk stays answerable and costs fewer tokens. Text
+  from emails, pages and files stays fenced as untrusted inside it.
 - **Prompt v2 (opt-in).** `prompt_version: v2` in
   `~/.config/omarchy-ai/config.yaml` (or `OMARCHY_PROMPT_VERSION=v2` in the
   service environment) uses a shorter system prompt

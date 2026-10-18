@@ -77,3 +77,11 @@ def no_jev_for_question_cards(monkeypatch):
     """A question card asks Jev whether it is a yes/no question (core/conversations.py)."""
     from omarchy_ai.core import conversations
     monkeypatch.setattr(conversations, "_open_question", lambda question: False)
+
+
+@pytest.fixture(autouse=True)
+def no_background_summaries(monkeypatch):
+    """A long test conversation would ask the Gateway for its summary (core/summarize.py);
+    tests call summarize.refresh() themselves."""
+    from omarchy_ai.core import summarize
+    monkeypatch.setattr(summarize, "AUTO", False)
