@@ -35,7 +35,7 @@ import tempfile
 import threading
 import time
 
-from ..core import retry
+from ..core import provider_health, retry
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +65,25 @@ CLI_MIN_SECONDS = 15
 _cooldown: dict[str, float] = {}
 _cooldown_lock = threading.Lock()
 _agents: dict = {}
+HEALTH_KIND = "worker_backend"
+
+
+def _bench(backend: str, seconds: float, state: str, reason: str) -> None:
+    until = time.time() + seconds
+    with _cooldown_lock:
+        _cooldown[backend] = until
+    provider_health.record(HEALTH_KIND, backend, state, until, reason)
+
+
+def _restore_cooldowns(entries) -> None:
+    """After a restart: a backend benched before it stays benched."""
+    with _cooldown_lock:
+        for e in entries:
+            if e["provider"] in BACKENDS:
+                _cooldown[e["provider"]] = max(_cooldown.get(e["provider"], 0), e["until"])
+
+
+provider_health.register(HEALTH_KIND, _restore_cooldowns)
 
 _UNAVAILABLE = re.compile(r"HTTP (400|404)\b.*model|model.{0,80}(not found|does not exist|not supported|unsupported|"
                           r"unknown|deprecated|no longer|retired|not available)", re.I | re.S)
@@ -168,13 +187,11 @@ class WorkerModel:
             except WorkerModelError as exc:
                 errors.append(f"{backend}: {exc}")
                 if backend != "api" and _LIMIT.search(str(exc)):
-                    with _cooldown_lock:
-                        _cooldown[backend] = time.time() + LIMIT_COOLDOWN
+                    _bench(backend, LIMIT_COOLDOWN, "quota", str(exc))
                     log.warning("worker backend %s is out of quota; skipping it for an hour", backend)
                 else:
                     if backend != "api":
-                        with _cooldown_lock:
-                            _cooldown[backend] = time.time() + FAILURE_COOLDOWN
+                        _bench(backend, FAILURE_COOLDOWN, "failed", str(exc))
                     log.warning("worker backend %s failed; trying the next: %s", backend, str(exc)[:200])
         raise WorkerModelError("; ".join(errors) or "no worker backend available")
 

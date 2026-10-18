@@ -32,6 +32,8 @@ import subprocess
 import threading
 import time
 
+from . import provider_health
+
 log = logging.getLogger("omarchy_ai.core.quota")
 
 ALERT_EVERY = 600
@@ -67,6 +69,20 @@ speaker = None
 
 _lock = threading.Lock()
 _last: dict[str, float] = {}
+HEALTH_KIND = "quota"
+
+
+def _restore(entries) -> None:
+    """After a restart: a provider reported out of quota a minute ago does
+    not alert again from a background failure (core/provider_health.py)."""
+    with _lock:
+        for e in entries:
+            if e["provider"] in PROVIDERS:
+                last = provider_health.to_monotonic(e["until"]) - ALERT_EVERY
+                _last[e["provider"]] = max(_last.get(e["provider"], -1e9), last)
+
+
+provider_health.register(HEALTH_KIND, _restore)
 
 
 def is_quota_error(text: str, status: int | None = None) -> bool:
@@ -84,6 +100,7 @@ def report(provider: str, detail: str = "", *, user_initiated: bool = False) -> 
         if now - _last.get(provider, -1e9) < gap:
             return False
         _last[provider] = now
+    provider_health.record(HEALTH_KIND, provider, "exhausted", time.time() + ALERT_EVERY, detail)
     log.warning("Quota alert: provider=%s user_initiated=%s detail=%s", provider, user_initiated,
                 " ".join(str(detail).split())[:300])
     threading.Thread(target=_alert, args=(provider,), daemon=True, name=f"quota-{provider}").start()
