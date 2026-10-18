@@ -44,6 +44,10 @@ Rules for every release:
 - Reopening a chat or reconnecting after a dropped line sends that summary
   and the last few turns instead of the whole transcript, so each
   conversation costs fewer tokens.
+- I can hand a web search or a job on a website to a background helper and
+  keep talking with you while it works. Up to three run at once; ask me
+  what they're doing, change what one is looking for, or stop it. Each one
+  tells you its result once.
 - When you schedule something, I tell you what happens if the computer is
   asleep or off at that time. Things that change something, like switching
   a light, are skipped and I tell you they were missed. Reminders and
@@ -71,6 +75,15 @@ Rules for every release:
 
 ### Under the hood
 
+- `runtime/workers.py`: `delegate(kind=research|browser|files, brief)`, a
+  catalog tool. Research and browser jobs run `browser_task` on the
+  ToolRunner in a bounded background worker (at most 3 open, one at a time
+  on the browser), with a bounded brief and a structured report; files jobs
+  go to `start_task`. `task_status`/`task_respond` list, cancel and redirect
+  workers (`w-` ids). Results go through the outbox once (key
+  `worker:<id>:result`, also across restarts) and the agenda inbox; the
+  report is untrusted (`external:worker`, fenced) and the worker inherits
+  the delegating turn's taint. Records: `STATE_DIR/workers.json`.
 - `core/triggers.py` (new): event triggers for agenda jobs (`schedule_task`
   `on`: `file_changed`, `email`, `process_exited`, `device_online`,
   `calendar`), polled on the heartbeat (stat, `/proc`, ping or a check

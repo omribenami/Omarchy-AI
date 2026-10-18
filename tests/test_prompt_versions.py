@@ -42,7 +42,12 @@ GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # Re-pinned for plan 4.5 (triggers and catch-up): the TOOL CATALOG signature
 # line for schedule_task gained ", catch_up, on" after announce_on_speaker;
 # nothing else in the prompt or the declared tools changed.
-LEGACY_LIVE_SHA256 = "1cebcc1926f4f0f0b84744bb3aad73c6b97eebb4ef21aa10863a146e96ac573b"
+# Re-pinned for plan 4.2 (background workers, on top of 4.5): the TOOL CATALOG signature
+# line gained "delegate(kind*, brief*, url), " (+8 tokens by Gemini's
+# count_tokens, 12494 -> 12502); the instructions already said to
+# acknowledge and keep listening, so nothing else in the prompt or the
+# declared tools changed.
+LEGACY_LIVE_SHA256 = "26bc35c97330380f0144aafe4e0dacdd0075357878b975ee3b9b5db43ca006fe"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 

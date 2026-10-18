@@ -360,7 +360,7 @@ def _task_tool(name: str):
 
 ACTIONS.update(desktop_task=desktop_task, search_os_knowledge=search_os_knowledge,
                start_task=_task_tool("start_task"), task_status=_task_tool("task_status"),
-               task_respond=_task_tool("task_respond"))
+               task_respond=_task_tool("task_respond"), delegate=_task_tool("delegate"))
 
 
 def myapi_refused(name: str) -> ActionResult | None:

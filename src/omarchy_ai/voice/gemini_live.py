@@ -671,6 +671,13 @@ class GeminiLiveSession:
         loop.call_soon_threadsafe(self._announcements.put_nowait, {"notice": text})
         return True
 
+    @staticmethod
+    def _untrusted_source(entry: dict) -> str:
+        """Where an announcement's untrusted content came from, if it carries any."""
+        if entry.get("untrusted"):
+            return str(entry["untrusted"])
+        return "external:announcement" if provenance.OPEN in str(entry.get("detail") or "") else ""
+
     def announce(self, entry: dict) -> None:
         """A heartbeat result arrived while this conversation is open."""
         self._announcements.put_nowait(entry)
@@ -1028,6 +1035,8 @@ class GeminiLiveSession:
                 entry = await asyncio.wait_for(self._announcements.get(), 0.5)
             except asyncio.TimeoutError:
                 entry = None
+            if entry is not None and (source := self._untrusted_source(entry)):
+                self._input_guard.taint.mark(source)  # a background worker's report (runtime/workers.py)
             if entry is not None and entry.get("notice"):
                 while not self._idle():
                     await asyncio.sleep(0.2)
