@@ -188,7 +188,7 @@ monorepo, so reuse means porting patterns and data, not importing code.
 | Background tasks / sessions | `background-task` manager, SQLite session store, resume | **Different**: one JSON file per task, thread per task, `interrupted` on restart; simpler and enough at this scale |
 | Subagents | read-only verifier subagent profile | **Adapted**: TEST_AGENT, REVIEW_AGENT, read-only external reviews |
 | Planning/execution split | plan mode | **Adapted**: a planner writes objective + acceptance criteria only; workers execute |
-| MCP, skills/plugins, TUI, context compaction | full implementations | **Not taken now**: Omarchy already has skills (`core/skills.py`); MCP and compaction are future work (see Roadmap) |
+| MCP, skills/plugins, TUI, context compaction | full implementations | **Not taken now**: Omarchy already has skills (`core/skills.py`); MCP and compaction are future work (see Roadmap items 4 and 7) |
 
 ## Evidence: live runs on this machine (2026-09-23)
 
@@ -249,5 +249,9 @@ came from reading the task record, not from guessing.
    `codex exec resume`) instead of re-dispatching from scratch.
 4. MCP tools as another executor surface (MiniMax `agent-modules/mcp`).
 5. Scheduled tasks (`core/agenda.py`) able to start runtime tasks.
-6. Per-task sandboxing for the System agent (MiniMax's sandbox-runtime is
-   Apache-2.0 and bubblewrap-based; worth evaluating for NORMAL commands).
+6. ~~Per-task sandboxing for the System agent~~ Done (2026-10-17):
+   `runtime/sandbox.py` runs Task Runtime commands and user tools under
+   bubblewrap, with a policy chosen by the risk level the command was
+   allowed at. HIGH commands still run unsandboxed after a tap.
+7. Context compaction: still future work. Conversations are trimmed to
+   their last 2,000 lines (`core/conversations.py`), not summarized.

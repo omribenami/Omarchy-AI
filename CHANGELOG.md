@@ -19,6 +19,102 @@ Rules for every release:
 - Work lands under `## [Unreleased]` first. Rename it to the version when
   releasing.
 
+## [Unreleased]
+
+### Highlights
+
+- Before I send an email, a reply or a post for you, I show it on a confirm
+  card with the exact recipient and text. Say yes or tap Send. If I read an
+  email or a web page first, sending needs a tap.
+- Instructions hidden in emails, web pages, files or pictures are treated as
+  information, not orders. If I find one, I tell you, and anything it asks
+  me to send or change waits for your tap.
+- I ask before I remember something. When you give me a standing rule, I
+  check with you first, and I never save one because an email or a page
+  told me to. You can see and remove your rules in the new Standing rules
+  section of the settings.
+- Commands in background jobs, and the tools I write for myself, now run in
+  a sandbox. They cannot see your SSH keys, passwords or browser profiles,
+  and they can only write where the job needs to.
+- Ask me to check my own health and I check keys, services, audio, the
+  desktop and stuck work, problems first, each with a fix. You can run the
+  same check yourself with omarchy-ai-doctor.
+- If I crash several times in a row, I start in safe mode and tell you. You
+  can still talk to me, but scheduled jobs and watches pause until I have
+  run for ten minutes without a problem.
+- If my connection drops in the middle of a conversation, I reconnect once
+  on my own. A tool that hangs is stopped at its time limit, and the
+  conversation carries on.
+- I can take one look at a home camera and tell you what it shows right
+  now.
+- Reading your newest email is faster. If MyApi holds a message back as
+  suspicious, I say so instead of saying the inbox is empty.
+- Updates install next to the current version and roll back on their own if
+  the new version fails its health check.
+
+### Fixes
+
+- One request no longer runs the same action twice, such as turning the
+  volume down two steps when you asked once. Asking for "twice" still works.
+- Quick actions with no output, such as a volume change, answer "done"
+  instead of an empty reply.
+- If I restart in the middle of a send, the action is no longer stuck as
+  running. When I cannot tell whether it went out, I show an "I may have
+  sent this" card with check, resend and drop, and I never send it again on
+  my own.
+- When reconnecting does not help, the message says why the connection
+  ended.
+- A tool you added that gets a value it does not accept now names the values
+  it does accept, so the next try can get it right.
+- Asking a git checkout to update itself is refused with the pull and
+  install steps, instead of replacing it with a release.
+- A failed update now records that it failed.
+
+### Under the hood
+
+- CI runs `ruff check`, `ruff format --check`, `mypy`, the test suite with
+  the deterministic behavior evals, and the phone page tests on every push
+  and pull request, on Python 3.12 and 3.13. Code owners, a pull request
+  template and Dependabot were added.
+- Release tarballs and raw demo media are no longer tracked; the spikes moved
+  to `experiments/`. `execution/actions.py` is now a package, `TaskRuntime`
+  is split into mixins, and live tool dispatch has its own module.
+- State files are written under a cross-process lock with atomic writes, and
+  a corrupt file is set aside instead of reset (`core/statefile.py`). Agenda
+  runs hold a lease in `agenda.json` instead of an in-memory set.
+- Every external or irreversible change goes through a side-effect journal
+  with idempotency keys (`core/effects.py`). Each tool declares an effect
+  class, a deadline, a resource and a provenance in `execution/tools.py`.
+- Tool calls run on `execution/runner.py`, with deadlines, cancel tokens,
+  killable worker processes for network reads, and ordering per resource
+  instead of one lock per session. One retry policy (`core/retry.py`)
+  replaces the ad-hoc retries.
+- One approval policy (`core/approvals.py`) covers voice, chat, the phone,
+  the Task Runtime and the agenda. Standing approvals for one exact
+  recipient are managed with `python -m omarchy_ai.core.approvals standing`.
+- Untrusted tool results are fenced in `<untrusted>` and taint the
+  conversation or task (`execution/provenance.py`). Saved secrets are masked
+  on every path to a model, speech, the phone, logs and state files.
+- Commands and user tools run under bubblewrap by risk level
+  (`runtime/sandbox.py`); `tool.json` gains a `sandbox` field.
+- Memory is a set of records with proposals and confirmation
+  (`core/memory.py`, `memory.json`), with `omarchy-ai-settings memory-*`
+  commands.
+- Structured JSONL logs with correlation IDs (`core/logs.py`), persisted
+  provider health (`core/provider_health.py`), a systemd watchdog with
+  crash-loop safe mode and a memory cap (`core/health.py`, the unit file),
+  and `omarchy-ai-doctor` with the `run_diagnostics` tool.
+- An opt-in v2 system prompt (`prompt_version: v2` or
+  `OMARCHY_PROMPT_VERSION=v2`) that costs fewer tokens, with legacy-vs-v2
+  behavior evals and a 66-fixture injection eval suite.
+- A fault-injection kit (`core/crashpoints.py`, `tests/chaos/`, a fake MyApi
+  server), and tests can no longer reach the live desktop or keyring.
+- Releases are built, signed with minisign and published by CI on a `v*`
+  tag. The updater checks the signature when a release has one, installs
+  into `versions/<version>`, switches `current`, and rolls back when the
+  startup check fails, `doctor --quick` finds a new red, or safe mode or a
+  failed unit follows within 10 minutes.
+
 ## [0.15.0] - 2026-10-16
 
 ### Highlights
