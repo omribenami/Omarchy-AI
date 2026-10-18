@@ -21,6 +21,17 @@ class MyApiClientErrorTests(unittest.TestCase):
             with self.assertRaisesRegex(MyApiError, "connection to myapiai.com failed"):
                 self._client()._raw_request("GET", "/services", signed=False)
 
+    def test_injection_scanner_block_is_an_error_not_an_empty_answer(self):
+        blocked = {"data": {"service": "gmail", "status": "executed", "response": {"ok": True, "data": {
+            "ok": False, "code": "PROMPT_INJECTION_BLOCKED", "service": "gmail"}}}}
+        client = self._client()
+        with patch.object(client, "_raw_request", return_value=blocked):
+            with self.assertRaisesRegex(MyApiError, "prompt-injection scanner withheld this gmail answer") as caught:
+                client.request("POST", "/services/gmail/execute", body={})
+        self.assertEqual(caught.exception.status, 422)          # permanent: core/retry.py does not retry it
+        with patch.object(client, "_raw_request", return_value={"data": {"messages": []}}):
+            self.assertEqual(client.request("GET", "/services"), {"data": {"messages": []}})
+
 
 if __name__ == "__main__":
     unittest.main()
