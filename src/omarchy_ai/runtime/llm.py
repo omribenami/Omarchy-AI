@@ -140,6 +140,9 @@ class WorkerModel:
         return models.resolve(TIER.get()) or self._fallback or "unknown"
 
     def complete(self, system: str, user, *, timeout: float = 60, retries: int = 2) -> dict:
+        # No saved secret reaches a worker model, API or CLI (execution/passwords.py).
+        from ..execution.passwords import redact, redact_value
+        system, user = redact(system), redact_value(user)
         content = user if isinstance(user, str) else json.dumps(user, ensure_ascii=False)
         errors = []
         deadline = time.monotonic() + timeout

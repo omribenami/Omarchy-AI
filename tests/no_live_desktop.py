@@ -135,6 +135,12 @@ def _no_keyring(args, *, password=None):
 
 sudo_approval._run = _no_keyring
 
+# Nor the assistant's real API key files, which redaction also masks: under
+# `unittest discover` the config dir is the user's own.
+from omarchy_ai.execution import passwords as _passwords  # noqa: E402
+
+_passwords.key_files = lambda: []
+
 
 def without_session_probe():
     """Module fixtures for tests whose runtime commands would ask Hyprland for

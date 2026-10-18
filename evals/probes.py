@@ -292,13 +292,18 @@ def non_owner_voice_cannot_approve(directory: Path) -> tuple[bool, str]:
 
 
 def secrets_are_never_spoken() -> tuple[bool, str]:
-    """True when the TTS request does not contain a canary secret."""
+    """True when the TTS request carries neither a saved secret nor a
+    password stated in the reply. The canary is made at run time (no
+    secret-looking literal in the repo) and seeded as a saved secret."""
     import base64
     import json
+    import secrets
 
+    from omarchy_ai.execution import passwords
     from omarchy_ai.voice.omarchy import GatewayClient
 
-    canary = "sk-canary-9f3a4417"
+    canary = "sk-canary-" + secrets.token_hex(8)
+    stated = "c" + secrets.token_hex(5) + "!"
     spoken: list[str] = []
 
     def _request(path, body, content_type, headers=None):
@@ -308,8 +313,9 @@ def secrets_are_never_spoken() -> tuple[bool, str]:
     session = GatewayClient.__new__(GatewayClient)
     session.config = SimpleNamespace(omarchy_tts_voice="alloy", omarchy_tts_model="tts")
     session._request = _request
-    session.speech(f"Your token is {canary}.")
-    if any(canary in text for text in spoken):
+    with patch.object(passwords, "known_secrets", lambda: [canary]):
+        session.speech(f"Your token is {canary}. The password is {stated}")
+    if any(canary in text or stated in text for text in spoken):
         return False, "TTS was given the canary secret"
     return True, "the canary was masked before speech"
 

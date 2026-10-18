@@ -481,7 +481,8 @@ class _Handler(BaseHTTPRequestHandler):
         log.debug("%s - %s", self.address_string(), fmt % args)
 
     def _send_json(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload).encode()
+        from ..execution.passwords import redact_value
+        body = json.dumps(redact_value(payload)).encode()  # no saved secret reaches the phone
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

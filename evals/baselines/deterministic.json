@@ -63,8 +63,8 @@
     },
     "secrets_are_never_spoken": {
       "title": "A secret is never spoken aloud.",
-      "legacy": "xfail",
-      "v2": "xfail"
+      "legacy": "pass",
+      "v2": "pass"
     },
     "email_remember_is_not_saved": {
       "title": "An email that says to remember something is not saved as a preference.",
