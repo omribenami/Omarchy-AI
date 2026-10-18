@@ -1,7 +1,37 @@
 """Versioned GitHub Release bundles, cached wake notices, and isolated self-updates.
 
-This file is also a standalone worker launched in its own systemd user unit,
-so restarting the voice daemon cannot kill an update halfway through.
+This module is also the worker launched in its own systemd user unit
+(`python -m omarchy_ai.core.updates --install`), so restarting the voice
+daemon cannot kill an update halfway through.
+
+Update flow for a release install (install()):
+
+1. verify: the SHA-256 file, then the minisign signature (core/signing.py)
+   when the release has one. A signature that fails is refused. An unsigned
+   release is accepted by SHA-256 alone only while this install pins no
+   release key; once it pins one, newer releases must be signed.
+2. install side by side into ~/.local/share/omarchy-ai/versions/<v> and
+   prepare its environment while the current assistant keeps running.
+3. switch: stop the service, point ~/.local/share/omarchy-ai/current at the
+   new tree, run its setup.sh through that link (so the unit, plugins and
+   shell hooks name `current`, not a version), start the service.
+4. check: the startup check, then `omarchy-ai-doctor --quick`; a check that
+   was not red before the switch and is red after it fails the update.
+5. watch: for WATCH_SECONDS after the switch, crash-loop safe mode
+   (core/health.py) or a failed unit also fails the update.
+6. any failure after the switch rolls back: `current` points at the previous
+   tree again, the snapshot of the unit, plugins and shell rc files is
+   restored, and the service restarts. The last two version trees are kept.
+
+A source checkout (the maintainer's own, run straight from the repository)
+is never self-updated or converted: the update is refused with a hint to
+pull instead.
+
+Migration, once, for an install from before versions/ existed (the unit
+points at an extracted tree somewhere else): its first update makes `current`
+and repoints the unit at it. The old tree is left in place and is the
+rollback target; a rollback restores the old unit file, so the step is
+undone by the same mechanism.
 """
 from __future__ import annotations
 
@@ -31,7 +61,15 @@ REPOSITORY = "omribenami/Omarchy-AI"
 API = f"https://api.github.com/repos/{REPOSITORY}"
 ROOT = Path(__file__).resolve().parents[3]
 STATE = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "omarchy-ai/updates"
-RELEASES = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser() / "omarchy-ai/releases"
+DATA = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser() / "omarchy-ai"
+# Where updaters up to 0.15.0 unpacked bundles (one temporary directory per
+# update). Never pruned: an install from before versions/ may still run there.
+RELEASES = DATA / "releases"
+VERSIONS = DATA / "versions"
+CURRENT = DATA / "current"
+# Safe mode or a failed unit this long after the switch rolls the update back.
+WATCH_SECONDS = 600
+WATCH_INTERVAL = 15
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
 SERVICE = "omarchy-ai.service"
 CACHE_SECONDS = 900
@@ -70,10 +108,26 @@ def _write(path, value):
 
 
 def bundle_names(version):
-    """Archive and checksum filenames for one stable X.Y.Z package."""
+    """Archive and checksum filenames for one stable X.Y.Z package.
+
+    These exact names are a contract: updaters up to 0.15.0 only look for
+    them, so every release must keep publishing both."""
     version_tuple(version)
     package = f"omarchy-ai-{version}-linux-x86_64.tar.gz"
     return package, package + ".sha256"
+
+
+SIGNATURE_SUFFIX = ".minisig"
+
+
+def signature_name(version):
+    """The optional minisign signature published next to the archive."""
+    return bundle_names(version)[0] + SIGNATURE_SUFFIX
+
+
+def is_dev_checkout(root=ROOT):
+    """A source checkout (or worktree) the user runs directly: never self-updated."""
+    return (Path(root) / ".git").exists()
 
 
 def _read_github(url, limit=2_000_000):
@@ -124,7 +178,7 @@ def _list_releases():
     raise ValueError("GitHub releases listing exceeded page limit")
 
 
-def _candidate(version, package, *, source, commit=None):
+def _candidate(version, package, *, source, commit=None, signed=False):
     _package, checksum = bundle_names(version)
     if package != _package:
         raise ValueError("Release asset name does not match its version")
@@ -147,6 +201,7 @@ def _candidate(version, package, *, source, commit=None):
         "package": package,
         "package_url": base + package,
         "checksum_url": base + checksum,
+        "signature_url": base + package + SIGNATURE_SUFFIX if signed else None,
         "url": page,
         "source": source,
     }
@@ -174,7 +229,8 @@ def candidates_from_releases(releases):
         names = {asset.get("name") for asset in release.get("assets") or []
                  if isinstance(asset, dict)}
         if package in names and checksum in names:
-            found.append(_candidate(version, package, source="release"))
+            found.append(_candidate(version, package, source="release",
+                                    signed=signature_name(version) in names))
     return found
 
 
@@ -219,7 +275,7 @@ def _bundle_url_ok(url, filename):
     if release:
         version, name = release.groups()
         package, checksum = bundle_names(version)
-        return name == filename and filename in {package, checksum}
+        return name == filename and filename in {package, checksum, package + SIGNATURE_SUFFIX}
     dist = re.fullmatch(
         rf"https://raw\.githubusercontent\.com/{re.escape(REPOSITORY)}/[0-9a-f]{{40}}/dist/([^/]+)",
         url,
@@ -325,14 +381,21 @@ def check_updates(force=False):
         if not force and 0 <= now - checked_at < CACHE_SECONDS:
             cache["current_version"] = current
             try:
-                cache["available"] = bool(cache.get("ok") and version_tuple(cache["latest_version"]) > version_tuple(current))
+                cache["available"] = bool(cache.get("ok") and not cache.get("unsigned") and version_tuple(cache["latest_version"]) > version_tuple(current))
                 return cache
             except (KeyError, ValueError, TypeError):
                 pass  # Refresh a malformed cache instead of breaking activation.
         try:
             release = discover()
             result = {**release, "ok": True, "checked_at": now, "current_version": current,
-                      "available": version_tuple(release["latest_version"]) > version_tuple(current)}
+                      "available": version_tuple(release["latest_version"]) > version_tuple(current),
+                      "dev_checkout": is_dev_checkout()}
+            if result["available"] and not release.get("signature_url") and _trusted_keys():
+                # Never offer what install() would refuse (see verify_release).
+                result["available"] = False
+                result["unsigned"] = True
+                result["error"] = (f"Release {release['latest_version']} is not signed; this install "
+                                   "only accepts signed releases.")
             if result["available"]:
                 # Same pinned commit as the bundle, so the notes describe
                 # exactly what would be installed. Optional: a missing or
@@ -390,8 +453,12 @@ def wake_notice():
     """Read cached evidence only; never add network latency to session setup."""
     cache = _read(STATE / "check.json")
     try:
-        if (cache.get("ok") and 0 <= time.time() - cache["checked_at"] < CACHE_SECONDS * 2
+        if (cache.get("ok") and not cache.get("unsigned") and 0 <= time.time() - cache["checked_at"] < CACHE_SECONDS * 2
                 and version_tuple(cache["latest_version"]) > version_tuple(installed_version())):
+            if is_dev_checkout():
+                return (f"Omarchy AI version {cache['latest_version']} is available. This copy runs "
+                        "from a source checkout, so it updates by pulling the repository, not by "
+                        "'update yourself'.")
             notice = (f"Omarchy AI version {cache['latest_version']} is available. "
                       "I recommend updating. You can say 'update yourself' to install it.")
             # Only offer what can really be delivered: the highlights must
@@ -446,16 +513,28 @@ def request_update():
     release = check_updates(force=True)
     if not release["ok"]:
         return False, release["error"]
+    if release.get("unsigned"):
+        return False, release["error"]
     if not release["available"]:
         return True, f"Already current: installed {release['current_version']}; latest published bundle {release['latest_version']}."
+    if is_dev_checkout():
+        return False, (f"Version {release['latest_version']} is available, but this assistant runs from "
+                       f"a source checkout at {ROOT}. Self-update only manages release installs; "
+                       "update the checkout with git pull --ff-only and bash install.sh instead.")
     # This is a separate service, not a detached child in the daemon cgroup.
     # The fixed unit name prevents duplicate updates across phone sessions.
     command = ["systemd-run", "--user", "--collect", "--unit=omarchy-ai-update",
-               "--service-type=exec", "--property=TimeoutStartSec=30min"]
+               "--service-type=exec", "--property=TimeoutStartSec=30min",
+               "--working-directory=" + str(ROOT)]
     for key in ("PATH", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "OMARCHY_PATH"):
         if key in os.environ:
             command += ["--setenv=" + key + "=" + os.environ[key]]
-    command += [sys.executable, str(Path(__file__).resolve()), "--install", release["latest_version"], "--previous-root", str(ROOT)]
+    # The worker runs this install's own code from its physical tree: through
+    # `current` it would pick up the new version's packages after the switch.
+    # As a module (-m), so its relative imports (issues, health) resolve.
+    python = ROOT / ".venv/bin/python"
+    command += [str(python) if python.exists() else sys.executable, "-m", "omarchy_ai.core.updates",
+                "--install", release["latest_version"], "--previous-root", str(ROOT)]
     try:
         proc = subprocess.run(command, capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -482,8 +561,7 @@ def _download(url, path, limit):
             output.write(chunk)
 
 
-def unpack_verified(archive, checksum, destination, version):
-    name = f"omarchy-ai-{version}-linux-x86_64"
+def _verify_checksum(archive, checksum):
     parts = checksum.read_text().strip().split()
     if len(parts) != 2 or parts[1].lstrip("*") != archive.name or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
         raise ValueError("Invalid release checksum file")
@@ -491,6 +569,11 @@ def unpack_verified(archive, checksum, destination, version):
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     if digest != parts[0].lower():
         raise ValueError("Release checksum mismatch")
+
+
+def unpack_verified(archive, checksum, destination, version):
+    name = f"omarchy-ai-{version}-linux-x86_64"
+    _verify_checksum(archive, checksum)
     with tarfile.open(archive, "r:gz") as bundle:
         members = bundle.getmembers()
         if len(members) > 50000 or sum(m.size for m in members) > 2_000_000_000:
@@ -597,64 +680,243 @@ def _report_failure(version, message, previous_root):
     return (result, None) if ok else (None, result)
 
 
+def _trusted_keys():
+    from . import signing
+    return signing.trusted_keys()
+
+
+def verify_release(archive, checksum, signature, version, keys=None):
+    """SHA-256 always; the minisign signature when the release has one.
+
+    A signature that does not verify against a pinned key is refused. An
+    unsigned release passes on SHA-256 alone only while this install pins no
+    key (every release before signing existed); with a key pinned, a newer
+    release without a signature is refused, so deleting the .minisig asset
+    cannot downgrade the check. Returns a note for install.json."""
+    _verify_checksum(archive, checksum)
+    from . import signing
+    keys = _trusted_keys() if keys is None else keys
+    if signature is None:
+        if keys:
+            raise ValueError(f"Release {version} is not signed; this install only accepts signed releases")
+        return "SHA-256 verified; the release is not signed"
+    if not keys:
+        log.warning("Release %s is signed, but this install pins no release key; SHA-256 only", version)
+        return "SHA-256 verified; signed, but this install pins no release key to check it with"
+    text = signature.read_text(encoding="utf-8", errors="replace")
+    try:
+        signing.verify_file(archive, text, keys, expect_file=archive.name)
+    except signing.SignatureError as exc:
+        raise ValueError(f"Release signature refused: {exc}") from exc
+    return "SHA-256 and release signature verified"
+
+
+def _point_current(target):
+    """Atomically make CURRENT a symlink to `target`."""
+    CURRENT.parent.mkdir(parents=True, exist_ok=True)
+    temp = CURRENT.with_name(f".current-{os.getpid()}")
+    temp.unlink(missing_ok=True)
+    os.symlink(str(target), temp)
+    os.replace(temp, CURRENT)
+
+
+def _health_file():
+    from . import health
+    return STATE.parent / health.FILE_NAME
+
+
+def _reset_health():
+    """Crashes before a switch belong to the version that is being replaced:
+    the next version starts with a clean slate, so safe mode afterwards is its own."""
+    from . import health
+    try:
+        health.mark_stable(_health_file())
+    except Exception as exc:  # noqa: BLE001 -- best effort, never blocks a switch or a rollback
+        log.warning("Could not reset the crash counter: %s", exc)
+
+
+def _unit_state():
+    result = subprocess.run(["systemctl", "--user", "show", SERVICE, "--property=ActiveState"],
+                            capture_output=True, text=True, timeout=10)
+    return result.stdout.strip().partition("=")[2]
+
+
+def _doctor_quick(root):
+    """{check id: {"status", "reason"}} from the tree's own `omarchy-ai-doctor
+    --quick --json`, or None for a tree that has no doctor (before 0.16)."""
+    doctor = Path(root) / ".venv/bin/omarchy-ai-doctor"
+    if not doctor.exists():
+        return None
+    try:
+        proc = subprocess.run([str(doctor), "--quick", "--json"], capture_output=True, text=True,
+                              timeout=180, cwd=root)
+        report = json.loads(proc.stdout)
+        return {check["id"]: {"status": check["status"], "reason": check.get("reason", "")}
+                for check in report["checks"]}
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"omarchy-ai-doctor --quick did not produce a report: {exc}") from exc
+
+
+def _post_update_check(root, baseline):
+    """Fail when a doctor check is red after the switch but was not before it.
+    Reds that were already there (no API key, no microphone...) are not the
+    update's doing and never roll it back."""
+    if baseline is None:
+        return
+    after = _doctor_quick(root)
+    if after is None:
+        raise RuntimeError("omarchy-ai-doctor is missing after the update")
+    broken = [f"{check_id} ({result['reason']})" for check_id, result in sorted(after.items())
+              if result["status"] == "red" and baseline.get(check_id, {}).get("status", "red") != "red"]
+    if broken:
+        raise RuntimeError("Post-update check failed: " + "; ".join(broken))
+
+
+def _watch(switched_at, seconds=None, interval=None, clock=None, sleep=None):
+    """Raise if crash-loop safe mode starts, or the unit fails, within
+    `seconds` (WATCH_SECONDS) of the switch."""
+    from . import health
+    seconds = WATCH_SECONDS if seconds is None else seconds
+    interval = WATCH_INTERVAL if interval is None else interval
+    clock = clock or time.time
+    sleep = sleep or time.sleep
+    while True:
+        state = health.status(_health_file())
+        if state["safe_mode"] and (state["since"] or 0) >= switched_at:
+            minutes = max(0, int(((state["since"] or switched_at) - switched_at) // 60))
+            raise RuntimeError(f"The updated assistant entered crash-loop safe mode {minutes} min after the update")
+        if _unit_state() == "failed":
+            raise RuntimeError("The updated assistant's service failed after the update")
+        remaining = switched_at + seconds - clock()
+        if remaining <= 0:
+            return
+        sleep(min(interval, remaining))
+
+
+def _prune(keep):
+    """Delete version trees and leftovers under VERSIONS except `keep` and
+    whatever CURRENT points at. Never touches anything outside VERSIONS."""
+    keep = {Path(path).resolve() for path in keep}
+    if CURRENT.exists():
+        keep.add(CURRENT.resolve())
+    if not VERSIONS.is_dir():
+        return
+    for entry in VERSIONS.iterdir():
+        if entry.resolve() in keep or entry.is_symlink() or not entry.is_dir():
+            continue
+        if re.fullmatch(r"\d+\.\d+\.\d+", entry.name) or entry.name.startswith(".staging-"):
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def install(version, previous_root):
     version_tuple(version)
+    previous_root = Path(previous_root).resolve()
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (STATE / "install.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         records = []
         switched = False
+        staging = target = None
         def status(state, message, **extra):
             _write(STATE / "install.json", {"state": state, "version": version,
                     "message": message, "updated_at": time.time(), "previous_root": str(previous_root),
                     **extra})
+        if is_dev_checkout(previous_root):
+            # The maintainer's own checkout: never replaced by a release tree.
+            status("refused", f"{previous_root} is a source checkout; update it with git pull --ff-only "
+                              "and bash install.sh. Self-update only manages release installs.")
+            return
         try:
             status("preparing", "Downloading and verifying the release; current assistant remains running.")
             release = discover()
             if release["latest_version"] != version or version_tuple(version) <= version_tuple(installed_version(previous_root)):
                 raise ValueError("Release changed or is not newer; check for updates again")
-            RELEASES.mkdir(parents=True, exist_ok=True)
-            destination = Path(tempfile.mkdtemp(prefix=f"{version}-", dir=RELEASES))
-            archive = destination / release["package"]
-            checksum = destination / (release["package"] + ".sha256")
+            if CURRENT.exists() and not CURRENT.is_symlink():
+                raise ValueError(f"{CURRENT} is not a symlink; move it away and retry the update")
+            VERSIONS.mkdir(parents=True, exist_ok=True)
+            staging = Path(tempfile.mkdtemp(prefix=f".staging-{version}-", dir=VERSIONS))
+            archive = staging / release["package"]
+            checksum = staging / (release["package"] + ".sha256")
             _require_bundle_url(release.get("package_url"), release["package"])
             _require_bundle_url(release.get("checksum_url"), checksum.name)
+            signature = None
+            if release.get("signature_url"):
+                signature = staging / (release["package"] + SIGNATURE_SUFFIX)
+                _require_bundle_url(release["signature_url"], signature.name)
             _download(release["package_url"], archive, 1_000_000_000)
             _download(release["checksum_url"], checksum, 4096)
-            new_root = unpack_verified(archive, checksum, destination, version)
+            if signature is not None:
+                _download(release["signature_url"], signature, 4096)
+            verification = verify_release(archive, checksum, signature, version)
+            unpacked = unpack_verified(archive, checksum, staging, version)
+            destination = VERSIONS / version
+            if destination.exists():  # a leftover from an earlier attempt; never the running tree
+                if destination.resolve() == previous_root or (CURRENT.exists() and CURRENT.resolve() == destination.resolve()):
+                    raise ValueError(f"{destination} is the running install")
+                shutil.rmtree(destination)
+            target = destination
+            unpacked.rename(target)
             # Prepare all dependencies before touching the running installation.
-            _command(["bash", "scripts/check-dependencies.sh"], cwd=new_root)
-            _command(["uv", "venv", "--system-site-packages", "--python", "/usr/bin/python3", ".venv"], cwd=new_root)
-            _command(["uv", "sync", "--locked"], cwd=new_root)
-            _command([str(new_root / ".venv/bin/python"), "-c", "import omarchy_ai.core.daemon"], cwd=new_root)
-            backup = destination / "rollback"
+            _command(["bash", "scripts/check-dependencies.sh"], cwd=target)
+            _command(["uv", "venv", "--system-site-packages", "--python", "/usr/bin/python3", ".venv"], cwd=target)
+            _command(["uv", "sync", "--locked"], cwd=target)
+            _command([str(target / ".venv/bin/python"), "-c", "import omarchy_ai.core.daemon"], cwd=target)
+            # The new doctor, against the system before the switch: what is
+            # already red is not counted against the update.
+            baseline = _doctor_quick(target)
+            backup = staging / "rollback"
             backup.mkdir(mode=0o700)
             records = _snapshot(backup)
-            status("installing", "Installing verified update and restarting the assistant.")
+            status("installing", "Installing verified update and restarting the assistant.",
+                   verification=verification)
             # Allow the voice tool result to be spoken even with cached downloads.
             time.sleep(8)
             switched = True
             _command(["systemctl", "--user", "stop", SERVICE], timeout=120)
-            _command(["bash", "scripts/setup.sh"], cwd=new_root)
+            _reset_health()
+            _point_current(target)
+            # Through the link, so the unit, plugins and shell hooks it
+            # writes name `current` and follow the next switch.
+            _command(["bash", str(CURRENT / "scripts/setup.sh")], cwd=CURRENT)
             _command(["systemctl", "--user", "start", SERVICE], timeout=120)
             _healthy()
-            status("completed", f"Updated to {version}; startup verified. Previous installation retained at {previous_root}.")
+            switched_at = time.time()
+            status("checking", "Started; running the post-update health check.", verification=verification)
+            _post_update_check(target, baseline)
+            minutes = WATCH_SECONDS // 60
+            status("completed", f"Updated to {version}; startup and health checks passed. For {minutes} "
+                                "minutes a crash loop still rolls it back automatically.",
+                   verification=verification, watching_until=switched_at + WATCH_SECONDS)
+            _watch(switched_at)
+            status("completed", f"Updated to {version}; startup, health checks and {minutes} minutes "
+                                f"without a crash loop passed. Previous installation kept at {previous_root}.",
+                   verification=verification)
+            _prune({target, previous_root})
         except Exception as exc:
             message = str(exc)
             if switched:
                 try:
                     _command(["systemctl", "--user", "stop", SERVICE], timeout=120)
+                    _point_current(previous_root)
                     _restore(records)
+                    _reset_health()
                     _command(["systemctl", "--user", "daemon-reload"])
                     _command(["systemctl", "--user", "start", SERVICE], timeout=120)
                     _command(["omarchy-shell", "shell", "rescanPlugins"])
                     _healthy()
-                    message += "; previous installation restored and running"
+                    message += f"; rolled back: previous installation ({previous_root}) restored and running"
                 except Exception as rollback_error:
                     message += f"; rollback needs attention: {rollback_error}"
+            # The failed tree goes; it never counts as one of the kept versions.
+            if (target is not None and target.exists() and target.resolve() != previous_root
+                    and not (CURRENT.exists() and CURRENT.resolve() == target.resolve())):
+                shutil.rmtree(target, ignore_errors=True)
             issue_url, issue_error = _report_failure(version, message, previous_root)
             status("failed", message, issue_url=issue_url, issue_error=issue_error)
             raise
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
 
 
 if __name__ == "__main__":

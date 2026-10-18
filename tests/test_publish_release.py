@@ -204,6 +204,77 @@ class GitHubReleaseScriptTests(unittest.TestCase):
             self.assertIsInstance(api.call_args.args[1], self.mod.GitHubApi)
             self.assertEqual(api.call_args.args[1].token, "secret")
 
+    def test_signature_is_published_after_the_two_original_assets(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive, checksum = write_bundle(root, "0.4.0")
+            unsigned = self.mod.prepare(root, "0.4.0", "a" * 40)
+            self.assertIsNone(unsigned["signature"])
+            self.assertIn("unsigned", self.mod.format_plan(unsigned))
+            signature = archive.with_name(archive.name + ".minisig")
+            signature.write_text("untrusted comment: test\n")
+            plan = self.mod.prepare(root, "0.4.0", "a" * 40)
+            self.assertEqual(self.mod.assets(plan), [archive, checksum, signature])
+            create = self.mod.gh_create_command(plan)
+            self.assertEqual(create[4:7], [str(archive), str(checksum), str(signature)])
+            self.assertIn(str(signature), self.mod.gh_upload_command(plan))
+            self.assertIn("minisign -Vm", plan["notes"])
+            api = FakeApi(None)
+            self.mod.publish_with_api(plan, api)
+            uploads = [url for method, url in api.calls if "uploads.github.com" in url]
+            self.assertEqual(len(uploads), 3)
+            self.assertTrue(uploads[2].endswith("name=" + signature.name))
+
+    def test_ci_requires_the_pushed_tag_and_never_replaces_a_release(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.mod.ensure_tag_checkout("v0.4.0", {"GITHUB_REF": "refs/heads/main"})
+        self.assertIn("push the tag", str(caught.exception))
+        answers = iter(["a" * 40 + "\n", "b" * 40 + "\n"])
+        with patch.object(self.mod.subprocess, "check_output", side_effect=lambda *a, **k: next(answers)):
+            with self.assertRaises(SystemExit) as caught:
+                self.mod.ensure_tag_checkout("v0.4.0", {"GITHUB_REF": "refs/tags/v0.4.0"})
+        self.assertIn("is not v0.4.0", str(caught.exception))
+        answers = iter(["c" * 40 + "\n", "c" * 40 + "\n"])
+        with patch.object(self.mod.subprocess, "check_output", side_effect=lambda *a, **k: next(answers)):
+            self.assertEqual(self.mod.ensure_tag_checkout("v0.4.0", {"GITHUB_REF": "refs/tags/v0.4.0"}), "c" * 40)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text('[project]\nversion = "0.4.0"\n')
+            write_bundle(root, "0.4.0")
+            calls = []
+
+            def published(args):
+                calls.append(args)
+                return Result(0)
+
+            with patch.object(self.mod, "ROOT", root), \
+                    patch.object(self.mod, "ensure_tag_checkout", return_value="c" * 40), \
+                    patch.object(self.mod, "_gh_run", side_effect=published):
+                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                    self.mod.main(["--ci", "--publish"])
+            self.assertIn("already published", str(caught.exception))
+            self.assertEqual(len(calls), 1)  # only the view; nothing uploaded
+
+            calls.clear()
+
+            def missing(args):
+                calls.append(args)
+                return Result(1, stderr="release not found") if args[1:3] == ["release", "view"] else Result(0)
+
+            with patch.object(self.mod, "ROOT", root), \
+                    patch.object(self.mod, "ensure_tag_checkout", return_value="c" * 40), \
+                    patch.object(self.mod, "_gh_run", side_effect=missing):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.mod.main(["--ci", "--publish"]), 0)
+            create = calls[1]
+            self.assertEqual(create[1:3], ["release", "create"])
+            self.assertIn("--verify-tag", create)
+            self.assertNotIn("--clobber", create)
+            self.assertIn("gh attestation verify", create[create.index("--notes") + 1])
+
 
 class FakeApi:
     def __init__(self, existing):

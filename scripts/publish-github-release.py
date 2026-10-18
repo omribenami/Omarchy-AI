@@ -6,9 +6,18 @@ Reads the version from pyproject.toml and publishes:
   dist/omarchy-ai-<version>-linux-x86_64.tar.gz
   dist/omarchy-ai-<version>-linux-x86_64.tar.gz.sha256
 
-on the release tag v<version>. Creating the release also creates that git tag
-at origin/main when the tag does not already exist. Re-running replaces those
-two assets on the existing release.
+on the release tag v<version>, plus the minisign signature
+dist/omarchy-ai-<version>-linux-x86_64.tar.gz.minisig when it exists (the
+updater checks it, core/signing.py). The two original names never change:
+installed updaters up to 0.15.0 only know those. Creating the release also
+creates that git tag at origin/main when the tag does not already exist.
+Re-running replaces those assets on the existing release.
+
+The normal path is CI: .github/workflows/release.yml builds, signs and runs
+this script with --ci when a vX.Y.Z tag is pushed. --ci checks out nothing
+itself; it requires HEAD to be the tag's commit instead of origin/main, and
+refuses to create a tag that does not exist yet. Locally it still works as
+before.
 
 Prefers the gh CLI. When gh is not on PATH, uses GH_TOKEN or GITHUB_TOKEN
 (contents: write) against the GitHub REST API. Dry-run by default, same as
@@ -60,7 +69,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from omarchy_ai.core.updates import REPOSITORY, bundle_names, version_tuple
+from omarchy_ai.core.updates import REPOSITORY, bundle_names, signature_name, version_tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = REPOSITORY
@@ -82,9 +91,21 @@ def verify_checksum(archive: Path, checksum: Path) -> None:
         raise ValueError("Release checksum mismatch")
 
 
-def release_notes(version: str) -> str:
+def release_notes(version: str, *, signed: bool = False, attested: bool = False) -> str:
     package, checksum = bundle_names(version)
     base = f"https://github.com/{REPO}/releases/download/v{version}"
+    extra = ""
+    if signed:
+        extra += (
+            f"\nSigned with minisign ({signature_name(version)}); the updater checks it against "
+            "the keys in src/omarchy_ai/core/release-keys.pub:\n\n"
+            f"    minisign -Vm {package} -P <key line from release-keys.pub>\n"
+        )
+    if attested:
+        extra += (
+            "\nBuilt by GitHub Actions with a build provenance attestation:\n\n"
+            f"    gh attestation verify {package} --repo {REPO}\n"
+        )
     return (
         f"Omarchy AI {version} for linux-x86_64.\n\n"
         "Verify the archive before installing:\n\n"
@@ -96,10 +117,11 @@ def release_notes(version: str) -> str:
         "    bash install.sh\n\n"
         "OmaStore extracts this same archive and runs bin/omarchy-ai. "
         "That launcher runs install.sh on first use, then starts the user service.\n"
+        f"{extra}"
     )
 
 
-def prepare(root: Path, version: str, commit: str) -> dict:
+def prepare(root: Path, version: str, commit: str, *, attested: bool = False) -> dict:
     package, checksum_name = bundle_names(version)
     archive = root / "dist" / package
     checksum = root / "dist" / checksum_name
@@ -108,16 +130,25 @@ def prepare(root: Path, version: str, commit: str) -> dict:
             f"Missing {archive.name} or its .sha256. Run scripts/build-install-package.sh first."
         )
     verify_checksum(archive, checksum)
+    signature = root / "dist" / signature_name(version)
+    signed = signature.is_file()
     return {
         "version": version,
         "tag": f"v{version}",
         "commit": commit,
         "archive": archive,
         "checksum": checksum,
+        "signature": signature if signed else None,
         "title": f"Omarchy AI {version}",
-        "notes": release_notes(version),
+        "notes": release_notes(version, signed=signed, attested=attested),
         "repo": REPO,
+        "verify_tag": False,
     }
+
+
+def assets(plan: dict) -> list[Path]:
+    """Archive and checksum first (the names old updaters need), then the signature."""
+    return [plan["archive"], plan["checksum"]] + ([plan["signature"]] if plan.get("signature") else [])
 
 
 def _status_path(line: str) -> str:
@@ -143,21 +174,36 @@ def ensure_publishable_checkout(allowed_dirty: set[str]) -> str:
     return head
 
 
+def ensure_tag_checkout(tag: str, env=os.environ) -> str:
+    """CI: HEAD is the pushed tag's commit, and the tag names this version."""
+    ref = env.get("GITHUB_REF", "")
+    if ref != f"refs/tags/{tag}":
+        raise SystemExit(f"Refusing to publish {tag} from {ref or 'no ref'}: push the tag {tag} to release it.")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    tagged = subprocess.check_output(["git", "rev-parse", f"{tag}^{{commit}}"], text=True).strip()
+    if head != tagged:
+        raise SystemExit(f"Refusing to publish: HEAD {head[:12]} is not {tag} ({tagged[:12]}).")
+    return head
+
+
 def gh_create_command(plan: dict) -> list[str]:
-    return [
+    command = [
         "gh", "release", "create", plan["tag"],
-        str(plan["archive"]), str(plan["checksum"]),
+        *(str(path) for path in assets(plan)),
         "--repo", plan["repo"],
         "--title", plan["title"],
         "--notes", plan["notes"],
         "--target", plan["commit"],
     ]
+    if plan.get("verify_tag"):
+        command.append("--verify-tag")
+    return command
 
 
 def gh_upload_command(plan: dict) -> list[str]:
     return [
         "gh", "release", "upload", plan["tag"],
-        str(plan["archive"]), str(plan["checksum"]),
+        *(str(path) for path in assets(plan)),
         "--repo", plan["repo"],
         "--clobber",
     ]
@@ -223,10 +269,10 @@ def format_plan(plan: dict) -> str:
     upload = " ".join(shlex.quote(part) for part in gh_upload_command(plan))
     return (
         f"Release {plan['tag']} at {plan['commit']}\n"
-        f"  {plan['archive']}\n"
-        f"  {plan['checksum']}\n"
-        f"Create (when {plan['tag']} has no release yet):\n  {create}\n"
-        f"Update (when the release already exists; replaces these two assets):\n  {upload}\n"
+        + "".join(f"  {path}\n" for path in assets(plan))
+        + ("" if plan.get("signature") else "  (no .minisig: the release is unsigned)\n")
+        + f"Create (when {plan['tag']} has no release yet):\n  {create}\n"
+        f"Update (when the release already exists; replaces these assets):\n  {upload}\n"
         f"{api_steps(plan)}"
     )
 
@@ -291,12 +337,12 @@ def publish_with_api(plan: dict, api: GitHubApi) -> str:
         )
     if not isinstance(existing, dict) or "id" not in existing:
         raise RuntimeError("GitHub release response did not include an id")
-    assets = {}
+    uploaded = {}
     for asset in existing.get("assets") or []:
         if isinstance(asset, dict) and isinstance(asset.get("name"), str) and asset.get("id") is not None:
-            assets[asset["name"]] = asset["id"]
-    for path in (plan["archive"], plan["checksum"]):
-        asset_id = assets.get(path.name)
+            uploaded[asset["name"]] = asset["id"]
+    for path in assets(plan):
+        asset_id = uploaded.get(path.name)
         if asset_id is not None:
             api.request("DELETE", f"https://api.github.com/repos/{repo}/releases/assets/{asset_id}")
         query = urllib.parse.urlencode({"name": path.name})
@@ -316,14 +362,34 @@ def _gh_run(args: list[str]):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publish the built install archive as a GitHub Release.")
     parser.add_argument("--publish", action="store_true", help="create or update the release and upload assets")
+    parser.add_argument("--ci", action="store_true",
+                        help="release workflow: HEAD must be the pushed tag; never replaces a published release")
     args = parser.parse_args(argv)
     version = project_version(ROOT)
     package, checksum_name = bundle_names(version)
-    commit = ensure_publishable_checkout({f"dist/{package}", f"dist/{checksum_name}"})
-    plan = prepare(ROOT, version, commit)
+    if args.ci:
+        commit = ensure_tag_checkout(f"v{version}")
+    else:
+        commit = ensure_publishable_checkout(
+            {f"dist/{package}", f"dist/{checksum_name}", f"dist/{signature_name(version)}"})
+    plan = prepare(ROOT, version, commit, attested=args.ci)
+    plan["verify_tag"] = args.ci
     print(format_plan(plan))
     if not args.publish:
         print("Dry run only. Re-run with --publish to create or update the GitHub Release.")
+        return 0
+    if args.ci:
+        # A published bundle is never swapped under installs mid-download;
+        # a broken release gets a new version instead.
+        view = _gh_run(["gh", "release", "view", plan["tag"], "--repo", plan["repo"]])
+        if view.returncode == 0:
+            raise SystemExit(f"{plan['tag']} is already published; bump the version for a new release.")
+        if not _release_missing(view):
+            raise SystemExit((view.stderr or view.stdout or "gh release view failed").strip())
+        created = _gh_run(gh_create_command(plan))
+        if created.returncode:
+            raise SystemExit((created.stderr or created.stdout or "gh release create failed").strip())
+        print(f"Created https://github.com/{plan['repo']}/releases/tag/{plan['tag']}")
         return 0
     if shutil.which("gh"):
         action = publish_with_gh(plan, _gh_run)

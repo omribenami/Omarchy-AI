@@ -1,0 +1,174 @@
+# Build, sign and publish a release when a vX.Y.Z tag is pushed.
+#
+#   push of tag vX.Y.Z  build -> SHA-256 -> minisign signature -> build
+#                       provenance attestation -> GitHub Release vX.Y.Z with
+#                       the tarball, its .sha256 (the two names every
+#                       installed updater knows) and the .minisig.
+#   pull_request (release files changed), workflow_dispatch
+#                       dry run: the same build and signature check with a
+#                       throwaway key. Nothing is published: the build job
+#                       can only read the repository, and the publish job
+#                       runs for tag pushes only.
+#
+# The bundle is built with --skip-android. The receiver APK is a debug build
+# signed with the building machine's own debug keystore, so a CI-built APK
+# could not upgrade a receiver already installed from another machine; the
+# assistant builds the APK itself from the bundled android-receiver/ sources
+# when it installs the receiver (execution/actions/casting.py).
+#
+# Signing key: the MINISIGN_SECRET_KEY repository secret (an unencrypted
+# minisign secret key, `minisign -G -W`), whose public key line is in
+# src/omarchy_ai/core/release-keys.pub. Until both exist, a tag release is
+# published unsigned (SHA-256 and the attestation only) with a warning. A key
+# pinned in the tagged tree without the secret, or a secret whose key is not
+# pinned, fails the release before anything is published.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-install-package.sh
+      - scripts/publish-github-release.py
+      - src/omarchy_ai/core/signing.py
+      - src/omarchy_ai/core/release-keys.pub
+      - src/omarchy_ai/core/updates.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Check the tag matches the version
+        id: version
+        run: |
+          version="$(awk -F '"' '/^version = / { print $2; exit }' pyproject.toml)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::pyproject.toml version '$version' is not X.Y.Z"
+            exit 1
+          fi
+          if [[ "$RELEASE" == true && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      # The build script refuses a dirty tree, a stale uv.lock and a version
+      # without a CHANGELOG.md section with highlights.
+      - name: Build the install bundle
+        run: bash scripts/build-install-package.sh --skip-android
+
+      - name: Check the SHA-256
+        working-directory: dist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: sha256sum -c "omarchy-ai-${VERSION}-linux-x86_64.tar.gz.sha256"
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+
+      - name: Sign
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          package="dist/omarchy-ai-${VERSION}-linux-x86_64.tar.gz"
+          keys_file=src/omarchy_ai/core/release-keys.pub
+          pinned="$(grep -c '^RW' "$keys_file" || true)"
+          work="$RUNNER_TEMP/minisign"
+          mkdir -m 700 "$work"
+          if [[ "$RELEASE" == true ]]; then
+            if [[ -z "$MINISIGN_SECRET_KEY" ]]; then
+              if ((pinned)); then
+                echo "::error::$keys_file pins a release key, but the MINISIGN_SECRET_KEY secret is not set"
+                exit 1
+              fi
+              echo "::warning::No MINISIGN_SECRET_KEY secret and no pinned key: publishing unsigned (SHA-256 and attestation only)"
+              exit 0
+            fi
+            printf '%s\n' "$MINISIGN_SECRET_KEY" >"$work/release.key"
+            verify=(--keys-file "$keys_file")
+          else
+            # Dry run: a throwaway key exercises signing and verification.
+            minisign -G -W -p "$work/dry-run.pub" -s "$work/release.key"
+            verify=(--key "$(sed -n 2p "$work/dry-run.pub")")
+          fi
+          minisign -S -s "$work/release.key" -m "$package"
+          rm -f "$work/release.key"
+          if [[ "$RELEASE" != true ]]; then
+            # The reference verifier, so the dry run also checks that
+            # core/signing.py reads real minisign output.
+            minisign -V -p "$work/dry-run.pub" -m "$package"
+          fi
+          # The updater's own check (core/signing.py): for a release this
+          # also proves the signing key is pinned for installs to verify.
+          PYTHONPATH=src uv run --no-project --with 'cryptography>=42' \
+            python -m omarchy_ai.core.signing verify "$package" "$package.minisig" "${verify[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: dist/omarchy-ai-*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: dist
+
+      # Keyless (Sigstore, no secret): `gh attestation verify <tarball>
+      # --repo omribenami/Omarchy-AI` shows it was built here from this tag.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/omarchy-ai-*-linux-x86_64.tar.gz
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: PYTHONPATH=src python3 scripts/publish-github-release.py --ci --publish

@@ -1,0 +1,10 @@
+# minisign public keys that release bundles are signed with (core/signing.py).
+#
+# One key line per key (the second line of a minisign .pub file, "RW...").
+# Keep the old key here for one release when rotating, so installs that
+# already run the new key's release can still verify the next one.
+#
+# No key yet: releases are checked by SHA-256 only until the maintainer adds
+# one (README.md, "Maintainers: build and publish a release"). Once a key is
+# here, the installs that ship it refuse newer releases that are unsigned or
+# whose signature does not verify.
