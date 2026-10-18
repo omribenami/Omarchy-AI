@@ -169,7 +169,9 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
     # Everything said or typed goes into the phone's conversation as it happens,
     # and the call's tasks report back into it (core/conversations.py).
     from ..core import conversations
-    earlier = conversations.context(conversation) if conversation else ''
+    # Its rolling summary and last turns (core/summarize.py), not all its lines.
+    from ..core import summarize
+    earlier = await asyncio.to_thread(summarize.session_context, conversation) if conversation else ''
     if conversation:
         adapter._transcript = conversations.Transcript(conversation, adapter._transcript)
         conversations.CURRENT.set(conversation)

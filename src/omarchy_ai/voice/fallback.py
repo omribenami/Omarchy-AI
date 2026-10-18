@@ -279,12 +279,16 @@ DROPPED = ("[Turn recovery] The connection dropped for a moment and was restored
            "say so and do not run it again unless they ask. Do not greet.")
 
 
-def carry_over(transcript: list[dict], stalled: bool = False, dropped: bool = False) -> str | None:
+def carry_over(transcript: list[dict], stalled: bool = False, dropped: bool = False,
+               conversation: str = "") -> str | None:
     """Context for the fallback model: what was said before the switch.
     `stalled`: the same model on a new connection after it stopped
     answering (gemini_live.StuckTurn); the user has heard nothing.
     `dropped`: the same model on a new connection after the old one closed
-    (gemini_live._resume_dropped); she says she is back."""
+    (gemini_live._resume_dropped); she says she is back.
+    A session longer than CARRY_OVER_TURNS also gets a summary of the turns
+    before them (core/summarize.py): its `conversation`'s, or one made from
+    the transcript (text chat has no conversation)."""
     # Live transcription arrives in fragments: one line per speaker turn.
     turns: list[list] = []
     for t in transcript:
@@ -296,6 +300,16 @@ def carry_over(transcript: list[dict], stalled: bool = False, dropped: bool = Fa
             turns.append([t.get("role"), t["text"]])
     text = "\n".join(f"{role}: {' '.join(said.split())}" for role, said in turns[-CARRY_OVER_TURNS:])
     text = text[-CARRY_OVER_CHARS:]
+    if len(turns) > CARRY_OVER_TURNS:
+        try:
+            from ..core import summarize
+            earlier = summarize.carry_over_summary([(str(role), said) for role, said in turns[:-CARRY_OVER_TURNS]],
+                                                   conversation, keep_last=CARRY_OVER_TURNS)
+        except Exception:  # noqa: BLE001 -- the last turns still go over
+            log.warning("carry-over summary unavailable", exc_info=True)
+            earlier = ""
+        if earlier:
+            text = earlier + "\nLast turns (verbatim):\n" + text
     if stalled or dropped:
         return (STALLED if stalled else DROPPED) + ("\nConversation so far:\n" + text if text else "")
     if not text:

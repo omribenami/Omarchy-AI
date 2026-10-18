@@ -164,6 +164,8 @@ def _pinned(myapi: bool):
         "omarchy_ai.core.updates.wake_notice": "",
         "omarchy_ai.voice.prompt_v2.load_preferences": [],
         "omarchy_ai.voice.prompt_v2.load_recent_context": "",
+        "omarchy_ai.voice.live.archive_summaries": "",
+        "omarchy_ai.voice.prompt_v2.archive_summaries": "",
         "omarchy_ai.voice.prompt_v2.updates.wake_notice": "",
         "omarchy_ai.voice.prompt_v2.agenda.briefing": [],
         "omarchy_ai.voice.prompt_v2.skills.index_text": "",

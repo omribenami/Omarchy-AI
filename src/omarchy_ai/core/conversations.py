@@ -8,7 +8,9 @@ A conversation is one file under STATE_DIR/conversations: its lines (what the
 user said or typed, what she answered) and cards for the tasks started in it
 (an approval, a question, a result). Calls write into it as they happen: the
 session's transcript list is a Transcript, whose appends land here. A call
-that continues a conversation gives the model its lines first (context()).
+that continues a conversation gives the model its rolling summary and its
+last lines first (core/summarize.py session_context()); the summary is
+refreshed on a worker thread as the talk grows.
 The title comes from the Gateway model once there is something to name, and
 again as the talk grows.
 
@@ -159,6 +161,17 @@ def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = No
         _save(conv)
     if role == "assistant":
         _maybe_title(cid)
+    _maybe_summarize(cid)
+
+
+def _maybe_summarize(cid: str) -> None:
+    """A long talk refreshes its rolling summary on a worker thread
+    (core/summarize.py); this only checks whether one is due."""
+    try:
+        from . import summarize
+        summarize.maybe_refresh(cid)
+    except Exception:  # noqa: BLE001 -- a summary is never worth a lost line
+        log.debug("conversation summary not scheduled", exc_info=True)
 
 
 def _redact(text: str, speech: bool) -> str:
@@ -281,27 +294,30 @@ def delete(cid) -> bool:
         return True
 
 
+def render_line(line: dict) -> str:
+    """One line of a conversation as the model reads it ("User: ...", "[Task t1 approval] ...")."""
+    attached = ", ".join(
+        f"{item.get('name')} ({item.get('mime')}; desktop path {item.get('path')})"
+        for item in line.get("attachments", []) if isinstance(item, dict)
+    )
+    if line.get("role") == "card" and line.get("kind") == "note":
+        return f"[Note] {line.get('text', '')}"
+    if line.get("role") == "card":
+        return f"[Task {line.get('task_id')} {line.get('kind')}] {line.get('text', '')}"
+    text = str(line.get("text", "")).strip()
+    if attached:
+        text += f" [Attachments: {attached}]"
+    return f"{'User' if line.get('role') == 'user' else 'Omarchy'}: {text}"
+
+
 def context(cid: str) -> str:
-    """The conversation so far, for the model at the start of a call that continues it."""
+    """The conversation so far, verbatim (its last CONTEXT_CHARS). A call
+    that continues a conversation gets core/summarize.py session_context()
+    instead: the rolling summary and the last turns."""
     conv = _load(cid)
     if not conv:
         return ""
-    out = []
-    for line in conv["lines"]:
-        attached = ", ".join(
-            f"{item.get('name')} ({item.get('mime')}; desktop path {item.get('path')})"
-            for item in line.get("attachments", []) if isinstance(item, dict)
-        )
-        if line.get("role") == "card" and line.get("kind") == "note":
-            out.append(f"[Note] {line.get('text', '')}")
-        elif line.get("role") == "card":
-            out.append(f"[Task {line.get('task_id')} {line.get('kind')}] {line.get('text', '')}")
-        else:
-            text = line["text"].strip()
-            if attached:
-                text += f" [Attachments: {attached}]"
-            out.append(f"{'User' if line['role'] == 'user' else 'Omarchy'}: {text}")
-    text = "\n".join(out)
+    text = "\n".join(render_line(line) for line in conv["lines"])
     return text[-CONTEXT_CHARS:]
 
 

@@ -253,5 +253,10 @@ came from reading the task record, not from guessing.
    `runtime/sandbox.py` runs Task Runtime commands and user tools under
    bubblewrap, with a policy chosen by the risk level the command was
    allowed at. HIGH commands still run unsandboxed after a tap.
-7. Context compaction: still future work. Conversations are trimmed to
-   their last 2,000 lines (`core/conversations.py`), not summarized.
+7. ~~Context compaction~~ Done (2026-10-18): `core/summarize.py` keeps a
+   rolling summary per conversation (requests, decisions, open questions,
+   entities, fenced content), refreshed off the voice loop by the Gateway
+   text model or, without it, by rules. Pending approvals are read from
+   state each time it is rendered. Conversations are still trimmed to 2,000
+   lines; the summary carries what the trim drops. Task Runtime briefs are
+   unchanged.

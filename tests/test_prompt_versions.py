@@ -58,6 +58,8 @@ def _pinned(*, myapi_on=False, preferences=(), context=""):
         "omarchy_ai.voice.live.load_recent_context": context,
         "omarchy_ai.voice.prompt_v2.load_preferences": list(preferences),
         "omarchy_ai.voice.prompt_v2.load_recent_context": context,
+        "omarchy_ai.voice.live.archive_summaries": "",
+        "omarchy_ai.voice.prompt_v2.archive_summaries": "",
         "omarchy_ai.voice.live.notes_hint": "",
         "omarchy_ai.voice.prompt_v2.notes_hint": "",
         "omarchy_ai.core.updates.wake_notice": "",
