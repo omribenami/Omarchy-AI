@@ -15,9 +15,11 @@ before running any test.
 """
 
 import contextlib
+import ipaddress
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -168,3 +170,44 @@ def _guarded_init(self, args, *pargs, **kwargs):
 
 
 subprocess.Popen.__init__ = _guarded_init  # type: ignore[method-assign]
+
+
+# Nor the network beyond this machine. Live 2026-10-18: a background
+# conversation title ran after its test had restored conversations.DIR,
+# called the Gateway with the user's key and saved a test talk into the
+# user's real conversations. Refused like an offline machine (OSError), so
+# code under test takes its offline path; loopback fakes (FakeMyApi) still work.
+class LiveNetworkCall(ConnectionRefusedError):
+    pass
+
+
+def _loopback(address) -> bool:
+    if not isinstance(address, tuple) or not address:
+        return True  # AF_UNIX paths and other local families
+    host = str(address[0]).lower()
+    if host in ("localhost", ""):
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%")[0]).is_loopback
+    except ValueError:
+        return False  # a host name other than localhost
+
+
+_real_connect = socket.socket.connect
+_real_connect_ex = socket.socket.connect_ex
+
+
+def _guarded_connect(self, address):
+    if not _loopback(address):
+        raise LiveNetworkCall(f"test tried to reach {address!r} over the network")
+    return _real_connect(self, address)
+
+
+def _guarded_connect_ex(self, address):
+    if not _loopback(address):
+        raise LiveNetworkCall(f"test tried to reach {address!r} over the network")
+    return _real_connect_ex(self, address)
+
+
+socket.socket.connect = _guarded_connect  # type: ignore[method-assign]
+socket.socket.connect_ex = _guarded_connect_ex  # type: ignore[method-assign]
