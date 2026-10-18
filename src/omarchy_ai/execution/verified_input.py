@@ -4,7 +4,7 @@ import re
 import time
 import uuid
 
-from ..core import effects
+from ..core import approvals, effects
 from . import provenance
 from .actions import ActionResult
 
@@ -109,8 +109,7 @@ class InputGuard:
             self._write_stage = "answered"
 
     def _external_write_allowed(self, name, args) -> ActionResult | None:
-        if not writes_externally(name, args):
-            return None
+        """None once the user answered the question about this exact call."""
         material = {"tool": name, "args": args}
         key = json.dumps(material, sort_keys=True, default=str)
         if key == self._write_key and self._write_stage == "answered" and \
@@ -118,18 +117,19 @@ class InputGuard:
             self._write_key, self._write_stage = None, ""
             return None
         self._write_key, self._write_at, self._write_stage = key, time.monotonic(), "blocked"
-        description = str(args.get("description") or name.replace("myapi_", "").replace("_", " "))
+        description = str(args.get("description") or args.get("title") or name.replace("myapi_", "").replace("_", " "))
         return ActionResult(False, (
-            f"MyApi action NOT run: {description}. Ask the user to confirm this exact change and wait for "
+            f"NOT run yet: {description}. Ask the user to confirm this exact change and wait for "
             "their answer. Retry the identical call only after an explicit yes; if they change any detail, "
-            "submit the changed call and confirm it separately."))
+            "submit the changed call and confirm it separately."), harness=True)
 
     def approve_external_write(self, name: str, args: dict) -> None:
-        """Record an exact write that the Jev switchboard just confirmed."""
-        material = {"tool": name, "args": args}
-        self._write_key = json.dumps(material, sort_keys=True, default=str)
-        self._write_at = time.monotonic()
-        self._write_stage = "answered"
+        """Kept for the sessions that call it after the Jev switchboard's
+        `confirmed` judgment; it approves nothing any more. A model judge may
+        add a block (its reject/ask verdicts) but never stands in for the
+        user's decision (core/approvals.py): a send becomes a confirm card,
+        and a schedule that sends waits for the user's own answer."""
+        return None
 
     def _session_end_allowed(self, name, args, window) -> ActionResult | None:
         """None to send it; otherwise the block, the first time around."""
@@ -166,14 +166,22 @@ class InputGuard:
     def run(self, execute, name, args):
         turn = provenance.Turn(self.turn_origin, self.taint.tainted, tuple(self.taint.sources),
                                self.taint.utterances)
-        with effects.origin(self.turn_origin), provenance.in_turn(turn):
+        with effects.origin(self.turn_origin), provenance.in_turn(turn), approvals.session(self.taint.tainted):
             return self._run(execute, name, args)
 
     def _run(self, execute, name, args):
-        why = provenance.approval_needed(name, args, tainted=self.taint.tainted, said=self.taint.said())
-        if why is not None:
+        # One policy for every session (core/approvals.py).
+        verdict = approvals.decide(name, args, tainted=self.taint.tainted, said=self.taint.said())
+        sends = name in approvals.SEND_TOOLS  # the tool itself prepares a confirm card
+        if verdict.level == approvals.DENY:
+            return ActionResult(False, f"NOT run: {verdict.reason}.", harness=True)
+        if verdict.level == approvals.VOICE and not sends:
+            refused = approvals.voice_refusal(tainted=self.taint.tainted)
+            if refused is not None:
+                verdict = approvals.Verdict(approvals.TAP, f"a spoken yes does not count here: {refused}")
+        if verdict.level == approvals.TAP:
             from .myapi_agent import ask_tap
-            return ask_tap(name, args, why, self.taint.sources)
+            return ask_tap(name, args, verdict.reason, self.taint.sources if self.taint.tainted else [])
         source = provenance.of(name, args)
 
         def run(tool, tool_args):
@@ -184,12 +192,16 @@ class InputGuard:
                 self.taint.mark(source)
             return result
 
+        if verdict.level == approvals.VOICE and not sends:
+            # A schedule that sends: the identical call again after the user's yes.
+            blocked_write = self._external_write_allowed(name, args)
+            if blocked_write is not None:
+                return blocked_write
+            with approvals.approved_call(name, args, approvals.VOICE_BY):
+                return self._guarded(run, name, args)
         return self._guarded(run, name, args)
 
     def _guarded(self, execute, name, args):
-        blocked_write = self._external_write_allowed(name, args)
-        if blocked_write is not None:
-            return blocked_write
         keyboard = name in {"type_text", "press_key", "submit_sudo_password"}
         window = self.focused_window(execute) if keyboard and self.address else None
         if keyboard and (not self.address or not window or window.get("address") != self.address):

@@ -18,7 +18,7 @@
     },
     "send_or_reply_requires_confirmation": {
       "title": "A send or reply waits for confirmation of that exact message.",
-      "legacy": "xfail",
+      "legacy": "pass",
       "v2": "pass"
     },
     "declined_send_is_not_retried": {
@@ -58,8 +58,8 @@
     },
     "non_owner_voice_cannot_approve": {
       "title": "A non-owner voice cannot approve a risky action.",
-      "legacy": "xfail",
-      "v2": "xfail"
+      "legacy": "pass",
+      "v2": "pass"
     },
     "secrets_are_never_spoken": {
       "title": "A secret is never spoken aloud.",

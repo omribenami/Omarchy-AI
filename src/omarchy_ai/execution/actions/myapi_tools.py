@@ -261,14 +261,44 @@ def myapi_call(args: dict) -> ActionResult:
         )
 
 
-def myapi_write(args: dict) -> ActionResult:
-    """Run one already-confirmed external mutation through MyApi.
+# --- external sends: only with an approval record (core/approvals.py) --------
+# Every send below checks for an approval of exactly its arguments before it
+# dispatches: a tap or a counted yes on its confirm card, the approval a
+# scheduled action got when it was created, or a standing approval the user
+# made for that recipient. Without one, the tool prepares the confirm card
+# instead (execution/myapi_agent.py) and nothing is sent.
 
-    Conversation-scoped confirmation is enforced by InputGuard before this
-    function is reached. Keeping reads and writes as different tool names also
-    lets the switchboard treat speculative reads optimistically without ever
-    starting a mutation before its verdict.
-    """
+def _not_approved(what: str) -> ActionResult:
+    return ActionResult(False, f"NOT sent: {what} has no matching approval (a tap or a yes on its confirm card "
+                               "for these exact details). Nothing went out.", harness=True)
+
+
+def _approval(tool: str, args: dict, key: str, *, consume: bool) -> str | None:
+    """Who approved this send, or None. `consume` uses up a one-shot approval."""
+    from ...core import approvals
+    by = approvals.approved_by(tool, args) or approvals.job_allows(key)
+    if by:
+        return by
+    if consume:
+        by = approvals.take(key)
+    elif approvals.pending(key):
+        by = approvals.TAP_BY
+    if by:
+        return by
+    if approvals.standing_match(tool, args) and not approvals.current_session().tainted:
+        return approvals.STANDING_BY
+    return None
+
+
+def _hold(tool: str, args: dict, service: str, operation: str, arguments: dict) -> ActionResult:
+    from .. import myapi_agent
+    return myapi_agent.hold(tool, args, service, operation, arguments)
+
+
+def myapi_write(args: dict) -> ActionResult:
+    """One external mutation through MyApi's REST proxy: with an approval of
+    these exact arguments it runs; otherwise it becomes a confirm card."""
+    from ...core import approvals
     if not myapi.is_connected():
         return ActionResult(False, "MyApi isn't connected -- connect it from the Omarchy AI settings panel first.")
     service = args.get("service")
@@ -286,6 +316,12 @@ def myapi_write(args: dict) -> ActionResult:
     if body is not None and not isinstance(body, dict):
         return ActionResult(False, "body must be an object")
     service, path = service.strip(), path.strip()
+    request = {"service": service, "path": path, "method": method, "query": query, "body": body}
+    approval = approvals.send_key(service, f"{method} {path}", {"query": query, "body": body})
+    if _approval("myapi_write", args, approval, consume=False) is None:
+        return _hold("myapi_write", args, service, f"{method} {path}", {"query": query, "body": body})
+    if _approval("myapi_write", args, approval, consume=True) is None:
+        return _not_approved(f"{method} {path}")
 
     def dispatch(key: str) -> ActionResult:
         started = time.monotonic()
@@ -305,9 +341,7 @@ def myapi_write(args: dict) -> ActionResult:
             myapi_usage.record(service=service, path=path, method=method,
                                ok=ok, duration_ms=(time.monotonic() - started) * 1000)
 
-    return effects.perform("myapi_write", "myapi_write",
-                           {"service": service, "path": path, "method": method, "query": query, "body": body},
-                           dispatch, target=f"{service}:{method} {path}")
+    return effects.perform("myapi_write", "myapi_write", request, dispatch, target=f"{service}:{method} {path}")
 
 
 def _myapi_execute(service: str, operation: str, arguments: dict, idem_key: str | None = None) -> ActionResult:
@@ -349,12 +383,19 @@ def myapi_write_key(origin_id: str, service: str, operation: str, arguments: dic
     return effects.idem_key(origin_id, operation, _write_args(service, arguments))
 
 
-def myapi_write_execute(service: str, operation: str, arguments: dict) -> ActionResult:
+def myapi_write_execute(service: str, operation: str, arguments: dict, *, tool: str = "",
+                        tool_args: dict | None = None) -> ActionResult:
     """A state-changing /execute call, journaled and sent at most once per
-    origin (core/effects.py). Gmail's GMAIL_SEND_EMAIL / GMAIL_REPLY_TO_THREAD
-    take only recipients, subject and body (no custom headers), so the key
-    cannot be put into the email itself; it travels as the Idempotency-Key
-    header to MyApi."""
+    origin (core/effects.py), and only with an approval of exactly these
+    arguments (core/approvals.py). Gmail's GMAIL_SEND_EMAIL /
+    GMAIL_REPLY_TO_THREAD take only recipients, subject and body (no custom
+    headers), so the key cannot be put into the email itself; it travels as
+    the Idempotency-Key header to MyApi."""
+    from ...core import approvals
+    key = approvals.send_key(service, operation, arguments)
+    if _approval(tool or f"myapi:{service}:{operation}", tool_args if tool else {"arguments": arguments}, key,
+                 consume=True) is None:
+        return _not_approved(operation)
     return effects.perform("myapi_execute", operation, _write_args(service, arguments),
                            lambda key: _myapi_execute(service, operation, arguments, key),
                            target=f"{service}:{operation}")
@@ -370,25 +411,61 @@ def myapi_execute(args: dict) -> ActionResult:
         return ActionResult(False, "no operation given")
     if not isinstance(arguments, dict):
         return ActionResult(False, "arguments must be an object")
-    return myapi_write_execute(service.strip(), operation.strip(), arguments)
+    return _send_or_hold("myapi_execute", args, service.strip(), operation.strip(), arguments)
+
+
+def _send_or_hold(tool: str, args: dict, service: str, operation: str, arguments: dict) -> ActionResult:
+    """Send it when an approval of exactly these arguments exists; otherwise
+    prepare its confirm card."""
+    from ...core import approvals
+    if _approval(tool, args, approvals.send_key(service, operation, arguments), consume=False) is None:
+        return _hold(tool, args, service, operation, arguments)
+    return myapi_write_execute(service, operation, arguments, tool=tool, tool_args=args)
+
+
+def gmail_arguments(tool: str, args: dict) -> tuple[str, dict] | None:
+    """The Gmail operation and arguments a send tool's call becomes, or None
+    when a required field is missing."""
+    required = {"myapi_gmail_send": ("recipient_email", "subject", "body"),
+                "myapi_gmail_reply": ("thread_id", "recipient_email", "message_body")}.get(tool)
+    if required is None or any(not isinstance(args.get(key), str) or not args[key].strip() for key in required):
+        return None
+    arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
+    arguments["user_id"] = "me"
+    return ("GMAIL_SEND_EMAIL" if tool == "myapi_gmail_send" else "GMAIL_REPLY_TO_THREAD"), arguments
+
+
+def send_key_of(tool: str, args: dict) -> str | None:
+    """The approval key of a send tool's call (core/approvals.py), or None
+    when the call is not a send this module checks."""
+    from ...core import approvals
+    args = args if isinstance(args, dict) else {}
+    if tool in ("myapi_gmail_send", "myapi_gmail_reply"):
+        found = gmail_arguments(tool, args)
+        return approvals.send_key("gmail", *found) if found else None
+    if tool == "myapi_execute" and isinstance(args.get("arguments"), dict):
+        return approvals.send_key(str(args.get("service") or "").strip(), str(args.get("operation") or "").strip(),
+                                  args["arguments"])
+    if tool == "myapi_write":
+        method = str(args.get("method") or "").strip().upper()
+        return approvals.send_key(str(args.get("service") or "").strip(),
+                                  f"{method} {str(args.get('path') or '').strip()}",
+                                  {"query": args.get("query"), "body": args.get("body")})
+    return None
 
 
 def myapi_gmail_send(args: dict) -> ActionResult:
-    required = ("recipient_email", "subject", "body")
-    if any(not isinstance(args.get(key), str) or not args[key].strip() for key in required):
+    found = gmail_arguments("myapi_gmail_send", args)
+    if found is None:
         return ActionResult(False, "recipient_email, subject, and body are required")
-    arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
-    arguments["user_id"] = "me"
-    return myapi_write_execute("gmail", "GMAIL_SEND_EMAIL", arguments)
+    return _send_or_hold("myapi_gmail_send", args, "gmail", *found)
 
 
 def myapi_gmail_reply(args: dict) -> ActionResult:
-    required = ("thread_id", "recipient_email", "message_body")
-    if any(not isinstance(args.get(key), str) or not args[key].strip() for key in required):
+    found = gmail_arguments("myapi_gmail_reply", args)
+    if found is None:
         return ActionResult(False, "thread_id, recipient_email, and message_body are required")
-    arguments = {key: args[key] for key in (*required, "cc", "bcc") if args.get(key) is not None}
-    arguments["user_id"] = "me"
-    return myapi_write_execute("gmail", "GMAIL_REPLY_TO_THREAD", arguments)
+    return _send_or_hold("myapi_gmail_reply", args, "gmail", *found)
 
 
 def _gmail_execute(method: str, arguments: dict) -> dict:

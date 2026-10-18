@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
+from omarchy_ai.core import approvals
 from omarchy_ai.execution import actions, files, tile_logs
 
 from fakes.effects_journal import isolate_journal  # noqa: E402
@@ -221,10 +222,10 @@ class GmailAttachmentToolTests(unittest.TestCase):
         with patch.object(actions.myapi, "is_connected", return_value=True), \
              patch.object(actions.myapi, "MyApiClient", return_value=client), \
              patch.object(actions.myapi_usage, "record"):
-            result = actions.myapi_write({
-                "service": "googlecalendar", "path": "/calendar/v3/calendars/primary/events",
-                "method": "POST", "body": {"summary": "Lunch"}, "description": "create Lunch",
-            })
+            args = {"service": "googlecalendar", "path": "/calendar/v3/calendars/primary/events",
+                    "method": "POST", "body": {"summary": "Lunch"}, "description": "create Lunch"}
+            with approvals.approved_call("myapi_write", args, "tap"):  # the tap on its card
+                result = actions.myapi_write(args)
         self.assertTrue(result.ok)
         client.call_service.assert_called_once_with(
             "googlecalendar", "/calendar/v3/calendars/primary/events", "POST",
@@ -236,9 +237,9 @@ class GmailAttachmentToolTests(unittest.TestCase):
         client.request.return_value = {"ok": True, "message_id": "m1"}
         with patch.object(actions.myapi, "MyApiClient", return_value=client), \
              patch.object(actions.myapi_usage, "record"):
-            result = actions.myapi_gmail_send({
-                "recipient_email": "chris@example.com", "subject": "Quote", "body": "Any update?",
-            })
+            args = {"recipient_email": "chris@example.com", "subject": "Quote", "body": "Any update?"}
+            with approvals.approved_call("myapi_gmail_send", args, "tap"):  # the tap on its card
+                result = actions.myapi_gmail_send(args)
         self.assertTrue(result.ok)
         client.request.assert_called_once_with(
             "POST", "/services/gmail/execute",
@@ -253,10 +254,10 @@ class GmailAttachmentToolTests(unittest.TestCase):
         client.request.return_value = {"ok": True, "message_id": "m2"}
         with patch.object(actions.myapi, "MyApiClient", return_value=client), \
              patch.object(actions.myapi_usage, "record"):
-            result = actions.myapi_gmail_reply({
-                "thread_id": "abc123", "recipient_email": "chris@example.com",
-                "message_body": "We want to move forward.",
-            })
+            args = {"thread_id": "abc123", "recipient_email": "chris@example.com",
+                    "message_body": "We want to move forward."}
+            with approvals.approved_call("myapi_gmail_reply", args, "tap"):  # the tap on its card
+                result = actions.myapi_gmail_reply(args)
         self.assertTrue(result.ok)
         body = client.request.call_args.kwargs["body"]
         self.assertEqual(body["method"], "GMAIL_REPLY_TO_THREAD")

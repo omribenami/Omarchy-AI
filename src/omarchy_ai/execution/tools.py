@@ -821,10 +821,10 @@ MYAPI_TOOLS: list[dict] = [
     _tool(
         "myapi_write",
         "Create, update, send, or delete data in any connected MyApi service. Use the service's "
-        "documented REST path from myapi_service_methods. This is a real external side effect: the "
-        "first identical call is blocked and tells you exactly what to confirm; ask the user, wait "
-        "for an explicit yes, then retry the identical call. Never treat an earlier general request "
-        "as that confirmation. MyApi still enforces the access scope granted to this assistant.",
+        "documented REST path from myapi_service_methods. This is a real external side effect, so the "
+        "call prepares it for the user's confirmation: a card shows the exact change, and nothing runs "
+        "until they approve it. Never treat an earlier general request as that approval. MyApi still "
+        "enforces the access scope granted to this assistant.",
         {
             "type": "object",
             "properties": {
@@ -850,8 +850,8 @@ MYAPI_TOOLS: list[dict] = [
         "Execute one documented state-changing MyApi service operation by its exact method name. Use the "
         "operation and argument names returned by myapi_service_methods; do not translate an /execute method "
         "into a provider REST path. Prefer dedicated tools such as myapi_gmail_send and myapi_gmail_reply when "
-        "available. MyApi enforces the enrolled device's scope and Jev verifies that the user explicitly asked "
-        "for this exact change.",
+        "available. It prepares the change for the user's confirmation; nothing runs until they approve its "
+        "card. MyApi enforces the device's scope.",
         {"type": "object", "properties": {
             "service": {"type": "string", "description": "Connected service id, e.g. gmail."},
             "operation": {"type": "string", "description": "Exact documented method, e.g. GMAIL_CREATE_EMAIL_DRAFT."},
@@ -861,9 +861,9 @@ MYAPI_TOOLS: list[dict] = [
     ),
     _tool(
         "myapi_gmail_send",
-        "Send a new Gmail message immediately. Use only when the user explicitly says to send—not when they ask "
-        "to write, compose, prepare, or draft. This calls GMAIL_SEND_EMAIL directly and needs no service-method "
-        "discovery. Jev verifies the exact recipient, subject, and body against the user's request.",
+        "Prepares a send of a new Gmail message for the user's confirmation: it goes out only after they approve "
+        "the card showing its exact recipient, subject and body. Use only when the user explicitly says to send—not "
+        "when they ask to write, compose, prepare, or draft. Calls GMAIL_SEND_EMAIL; no method discovery.",
         {"type": "object", "properties": {
             "recipient_email": {"type": "string", "description": "Exact To address."},
             "subject": {"type": "string", "description": "Exact subject."},
@@ -874,9 +874,9 @@ MYAPI_TOOLS: list[dict] = [
     ),
     _tool(
         "myapi_gmail_reply",
-        "Send a reply in an existing Gmail thread immediately. Use the thread_id from myapi_gmail_search and the "
-        "sender's exact email address. This calls GMAIL_REPLY_TO_THREAD directly and needs no service-method "
-        "discovery. Jev verifies the thread, recipient, and complete reply body against the user's request.",
+        "Prepares a send of a reply in an existing Gmail thread for the user's confirmation: it goes out only after "
+        "they approve the card showing its exact recipient and body. Use the thread_id from myapi_gmail_search and "
+        "the sender's exact email address. Calls GMAIL_REPLY_TO_THREAD; no method discovery.",
         {"type": "object", "properties": {
             "thread_id": {"type": "string", "description": "Existing Gmail thread ID."},
             "recipient_email": {"type": "string", "description": "Exact reply recipient."},

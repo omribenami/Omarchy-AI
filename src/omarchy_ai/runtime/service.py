@@ -427,17 +427,14 @@ def task_respond(args: dict) -> ActionResult:
         from ..execution import myapi_agent
         if args.get("answer") in myapi_agent.CHOICES:
             # One that may already have been sent (core/pending_actions.py): check, resend or drop.
-            ok, message = myapi_agent.resolve(task_id[len("action:"):], args["answer"], "by voice in the chat")
+            ok, message = myapi_agent.resolve(task_id[len("action:"):], args["answer"], "by voice in the chat",
+                                              by="voice")
             return ActionResult(ok, message)
         if approve is None:
             return ActionResult(False, "Answer the prepared action with approve=true (send it) or false (cancel).")
-        from ..core import pending_actions
-        if approve and (pending_actions.get(task_id[len("action:"):]) or {}).get("tap_only"):
-            # Held back by the taint check (execution/myapi_agent.ask_tap).
-            return ActionResult(False, (
-                "Not approved: this call came after untrusted content, so only the user's tap on Send on its "
-                "card in the chat runs it, not a spoken yes. Tell the user that in one sentence."))
-        ok, message = myapi_agent.decide(task_id[len("action:"):], approve, "by voice in the chat")
+        # A yes relayed by the model: core/approvals.py says whether it counts
+        # (never for a card held back by the taint check, execution/myapi_agent.ask_tap).
+        ok, message = myapi_agent.decide(task_id[len("action:"):], approve, "by voice in the chat", by="voice")
         return ActionResult(ok, message)
     result = runtime.respond(task_id, approve=approve, answer=args.get("answer") or None, channel="voice")
     return ActionResult(result["ok"], result["message"])

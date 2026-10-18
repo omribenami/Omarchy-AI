@@ -354,10 +354,11 @@ def _fields(method: str, args: dict, observations: list) -> tuple[str, list[dict
 
 
 def _prepare(service: str, method: dict, args: dict, request: str, observations: list, cid: str) -> ActionResult:
-    from ..core import conversations, pending_actions
+    from ..core import approvals, conversations, pending_actions
     title, fields = _fields(method["name"], args, observations)
     aid = pending_actions.create({"service": service, "method": method["name"], "arguments": args,
-                                  "title": title, "fields": fields, "request": request, "conversation": cid})
+                                  "title": title, "fields": fields, "request": request, "conversation": cid,
+                                  "tainted": approvals.current_session().tainted})
     if cid:
         expires = pending_actions.expires_at(pending_actions.get(aid) or {})
         until = time.strftime("%H:%M on %Y-%m-%d", time.localtime(expires))
@@ -376,12 +377,52 @@ def _prepare(service: str, method: dict, args: dict, request: str, observations:
 ACTION = "action:"
 
 
+def hold(tool: str, tool_args: dict, service: str, operation: str, arguments: dict) -> ActionResult:
+    """A direct send tool's call (myapi_gmail_send, myapi_gmail_reply,
+    myapi_execute, myapi_write) with no approval yet: it becomes a confirm
+    card showing exactly what would go out, and nothing is sent
+    (core/approvals.py). Gmail and /execute sends run through _send (so email
+    is checked in Sent); a REST write runs its tool again with the approval."""
+    from ..core import approvals, conversations, pending_actions
+    cid = conversations.CURRENT.get()
+    session = approvals.current_session()
+    if tool == "myapi_write":
+        title = str(tool_args.get("description") or f"{operation} on {service}")[:120]
+        fields = [{"label": label, "value": value[:4000]} for label, value in (
+            ("Service", service), ("Request", operation),
+            ("Body", json.dumps(arguments.get("body"), ensure_ascii=False) if arguments.get("body") else ""),
+            ("Query", json.dumps(arguments.get("query"), ensure_ascii=False) if arguments.get("query") else ""))
+            if value]
+        action = {"service": service, "method": "myapi_write", "arguments": dict(tool_args), "tool": "myapi_write"}
+    else:
+        title, fields = _fields(operation, arguments, [])
+        action = {"service": service, "method": operation, "arguments": arguments}
+    aid = pending_actions.create({**action, "title": title, "fields": fields, "conversation": cid or "",
+                                  "request": str(tool_args.get("description") or ""), "tainted": session.tainted})
+    if cid:
+        expires = pending_actions.expires_at(pending_actions.get(aid) or {})
+        until = time.strftime("%H:%M on %Y-%m-%d", time.localtime(expires))
+        conversations.add_card(cid, {"kind": "confirm", "task_id": f"{ACTION}{aid}",
+                                     "text": f"{title} (waits for your OK until {until})", "expires_at": expires,
+                                     "action": {"id": aid, "title": title, "service": service,
+                                                "method": action["method"], "fields": fields}})
+    shown = "\n".join(f"{f['label']}: {f['value']}" for f in fields)
+    return ActionResult(True, json.dumps({"prepared": title, "task_id": f"{ACTION}{aid}", "fields": fields, "note": (
+        f"Prepared, NOT sent: {title} waits for the user's OK"
+        + (" (a card with Send is in the chat)" if cid else "") + ". Tell the user who it goes to and the gist "
+        "of what it says, and ask whether to send it. Their yes for this exact message is "
+        f"task_respond(task_id='{ACTION}{aid}', approve=true); a change means calling the tool again with the "
+        f"corrected details. Never say it was sent before the result says so.\n{shown}")}, ensure_ascii=False),
+        harness=True)
+
+
 def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult:
-    """A tool call held back by the taint check (execution/provenance.py):
-    it waits as a confirm card in its conversation, like a prepared MyApi
-    action, and only a tap on Send runs it -- a spoken yes is relayed by the
-    model that just read the content, so it does not count (task_respond
-    refuses it, runtime/service.py)."""
+    """A tool call that only a human tap may approve (core/approvals.py): held
+    back by the taint check (execution/provenance.py; `sources` names the
+    content), a destructive local action, or a yes that does not count. It
+    waits as a confirm card in its conversation, like a prepared MyApi
+    action, and only a tap on Send runs it -- a spoken yes is relayed by a
+    model, so it does not count here (myapi_agent.decide refuses it)."""
     from ..core import conversations, pending_actions
     cid = conversations.CURRENT.get()
     title = f"Run {name.replace('_', ' ')}"
@@ -389,6 +430,23 @@ def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult
                "value": (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))[:4000]}
               for k, v in (args or {}).items() if v not in (None, "")]
     came = ", ".join(sources) or "content"
+    if not sources:
+        # Not the taint check: a destructive action, or a yes that does not count.
+        if cid:
+            aid = pending_actions.create({"service": "tool", "method": name, "arguments": args, "tool": name,
+                                          "title": title, "fields": fields, "conversation": cid, "tap_only": True,
+                                          "reason": why[:300]})
+            expires = pending_actions.expires_at(pending_actions.get(aid) or {})
+            conversations.add_card(cid, {"kind": "confirm", "task_id": f"{ACTION}{aid}",
+                                         "text": f"{title}? {why}", "expires_at": expires,
+                                         "action": {"id": aid, "title": title, "service": "tool", "method": name,
+                                                    "fields": fields}})
+            how = "A card with Send is in the chat: only the user's tap on it runs this; a spoken yes does not count."
+        else:
+            how = "There is no chat to put its card in, so it cannot run from here; the user can do it themselves."
+        return ActionResult(False, (
+            f"NOT run: {name} needs the user's tap ({why}). {how} Tell the user in one sentence what it would do "
+            "and why it waits for their tap. Do not retry it another way."), harness=True)
     if cid:
         aid = pending_actions.create({"service": "tool", "method": name, "arguments": args, "tool": name,
                                       "title": title, "fields": fields, "conversation": cid, "tap_only": True,
@@ -410,11 +468,45 @@ def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult
         "another way."), harness=True)
 
 
-def decide(aid: str, go: bool, how: str) -> tuple[bool, str]:
+def _by(how: str, by: str | None) -> str:
+    """tap (a button on the card) or voice (a yes relayed by a model, typed in chat included)."""
+    from ..core import approvals
+    return by or (approvals.TAP_BY if "phone" in how or "desktop" in how else approvals.VOICE_BY)
+
+
+def _refusal(action: dict, by: str) -> str | None:
+    """Why `by` cannot send this prepared action (core/approvals.py), or None."""
+    from ..core import approvals
+    verdict = approvals.Verdict(approvals.TAP if action.get("tap_only") else approvals.VOICE,
+                                str(action.get("reason") or "it came after untrusted content"))
+    why = approvals.accepts(verdict, by, risk=approvals.ELEVATED,
+                            tainted=approvals.current_session().tainted or bool(action.get("tainted")),
+                            asked_at=float(action.get("created") or 0) or None)
+    if why is None:
+        return None
+    return (f"Not sent: a spoken yes does not approve this ({why}). Only the user's tap on Send on its card in the "
+            "chat sends it. Tell the user that in one sentence.")
+
+
+def _grant(action: dict, by: str) -> None:
+    """The approval record the send itself checks for (core/approvals.py)."""
+    from ..core import approvals
+    if not action.get("tool"):
+        approvals.grant(approvals.send_key(str(action.get("service") or ""), str(action.get("method") or ""),
+                                           action.get("arguments") or {}), by)
+
+
+def decide(aid: str, go: bool, how: str, by: str | None = None) -> tuple[bool, str]:
     """The user's Send (go) or Cancel for a prepared action. Send runs it and
-    checks it worked; email must show up in Sent."""
+    checks it worked; email must show up in Sent. `by` (tap or voice;
+    from `how` when not given) must be allowed to approve it."""
     from ..core import pending_actions
     from ..core.crashpoints import crashpoint
+    by = _by(how, by)
+    if go:
+        current = pending_actions.get(aid)
+        if current and current.get("status") == pending_actions.WAITING and (why := _refusal(current, by)):
+            return False, why
     action = pending_actions.claim(aid)
     if action is None:
         current = pending_actions.get(aid)
@@ -433,17 +525,18 @@ def decide(aid: str, go: bool, how: str) -> tuple[bool, str]:
     if not go:
         pending_actions.finish(aid, "cancelled", how)
         return True, "Cancelled."
-    return _send(action)
+    return _send(action, by)
 
 
-def _send(action: dict) -> tuple[bool, str]:
+def _send(action: dict, by: str = "tap") -> tuple[bool, str]:
     """Run a claimed action under its origin (the action itself, or a Resend's
     new one): the same approved send goes out once, however often its Send is
     pressed or retried."""
     from ..core import conversations, effects, pending_actions
     aid, cid = action["id"], action.get("conversation") or ""
     if action.get("tool"):
-        return _run_tool(action)
+        return _run_tool(action, by)
+    _grant(action, by)
     result = _call(action["service"], action["method"], action["arguments"],
                    origin=pending_actions.origin_of(action))
     effect = None if result.ok else effects.lookup(pending_actions.effect_key(action))
@@ -469,14 +562,16 @@ def _send(action: dict) -> tuple[bool, str]:
     return ok, message
 
 
-def _run_tool(action: dict) -> tuple[bool, str]:
-    """A tool call the user tapped Send on (ask_tap), once, under the action's
-    origin (core/effects.py)."""
-    from ..core import conversations, effects, pending_actions
+def _run_tool(action: dict, by: str = "tap") -> tuple[bool, str]:
+    """A tool call the user approved on its card (ask_tap, or a REST write
+    from hold), once, under the action's origin (core/effects.py), with the
+    approval of exactly these arguments (core/approvals.py)."""
+    from ..core import approvals, conversations, effects, pending_actions
     from . import provenance, runner
     aid, cid = action["id"], action.get("conversation") or ""
-    with effects.origin(pending_actions.origin_of(action)):
-        result = runner.default_runner().run(action["tool"], dict(action.get("arguments") or {}))
+    tool, arguments = action["tool"], dict(action.get("arguments") or {})
+    with effects.origin(pending_actions.origin_of(action)), approvals.approved_call(tool, arguments, by):
+        result = runner.default_runner().run(tool, arguments)
     if result.error_class in ("timeout", "cancelled", "worker_lost", "uncertain"):
         pending_actions.mark_uncertain(aid, f"{action['title']} may have run: {result.message[:200]} Check "
                                             "whether it happened, then resend or drop it.")
@@ -497,7 +592,7 @@ CHOICES = ("check", "resend", "drop")
 _EMAIL = ("GMAIL_SEND_EMAIL", "GMAIL_REPLY_TO_THREAD")
 
 
-def resolve(aid: str, choice: str, how: str) -> tuple[bool, str]:
+def resolve(aid: str, choice: str, how: str, by: str | None = None) -> tuple[bool, str]:
     """The user's answer to an action that may already have been sent
     (core/pending_actions.py): check for it, resend it on purpose (a new
     origin, so a deliberate second send), or drop it."""
@@ -528,10 +623,13 @@ def resolve(aid: str, choice: str, how: str) -> tuple[bool, str]:
             return False, f"{message} Resend it, or drop it if you can see it went out."
         return settle("sent", "certified", message)
     if choice == "resend":
+        by = _by(how, by)
+        if why := _refusal({**action, "created": time.time()}, by):
+            return False, why
         claimed = pending_actions.claim_resend(aid)
         if claimed is None:
             return False, "That was already decided."
-        return _send(claimed)
+        return _send(claimed, by)
     return False, f"Answer with one of: {', '.join(CHOICES)}."
 
 

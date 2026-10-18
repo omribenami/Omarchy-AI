@@ -49,6 +49,7 @@ def holds_send(prompt: str, tools: list[dict]) -> bool:
     if (
         "Do not call this to send immediately" in send
         or "wait for confirmation" in reply
+        or "for the user's confirmation" in send
     ):
         return True
     return "confirm card" in prompt
