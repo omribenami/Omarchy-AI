@@ -32,7 +32,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..core import alert_clips, retry
+from ..core import alert_clips, provider_health, retry
 from ..core.quota import is_quota_error
 
 log = logging.getLogger("omarchy_ai.voice.fallback")
@@ -68,6 +68,18 @@ class Reconnect(ConnectionError):
 _lock = threading.Lock()
 _down: dict[str, float] = {}
 _announced_at = -1e9
+HEALTH_KIND = "voice_model"
+
+
+def _restore(entries) -> None:
+    """After a restart: a model that failed before it is still skipped."""
+    with _lock:
+        for e in entries:
+            failed_at = provider_health.to_monotonic(e["until"]) - DOWN_SECONDS
+            _down[e["provider"]] = max(_down.get(e["provider"], -1e9), failed_at)
+
+
+provider_health.register(HEALTH_KIND, _restore)
 
 
 def display_name(model: str) -> str:
@@ -134,6 +146,7 @@ def chain(config) -> list[str]:
 def mark_down(model: str, error: BaseException) -> None:
     with _lock:
         _down[model] = time.monotonic()
+    provider_health.record(HEALTH_KIND, model, "down", time.time() + DOWN_SECONDS, str(error))
     log.warning("Voice model failed on the provider side, skipping it for %ds: model=%s error=%s",
                 DOWN_SECONDS, model, " ".join(str(error).split())[:200])
 

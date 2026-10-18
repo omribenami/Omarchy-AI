@@ -26,7 +26,7 @@ import re
 import threading
 import time
 
-from . import retry
+from . import provider_health, retry
 
 log = logging.getLogger(__name__)
 
@@ -145,15 +145,35 @@ class _Breaker:
             if self._failures >= self.THRESHOLD and self._until <= time.monotonic():
                 self._until = time.monotonic() + self.COOLDOWN
                 log.warning("Gateway circuit open for %.0fs after %d failures", self.COOLDOWN, self._failures)
+                provider_health.record(HEALTH_KIND, "gateway", "open", time.time() + self.COOLDOWN,
+                                       f"{self._failures} consecutive failures")
 
     def success(self) -> None:
         with self._lock:
             if self._failures >= self.THRESHOLD:
                 log.info("Gateway circuit closed")
+                provider_health.clear(HEALTH_KIND, "gateway")
             self._failures, self._until = 0, 0.0
+
+    def restore(self, until: float) -> None:
+        """After a restart: open until the wall-clock `until`; the first
+        call after that is the probe, as in one process."""
+        with self._lock:
+            self._failures = max(self._failures, self.THRESHOLD)
+            self._until = max(self._until, provider_health.to_monotonic(until))
+
+
+HEALTH_KIND = "breaker"
+
+
+def _restore_breaker(entries) -> None:
+    for e in entries:
+        if e["provider"] == "gateway":
+            BREAKER.restore(e["until"])
 
 
 BREAKER = _Breaker()
+provider_health.register(HEALTH_KIND, _restore_breaker)
 
 
 class Jev:

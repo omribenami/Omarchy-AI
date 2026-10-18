@@ -349,6 +349,10 @@ def main() -> None:
     # MyApi/Gmail reads run in killable worker processes (execution/runner.py).
     from ..execution import runner
     runner.use_workers()
+    # Cooldowns, breakers and quota state from before a restart (and saved
+    # from now on): a backend that just failed is not tried first again.
+    from . import provider_health
+    provider_health.enable()
     daemon = OmaDaemon()
     try:
         asyncio.run(daemon.run())

@@ -23,6 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from ...core import provider_health
 from ...core.skills import COMMANDS_MARKER, reported_commands
 from .. import discovery
 from ..glossary import PROJECT_TERMS
@@ -37,6 +38,15 @@ _DETECT_TTL = 600
 _LIMIT = re.compile(r"(?i)usage limit|limit reached|hit your (?:usage )?limit|rate[ _-]?limit|quota exceeded|"
                     r"too many requests|\b429\b")
 _EXHAUSTED: dict[str, float] = {}
+HEALTH_KIND = "coding_agent"
+
+
+def _restore_exhausted(entries) -> None:
+    for e in entries:
+        _EXHAUSTED[e["provider"]] = max(_EXHAUSTED.get(e["provider"], 0), e["until"])
+
+
+provider_health.register(HEALTH_KIND, _restore_exhausted)
 
 
 def exhausted_until(name: str, text: str) -> float:
@@ -50,6 +60,7 @@ def exhausted_until(name: str, text: str) -> float:
     elif wait and (wait[1] or wait[2]):
         until = now + int(wait[1] or 0) * 3600 + int(wait[2] or 0) * 60
     _EXHAUSTED[name] = until
+    provider_health.record(HEALTH_KIND, name, "quota", until, "usage limit reached")
     log.warning("%s usage limit reached; not used until %s", name, time.strftime("%H:%M", time.localtime(until)))
     return until
 _FAILED_DETECT_TTL = 60
