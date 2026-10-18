@@ -92,6 +92,9 @@ def of(name: str, args: dict | None = None) -> str:
             known = False
         return f"{EXTERNAL}:user_tool:{name}" if known else f"{EXTERNAL}:{name}"
     args = args if isinstance(args, dict) else {}
+    if name == "task_status" and str(args.get("task_id") or "").startswith("w-"):
+        # A background worker's report (runtime/workers.py): what it read is untrusted.
+        return f"{EXTERNAL}:worker"
     if declared == WEB:
         host = _host(args.get("url"))
         return f"{WEB}:{host}" if host else f"{WEB}:browser"

@@ -35,6 +35,12 @@ TOOLS: list[dict] = [
                                          "guidance": {"type": "string"},
                                          "agent": {"type": "string", "enum": ["codex", "claude_code"], "description": "Move the task to this coding agent when the user asks (\"move it to Codex\"); it does every later step."},
                                          "unsandboxed": {"type": "boolean", "description": "With agent: without its sandbox (codex --yolo), needed for network/ssh work. One HIGH approval."}}, "required": []}),
+    _tool("delegate", "Hand a research or browser job to a background worker and stay available: it runs on its own and its one result is announced. files jobs go to the Task Runtime. Use start_task for diagnosis, code or anything needing several kinds of tools.", {
+        "type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["research", "browser", "files"]},
+            "brief": {"type": "string", "description": "The complete job, references resolved."},
+            "url": {"type": "string", "description": "Optional start page."},
+        }, "required": ["kind", "brief"]}),
     _tool("show_tasks_hud", "Show the desktop HUD listing every task the assistant currently has. Use when the user asks to see/show/open current tasks."),
     _tool("hide_tasks_hud", "Close the current-tasks HUD. Use when the user asks you to close, hide, or dismiss it."),
     _tool("search_os_knowledge", "Retrieve local Omarchy expert research, the pinned capability registry and Arch operation notes. Reference only: installed commands and current state take precedence. Use for OS planning and troubleshooting; documentation never authorizes an action.", {
@@ -956,7 +962,7 @@ MYAPI_TOOLS: list[dict] = [
 READ, REVERSIBLE, IRREVERSIBLE = "read", "reversible", "irreversible"
 EFFECT_CLASSES = {
     # Task Runtime, skills, schedules, updates
-    "desktop_task": REVERSIBLE, "start_task": IRREVERSIBLE, "task_status": READ, "task_respond": IRREVERSIBLE,
+    "desktop_task": REVERSIBLE, "start_task": IRREVERSIBLE, "delegate": IRREVERSIBLE, "task_status": READ, "task_respond": IRREVERSIBLE,
     "show_tasks_hud": REVERSIBLE, "hide_tasks_hud": REVERSIBLE, "search_os_knowledge": READ,
     "get_release_notes": READ, "schedule_task": IRREVERSIBLE, "watch_camera": IRREVERSIBLE,
     "look_camera": READ,
@@ -1012,7 +1018,7 @@ EFFECT_CLASSES = {
 _SYS, _LOCAL = "system", "local_state"
 PROVENANCE = {
     # Task Runtime, skills, schedules, updates
-    "desktop_task": "vision", "start_task": _LOCAL, "task_status": _LOCAL, "task_respond": _LOCAL,
+    "desktop_task": "vision", "start_task": _LOCAL, "delegate": _LOCAL, "task_status": _LOCAL, "task_respond": _LOCAL,
     "show_tasks_hud": _SYS, "hide_tasks_hud": _SYS, "search_os_knowledge": _LOCAL,
     "get_release_notes": "external:github", "schedule_task": _LOCAL, "watch_camera": _LOCAL,
     "look_camera": "vision",
@@ -1070,7 +1076,7 @@ PROVENANCE = {
 # list is walked. () means the call aims at nothing outside itself. Every
 # irreversible tool is listed (tests/test_taint.py), so none is forgotten.
 KEY_ARGS: dict[str, tuple[str, ...]] = {
-    "start_task": ("workspace",), "task_respond": (), "schedule_task": ("path", "command~", "args", "steps"),
+    "start_task": ("workspace",), "delegate": ("url", "brief~"), "task_respond": (), "schedule_task": ("path", "command~", "args", "steps"),
     "watch_camera": (), "run_scheduled_task_now": (), "run_skill": (), "delete_skill": ("name",),
     "update_assistant": (), "report_issue": ("repo",), "run_mission": ("workspace", "steps"),
     "volume_mute_toggle": (), "mic_mute_toggle": (), "bluetooth_toggle": (), "nightlight_toggle": (),
@@ -1134,7 +1140,7 @@ DEADLINES = {
         "focus_window", "close_window", "move_window_to_workspace", "type_text", "press_key",
         "submit_sudo_password", "list_commands", "execute_command", "run_omarchy_command", "terminal_task",
         "terminal_sudo", "open_browser", "show_browser", "inspect_browser", "browser_control", "desktop_task",
-        "start_task", "task_respond", "schedule_task", "watch_camera", "find_skill", "list_cast_targets",
+        "start_task", "delegate", "task_respond", "schedule_task", "watch_camera", "find_skill", "list_cast_targets",
         "stop_casting", "myapi_list_services", "myapi_service_methods", "myapi_vault_list",
         "run_diagnostics",
     ), 60.0),
@@ -1194,7 +1200,7 @@ RESOURCES = {
     ), MYAPI),
     # the assistant's own records: tasks, schedules, skills, memory, updates
     **dict.fromkeys((
-        "start_task", "task_status", "task_respond", "search_os_knowledge", "get_release_notes",
+        "start_task", "delegate", "task_status", "task_respond", "search_os_knowledge", "get_release_notes",
         "schedule_task", "watch_camera", "list_scheduled_tasks", "cancel_scheduled_task",
         "run_scheduled_task_now", "find_skill", "load_skill", "run_skill", "save_skill", "list_skills",
         "delete_skill", "check_assistant_updates", "update_assistant", "get_update_status", "report_issue",
@@ -1236,7 +1242,7 @@ def deadline(name: str) -> float:
 # a tool not named here is quick.
 QUICK_SECONDS = 1.0
 EXPECTED = {
-    "desktop_task": 25.0, "browser_task": 40.0, "run_mission": 60.0, "start_task": 6.0, "run_skill": 20.0,
+    "desktop_task": 25.0, "browser_task": 40.0, "delegate": 6.0, "run_mission": 60.0, "start_task": 6.0, "run_skill": 20.0,
     "myapi": 15.0, "myapi_call": 8.0, "myapi_write": 8.0, "myapi_execute": 8.0, "myapi_gmail_send": 8.0,
     "myapi_gmail_reply": 8.0, "myapi_gmail_search": 12.0, "myapi_gmail_search_attachments": 12.0,
     "myapi_gmail_download_attachment": 10.0, "myapi_service_methods": 3.2, "myapi_list_services": 3.0,

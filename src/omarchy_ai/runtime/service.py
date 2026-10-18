@@ -2,7 +2,9 @@
 
 The live voice model starts, checks and answers tasks through three small
 tools (start_task, task_status, task_respond); the work itself happens in
-runtime threads, so the conversation is never blocked. Results reach an
+runtime threads, so the conversation is never blocked. delegate starts the
+lighter background worker (runtime/workers.py); the same task_status and
+task_respond list, cancel and redirect it. Results reach an
 open conversation through the daemon's announce hook; otherwise they are
 shown where the user is (core/outbox.py), once.
 """
@@ -25,6 +27,47 @@ _LINK_WINDOW = 30 * 60   # ... and how old one may be, in seconds
 
 _runtime = None
 _lock = threading.Lock()
+
+
+_workers = None
+
+
+def get_workers():
+    """The daemon's background workers (runtime/workers.py)."""
+    global _workers
+    with _lock:
+        if _workers is None:
+            from .workers import Workers
+            _workers = Workers()
+        return _workers
+
+
+def delegate(args: dict) -> ActionResult:
+    """A bounded background worker for a research or browser job; a files
+    job goes to the Task Runtime, which already does file work."""
+    from . import workers
+    kind = str(args.get("kind") or "").strip().lower()
+    text = str(args.get("brief") or "").strip()
+    if kind not in workers.KINDS:
+        return ActionResult(False, f"delegate kind must be one of: {', '.join(workers.KINDS)}")
+    if not text or len(text) > 4000:
+        return ActionResult(False, "delegate needs the job's complete brief (1-4000 characters).")
+    if kind in workers.TASK_KINDS:
+        log.info("delegate(%s) routed to start_task", kind)
+        return start_task({"goal": text})
+    from ..core import conversations
+    from ..execution import provenance
+    try:
+        worker = get_workers().start(kind, text, url=str(args.get("url") or "").strip(),
+                                     conversation=conversations.CURRENT.get(), turn=provenance.current_turn())
+    except workers.Busy as exc:
+        return ActionResult(False, str(exc))
+    return ActionResult(True, json.dumps({
+        "task_id": worker.id, "kind": kind, "status": worker.status,
+        "note": ("Running in the background. Say so in a few words and stay available for the user. Its one "
+                 "result is announced; task_status with this task_id shows it, task_respond with cancel=true "
+                 "stops it and with guidance=... redirects it."),
+    }))
 
 
 def get_runtime():
@@ -331,12 +374,22 @@ def change_preview(workspace: str, limit: int = 3000) -> dict | None:
 
 
 def task_status(args: dict) -> ActionResult:
+    from . import workers
+    requested_id = str(args.get("task_id") or "")
+    if workers.is_worker(requested_id):
+        # Its report is untrusted: execution/provenance.py makes this call's result external:worker.
+        worker = get_workers().get(requested_id)
+        if worker is None:
+            return ActionResult(False, "No task found.")
+        return ActionResult(True, workers.report_json(worker))
     runtime = get_runtime()
     if args.get("list"):
         # Compact: 2026-09-27 19:21 the full summaries were 22,254 chars, she
         # acted on none of it and never saw a waiting task's what_to_do.
-        return ActionResult(True, json.dumps([_brief(t.summary()) for t in runtime.store.list(8)], ensure_ascii=False))
-    requested_id = str(args.get("task_id") or "")
+        listed = [_brief(t.summary()) for t in runtime.store.list(8)]
+        # Background workers too, without their (untrusted) reports: task_status(task_id) reads one.
+        listed += [w.summary(report=False) for w in get_workers().recent(4)]
+        return ActionResult(True, json.dumps(listed, ensure_ascii=False))
     summary = runtime.status(requested_id or None)
     if summary is None and requested_id:
         # Speech models occasionally reverse the date portion of an id, while
@@ -401,6 +454,17 @@ def _myapi_job(goal: str) -> bool:
 
 
 def task_respond(args: dict) -> ActionResult:
+    from . import workers
+    if workers.is_worker(args.get("task_id")):
+        worker_id = str(args["task_id"])
+        if args.get("cancel"):
+            result = get_workers().cancel(worker_id)
+        elif args.get("guidance"):
+            result = get_workers().redirect(worker_id, str(args["guidance"]))
+        else:
+            result = {"ok": False, "message": f"{worker_id} is a background worker: it takes cancel=true or "
+                                              "guidance=<the new brief>, nothing else."}
+        return ActionResult(result["ok"], result["message"])
     runtime = get_runtime()
     if args.get("guidance"):
         task_id = args.get("task_id") or ""

@@ -415,6 +415,13 @@ request, or automatically when the assistant keeps failing at something.
   are announced when they finish, need approval or have a question, even if
   you hung up. Ask "which model is working on it?" any time. Follow them from
   a terminal with `omarchy-ai-task`.
+- **Lighter background helpers.** A web search or a single job on a website
+  can go to a background worker instead (`delegate`): the assistant keeps
+  talking with you while it runs. Up to three run at once, one at a time
+  on the browser; ask about one, give it a new brief or cancel it the same
+  way as a task. Each reports its result once, and what it read from the
+  web is treated as untrusted content. File jobs still go to the Task
+  Runtime.
 
 ### 2. Working alongside you: terminals, machines and coding agents
 

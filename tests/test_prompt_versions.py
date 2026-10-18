@@ -39,7 +39,12 @@ GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # (facts and procedures are saved through remember_preference and found with
 # the catalog tool recall); nothing else in the prompt or the declared tools
 # changed. With no saved notes the prompt gains nothing (notes_hint is "").
-LEGACY_LIVE_SHA256 = "cc5fd56c369f3a547005d4ec7bed67f98e12f0610e9af23756c91ba61c4326fc"
+# Re-pinned for plan 4.2 (background workers): the TOOL CATALOG signature
+# line gained "delegate(kind*, brief*, url), " (+8 tokens by Gemini's
+# count_tokens, 12494 -> 12502); the instructions already said to
+# acknowledge and keep listening, so nothing else in the prompt or the
+# declared tools changed.
+LEGACY_LIVE_SHA256 = "45b509b0973693d09fdbe8fb4fcb878618a0da8d65a75a802759957d161be5e7"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
