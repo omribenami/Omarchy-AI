@@ -22,17 +22,16 @@ def _effects_state() -> dict:
 
 def send(origin: str, subject: str = "Hello") -> dict:
     """One Gmail send for one logical action (its origin), as a live turn makes it."""
-    from omarchy_ai.core import effects
+    from omarchy_ai.core import approvals, effects
     from omarchy_ai.execution import actions
 
-    with effects.origin(origin):
-        result = actions.myapi_gmail_send(
-            {
-                "recipient_email": "someone@example.com",
-                "subject": subject,
-                "body": "Hi.",
-            }
-        )
+    args = {"recipient_email": "someone@example.com", "subject": subject, "body": "Hi."}
+    # The user's tap on its confirm card (core/approvals.py).
+    with (
+        effects.origin(origin),
+        approvals.approved_call("myapi_gmail_send", args, "tap"),
+    ):
+        result = actions.myapi_gmail_send(args)
     return {"ok": result.ok, "message": result.message, **_effects_state()}
 
 
@@ -46,20 +45,24 @@ def _quiet_agenda():
 
 def schedule_send(subject: str = "Routine") -> str:
     """A routine that sends one email, created for a minute from now."""
+    from omarchy_ai.core import approvals
+
     agenda = _quiet_agenda()
-    job = agenda.create(
-        {
-            "title": "send the note",
-            "kind": "action",
-            "in_minutes": 1,
-            "tool": "myapi_gmail_send",
-            "args": {
-                "recipient_email": "someone@example.com",
-                "subject": subject,
-                "body": "Hi.",
-            },
-        }
-    )
+    # Approved when it is scheduled, as the user's tap would (core/approvals.py).
+    with approvals.approved_call("schedule_task", {}, "tap"):
+        job = agenda.create(
+            {
+                "title": "send the note",
+                "kind": "action",
+                "in_minutes": 1,
+                "tool": "myapi_gmail_send",
+                "args": {
+                    "recipient_email": "someone@example.com",
+                    "subject": subject,
+                    "body": "Hi.",
+                },
+            }
+        )
     return job["id"]
 
 
@@ -96,7 +99,7 @@ def press_send(aid: str) -> dict:
 
     myapi_agent._worked = lambda action, raw: True
     myapi_agent._sent_check = lambda action: None
-    ok, message = myapi_agent.decide(aid, True, "test")
+    ok, message = myapi_agent.decide(aid, True, "test", by="tap")
     return {"ok": ok, "message": message, **_effects_state()}
 
 
@@ -106,7 +109,13 @@ def resend_pending(aid: str) -> dict:
     from omarchy_ai.core import pending_actions
     from omarchy_ai.execution import myapi_agent
 
+    from omarchy_ai.core import approvals
+
     action = pending_actions.get(aid)
+    approvals.grant(
+        approvals.send_key(action["service"], action["method"], action["arguments"]),
+        "tap",
+    )
     result = myapi_agent._call(
         action["service"],
         action["method"],

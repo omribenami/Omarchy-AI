@@ -152,6 +152,13 @@ class RuntimeHarness(unittest.TestCase):
         mine = patch.object(skills, "SKILLS_DIR", self.root / "skills")
         mine.start()
         self.addCleanup(mine.stop)
+        # Never the user's household or speaker-ID setting (core/approvals.py's
+        # voice rules): no owner, speaker ID off.
+        from omarchy_ai.core import approvals, identities
+        for household in (patch.object(identities, "PATH", self.root / "identities.json"),
+                          patch.object(approvals, "_speaker_id_enabled", return_value=False)):
+            household.start()
+            self.addCleanup(household.stop)
         # No test runs a real sudo: with Flux's PAM helper on, even `sudo -n`
         # asks the phone. From 2026-10-05 to 10-07 every run of this suite sent
         # the user a fingerprint request for `true` with no reason.

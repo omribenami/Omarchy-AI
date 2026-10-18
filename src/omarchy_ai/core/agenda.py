@@ -395,6 +395,26 @@ def steps_from(args: dict) -> list[dict]:
     return steps
 
 
+def _approval_at_creation(steps: list[dict], now: float) -> dict | None:
+    """A scheduled action runs unattended, so a step that sends or destroys
+    is approved now, when the user makes it (core/approvals.py): the
+    schedule_task call itself was approved (a tap, or a counted yes), and the
+    job keeps each send's key so at run time exactly that send goes out."""
+    from . import approvals
+    from ..execution.actions.myapi_tools import send_key_of
+    needs = [s for s in steps if approvals.decide(s["tool"], s["args"]).level != approvals.AUTO]
+    keys = [k for k in (send_key_of(s["tool"], s["args"]) for s in steps) if k]
+    if not needs:
+        # Nothing to approve, or sends a standing approval covers.
+        return {"by": approvals.STANDING_BY, "at": now, "keys": keys} if keys else None
+    by = approvals.approved_tool("schedule_task")
+    if by is None:
+        names = ", ".join(sorted({s["tool"] for s in needs}))
+        raise ValueError(f"it runs {names} unattended, which needs the user's approval when it is scheduled: "
+                         "read back exactly what it will do and when, wait for their yes, then call again")
+    return {"by": by, "at": now, "keys": keys}
+
+
 def create(args: dict, now: float | None = None) -> dict:
     now = time.time() if now is None else now
     kind = str(args.get("kind") or "").strip()
@@ -466,6 +486,9 @@ def create(args: dict, now: float | None = None) -> dict:
     elif kind == "action":
         job["steps"] = steps_from(args)
         job["request"] = _text(args, "request", 2000) or title
+        approved = _approval_at_creation(job["steps"], now)
+        if approved:
+            job["approved"] = approved
     job["next_run"] = now if kind == "watch" and "every_minutes" in job["schedule"] else \
         job["schedule"]["at"] if "at" in job["schedule"] else schedule.next_run(job["schedule"], now)
     if job["next_run"] is None:
@@ -769,10 +792,21 @@ def _run_action(job, now, jev):
     # At most once: the next run is committed before anything executes, so a
     # crash mid-run can never repeat a step (STALE_RUN_SECONDS reports it).
     _update(job["id"], started_at=now, next_run=schedule.next_run(job["schedule"], now))
+    from . import approvals
+    from ..execution.actions import ActionResult
+    from ..execution.actions.myapi_tools import send_key_of
     results, failed = [], None
+    approved = (job.get("approved") or {}).get("keys") or []
     for number, step in enumerate(job["steps"], 1):
-        with logs.bind(step_id=number):
-            result, why, attempts = _call(step, f"agenda:{job['id']}:{now}:{number}", job["id"])
+        key = send_key_of(step["tool"], step["args"])
+        if key is not None and key not in approved:
+            # Scheduled before approvals existed, or changed since: never sent unattended.
+            result, attempts = ActionResult(False, "NOT sent: this scheduled send was not approved when it was "
+                                                   "scheduled. Schedule it again to approve it."), 0
+            why: str | None = result.message
+        else:
+            with logs.bind(step_id=number), approvals.job_scope(job):
+                result, why, attempts = _call(step, f"agenda:{job['id']}:{now}:{number}", job["id"])
         line = {"tool": step["tool"], "ok": why is None, "result": result.message[:600], "attempts": attempts}
         results.append(line)
         log.info("agenda: %s step %d/%d %s -> %s%s", job["id"], number, len(job["steps"]), step["tool"],

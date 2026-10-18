@@ -17,6 +17,7 @@ CLI, or (ELEVATED only) the voice assistant -- re-dispatches the step.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -30,7 +31,7 @@ import threading
 import time
 from typing import Callable
 
-from ..core import logs
+from ..core import approvals, logs
 from . import shell
 from ..execution import provenance
 from .control import LIVE_GAPS, ControlPlane
@@ -204,6 +205,23 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
                     f"'{request.get('subject')}' is HIGH risk ({', '.join(request.get('reasons', []))}). It can only "
                     "be approved with the Approve button on the desktop (the notification or the approval "
                     f"envelope), or `omarchy-ai-task approve {task.id}` -- not by voice. {sent['message']}")}
+            refused = (approvals.voice_refusal(risk=Risk.parse(request.get("risk"), Risk.HIGH),
+                                               tainted=approvals.current_session().tainted)
+                       if approve and channel == "voice" else None)
+            if refused is not None:
+                # One policy (core/approvals.py): a yes from a speaker who is not
+                # verified as the owner, or from a conversation with untrusted
+                # content in it, is not an approval; a tap still is.
+                sent = self.ask_fingerprint(task.id)
+                if sent["ok"]:
+                    return {"ok": True, "message": (
+                        f"Not approved yet: a spoken yes does not approve '{request.get('subject')}' ({refused}), so "
+                        "a fingerprint prompt went to the phone. The task resumes when the user touches it. Tell the "
+                        "user that in one sentence.")}
+                return {"ok": False, "message": (
+                    f"Not approved: a spoken yes does not approve '{request.get('subject')}' ({refused}). It can be "
+                    "approved with the Approve button on the desktop (the notification or the approval envelope), "
+                    f"or `omarchy-ai-task approve {task.id}`. {sent['message']}")}
             paused = next((s for s in task.steps if s["n"] == request.get("step")), None)
             if approve:
                 task.grants.append(request.get("fingerprint", ""))
@@ -897,6 +915,9 @@ class WorkContextImpl:
         self._stage("Running " + " ".join(words[:2]))
         cwd = str(Path(cwd or self.task.workspace).expanduser())
         assessment = classify(command, cwd, self.scope)
+        destructive = approvals.destructive_assessment(assessment.reasons)
+        if destructive:
+            assessment.always_ask = True  # a human tap, whatever auto-approve says (core/approvals.py)
         decision = self._decide("command", command, assessment)
         record = {"command": command[:2000], "cwd": cwd, "step": self.step, "role": role,
                   "decision": decision.behavior, "risk": assessment.risk.name, "reasons": assessment.reasons[:4],
@@ -911,8 +932,11 @@ class WorkContextImpl:
         if decision.behavior == "ask":
             self.task.add_command(record)
             self.runtime.store.save(self.task)
+            request = self._request(decision, "command", command)
+            if destructive:
+                request["tap_only"] = True
             return {"command": command, "decision": "ask", "risk": assessment.risk.name, "exit_code": None,
-                    "request": self._request(decision, "command", command),
+                    "request": request,
                     "output": f"NEEDS USER APPROVAL ({assessment.risk.name}): {'; '.join(assessment.reasons)}"}
         stdin_text = None
         if assessment.risk >= Risk.HIGH and re.match(r"\s*sudo\s", command):
@@ -1063,23 +1087,30 @@ class WorkContextImpl:
         self._stage(label[:110])
         assessment = Assessment(_ACTION_RISK.get(name, Risk.NORMAL))
         subject = f"{name} {json.dumps(args, sort_keys=True)}"
-        why = provenance.approval_needed(name, args, tainted=self.task.tainted, said=self._user_said())
-        if why is not None:
-            # A target from untrusted content: the user's tap, whatever auto-approve says.
+        # The one approval policy (core/approvals.py): a send asks the user
+        # with its exact arguments; a destructive action or a target from
+        # untrusted content needs a tap, whatever auto-approve says.
+        verdict = approvals.decide(name, args, tainted=self.task.tainted, said=self._user_said())
+        why = verdict.reason if verdict.level == approvals.TAP else None
+        if verdict.level == approvals.DENY:
+            assessment.raise_to(Risk.BLOCKED, verdict.reason)
+        elif verdict.level != approvals.AUTO:
             assessment.always_ask = True
-            assessment.reasons.append(f"after untrusted content: {why}")
+            assessment.reasons.append(verdict.reason)
         decision = self._decide("action", subject, assessment)
         if decision.behavior != "allow":
             request = self._request(decision, "action", subject)
             if why is not None:
                 request["tap_only"] = True
             return {"ok": False, "decision": decision.behavior, "request": request}
+        granted = decision.fingerprint in self.task.grants
         # What the tool's own side effects are caused by (core/effects.py):
         # this task, step and call.
         from ..core import effects
         step = self._step_record()
         calls = int(step.get("actions_done") or 0)
-        with effects.origin(f"task:{self.task.id}:step{self.step}:action{calls}"):
+        with effects.origin(f"task:{self.task.id}:step{self.step}:action{calls}"), \
+                approvals.approved_call(name, args, "task") if granted else contextlib.nullcontext():
             result = self._action_runner()(name, args)
         if getattr(result, "untrusted", False):
             self.task.tainted = True

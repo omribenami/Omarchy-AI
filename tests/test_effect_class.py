@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from fakes.myapi_server import FakeMyApi, fake_identity
-from omarchy_ai.core import agenda, effects, retry
+from omarchy_ai.core import agenda, approvals, effects, retry
 from omarchy_ai.execution import actions, tools
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.catalog import USE_TOOL
@@ -103,9 +103,11 @@ class AgendaRetryTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def routine(self, steps):
-        return agenda.create(
-            {"title": "routine", "kind": "action", "in_minutes": 1, "steps": steps}
-        )
+        # Approved when it is scheduled, as the user's tap would (core/approvals.py).
+        with approvals.approved_call("schedule_task", {}, "tap"):
+            return agenda.create(
+                {"title": "routine", "kind": "action", "in_minutes": 1, "steps": steps}
+            )
 
     def run_it(self, job):
         job = next(j for j in agenda._load() if j["id"] == job["id"])

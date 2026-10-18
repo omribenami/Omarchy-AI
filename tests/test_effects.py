@@ -10,7 +10,7 @@ from unittest import mock
 
 import no_live_desktop
 from fakes.myapi_server import FakeMyApi, fake_identity
-from omarchy_ai.core import effects
+from omarchy_ai.core import approvals, effects
 from omarchy_ai.execution import actions
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.execution.verified_input import InputGuard
@@ -275,15 +275,15 @@ class MyApiWriteTests(JournalCase):
         self.addCleanup(usage.stop)
 
     def send(self, **extra):
-        return actions.run_action(
-            "myapi_gmail_send",
-            {
-                "recipient_email": "a@example.com",
-                "subject": "Hi",
-                "body": "Hello",
-                **extra,
-            },
-        )
+        args = {
+            "recipient_email": "a@example.com",
+            "subject": "Hi",
+            "body": "Hello",
+            **extra,
+        }
+        # The user's tap on its confirm card (core/approvals.py).
+        with approvals.approved_call("myapi_gmail_send", args, "tap"):
+            return actions.run_action("myapi_gmail_send", args)
 
     def test_the_key_travels_as_the_idempotency_key_header(self):
         with effects.origin("turn:s:1"):
@@ -345,18 +345,19 @@ class MyApiWriteTests(JournalCase):
         self.assertFalse(_never_sent(TimeoutError()))
 
     def test_myapi_write_journals_the_proxy_call(self):
-        with effects.origin("turn:s:1"):
+        args = {
+            "service": "gmail",
+            "path": "/x",
+            "method": "POST",
+            "body": {"a": 1},
+            "description": "first wording",
+        }
+        with (
+            effects.origin("turn:s:1"),
+            approvals.approved_call("myapi_write", args, "tap"),
+        ):
             for _ in range(2):
-                actions.run_action(
-                    "myapi_write",
-                    {
-                        "service": "gmail",
-                        "path": "/x",
-                        "method": "POST",
-                        "body": {"a": 1},
-                        "description": "first wording",
-                    },
-                )
+                actions.run_action("myapi_write", args)
         (write,) = self.fake.writes
         self.assertTrue(write.idempotency_key)
 

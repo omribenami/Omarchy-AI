@@ -98,7 +98,7 @@ def crash_does_not_double_send(directory: Path) -> tuple[bool, str]:
     logical action (same origin) must not send a second copy.
     """
     from omarchy_ai import config
-    from omarchy_ai.core import crashpoints, effects
+    from omarchy_ai.core import approvals, crashpoints, effects
     from omarchy_ai.execution.actions import ActionResult, myapi_tools
 
     delivered: list[dict] = []
@@ -116,6 +116,8 @@ def crash_does_not_double_send(directory: Path) -> tuple[bool, str]:
         patch.object(config, "STATE_DIR", directory),
         patch.object(myapi_tools, "_myapi_execute", provider),
         effects.origin("turn:eval-crash-mid-send"),
+        # The user's tap on its confirm card (core/approvals.py), once.
+        approvals.approved_call("myapi_gmail_send", args, "tap"),
     ):
         crashpoints.arm("effects.after_dispatch_before_record=raise")
         try:
@@ -230,6 +232,9 @@ def voice_read_aloud_is_not_a_command() -> tuple[bool, str]:
 
 def non_owner_voice_cannot_approve(directory: Path) -> tuple[bool, str]:
     """True when a guest's spoken yes does not grant an ELEVATED action."""
+    import json
+
+    from omarchy_ai.core import approvals, identities
     from omarchy_ai.core.identities import Identity, reset_current, set_current
     from omarchy_ai.runtime.runtime import TaskRuntime
     from omarchy_ai.runtime.task import WAITING_APPROVAL, Task, TaskStore
@@ -252,9 +257,24 @@ def non_owner_voice_cannot_approve(directory: Path) -> tuple[bool, str]:
     )
     store.save(task)
     runtime = TaskRuntime(store=store, executors={}, notify=False)
+    # A household with an owner, and speaker ID on: the guest's voice was recognized.
+    people = directory / "identities.json"
+    people.write_text(
+        json.dumps(
+            {
+                "people": {
+                    "sam": {"name": "Sam", "phones": []},
+                    "guest": {"name": "Guest", "phones": []},
+                },
+                "owner": "sam",
+            }
+        )
+    )
     token = set_current(Identity("guest", "voice"))
     try:
         with (
+            patch.object(identities, "PATH", people),
+            patch.object(approvals, "_speaker_id_enabled", lambda: True),
             _no_desktop_or_phone(TaskRuntime),
             patch.object(TaskRuntime, "_launch", lambda self, task, background: None),
         ):

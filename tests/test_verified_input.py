@@ -111,30 +111,44 @@ class InputGuardTests(unittest.TestCase):
         self.assertTrue(ends_session('press_key', {'key': 'd', 'modifiers': ['ctrl']}))
         self.assertFalse(ends_session('press_key', {'key': 'c', 'modifiers': ['ctrl']}))
 
-    def test_myapi_write_requires_an_intervening_confirmation_turn(self):
+    SCHEDULED_SEND = {"kind": "action", "title": "note", "at": "18:00", "tool": "myapi_gmail_send",
+                      "args": {"recipient_email": "a@example.com", "subject": "Hi", "body": "Hello"}}
+
+    def test_a_send_reaches_its_tool_which_prepares_the_confirm_card(self):
+        # core/approvals.py: the card is the confirmation, so the guard does not block it.
         args = {"service": "gmail", "path": "/messages/send", "method": "POST",
                 "body": {"to": "a@example.com"}, "description": "send mail to a@example.com"}
-        self.assertFalse(self.guard.run(self.execute, "myapi_write", args).ok)
-        self.assertFalse(self.guard.run(self.execute, "myapi_write", args).ok)
-        self.guard.assistant_replied()
-        self.guard.heard_user()
         self.assertTrue(self.guard.run(self.execute, "myapi_write", args).ok)
+        self.execute.assert_called_with("myapi_write", args)
 
-    def test_changed_myapi_write_needs_new_confirmation(self):
-        args = {"service": "gmail", "path": "/messages/send", "method": "POST",
-                "body": {"to": "a@example.com"}, "description": "send mail"}
-        self.assertFalse(self.guard.run(self.execute, "myapi_write", args).ok)
-        self.guard.assistant_replied()
-        self.guard.heard_user()
-        changed = {**args, "body": {"to": "b@example.com"}}
-        self.assertFalse(self.guard.run(self.execute, "myapi_write", changed).ok)
+    def test_a_scheduled_send_needs_an_intervening_confirmation_turn(self):
+        from omarchy_ai.core import approvals
+        seen = []
+        self.execute.side_effect = lambda name, args: (seen.append(approvals.approved_by(name, args)),
+                                                       ActionResult(True, "scheduled"))[1]
+        with patch.object(approvals, "_speaker_id_enabled", return_value=False):
+            self.assertFalse(self.guard.run(self.execute, "schedule_task", self.SCHEDULED_SEND).ok)
+            self.assertFalse(self.guard.run(self.execute, "schedule_task", self.SCHEDULED_SEND).ok)
+            self.guard.assistant_replied()
+            self.guard.heard_user("yes")
+            self.assertTrue(self.guard.run(self.execute, "schedule_task", self.SCHEDULED_SEND).ok)
+        self.assertEqual(seen, ["voice"])  # run with the approval agenda.create records
 
-    def test_switchboard_can_pin_an_exact_gmail_send(self):
-        args = {"recipient_email": "a@example.com", "subject": "Hi", "body": "Hello"}
-        self.guard.approve_external_write("myapi_gmail_send", args)
-        self.assertTrue(self.guard.run(self.execute, "myapi_gmail_send", args).ok)
-        changed = {**args, "recipient_email": "b@example.com"}
-        self.assertFalse(self.guard.run(self.execute, "myapi_gmail_send", changed).ok)
+    def test_a_changed_scheduled_send_needs_a_new_confirmation(self):
+        from omarchy_ai.core import approvals
+        with patch.object(approvals, "_speaker_id_enabled", return_value=False):
+            self.assertFalse(self.guard.run(self.execute, "schedule_task", self.SCHEDULED_SEND).ok)
+            self.guard.assistant_replied()
+            self.guard.heard_user("yes")
+            changed = {**self.SCHEDULED_SEND, "args": {**self.SCHEDULED_SEND["args"], "recipient_email": "b@x.io"}}
+            self.assertFalse(self.guard.run(self.execute, "schedule_task", changed).ok)
+
+    def test_the_switchboard_judgment_approves_nothing(self):
+        # A model judge may add a block, never stand in for the user's decision.
+        from omarchy_ai.core import approvals
+        with patch.object(approvals, "_speaker_id_enabled", return_value=False):
+            self.guard.approve_external_write("schedule_task", self.SCHEDULED_SEND)
+            self.assertFalse(self.guard.run(self.execute, "schedule_task", self.SCHEDULED_SEND).ok)
 
     def test_input_results_say_which_machine_runs_it(self):
         self.window = {'machine': 'REMOTE user@x230 (ssh): commands typed here run on that machine'}
