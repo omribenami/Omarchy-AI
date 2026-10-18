@@ -45,6 +45,13 @@ Rules for every release:
   and the last few turns instead of the whole transcript, so each
   conversation costs fewer tokens.
 
+### Fixes
+
+- In the typed chat, when a smart-home switch or another background job
+  finished and I said nothing about it, you were never told. Now I tell you
+  once, in the chat as well as by voice; an empty reply no longer counts as
+  having told you.
+
 ### Under the hood
 
 - Facts and procedures live in `memory_notes.json` beside
