@@ -348,3 +348,75 @@ def _again(
         pause,
     )
     return _sleep(pause, token)
+
+
+# -------------------------------------------------------- live sessions
+
+# WebSocket close codes a live session (Gemini Live) ends with through no
+# fault of what was sent: the same session opened again normally works.
+# Journal 2026-10-17 08:09 and 09:50: "received 1011 (internal error)
+# Internal error encountered." in the middle of a text chat, both times right
+# after the user's typed line. 1007 (bad payload), 1008 (policy) and the
+# rest say the request itself was refused, and a quota close (1011
+# "Resource has been exhausted") is out of quota, not a blip.
+TRANSIENT_CLOSE = {
+    1001: "going away",
+    1006: "abnormal closure",
+    1011: "internal error",
+    1012: "service restart",
+    1013: "try again later",
+    1014: "bad gateway",
+}
+_CLOSE_TEXT = re.compile(r"^\s*(10\d\d|[34]\d{3})\b|\breceived (10\d\d|[34]\d{3})\b")
+_AUTH = re.compile(r"api key|unauthenticated|permission denied", re.I)
+LIVE_TRANSIENT = frozenset({NOT_SENT, TRANSPORT, TIMEOUT, SERVER})
+
+
+def close_code(error: BaseException | None) -> int | None:
+    """The WebSocket close code `error` (or what caused it) carries: the
+    `code` of google-genai's APIError, the `rcvd.code` of a websockets
+    ConnectionClosed, or "1011 ..." / "received 1011" in its message."""
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if hasattr(error, "rcvd"):  # websockets: its own `code` is deprecated
+            code = getattr(error.rcvd, "code", None)
+        else:
+            code = getattr(error, "code", None)
+        if isinstance(code, int) and 1000 <= code <= 4999:
+            return code
+        if match := _CLOSE_TEXT.search(str(error)):
+            return int(match.group(1) or match.group(2))
+        error = error.__cause__ or error.__context__
+    return None
+
+
+def classify_live(error: BaseException) -> Failure:
+    """What ended a live session: `transport` for a transient close (the
+    codes in TRANSIENT_CLOSE, or the connection breaking without one),
+    `rate_limited` for out of quota, `permanent` for a rejected key or any
+    other close code; anything else as `classify` says."""
+    from .quota import is_quota_error
+
+    detail = " ".join(str(error).split())[:200]
+    if is_quota_error(detail):
+        return Failure(RATE_LIMITED, detail=detail)
+    if _PERMANENT.search(detail) or _AUTH.search(detail):
+        # A rejected key fails the same way again.
+        return Failure(PERMANENT, detail=detail)
+    code = close_code(error)
+    if code in TRANSIENT_CLOSE:
+        return Failure(TRANSPORT, detail=f"{code} {TRANSIENT_CLOSE[code]}")
+    if code is not None and code != 1000:
+        return Failure(
+            PERMANENT,
+            detail=(detail if detail.startswith(str(code)) else f"{code} {detail}")[
+                :200
+            ],
+        )
+    return classify(error)
+
+
+def live_transient(failure: Failure) -> bool:
+    """Would the same live session, connected again at once, work?"""
+    return failure.kind in LIVE_TRANSIENT

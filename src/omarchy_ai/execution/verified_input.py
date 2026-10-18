@@ -164,7 +164,9 @@ class InputGuard:
         return window.get("address") if window else None
 
     def run(self, execute, name, args):
-        with effects.origin(self.turn_origin), approvals.session(self.taint.tainted):
+        turn = provenance.Turn(self.turn_origin, self.taint.tainted, tuple(self.taint.sources),
+                               self.taint.utterances)
+        with effects.origin(self.turn_origin), provenance.in_turn(turn), approvals.session(self.taint.tainted):
             return self._run(execute, name, args)
 
     def _run(self, execute, name, args):

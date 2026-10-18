@@ -41,6 +41,44 @@ class FakeLive:
                 return
 
 
+def api_error(code, text):
+    from google.genai import errors
+    return errors.APIError(code, {"error": {"message": text}})
+
+
+class DroppingLive(FakeLive):
+    """FakeLive whose connection Gemini closes with `error` when typed turn
+    number `drop_at` (0-based) arrives, after the tool calls in `calls`."""
+
+    def __init__(self, replies, drop_at=None, error=None, calls=()):
+        super().__init__(replies)
+        self.drop_at, self.error, self.calls, self.context, self.turns = drop_at, error, list(calls), [], 0
+
+    async def send_client_content(self, turns, turn_complete):
+        if not turn_complete:  # the carried-over conversation: context, no reply
+            self.context.append(turns["parts"][0]["text"])
+            return
+        if self.turns == self.drop_at:
+            self.sent.append(turns["parts"][0]["text"])
+            for call in self.calls:
+                await self.inbox.put(SimpleNamespace(
+                    server_content=None, tool_call_cancellation=None,
+                    tool_call=SimpleNamespace(function_calls=[SimpleNamespace(id=call, name="use_tool", args={})])))
+            await self.inbox.put(self.error)
+            return
+        self.turns += 1
+        await super().send_client_content(turns, turn_complete)
+
+    async def receive(self):
+        while True:
+            m = await self.inbox.get()
+            if isinstance(m, BaseException):
+                raise m
+            yield m
+            if m.server_content is not None and m.server_content.turn_complete:
+                return
+
+
 class TextChatTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -69,6 +107,31 @@ class TextChatTests(unittest.IsolatedAsyncioTestCase):
         def connect(cfg, live_config):
             self.connects.append(live_config)
             return Client(), Connection()
+        return text_chat.TextChat(Config(provider="gemini", **config), push=self.pushed.append, connect=connect)
+
+    def chat_on(self, lives, **config):
+        """A chat whose n-th connection is lives[n]."""
+        self.lives, self.connects, self.pushed = list(lives), [], []
+        test = self
+
+        class Connection:
+            def __init__(inner, live):
+                inner.live = live
+
+            async def __aenter__(inner):
+                if isinstance(inner.live, BaseException):
+                    raise inner.live
+                return inner.live
+
+            async def __aexit__(inner, *exc):
+                return False
+
+        class Client:
+            aio = SimpleNamespace(aclose=lambda: asyncio.sleep(0))
+
+        def connect(cfg, live_config):
+            test.connects.append(live_config)
+            return Client(), Connection(test.lives[len(test.connects) - 1])
         return text_chat.TextChat(Config(provider="gemini", **config), push=self.pushed.append, connect=connect)
 
     async def until(self, check, timeout=3):
@@ -151,6 +214,67 @@ class TextChatTests(unittest.IsolatedAsyncioTestCase):
         chat.send("again")
         await self.until(lambda: chat.messages[-1]["text"] == "Back.")
         chat.close()
+
+
+    async def test_a_1011_reconnects_once_and_sends_the_unanswered_line_again(self):
+        # Journal 2026-10-17 08:09 and 09:50: "received 1011 (internal error)"
+        # right after the typed line, which was never acted on.
+        first = DroppingLive(["Done."], drop_at=1, error=api_error(1011, "Internal error encountered."))
+        second = DroppingLive(["The backyard fan is on."])
+        chat = self.chat_on([first, second])
+        chat.send("Turn the volume down a little")
+        await self.until(lambda: len(chat.messages) == 2)
+        with self.assertLogs("omarchy_ai.voice.text_chat", "WARNING") as logged:
+            chat.send("Turn on the backyard fan")
+            await self.until(lambda: chat.messages[-1]["text"] == "The backyard fan is on.")
+        self.assertEqual(len(self.connects), 2)
+        self.assertIs(self.connects[1], self.connects[0], "the same config")
+        self.assertEqual(second.sent, ["Turn on the backyard fan"])
+        self.assertIn("user: Turn the volume down a little\nassistant: Done.", second.context[0])
+        self.assertNotIn("backyard fan", second.context[0], "the resent line is the request, not context")
+        self.assertEqual([m["role"] for m in chat.messages], ["user", "assistant", "user", "assistant"])
+        self.assertNotEqual(chat.status, "error")
+        self.assertTrue(any("Gemini session reconnected after 1011" in line for line in logged.output))
+        chat.close()
+        await self.until(lambda: chat._task.done())
+        self.assertEqual([t["text"] for t in self.archived[0] if t["role"] == "user"],
+                         ["Turn the volume down a little", "Turn on the backyard fan"])
+
+    async def test_a_line_whose_tool_call_started_is_not_sent_again(self):
+        first = DroppingLive([], drop_at=0, error=api_error(1006, "Abnormal closure."), calls=["c1"])
+        second = DroppingLive([])
+        ran = []
+
+        async def run_call(adapter, session, call):
+            ran.append(call.id)  # it ran; its answer is lost with the connection
+        with patch("omarchy_ai.voice.gemini_live.GeminiLiveSession._run_call", run_call):
+            chat = self.chat_on([first, second])
+            chat.send("Turn on the backyard fan")
+            await self.until(lambda: chat.messages[-1]["role"] == "note")
+            await self.until(lambda: len(self.connects) == 2 and chat._adapter._drop_restarts == 1)
+        self.assertEqual(ran, ["c1"])
+        self.assertEqual(second.sent, [], "it may have acted: not sent again")
+        self.assertIn("may or may not have finished", chat.messages[-1]["text"])
+        self.assertEqual(chat._adapter._running_blocking, 0)
+        chat.close()
+        await self.until(lambda: chat._task.done())
+
+    async def test_when_the_reconnect_fails_too_the_reason_is_shown(self):
+        drop = api_error(1011, "Internal error encountered.")
+        chat = self.chat_on([DroppingLive([], drop_at=0, error=drop), drop])
+        chat.send("Turn on the backyard fan")
+        await self.until(lambda: chat.status == "error")
+        self.assertEqual(len(self.connects), 2)
+        self.assertEqual(chat.messages[-1]["text"], "Connection to Gemini ended (Gemini closed it: 1011 internal "
+                                                    "error) and reconnecting did not help. Send again to reconnect.")
+
+    async def test_a_policy_close_does_not_reconnect(self):
+        chat = self.chat_on([DroppingLive([], drop_at=0, error=api_error(1008, "Policy violation."))])
+        chat.send("hello")
+        await self.until(lambda: chat.status == "error")
+        self.assertEqual(len(self.connects), 1)
+        self.assertEqual(chat.messages[-1]["text"],
+                         "Connection to Gemini ended (Gemini refused it: 1008). Send again to reconnect.")
 
 
 class DaemonAndSettingsTests(unittest.TestCase):

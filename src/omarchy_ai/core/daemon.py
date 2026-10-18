@@ -307,7 +307,10 @@ class OmaDaemon:
                     agenda.mark_delivered(session.acknowledged_ids())
             except Exception as error:  # noqa: BLE001
                 log.exception("live session crashed")
-                self._last_error = "Connection ended unexpectedly. Check the service log, then try again."
+                from ..voice.fallback import ended_reason
+                why = ended_reason(error)  # after the one reconnect (voice/gemini_live.py _resume_dropped)
+                self._last_error = ("Connection ended unexpectedly" + (f" ({why})" if why else "")
+                                    + ". Check the service log, then try again.")
                 from . import quota
                 # 2026-09-19 12:04: Gemini's "1011 Resource has been exhausted"
                 # ended the conversation with no word to the user.
