@@ -1043,10 +1043,10 @@ KEY_ARGS: dict[str, tuple[str, ...]] = {
     "update_assistant": (), "report_issue": ("repo",), "run_mission": ("workspace", "steps"),
     "volume_mute_toggle": (), "mic_mute_toggle": (), "bluetooth_toggle": (), "nightlight_toggle": (),
     "run_omarchy_command": (), "github_upload_attachment": ("path", "repo"),
-    "browser_control": ("url", "text~"), "browser_task": ("url", "goal~"),
+    "browser_control": ("url", "text~"), "browser_task": ("url", "goal~", "steps"),
     "write_file": ("path",), "edit_file": ("path",), "workspace_next": (), "workspace_prev": (),
     "close_window": (), "window_fullscreen_toggle": (), "execute_command": (), "type_text": ("text~",),
-    "press_key": (), "submit_sudo_password": (), "terminal_task": ("command~",),
+    "press_key": (), "submit_sudo_password": (), "terminal_task": ("command",),
     "terminal_type": ("text~",), "terminal_sudo": (), "terminal_close": (),
     "media_play_pause": (), "media_next": (), "media_prev": (), "set_reminder": (), "clear_reminders": (),
     # myapi prepares every send, change or delete as a confirm card the user taps.
