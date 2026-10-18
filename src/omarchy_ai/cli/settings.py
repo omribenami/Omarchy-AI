@@ -41,6 +41,10 @@ Commands:
                                  GITHUB_ISSUE_TOKEN) used to file issues on
                                  this project's repo (see core/issues.py)
   forget-github-issue-token  -> delete the saved GitHub issue token
+  memory-list                -> standing rules and proposals (core/memory.py):
+                                 {"memory": {"active", "proposed", "cap", "review"}}
+  memory-add <text> / memory-edit <id> <text> / memory-forget <id> /
+  memory-confirm <id>        -> change one record; each prints {"memory": ...}
   select-cast-target <addr>  -> manual click in the omarchy-ai.tv-discovery
                                  overlay; runs the real start_casting
   refresh-cast-targets       -> the overlay's "Refresh" button
@@ -196,7 +200,52 @@ def _snapshot() -> dict:
         "assistant": control.request('status'),
         "sudo_approval": sudo_approval.status(),
         "approval_pin": approval_pin.status(),
+        "memory": _memory(),
     }
+
+
+def _memory() -> dict:
+    from ..core import memory
+    try:
+        records = memory.load_records()
+    except Exception as exc:  # noqa: BLE001 -- one broken file must not blank the whole panel
+        return {"error": f"could not read memory: {exc}", "active": [], "proposed": []}
+    active = [r for r in records if r.get("confirmed")]
+    return {
+        "active": active,
+        "proposed": [r for r in records if not r.get("confirmed")],
+        "cap": memory.MAX_ACTIVE,
+        # Nothing is dropped past the cap: these are offered for review.
+        "review": memory.review(records) if len(active) >= memory.MAX_ACTIVE else [],
+    }
+
+
+_MEMORY_ERRORS = {
+    "missing": "no memory record with that id",
+    "empty": "the text is empty",
+    "duplicate": "another standing rule already says that",
+    "full": "memory is full: forget a rule first",
+}
+
+
+def cmd_memory(args: argparse.Namespace) -> dict:
+    from ..core import memory
+    if args.command == "memory-list":
+        return {"memory": _memory()}
+    if args.command == "memory-forget":
+        if not memory.forget(args.id):
+            return {"error": _MEMORY_ERRORS["missing"], "memory": _memory()}
+        return {"ok": True, "memory": _memory()}
+    if args.command == "memory-add":
+        outcome = memory.add_preference(args.text)
+    elif args.command == "memory-edit":
+        outcome = memory.edit(args.id, args.text)
+    else:  # memory-confirm: the user's own approval of a proposal
+        outcome = memory.confirm(args.id)
+    status = outcome["status"]
+    if status in _MEMORY_ERRORS and not (status == "duplicate" and args.command != "memory-edit"):
+        return {"error": _MEMORY_ERRORS[status], "memory": _memory()}
+    return {"ok": True, "status": status, "memory": _memory()}
 
 
 def _identities(cfg: Config) -> dict:
@@ -870,6 +919,13 @@ def main(argv: list[str] | None = None) -> int:
     p_select_cast = sub.add_parser("select-cast-target")
     p_select_cast.add_argument("address")
     sub.add_parser("refresh-cast-targets")
+    sub.add_parser("memory-list")
+    sub.add_parser("memory-add").add_argument("text")
+    p_memory = sub.add_parser("memory-edit")
+    p_memory.add_argument("id")
+    p_memory.add_argument("text")
+    sub.add_parser("memory-forget").add_argument("id")
+    sub.add_parser("memory-confirm").add_argument("id")
 
     args = parser.parse_args(argv)
     handler = {
@@ -906,6 +962,8 @@ def main(argv: list[str] | None = None) -> int:
         "refresh-cast-targets": cmd_refresh_cast_targets,
         "restart": cmd_restart,
         "test-quota-alert": cmd_test_quota_alert,
+        **{name: cmd_memory for name in ("memory-list", "memory-add", "memory-edit",
+                                         "memory-forget", "memory-confirm")},
     }[args.command]
     result = handler(args)
     sys.stdout.buffer.write(_response_bytes(result))
