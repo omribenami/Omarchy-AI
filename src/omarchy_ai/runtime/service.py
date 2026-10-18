@@ -47,6 +47,10 @@ def get_runtime():
             # interruption is restart fallout, not a user cancellation.
             recent = [task.id for task in _runtime.store.list(50)
                       if task.status == INTERRUPTED and time.time() - task.updated_at < 3600]
+            from ..core import health
+            if health.active:  # crash-loop safe mode: a resumed task may be what crashed it
+                log.warning("safe mode: not resuming interrupted tasks after the restart")
+                return _runtime
             recovered = _runtime.recover_after_restart(list(dict.fromkeys([*_runtime._restart_recoveries, *recent])))
             if recovered:
                 log.info("resumed %d task(s) after daemon restart: %s", len(recovered), ", ".join(recovered))
