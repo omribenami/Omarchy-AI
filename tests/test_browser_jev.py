@@ -1,4 +1,8 @@
+import os
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from omarchy_ai.execution import browser_jev
@@ -183,7 +187,8 @@ class BrowserStopTests(unittest.TestCase):
 
     def test_a_lost_connection_is_the_harness_s_own_report(self):
         error = RuntimeError("Page.navigate timed out after 15s waiting for the daemon")
-        result = browser_jev._stopped(0, error)
+        with patch.object(browser_jev, "_screen_is_locked", return_value=False):
+            result = browser_jev._stopped(0, error)
         self.assertFalse(result.ok)
         self.assertTrue(result.harness)
         self.assertIn("stopped after 0 actions", result.message)
@@ -193,9 +198,104 @@ class BrowserStopTests(unittest.TestCase):
         self.assertTrue(result.harness)
         self.assertIn("temporarily unavailable", result.message)
 
+    def test_a_timeout_behind_the_lock_screen_says_so(self):
+        error = RuntimeError("Page.navigate timed out after 15s waiting for the daemon")
+        with patch.object(browser_jev, "_screen_is_locked", return_value=True):
+            result = browser_jev._stopped(0, error)
+        self.assertFalse(result.ok)
+        self.assertTrue(result.harness)
+        self.assertIn("the browser can't load pages while the screen is locked", result.message)
+        self.assertNotIn("timed out", result.message)
+        with patch.object(browser_jev, "_screen_is_locked", return_value=False):
+            self.assertIn("timed out", browser_jev._stopped(0, error).message)
+
+    def test_the_lock_state_comes_from_the_desktop_check_and_unknown_is_unlocked(self):
+        for state, expected in ((True, True), (False, False), (None, False)):
+            with patch("omarchy_ai.execution.actions.desktop._screen_locked", return_value=state):
+                self.assertIs(browser_jev._screen_is_locked(), expected)
+
     def test_any_other_error_may_quote_the_page(self):
         error = RuntimeError("Stopped repeated interaction with Forward to x@evil.example")
         self.assertFalse(browser_jev._stopped(3, error).harness)
+
+
+class DedicatedBrowserLaunchTests(unittest.TestCase):
+    """The dedicated Chromium keeps rendering behind the lock screen, and one
+    started without those flags is restarted for a new task only."""
+
+    PID = 4242
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+        self.calls: list[list[str]] = []
+        self.unit_active = True
+        patch.object(browser_jev, "_PROC", self.tmp / "proc").start()
+        patch.object(browser_jev.subprocess, "run", self.fake_run).start()
+        patch.object(browser_jev.urllib.request, "urlopen", return_value=Mock()).start()
+        patch.object(browser_jev.Path, "home", return_value=self.tmp).start()
+        patch.object(browser_jev.time, "sleep").start()
+        patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-test"}).start()
+        self.addCleanup(patch.stopall)
+
+    def fake_run(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        if argv[:4] == ["systemctl", "--user", "is-active", "--quiet"]:
+            return subprocess.CompletedProcess(argv, 0 if self.unit_active else 3)
+        if argv[:3] == ["systemctl", "--user", "show"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{self.PID}\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def running(self, *flags):
+        proc = self.tmp / "proc" / str(self.PID)
+        proc.mkdir(parents=True, exist_ok=True)
+        argv = ["/usr/lib/chromium/chromium", "--remote-debugging-port=9229", *flags, "about:blank"]
+        (proc / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+
+    def launched(self):
+        return [c for c in self.calls if c and c[0] == "systemd-run"]
+
+    def stopped(self):
+        return [c for c in self.calls if c[:3] == ["systemctl", "--user", "stop"]]
+
+    def test_the_launch_argv_keeps_rendering_when_hidden(self):
+        self.unit_active = False
+        with patch.object(browser_jev.urllib.request, "urlopen", side_effect=[OSError("down"), Mock()]), \
+                patch("pathlib.Path.exists", return_value=True):
+            browser_jev._ensure_dedicated_browser()
+        (launch,) = self.launched()
+        chromium = launch[launch.index("--") + 1:]
+        for flag in ("--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+                     "--disable-background-timer-throttling"):
+            self.assertIn(flag, chromium)
+        self.assertFalse([a for a in chromium if "sandbox" in a or "web-security" in a])
+
+    def test_a_browser_started_without_the_flags_is_restarted_for_a_new_task(self):
+        self.running()
+        with patch("pathlib.Path.exists", return_value=True):
+            browser_jev._ensure_dedicated_browser(restart_stale=True)
+        self.assertEqual(len(self.stopped()), 1)
+        self.assertEqual(len(self.launched()), 1)
+        self.assertFalse(browser_jev._task_lock.locked())
+
+    def test_a_browser_with_the_flags_is_kept(self):
+        self.running(*browser_jev._RENDER_WHEN_HIDDEN_FLAGS)
+        browser_jev._ensure_dedicated_browser(restart_stale=True)
+        self.assertEqual((self.stopped(), self.launched()), ([], []))
+
+    def test_a_running_task_showing_or_resuming_never_restarts_it(self):
+        self.running()
+        browser_jev._ensure_dedicated_browser()  # show/inspect/resume
+        self.assertTrue(browser_jev._task_lock.acquire(blocking=False))
+        try:
+            browser_jev._ensure_dedicated_browser(restart_stale=True)  # a task is running
+        finally:
+            browser_jev._task_lock.release()
+        self.assertEqual((self.stopped(), self.launched()), ([], []))
+
+    def test_an_unknown_running_browser_is_kept(self):
+        browser_jev._ensure_dedicated_browser(restart_stale=True)  # no /proc entry
+        self.assertEqual((self.stopped(), self.launched()), ([], []))
 
 
 if __name__ == "__main__":

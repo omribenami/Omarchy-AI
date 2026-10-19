@@ -94,8 +94,11 @@ def _repair(raw: list, workspace) -> list[dict]:
         if step["action"] == "browser_task":
             if not a.get("goal"):
                 a["goal"] = "; ".join(str(x) for x in a["steps"]) if isinstance(a.get("steps"), list) else say
-            if not a.get("url") and ("google" in text or "search" in text or "google" in str(a.get("goal")).lower()):
-                a["url"] = "https://www.google.com"
+            named_google = "google" in text or "google" in str(a.get("goal")).lower()
+            if not a.get("url") and (named_google or "search" in text):
+                # Google only when the script names it: it answers the
+                # automated browser with a CAPTCHA (2026-10-19).
+                a["url"] = "https://www.google.com" if named_google else "https://duckduckgo.com"
         if step["action"] == "desktop_task" and not a.get("goal") and ("focused window" in text or "window" in text):
             step["action"] = "show_windows"
         if step["action"] in ("desktop_task", "say") and not a.get("goal") and any(
