@@ -20,6 +20,13 @@ class ActionResult:
     # The harness's own words (a refusal, a block), never fenced as untrusted
     # content even from a tool whose results are (execution/provenance.py).
     harness: bool = field(default=False, compare=False, repr=False)
+    # The harness's own words about a result whose content may be fenced:
+    # placed before the fence, never inside it (execution/runner.py).
+    note: str = field(default="", compare=False, repr=False)
+    # Actions the tool itself already ran and verified, as (name, args):
+    # desktop_task's verified steps. The turn's repeat check counts them
+    # (execution/verified_input.py).
+    performed: tuple = field(default=(), compare=False, repr=False)
 
 
 def _desktop_env() -> dict[str, str]:

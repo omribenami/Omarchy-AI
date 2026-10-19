@@ -546,6 +546,11 @@ class ToolRunner:
             message = provenance.fence(message, source)
         elif ok and not message.strip() and not tool.reads:
             message = DONE
+        # The harness's own words about the result (desktop_task: what already
+        # happened), outside the fence and first, where they are read.
+        note = passwords.redact(str(getattr(value, "note", "") or "")).strip()
+        if note:
+            message = f"{note}\n{message}" if message else note
         return ToolResult(
             ok, message, outcome, False, effect_id, duration, source, untrusted
         )
