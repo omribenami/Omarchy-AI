@@ -16,6 +16,7 @@ from ..core import alert_clips, identities, logs, outbox, quota, retry, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
+from ..execution.tools import READ, effect_class
 from ..execution import dispatch, provenance, runner
 from ..execution.actions import run_action, ActionResult
 from ..execution.verified_input import InputGuard, writes_externally
@@ -347,6 +348,10 @@ class GeminiLiveSession:
         # -> sent/what/name/busy.
         self._slow: dict = {}
         self._unspoken: dict = {}
+        # Claim before result: each request's calls, by origin (_turn_origin)
+        # -> heard/pending/results/calls/done; and call id -> origin.
+        self._requests: dict = {}
+        self._call_request: dict = {}
         self._last_call_at = 0.0  # monotonic start of her latest tool call
         self._last_audio_at = 0.0
         # Her latest words: output transcription with text in it. Audio alone,
@@ -752,6 +757,9 @@ class GeminiLiveSession:
             if (ack := self._ack_due(now)) is not None:
                 await self._say_ack(*ack)
                 continue
+            if (claimed := self._correction_due(now)) is not None:
+                await self._correct_claim(session, claimed)
+                continue
             if (unheard := self._result_due(now)) is not None:
                 await self._deliver_result(session, unheard)
                 continue
@@ -776,7 +784,8 @@ class GeminiLiveSession:
             if kind == "ack":
                 text = (f"[Automatic status, not from the user] You started this and it is still running: "
                         f"{w['what']}. Tell the user in one short sentence, in their language, that you heard "
-                        "them and are doing it now. Do not call any tool; the result comes to you by itself.")
+                        "them and are doing it now. Do not say it is done: its result has not come back. Do not "
+                        "call any tool; the result comes to you by itself.")
             else:
                 text = (f"[Automatic status, not from the user] Still running after {now - w['started']:.0f}s: "
                         f"{w['what']}. Tell the user in a few words, in their language, that you are still on "
@@ -851,9 +860,9 @@ class GeminiLiveSession:
             log.info("Acknowledged: session=%s call=%s tool=%s after=%.2fs", self._audit_session, call_id,
                      w and w["tool"], time.monotonic() - w["started"] if w else -1)
 
-    def _told_since(self, since: float) -> bool:
-        """Whether her words after `since` say more than an acknowledgement."""
-        said = " ".join(text for at, text in self._words if at > since)
+    def _told_since(self, since: float, until: float = float("inf")) -> bool:
+        """Whether her words after `since` (and before `until`) say more than an acknowledgement."""
+        said = " ".join(text for at, text in self._words if since < at < until)
         if not said.strip():
             return False
         if self._ack_phrase is False:
@@ -862,6 +871,11 @@ class GeminiLiveSession:
 
     def _result_due(self, now: float) -> str | None:
         for call_id, r in list(self._unspoken.items()):
+            if self._claimed(self._requests.get(self._call_request.get(call_id, ""))):
+                # She spoke for it before its result came: a result that bore
+                # her out was told; any other is _correct_claim's to tell.
+                self._unspoken.pop(call_id, None)
+                continue
             if r["busy"]:
                 # She was mid-turn when it came back: count from that turn's end.
                 if self._last_turn_done_at <= r["sent"]:
@@ -884,7 +898,9 @@ class GeminiLiveSession:
         (the typed chat: no clips, no spoken progress)."""
         while not self._hangup.is_set():
             await asyncio.sleep(0.2)
-            if (unheard := self._result_due(time.monotonic())) is not None:
+            if (claimed := self._correction_due(time.monotonic())) is not None:
+                await self._correct_claim(session, claimed)
+            elif (unheard := self._result_due(time.monotonic())) is not None:
                 await self._deliver_result(session, unheard)
 
     async def _deliver_result(self, session, call_id: str) -> None:
@@ -898,6 +914,110 @@ class GeminiLiveSession:
             "language, what it found or did. Do not call any tool."))]), turn_complete=True)
         self._claim_checked = self._user_mark()  # her next turn answers this, not the user
         log.info("Unspoken result delivered: session=%s call=%s name=%s", self._audit_session, call_id, r["name"])
+
+    # Claim before result. Live 2026-10-17 20:42 and 2026-10-18 18:45: the
+    # acknowledgement prompt was answered "on it! I turned on the goodnight
+    # routine / the lights" while the call was still running; it failed
+    # ("couldn't understand"), retries reported no change, and the user was
+    # never told. Her words while a call that acts is in flight are not its
+    # result: a request whose first such result did not bear them out is
+    # told once, when it has settled -- the real outcome if a later call did
+    # it, else a plain correction.
+    CLAIM_FORGET_SECONDS = 90.0  # a request settled this long ago is not corrected any more
+
+    def _request_started(self, call_id: str) -> None:
+        origin = self._turn_origin(self._last_user_speech)
+        entry = self._requests.setdefault(origin, {"heard": self._last_user_speech, "pending": set(),
+                                                    "results": [], "calls": [], "done": False})
+        entry["pending"].add(call_id)
+        entry["calls"].append(call_id)
+        self._call_request[call_id] = origin
+        for key in [k for k, e in self._requests.items() if e["done"] and not e["pending"]][:-20]:
+            for old in self._requests.pop(key)["calls"]:
+                self._call_request.pop(old, None)
+
+    def _request_result(self, call_id: str, ran: str, ran_args: dict, response: dict) -> None:
+        """What a call that acts reported, recorded for its request."""
+        entry = self._requests.get(self._call_request.get(call_id, ""))
+        if entry is None:
+            return
+        entry["pending"].discard(call_id)
+        if ran == "use_tool" or switchboard._reads(ran, ran_args) or effect_class(ran) == READ:
+            return  # nothing ran (an offer), or it only read
+        if not response.get("ok"):
+            verdict = "failed"
+        elif runner.NO_CHANGE in str(response.get("message", "")):
+            verdict = "no_change"
+        else:
+            verdict = "ok"
+        entry["results"].append({"call": call_id, "tool": ran, "verdict": verdict, "at": time.monotonic()})
+
+    def _claimed(self, entry: dict | None) -> bool:
+        """She said more than an acknowledgement for this request before the
+        first result of a call that acts came back."""
+        if not entry or not entry["results"]:
+            return False
+        return self._told_since(entry["heard"], entry["results"][0]["at"])
+
+    def _correction_due(self, now: float) -> str | None:
+        """The origin of a settled request whose result did not bear out what
+        she said before it."""
+        for origin, e in list(self._requests.items()):
+            if e["done"] or e["pending"] or not e["results"]:
+                continue
+            last = e["results"][-1]["at"]
+            if now - last > self.CLAIM_FORGET_SECONDS:
+                e["done"] = True
+                continue
+            if e["results"][0]["verdict"] == "ok" or not self._claimed(e):
+                e["done"] = True  # it bore her out, or she said nothing before it
+                continue
+            quiet = max(last, self._last_call_at, self._last_words_at)
+            if (now - quiet >= self.RESULT_UNSPOKEN_SECONDS and not self._pending_calls
+                    and not self._running_background and self._idle()):
+                return origin
+        return None
+
+    async def _correct_claim(self, session, origin: str) -> None:
+        """Once per request: the real outcome after her early words."""
+        from google.genai import types
+        e = self._requests[origin]
+        e["done"] = True
+        results = e["results"]
+        last = results[-1]
+        recovered = any(r["verdict"] == "ok" for r in results[1:])
+        kind = "recovered" if recovered else last["verdict"]
+        if self._told_since(last["at"]):
+            # She spoke after the last result: hers to tell, if it says what happened.
+            if recovered:
+                return
+            reply = " ".join(text for at, text in self._words if at > last["at"])
+            if await asyncio.to_thread(escalation.jev_told_not_done, reply):
+                log.info("Claim corrected by her: session=%s origin=%s kind=%s", self._audit_session, origin, kind)
+                return
+        if not outbox.once(f"claim:{origin}", lambda: None, origin_id=origin):
+            return
+        for call_id in e["calls"]:  # one telling per request: no result notice after this
+            outbox.claim(f"call:{self._audit_session}:{call_id}")
+            self._unspoken.pop(call_id, None)
+        said = "Before its result came back you told the user it was done, or being done: "
+        if kind == "recovered":
+            text = (f"[Automatic result notice, not from the user] {said}the first attempt failed, and a later "
+                    f"call ({last['tool']}) did it. Tell the user the real outcome now, briefly, in their language. "
+                    "Do not call any tool.")
+        elif kind == "no_change":
+            text = (f"[Automatic correction, not from the user] {said}it is not confirmed, {last['tool']} reported "
+                    "no change. Tell the user plainly now, in their language: that it already was so, if a state "
+                    "check you have shows it; otherwise that the tool reported no change. Do not call any tool.")
+        else:
+            text = (f"[Automatic correction, not from the user] {said}it was not, the call failed. Tell the user "
+                    "plainly now, in one or two sentences in their language, that it did not work and why, from the "
+                    "result you have. Do not call any tool.")
+        await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=text)]),
+                                          turn_complete=True)
+        self._claim_checked = self._user_mark()  # her next turn answers this, not the user
+        log.info("Claim before result corrected: session=%s origin=%s kind=%s calls=%d", self._audit_session,
+                 origin, kind, len(results))
 
     def _report_lost(self, call, ran: str, response: dict) -> None:
         """A background result whose conversation connection was gone: once,
@@ -1549,6 +1669,7 @@ class GeminiLiveSession:
                  self._audit_session, call.id, call.name, call.args or {})
         self._gemini_inflight = self._gemini_inflight[-20:] + [(call.name, dict(call.args or {}), time.monotonic())]
         background = call.name in NON_BLOCKING_ACTIONS
+        self._request_started(call.id)
         self._note_slow(call.id, call.name)
         self._last_call_at = time.monotonic()
         if background:
@@ -1685,6 +1806,7 @@ class GeminiLiveSession:
         log.info("Gemini action finished: session=%s call=%s name=%s ok=%s result_chars=%d message=%r",
                  self._audit_session, call.id, call.name, response["ok"],
                  len(response["message"]), response["message"][:1800])
+        self._request_result(call.id, ran, ran_args, response)
         if ran != "use_tool" and not response["message"].startswith(_NOT_RUN):
             self._executed = self._executed[-20:] + [(ran, ran_args, time.monotonic())]
         # A skill started is a task started: nothing else escalates the same job.
