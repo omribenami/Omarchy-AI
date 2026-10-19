@@ -35,7 +35,7 @@ import hashlib
 import html
 import ipaddress
 import re
-from typing import Callable, Collection, Iterator, NamedTuple
+from typing import Callable, Collection, Iterable, Iterator, NamedTuple
 from urllib.parse import unquote, unquote_plus, urlparse
 
 USER, SYSTEM, LOCAL_STATE = "user", "system", "local_state"
@@ -421,11 +421,80 @@ def _in_content(aim: str, heard: set[str], seen: _Seen) -> bool:
     return bool(words) and words <= seen.tokens
 
 
-def _carried(text: str, heard: set[str], seen: _Seen | None) -> list[str]:
+# Words too common to carry anything: frequent English and Hebrew words, and
+# the vocabulary of browser goals and steps. A word in content counts as data
+# only when it is distinctive (_distinctive).
+_COMMON = frozenset(
+    """
+    about above after again against along already also although always among
+    another answer answers around because before being below between both
+    called could does doing during each either every first found from further
+    great having here how into itself just known large later least less like
+    little long made make many more most much must never next number often
+    only other others over people perhaps place point possible quite rather
+    really right same several should show since small something sometimes
+    still such than that their them then there these they thing things think
+    this those though three through today together under until upon used
+    using very want well were what when where whether which while whole whose
+    will with within without would year years your yours best better time
+    times today tomorrow yesterday morning evening night early late during
+    information details detail guide guides about overview summary general
+    search searches searched searching result results page pages first
+    content contents read reading open opening click clicking find finding
+    look looking check checking verify verified visit website websites site
+    sites link links article articles recommended recommendation
+    recommendations source sources official answer question questions
+    following follow scroll scrolling select selecting enter type button
+    field form submit browse browser google bing duckduckgo query queries
+    image images video videos news main home section sections list lists
+    item items title titles text find identify identifying top related
+    tab tabs window close back forward reload new another few several
+    whether please thanks hello good tips tip ways steps step
+    של את על עם זה זאת הוא היא הם הן אני אתה את אנחנו לא כן גם אבל או כי
+    אם מה מי איך למה מתי איפה כל יותר פחות הרבה מאוד רק עוד כבר עכשיו היום
+    מחר אתמול בוקר ערב לילה זמן טוב הכי חיפוש תוצאות תוצאה עמוד דף אתר
+    קישור לחפש חפש תחפש לקרוא קרא תקרא לפתוח פתח תפתח מידע ראשון ראשונה
+    ראשונים
+    """.split()
+)
+
+
+def _stem(token: str) -> str:
+    """A word without its common inflection, so "searched", "searching" and
+    "searches" are one word, and so are Hebrew's prefixed forms."""
+    if token and "\u0590" <= token[0] <= "\u05ff":
+        if len(token) > 3 and token[0] in "הובלמשכ":
+            token = token[1:]
+        for suffix in ("ים", "ות"):
+            if len(token) > 4 and token.endswith(suffix):
+                return token[: -len(suffix)]
+        return token
+    for suffix in ("ings", "ing", "edly", "ed", "es", "ly", "s"):
+        if len(token) - len(suffix) >= 3 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
+
+
+def _distinctive(token: str) -> bool:
+    """A word that could identify something: five letters or more, or with a
+    digit, and not a common word (_COMMON) in any inflection."""
+    if not (len(token) >= 5 or any(c.isdigit() for c in token)):
+        return False
+    return token not in _COMMON and _stem(token) not in _COMMON_STEMS
+
+
+_COMMON_STEMS = frozenset(_stem(word) for word in _COMMON)
+
+
+def _carried(
+    text: str, heard: set[str], seen: _Seen | None, own_words: Collection[str] = ()
+) -> list[str]:
     """Words of `text` that would carry data out: ones the user never said
     that are opaque (a key, an id), or that appear in the untrusted content
-    and are not short everyday words (five letters or more, or with a
-    digit)."""
+    and are distinctive (_distinctive), unless the user said them in any
+    form or the assistant wrote them before content had them (`own_words`,
+    Taint.own_words: stems)."""
+    heard_stems = {_stem(h) for h in heard}
     return sorted(
         t
         for t in _tokens(text) - heard
@@ -433,13 +502,15 @@ def _carried(text: str, heard: set[str], seen: _Seen | None) -> list[str]:
         or (
             seen is not None
             and t in seen.tokens
-            and (len(t) >= 5 or any(c.isdigit() for c in t))
+            and _distinctive(t)
+            and _stem(t) not in heard_stems
+            and _stem(t) not in own_words
         )
     )
 
 
 def _browse_problem(
-    web: _Web, heard: set[str], seen: _Seen
+    web: _Web, heard: set[str], seen: _Seen, own_words: Collection[str] = ()
 ) -> tuple[bool, list[str]] | None:
     """None to go to this web address; otherwise (whether the content put
     it there, the words it would carry out): its host or a distinctive label
@@ -450,7 +521,7 @@ def _browse_problem(
             return True, []
         if any(label in seen.tokens and label not in heard for label in web.labels):
             return True, []
-    words = _carried(web.rest, heard, seen)
+    words = _carried(web.rest, heard, seen, own_words)
     return (False, words) if words else None
 
 
@@ -474,6 +545,7 @@ def approval_needed(
     said: str,
     chosen: Collection[str] = (),
     seen: str | None = None,
+    own_words: Collection[str] = (),
 ) -> str | None:
     """None to run the call; otherwise why it needs the user's tap. Only a
     tainted conversation or task is ever stopped, only for an irreversible
@@ -484,7 +556,8 @@ def approval_needed(
     browser goes to (_BROWSE) is held back only when the untrusted content
     `seen` put it there or it would carry data out (_browse_problem); `seen`
     is Taint.seen, None when that record is not whole, and then the address
-    is as strict as any target. Unsure is a tap.
+    is as strict as any target. `own_words` (Taint.own_words) are words the
+    user or the assistant itself wrote first, never data. Unsure is a tap.
 
     The reason says a target came from content only when it appears in
     `seen`; otherwise it says the user did not state it."""
@@ -508,7 +581,7 @@ def approval_needed(
             relaxed = True  # a search engine's front page carries nothing
             continue
         if web is not None and record is not None:
-            problem = _browse_problem(web, heard, record)
+            problem = _browse_problem(web, heard, record, own_words)
             if problem is None:
                 relaxed = True
                 continue
@@ -520,7 +593,9 @@ def approval_needed(
             from_content.append(aim)
         else:
             unstated.append(aim)
-    if relaxed and (words := _carried(_free_text(name, args), heard, record)):
+    if relaxed and (
+        words := _carried(_free_text(name, args), heard, record, own_words)
+    ):
         # What it would search for or type on the page (the goal, the steps).
         carrying.append(("the goal and steps", words))
     reasons = []
@@ -559,6 +634,7 @@ _SEEN_KEPT = (
     200_000  # characters of untrusted content a session keeps to compare against
 )
 _SEEN_KEYS = 64  # recent pieces of content remembered, so one seen twice is kept once
+_OWN_WORDS_KEPT = 5000  # stems of words the user or the assistant wrote first
 
 
 class Taint:
@@ -575,6 +651,26 @@ class Taint:
         self._seen = ""
         self._seen_whole = True  # every piece of untrusted content is in _seen
         self._seen_keys: list[str] = []
+        self._seen_tokens: set[str] = set()
+        # Stems of words the user said, and of words the assistant wrote in
+        # its own calls before any content held them: never data from content.
+        self.own_words: set[str] = set()
+
+    def _own(self, tokens: Iterable[str]) -> None:
+        for token in tokens:
+            if len(self.own_words) >= _OWN_WORDS_KEPT:
+                return
+            self.own_words.add(_stem(token))
+
+    def wrote(self, args: object) -> None:
+        """The arguments of a call the assistant made (run or refused): its
+        words that no content seen so far holds are its own. Opaque tokens
+        are never counted, and once the record of content is not whole
+        nothing more is."""
+        if self.tainted and not self._seen_whole:
+            return
+        words = _tokens(" ".join(text for _, text in _leaves(args)))
+        self._own(t for t in words if not _opaque(t) and t not in self._seen_tokens)
 
     def chose(self, aims: list[str]) -> None:
         """The targets of a call the assistant is dispatching. Kept only
@@ -603,6 +699,7 @@ class Taint:
         if key in self._seen_keys:
             return  # the same result, marked by the guard and its dispatcher
         self._seen_keys = (self._seen_keys + [key])[-_SEEN_KEYS:]
+        self._seen_tokens |= _tokens(_plain(text))
         joined = self._seen + "\n" + text
         if len(joined) > _SEEN_KEPT:
             self._seen_whole = False  # the oldest content no longer fits
@@ -622,6 +719,7 @@ class Taint:
             self.utterances += 1
             self._joined = (self._joined + text)[-_SAID_KEPT:]
             self._spaced = (self._spaced + " " + text)[-_SAID_KEPT:]
+            self._own(_tokens(text))
 
     def said(self) -> str:
         return self._joined + "\n" + self._spaced

@@ -281,7 +281,11 @@ class InputGuard:
     def _run(self, execute, name, args):
         # One policy for every session (core/approvals.py).
         verdict = approvals.decide(name, args, tainted=self.taint.tainted, said=self.taint.said(),
-                                   chosen=self.taint.chosen, seen=self.taint.seen())
+                                   chosen=self.taint.chosen, seen=self.taint.seen(),
+                                   own_words=self.taint.own_words)
+        # Its words are the assistant's own where no content held them yet,
+        # whether it runs or not.
+        self.taint.wrote(args)
         sends = name in approvals.SEND_TOOLS  # the tool itself prepares a confirm card
         if verdict.level == approvals.DENY:
             return ActionResult(False, f"NOT run: {verdict.reason}.", harness=True)
