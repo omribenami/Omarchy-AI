@@ -3,6 +3,8 @@ again (execution/verified_input.py REPEAT_SECONDS). Journal 2026-10-17 22:18:
 one typed "Turn the volume down a little" ran volume_down twice."""
 
 import asyncio
+import copy
+import json
 import threading
 import time
 import unittest
@@ -138,6 +140,90 @@ class GuardRepeatTests(unittest.TestCase):
         )
 
 
+def desktop_handoff_after_volume_down():
+    """Journal 2026-10-19 03:49: desktop_task ran and verified volume_down,
+    then handed off. The real loop, with fakes for Jev, the desktop and the
+    executor; returns (desktop_task's result, the inner executor)."""
+    from omarchy_ai.execution.desktop_jev import DesktopLoop
+
+    observed = {"volume": {"percent": 50, "muted": False}, "windows": []}
+
+    def evaluate(raw, qs):
+        payload = json.loads(raw)
+        if payload["verified_steps"]:
+            raise ValueError("Jev answer invalid")
+        return {
+            "goal_met": {"probability": 0.0},
+            "operation": {
+                "choice": "volume_down",
+                "probabilities": {
+                    k: float(k == "volume_down") for k in qs["operation"]["criteria"]
+                },
+            },
+        }
+
+    def execute(name, args):
+        observed["volume"]["percent"] -= 5
+        return ActionResult(True, "")
+
+    inner = Mock(side_effect=execute)
+    result = DesktopLoop(evaluate, lambda: copy.deepcopy(observed), inner).run(
+        "Turn the volume down a little"
+    )
+    return result, inner
+
+
+class InnerStepRepeatTests(unittest.TestCase):
+    """An action desktop_task already ran counts as the turn's previous one."""
+
+    def setUp(self):
+        self.guard = InputGuard()
+        self.guard.heard_user("Turn the volume down a little")
+        self.handoff, self.inner = desktop_handoff_after_volume_down()
+        self.execute = Mock(
+            side_effect=lambda name, args: (
+                self.handoff if name == "desktop_task" else ActionResult(True, "")
+            )
+        )
+
+    def run_in(self, turn, name, args=None):
+        with logs.bind(turn_id=turn):
+            return self.guard.run(self.execute, name, dict(args or {}))
+
+    def names(self):
+        return [c.args[0] for c in self.execute.call_args_list]
+
+    def test_the_same_action_after_desktop_task_is_already_done(self):
+        first = self.run_in(
+            "t1", "desktop_task", {"goal": "Turn the volume down a little"}
+        )
+        self.assertFalse(first.ok)
+        self.inner.assert_called_once_with("volume_down", {})
+        second = self.run_in("t1", "volume_down")
+        self.assertEqual(self.names(), ["desktop_task"])
+        self.assertTrue(second.ok)
+        self.assertIn("Already done for this request", second.message)
+        self.assertIn(
+            "volume_down was already run and verified by desktop_task", second.message
+        )
+
+    def test_a_different_action_or_the_next_turn_runs(self):
+        self.run_in("t1", "desktop_task", {"goal": "Turn the volume down a little"})
+        self.run_in("t1", "volume_up")
+        self.run_in("t1", "desktop_task", {"goal": "Turn the volume down a little"})
+        self.guard.heard_user("a bit more")
+        self.run_in("t2", "volume_down")
+        self.assertEqual(
+            self.names(), ["desktop_task", "volume_up", "desktop_task", "volume_down"]
+        )
+
+    def test_the_user_asking_twice_still_runs(self):
+        self.guard.heard_user("turn it down twice")
+        self.run_in("t1", "desktop_task", {"goal": "Turn the volume down twice"})
+        self.run_in("t1", "volume_down")
+        self.assertEqual(self.names(), ["desktop_task", "volume_down"])
+
+
 class SessionRepeatTests(unittest.TestCase):
     """The live session: use_tool resolved to the same tool, through the ToolRunner."""
 
@@ -207,6 +293,55 @@ class SessionRepeatTests(unittest.TestCase):
         s._input_guard.heard_user("a bit more")
         self.dispatch(s, run, "c4", {"request": "Turn the volume down"}, pick)
         self.assertEqual(run.call_count, 2)
+
+    def test_volume_down_after_desktop_task_ran_it_is_not_run_again(self):
+        # Journal 2026-10-19 03:49, replayed: desktop_task ran volume_down and
+        # handed off; the model then sent use_tool -> volume_down.
+        s = self.session()
+        handoff, inner = desktop_handoff_after_volume_down()
+        run = Mock(
+            side_effect=lambda name, args: (
+                handoff if name == "desktop_task" else ActionResult(True, "")
+            )
+        )
+        session = SimpleNamespace(send_tool_response=AsyncMock())
+        goal = {"goal": "Turn the volume down a little"}
+        with (
+            patch("omarchy_ai.voice.gemini_live.run_action", run),
+            patch(
+                "omarchy_ai.voice.gemini_live.LiveSession._current_window",
+                return_value={},
+            ),
+        ):
+
+            async def call():
+                await s._run_call(
+                    session, SimpleNamespace(id="c1", name="desktop_task", args=goal)
+                )
+                await asyncio.gather(*list(s._bg_tasks))
+
+            asyncio.run(call())
+        told = session.send_tool_response.call_args.kwargs[
+            "function_responses"
+        ].response
+        self.assertFalse(told["ok"])
+        self.assertTrue(
+            told["message"].startswith(
+                "desktop_task stopped before the whole goal was verified. "
+                "Already done (verified): volume_down. Do not repeat the done steps."
+            )
+        )
+        self.assertIn('<untrusted source="vision" kind="vision">', told["message"])
+        pick = catalog.Resolution(
+            True, "volume_down", {}, picked=True, evidence={"p": 1.0}
+        )
+        second = self.dispatch(
+            s, run, "c2", {"name": "volume_down{}", "request": goal["goal"]}, pick
+        )
+        inner.assert_called_once_with("volume_down", {})
+        self.assertEqual([c.args[0] for c in run.call_args_list], ["desktop_task"])
+        self.assertTrue(second["ok"])
+        self.assertIn("Already done for this request", second["message"])
 
     def test_the_parameter_offer_then_the_named_call_runs(self):
         s, run = self.session(), Mock(return_value=ActionResult(True, "Reminder set"))

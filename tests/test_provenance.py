@@ -183,6 +183,24 @@ class RunnerFencingTests(unittest.TestCase):
         empty = self.run_tool("read_file", {}, "")
         self.assertEqual(empty.message, "")
 
+    def test_a_note_is_the_harness_s_own_words_before_the_fence(self):
+        # desktop_task's "Already done: ..." about a result whose evidence
+        # (window titles) stays fenced.
+        note = "Already done (verified): volume_down. Do not repeat the done steps."
+        result = runner.ToolRunner().run(
+            "desktop_task",
+            {"goal": "Turn the volume down a little"},
+            execute=lambda n, a: ActionResult(False, INJECTION, note=note),
+        )
+        self.assertTrue(result.untrusted)
+        first, rest = result.message.split("\n", 1)
+        self.assertEqual(first, note)
+        self.assertTrue(rest.startswith('<untrusted source="vision" kind="vision">'))
+        self.assertTrue(rest.endswith("</untrusted>"))
+        self.assertIn(INJECTION, rest)
+        plain = self.run_tool("volume_up", {}, "Volume 40%")
+        self.assertEqual(plain.message, "Volume 40%")
+
     def test_a_timeout_is_the_runners_own_words(self):
         import threading
 

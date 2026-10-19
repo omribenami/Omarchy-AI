@@ -163,6 +163,21 @@ def probability(value):
     return float(value)
 
 
+# Gateway rounds every probability to 2 decimals (core/jev.py): the selected
+# option can read one step below another, and the sum drifts with the number
+# of options. Journal 2026-10-19 03:49: after a verified volume_down for
+# "Turn the volume down a little", the next decision (done, or one more
+# step?) ended in a ValueError, logged by class only. The near-even, rounded
+# answer such a decision gets is what the old exact checks (sum within .02
+# over up to 15 options, selected == max) rejected; an unsure answer is the
+# other way there, and is now told apart (UncertainChoice).
+_ROUNDING = .01 + 1e-9
+
+
+class UncertainChoice(ValueError):
+    """Jev's answer was valid but not sure enough to act on."""
+
+
 def choice(answers, name, question, minimum=.95):
     answer = answers[name]
     selected = answer["choice"]
@@ -171,13 +186,15 @@ def choice(answers, name, question, minimum=.95):
         raise ValueError("Jev returned an unknown choice or incomplete distribution")
     values = [probability(p) for p in distribution.values()]
     p = probability(distribution[selected])
-    if abs(sum(values) - 1) > .02 or p != max(values):
-        raise ValueError("Invalid Jev choice distribution")
+    if abs(sum(values) - 1) > max(.02, .005 * len(values)):
+        raise ValueError("Jev choice distribution does not sum to 1")
+    if max(values) - p > _ROUNDING:
+        raise ValueError("Jev choice is not its most probable option")
     # Do not call selected probability 'confidence': TypeSafe's confidence is
     # a different statistic. Gateway may omit it, so retain it only if supplied.
     confidence = probability(answer["confidence"]) if "confidence" in answer else None
     if p < minimum or (minimum and confidence is not None and confidence < .8):
-        raise ValueError("Uncertain Jev choice; return to live model")
+        raise UncertainChoice("Uncertain Jev choice; return to live model")
     return selected
 
 
@@ -247,6 +264,30 @@ def verified(name, args, before, after):
     return False
 
 
+def _step(name, args):
+    return f"{name} {json.dumps(args, ensure_ascii=False)}" if args else name
+
+
+def _note(status, reason, verified_steps, trace):
+    """What already happened, first and in the harness's own words: a
+    handoff once read as "nothing happened" got its done step run again
+    (journal 2026-10-19 03:49, volume_down twice)."""
+    if status in {"completed", "dry_run"}:
+        return ""
+    done = [_step(s["action"], s["args"]) for s in verified_steps]
+    dispatched = [t for t in trace if "dispatch_ok" in t and t["dispatch_ok"] is not False]
+    unsure = [_step(t["action"], t["args"]) for t in dispatched[len(verified_steps):]]
+    parts = ["desktop_task stopped before the whole goal was verified."]
+    if done:
+        parts.append(f"Already done (verified): {', '.join(done)}. Do not repeat the done steps.")
+    if unsure:
+        parts.append(f"Sent but not confirmed: {', '.join(unsure)}. Check the current state before sending it again.")
+    if not done and not unsure:
+        parts.append("Nothing was changed on the desktop.")
+    parts.append(f"Not done: whatever else the goal still needs, if anything. Why it stopped: {reason}")
+    return " ".join(parts)
+
+
 class DesktopLoop:
     def __init__(self, evaluate, observe_state=observe, execute=run_action, max_steps=8, timeout=25):
         self.evaluate, self.observe, self.execute = evaluate, observe_state, execute
@@ -256,10 +297,13 @@ class DesktopLoop:
         generation = _generation
         started = time.monotonic()
         trace, verified_steps = [], []
-        def result(status, reason):
-            return ActionResult(status == "completed", json.dumps({"status": status, "reason": reason,
+        # `detail` (the executor's output) goes in the fenced JSON only, never the note.
+        def result(status, reason, detail=""):
+            return ActionResult(status == "completed", json.dumps({"status": status, "reason": reason + detail,
                 "verified_steps": verified_steps, "trace": trace,
-                "elapsed_ms": round((time.monotonic() - started) * 1000)}, ensure_ascii=False))
+                "elapsed_ms": round((time.monotonic() - started) * 1000)}, ensure_ascii=False),
+                note=_note(status, reason, verified_steps, trace),
+                performed=tuple((s["action"], s["args"]) for s in verified_steps))
         def stopped():
             return generation != _generation or time.monotonic() - started >= self.timeout
         knowledge = search(goal, 3)
@@ -269,12 +313,13 @@ class DesktopLoop:
             try:
                 before = self.observe()
             except Exception:
-                return result("handoff", "Desktop observation failed; no further action executed.")
+                return result("handoff", "Desktop observation failed; nothing further was run.")
             actions = candidates(before)
             qs = questions(before, actions)
             state = {"goal": goal, "observation": before, "verified_steps": verified_steps,
                      "reference_only": knowledge}
             tick = time.monotonic()
+            answers = None
             try:
                 answers = self.evaluate(json.dumps(state, ensure_ascii=False), qs)
                 operation = choice(answers, "operation", qs["operation"], minimum=0)
@@ -286,15 +331,27 @@ class DesktopLoop:
                     return result("handoff", "Cancelled or timed out while Jev was evaluating; nothing further executed.")
                 if operation in {"handoff", "stuck"}:
                     return result("handoff", "Live model must handle the remaining goal, including vision/text if needed.")
-                choice(answers, "operation", qs["operation"])
                 if operation == "done":
-                    if met >= .95 and verified_steps:
+                    # An unsure "done" is a completion that was not confirmed,
+                    # not a failure: the verified steps stand.
+                    try:
+                        choice(answers, "operation", qs["operation"])
+                        sure = True
+                    except UncertainChoice:
+                        sure = False
+                    if sure and met >= .95 and verified_steps:
                         return result("completed", "Requested goal judged complete with verified native postconditions.")
-                    return result("handoff", "Completion judgment did not meet confidence/evidence requirements; report the verified steps.")
+                    return result("handoff", "Jev could not confirm the whole goal is complete; nothing further was run.")
+                choice(answers, "operation", qs["operation"])
                 name, args = resolve(operation, answers, qs, before, actions)
             except Exception as exc:
-                log.warning("Desktop Jev handoff: %s", type(exc).__name__)
-                return result("handoff", "Jev unavailable, uncertain or invalid; no further action executed.")
+                log.warning("Desktop Jev handoff: %s: %s", type(exc).__name__, str(exc)[:200])
+                log.debug("Desktop Jev handoff detail: operation answer=%r",
+                          (answers or {}).get("operation") if isinstance(answers, dict) else answers,
+                          exc_info=True)
+                why = ("Jev was not sure of the next step" if isinstance(exc, UncertainChoice)
+                       else "Jev was unavailable or its answer was invalid")
+                return result("handoff", why + "; nothing further was run.")
             trace[-1].update(action=name, args=args)
             if dry_run:
                 return result("dry_run", "Decision only; no action executed.")
@@ -317,13 +374,13 @@ class DesktopLoop:
                 return result("handoff", "Executor raised; dispatch outcome unknown. Inspect state before retrying.")
             trace[-1]["dispatch_ok"] = outcome.ok
             if not outcome.ok:
-                return result("handoff", "Action failed: " + outcome.message)
+                return result("handoff", "Action failed.", " " + outcome.message)
             try:
                 after = self.observe()
             except Exception:
                 return result("handoff", "Action dispatched, verification observation failed. Do not repeat blindly.")
             if not verified(name, args, before, after):
-                return result("handoff", "Action dispatched, outcome unverified. Do not repeat blindly. " + outcome.message)
+                return result("handoff", "Action dispatched, outcome unverified. Do not repeat blindly.", " " + outcome.message)
             verified_steps.append({"action": name, "args": args, "evidence": after})
         return result("handoff", "Step budget exhausted; report verified steps and remaining work.")
 
@@ -341,6 +398,7 @@ def desktop_task(args):
         return DesktopLoop(client.evaluate_questions).run(goal)
     except Exception as exc:
         log.warning("Desktop task unavailable: %s", type(exc).__name__)
+        log.debug("Desktop task unavailable detail", exc_info=True)
         return ActionResult(False, "Desktop Jev unavailable; return this task to the live model.")
     finally:
         _lock.release()

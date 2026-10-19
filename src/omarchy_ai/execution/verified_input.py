@@ -73,7 +73,11 @@ def ends_session(name: str, args: dict) -> bool:
 # still journals irreversible external effects once per origin; this is the
 # layer before it, for local and reversible actions and whatever use_tool
 # resolved to (the guard sees the resolved tool, so a use_tool that only
-# returned parameters ran nothing and holds nothing back).
+# returned parameters ran nothing and holds nothing back). An action a tool
+# ran itself counts too (ActionResult.performed: desktop_task's verified
+# steps). Journal 2026-10-19 03:49: desktop_task ran and verified volume_down,
+# then handed off; the model took the handoff for a failure and sent
+# use_tool -> volume_down, and the volume went down twice.
 REPEAT_SECONDS = 10.0
 _NO_REPEAT_CHECK = frozenset({"type_text", "press_key", "submit_sudo_password"})
 _ASKS_REPEAT = re.compile(
@@ -82,13 +86,17 @@ _ASKS_REPEAT = re.compile(
     re.IGNORECASE)
 
 
+def _key(name, args) -> str:
+    return json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str)
+
+
 class _Action:
     """A turn's previous action: which, when, and how it ended."""
 
     def __init__(self, turn: str, key: str) -> None:
         self.turn, self.key, self.at = turn, key, time.monotonic()
         self.done = threading.Event()
-        self.result = None
+        self.result: ActionResult | None = None
 
 
 def where(window: dict | None) -> str:
@@ -228,7 +236,24 @@ class InputGuard:
             if action is not None:
                 action.result = result
                 action.done.set()
+        self._performed(name, result)
         return result
+
+    def _performed(self, name, result) -> None:
+        """The last action `result`'s tool ran itself becomes the turn's
+        previous action, already answered: the same call next is a repeat."""
+        steps = getattr(result, "performed", None) or ()
+        turn = logs.current().get("turn_id")
+        if not turn or not steps:
+            return
+        step, step_args = steps[-1]
+        if step in _NO_REPEAT_CHECK or tools.effect_class(step) == tools.READ:
+            return
+        done = _Action(turn, _key(step, step_args))
+        done.result = ActionResult(True, f"{step} was already run and verified by {name} in this request")
+        done.done.set()
+        with self._lock:
+            self._previous = done
 
     def _repeat_of(self, name, args) -> tuple[_Action | None, ActionResult | None]:
         """(this call, now the turn's previous action, or None; None), or
@@ -236,7 +261,7 @@ class InputGuard:
         turn = logs.current().get("turn_id")
         if not turn or name in _NO_REPEAT_CHECK or tools.effect_class(name) == tools.READ:
             return None, None
-        key = json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str)
+        key = _key(name, args)
         with self._lock:
             before = self._previous
             if (before is None or before.turn != turn or before.key != key
