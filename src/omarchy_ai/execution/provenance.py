@@ -31,9 +31,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 import contextvars
 from dataclasses import dataclass
+import hashlib
+import html
+import ipaddress
 import re
-from typing import Callable, Collection, Iterator
-from urllib.parse import urlparse
+from typing import Callable, Collection, Iterator, NamedTuple
+from urllib.parse import unquote, unquote_plus, urlparse
 
 USER, SYSTEM, LOCAL_STATE = "user", "system", "local_state"
 EXTERNAL, WEB, FILE, TERMINAL, VISION = "external", "web", "file", "terminal", "vision"
@@ -172,6 +175,19 @@ def clip(text: str, limit: int) -> str:
 # whole decision (plan 2.4 will fold it into one approval policy); the
 # sessions turn a "needs approval" into the existing approval paths: a
 # confirm card (core/pending_actions.py) or a Task Runtime approval.
+#
+# One relaxation, for where the browser goes (_BROWSE: browser_task's url
+# and the web addresses written in its goal and steps, browser_control's
+# url). When the conversation kept a whole record of the untrusted content
+# it saw (Taint.seen), a web address the assistant picked itself runs
+# unless the content put it there: its host, or a distinctive label of the
+# host, appears in that content, or its path, query or fragment carries a
+# word from the content or an opaque token (an id, a key) the user never
+# said. A search engine's bare front page (_SEARCH_HOSTS) carries nothing
+# and always runs. Everything else -- recipients of a send, paths, commands,
+# amounts, typed text, repos -- keeps the strict rule above, and so does a
+# web address once the record is not whole (content seen without its text,
+# or more of it than the record keeps).
 
 # A key whose value is itself a target, wherever it sits in nested arguments.
 _TARGET_KEY = re.compile(
@@ -214,28 +230,39 @@ def _leaves(value: object, key: str = "") -> list[tuple[str, str]]:
     return []
 
 
-def targets(name: str, args: dict) -> list[str]:
-    """What an irreversible call aims at, from tools.KEY_ARGS. A tool that
-    declares nothing (unknown) aims at everything it was given."""
+def _aimed(name: str, args: dict) -> list[tuple[str, str]]:
+    """(argument, target) for each target of an irreversible call, from
+    tools.KEY_ARGS. A tool that declares nothing (unknown) aims at
+    everything it was given, under no argument name."""
     from . import tools
 
     spec = tools.KEY_ARGS.get(name)
     args = args if isinstance(args, dict) else {}
     if spec is None:
-        return [text for _, text in _leaves(args)]
-    found: list[str] = []
+        return [("", text) for _, text in _leaves(args)]
+    found: list[tuple[str, str]] = []
     for arg in spec:
-        value = args.get(arg.rstrip("~"))
+        key = arg.rstrip("~")
+        value = args.get(key)
         if value is None or value == "":
             continue
         if isinstance(value, (dict, list, tuple)):
-            for key, text in _leaves(value, arg):
-                found += [text] if _TARGET_KEY.search(key) else _EMBEDDED.findall(text)
+            for inner, text in _leaves(value, key):
+                if _TARGET_KEY.search(inner):
+                    found.append((key, text))
+                else:
+                    found += [(key, t) for t in _EMBEDDED.findall(text)]
         elif arg.endswith("~"):
-            found += _EMBEDDED.findall(str(value))
+            found += [(key, t) for t in _EMBEDDED.findall(str(value))]
         else:
-            found.append(str(value))
+            found.append((key, str(value)))
     return found
+
+
+def targets(name: str, args: dict) -> list[str]:
+    """What an irreversible call aims at, from tools.KEY_ARGS. A tool that
+    declares nothing (unknown) aims at everything it was given."""
+    return [text for _, text in _aimed(name, args)]
 
 
 def _home(text: str) -> str:
@@ -268,6 +295,177 @@ def own(aim: str) -> str:
     return _home(str(aim).strip()).rstrip("/")
 
 
+# The arguments whose web addresses get the relaxed rule (the comment above
+# _TARGET_KEY): where the assistant's own browser goes. browser_control's
+# typed text, a send's recipients, delegate's url (a worker acts on it
+# unseen) and every other target stay strict.
+_BROWSE = {
+    "browser_task": frozenset({"url", "goal", "steps"}),
+    "browser_control": frozenset({"url"}),
+}
+# Search engines whose bare front page carries no data anywhere.
+_SEARCH_HOSTS = frozenset(
+    {"google.com", "duckduckgo.com", "html.duckduckgo.com", "bing.com"}
+)
+# Labels of a host that name no one (www, example.co.uk's "co").
+_GENERIC_LABELS = frozenset({"co", "com", "org", "net", "gov", "edu", "ac", "www"})
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+
+
+class _Web(NamedTuple):
+    host: str  # ASCII (punycode) form, without "www."
+    names: frozenset[str]  # the host's ASCII and Unicode forms
+    labels: frozenset[str]  # its distinctive labels, both forms
+    rest: str  # path, parameters, query and fragment, decoded
+    bare: bool  # nothing past the origin
+
+
+def _idna(host: str) -> tuple[str, str]:
+    """(ASCII, Unicode) forms of a host; the input itself where one fails."""
+    try:
+        uni = host.encode("ascii").decode("idna") if "xn--" in host else host
+    except (UnicodeError, ValueError):
+        uni = host
+    try:
+        asc = uni.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError):
+        asc = host
+    return asc.lower(), uni.lower()
+
+
+def _web(aim: str) -> _Web | None:
+    """A public http(s) web address, normalized (case, scheme, "www.",
+    trailing slash, punycode), or None: another scheme, credentials, an
+    unusual port, an IP address or a local name stay strict."""
+    text = aim.strip()
+    if _SCHEME.match(text):
+        if not text.lower().startswith(("http://", "https://")):
+            return None
+    else:
+        text = "https://" + text
+    try:
+        parsed = urlparse(text)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").rstrip(".")
+    if not host or parsed.username or parsed.password or port not in (None, 80, 443):
+        return None
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return None
+    except ValueError:
+        pass
+    asc, uni = _idna(host)
+    asc, uni = asc.removeprefix("www."), uni.removeprefix("www.")
+    if "." not in asc or asc.endswith(_LOCAL_SUFFIXES):
+        return None
+    labels = {
+        label
+        for form in (asc, uni)
+        for label in form.split(".")[:-1]
+        if len(label) >= 3 and label not in _GENERIC_LABELS
+    }
+    rest = ";".join(filter(None, (parsed.path.strip("/"), parsed.params)))
+    rest = "?".join(filter(None, (rest, parsed.query)))
+    if parsed.fragment:
+        rest += "#" + parsed.fragment
+    return _Web(
+        asc, frozenset({asc, uni}), frozenset(labels), unquote_plus(rest), not rest
+    )
+
+
+def _opaque(token: str) -> bool:
+    """A token nobody types by accident: a key, an id, an encoded blob."""
+    return len(token) >= 20 or (
+        len(token) >= 10
+        and any(c.isdigit() for c in token)
+        and any(c.isalpha() for c in token)
+    )
+
+
+class _Seen(NamedTuple):
+    text: str  # decoded and lowercased
+    tokens: frozenset[str]
+
+
+# JSON's escapes of a character and of a slash, as a tool's JSON output has them.
+_JSON_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})|\\/")
+
+
+def _plain(content: str) -> str:
+    """Text to compare targets against: unfenced, entities, JSON escapes and
+    percent escapes decoded, lowercased."""
+    text = html.unescape(unfence(content))
+    text = _JSON_ESCAPE.sub(
+        lambda m: chr(int(m.group(1), 16)) if m.group(1) else "/", text
+    )
+    return unquote(_C0.sub("", text)).lower()
+
+
+def _record(seen: str | None) -> _Seen | None:
+    if seen is None:
+        return None
+    text = _plain(seen)
+    return _Seen(text, frozenset(_tokens(text)))
+
+
+def _in_content(aim: str, heard: set[str], seen: _Seen) -> bool:
+    """Whether a target, or every word of it the user did not say, appears
+    in the untrusted content seen."""
+    written = _plain(_home(aim)).strip().rstrip("/")
+    if len(written) >= 4 and written in seen.text:
+        return True
+    words = _tokens(_home(aim)) - heard
+    return bool(words) and words <= seen.tokens
+
+
+def _carried(text: str, heard: set[str], seen: _Seen | None) -> list[str]:
+    """Words of `text` that would carry data out: ones the user never said
+    that are opaque (a key, an id), or that appear in the untrusted content
+    and are not short everyday words (five letters or more, or with a
+    digit)."""
+    return sorted(
+        t
+        for t in _tokens(text) - heard
+        if _opaque(t)
+        or (
+            seen is not None
+            and t in seen.tokens
+            and (len(t) >= 5 or any(c.isdigit() for c in t))
+        )
+    )
+
+
+def _browse_problem(
+    web: _Web, heard: set[str], seen: _Seen
+) -> tuple[bool, list[str]] | None:
+    """None to go to this web address; otherwise (whether the content put
+    it there, the words it would carry out): its host or a distinctive label
+    of it appears in the content, or its path, query or fragment carries
+    data (_carried)."""
+    if web.host not in _SEARCH_HOSTS:
+        if any(name in seen.text for name in web.names):
+            return True, []
+        if any(label in seen.tokens and label not in heard for label in web.labels):
+            return True, []
+    words = _carried(web.rest, heard, seen)
+    return (False, words) if words else None
+
+
+def _free_text(name: str, args: dict) -> str:
+    """The free text a browser call carries besides its address: what
+    browser_task types and searches for is written in its goal and steps."""
+    if name != "browser_task" or not isinstance(args, dict):
+        return ""
+    return "\n".join(text for _, text in _leaves([args.get("goal"), args.get("steps")]))
+
+
+def _shown(aims: list[str]) -> str:
+    return ", ".join(repr(m[:80]) for m in aims[:3])
+
+
 def approval_needed(
     name: str,
     args: dict,
@@ -275,24 +473,70 @@ def approval_needed(
     tainted: bool,
     said: str,
     chosen: Collection[str] = (),
+    seen: str | None = None,
 ) -> str | None:
     """None to run the call; otherwise why it needs the user's tap. Only a
     tainted conversation or task is ever stopped, only for an irreversible
     call, and only when one of its targets is not in `said` (the user's own
     words and any plan they approved) and is not one the assistant itself
     used before the taint arose (`chosen`, Taint.chose: exactly that target,
-    not a look-alike), or the call is self-acting. Unsure is a tap."""
+    not a look-alike), or the call is self-acting. A web address the
+    browser goes to (_BROWSE) is held back only when the untrusted content
+    `seen` put it there or it would carry data out (_browse_problem); `seen`
+    is Taint.seen, None when that record is not whole, and then the address
+    is as strict as any target. Unsure is a tap.
+
+    The reason says a target came from content only when it appears in
+    `seen`; otherwise it says the user did not state it."""
     from . import tools
 
     if not tainted or tools.effect_class(name) != tools.IRREVERSIBLE:
         return None
     if name in _SELF_ACTING:
         return _SELF_ACTING[name]
-    missing = [m for m in _unsaid(targets(name, args), said) if own(m) not in chosen]
-    if not missing:
-        return None
-    shown = ", ".join(repr(m[:80]) for m in missing[:3])
-    return f"{shown} came from content, not from the user's own words"
+    heard = _tokens(_home(said))
+    record = _record(seen)
+    from_content: list[str] = []
+    carrying: list[tuple[str, list[str]]] = []
+    unstated: list[str] = []
+    relaxed = False  # a web address ran on the relaxed rule
+    for arg, aim in _aimed(name, args):
+        if not aim or _tokens(_home(aim)) <= heard or own(aim) in chosen:
+            continue
+        web = _web(aim) if arg in _BROWSE.get(name, ()) else None
+        if web is not None and web.bare and web.host in _SEARCH_HOSTS:
+            relaxed = True  # a search engine's front page carries nothing
+            continue
+        if web is not None and record is not None:
+            problem = _browse_problem(web, heard, record)
+            if problem is None:
+                relaxed = True
+                continue
+            if problem[0]:
+                from_content.append(aim)
+            else:
+                carrying.append((aim, problem[1]))
+        elif record is not None and _in_content(aim, heard, record):
+            from_content.append(aim)
+        else:
+            unstated.append(aim)
+    if relaxed and (words := _carried(_free_text(name, args), heard, record)):
+        # What it would search for or type on the page (the goal, the steps).
+        carrying.append(("the goal and steps", words))
+    reasons = []
+    if from_content:
+        reasons.append(
+            f"{_shown(from_content)} came from content, not from the user's own words"
+        )
+    for aim, words in carrying[:2]:
+        derived = [w for w in words if record is not None and w in record.tokens]
+        what = ", ".join(repr(w[:40]) for w in (derived or words)[:3])
+        source = "from outside content" if derived else "the user never said"
+        shown = aim if aim == "the goal and steps" else repr(aim[:80])
+        reasons.append(f"{shown} would carry data {source} ({what}) to the web")
+    if unstated:
+        reasons.append(f"{_shown(unstated)} wasn't stated by the user")
+    return "; ".join(reasons) or None
 
 
 def read_query_needed(args: dict, *, said: str) -> str | None:
@@ -311,12 +555,16 @@ def read_query_needed(args: dict, *, said: str) -> str | None:
 
 
 _CHOSEN_KEPT = 200  # targets of the assistant's own pre-taint calls a session keeps
+_SEEN_KEPT = (
+    200_000  # characters of untrusted content a session keeps to compare against
+)
+_SEEN_KEYS = 64  # recent pieces of content remembered, so one seen twice is kept once
 
 
 class Taint:
     """One conversation's taint: whether untrusted content entered it, from
-    where, what the user said in it, and the targets the assistant itself
-    aimed at before it was tainted."""
+    where, what that content said, what the user said in it, and the targets
+    the assistant itself aimed at before it was tainted."""
 
     def __init__(self) -> None:
         self.tainted = False
@@ -324,6 +572,9 @@ class Taint:
         self.utterances = 0  # pieces of the user's own words heard so far
         self._joined, self._spaced = "", ""
         self.chosen: set[str] = set()
+        self._seen = ""
+        self._seen_whole = True  # every piece of untrusted content is in _seen
+        self._seen_keys: list[str] = []
 
     def chose(self, aims: list[str]) -> None:
         """The targets of a call the assistant is dispatching. Kept only
@@ -337,10 +588,31 @@ class Taint:
             if aim and len(self.chosen) < _CHOSEN_KEPT:
                 self.chosen.add(own(aim))
 
-    def mark(self, source: str) -> None:
+    def mark(self, source: str, content: str | None = None) -> None:
+        """Untrusted content from `source` entered the conversation.
+        `content` is its text (fenced or not); without it the record of what
+        was seen is no longer whole (Taint.seen)."""
         self.tainted = True
         if source and source not in self.sources:
             self.sources = (self.sources + [source])[-5:]
+        if content is None:
+            self._seen_whole = False
+            return
+        text = _C0.sub("", html.unescape(unfence(content)))
+        key = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+        if key in self._seen_keys:
+            return  # the same result, marked by the guard and its dispatcher
+        self._seen_keys = (self._seen_keys + [key])[-_SEEN_KEYS:]
+        joined = self._seen + "\n" + text
+        if len(joined) > _SEEN_KEPT:
+            self._seen_whole = False  # the oldest content no longer fits
+            joined = joined[-_SEEN_KEPT:]
+        self._seen = joined
+
+    def seen(self) -> str | None:
+        """All the untrusted content this conversation saw, or None once
+        that record is not whole: then every target is checked strictly."""
+        return self._seen if self._seen_whole else None
 
     def heard(self, text: str) -> None:
         """The user's words: a whole turn, or one fragment of one (live

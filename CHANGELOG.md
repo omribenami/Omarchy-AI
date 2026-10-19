@@ -99,6 +99,15 @@ Rules for every release:
   anything from outside now counts as mine, and a browser timeout is no
   longer treated as web content. A new target that only shows up in an
   email or page still needs your tap.
+- After a smart-home request, "look up on the web..." was refused, saying
+  google.com came from outside content when it hadn't, and everyday
+  browsing after that needed your tap. Now a web address I pick myself
+  runs unless outside content actually named it or it would carry words
+  or codes from that content (in a search query, a link or the steps);
+  a search engine's front page always runs. Sends, files, commands and
+  other targets still need your tap when you didn't state them, and the
+  reason now says "wasn't stated by you" unless it really came from
+  content.
 - In the typed chat, when a smart-home switch or another background job
   finished and I said nothing about it, you were never told. Now I tell you
   once, in the chat as well as by voice; an empty reply no longer counts as
