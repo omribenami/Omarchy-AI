@@ -564,6 +564,11 @@ let pc = null;
 let dc = null;
 let localStream = null;
 let handledCallIds = new Set();
+// The conversation's turns since the last tool call, sent with the next one
+// (/api/tool `events`): the desktop keeps the same guard per conversation --
+// a confirmation counts only after it was asked and answered.
+let conversationId = '';
+let toolEvents = [];
 let userLine = null;
 let assistantLine = null;
 let live = false;
@@ -787,8 +792,20 @@ function setError(text) {
   nativeUi?.error(text || '');
 }
 
+function noteTurn(role, delta) {
+  const last = toolEvents[toolEvents.length - 1];
+  if (role === 'user') {
+    if (last && last[0] === 'heard') last[1] += delta;
+    else toolEvents.push(['heard', delta]);
+  } else if (!last || last[0] !== 'replied') {
+    toolEvents.push(['replied']);
+  }
+  if (toolEvents.length > 200) toolEvents = toolEvents.slice(-200);
+}
+
 function appendTranscript(role, delta) {
   if (!delta) return;
+  noteTurn(role, delta);
   nativeUi?.transcript(role, delta);
   if (role === 'user') {
     if (!userLine) {
@@ -815,7 +832,8 @@ async function callTool(name, args) {
     const res = await fetch('/api/tool', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, arguments: args || {} }),
+      body: JSON.stringify({ name, arguments: args || {}, conversation_id: conversationId,
+                             events: toolEvents.splice(0) }),
     });
     return await res.json();
   } catch (e) {
@@ -947,6 +965,7 @@ async function start() {
   updateComposer();
   setError('');
   handledCallIds = new Set();
+  toolEvents = [];
   userLine = null;
   assistantLine = null;
   setStatus('connecting…', 'connecting');
@@ -1025,7 +1044,8 @@ async function start() {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || ('HTTP ' + res.status));
     }
-    const {sdp} = await res.json();
+    const {sdp, conversation_id} = await res.json();
+    conversationId = conversation_id || '';
     if (pc !== peer) return false;
     await peer.setRemoteDescription({type: 'answer', sdp});
     return await ready;

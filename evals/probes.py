@@ -53,8 +53,10 @@ def hanging_tool_cancelled(deadline: float = 0.4) -> tuple[bool, str]:
             self._watchdog_on = False
             self._action_log: list = []
             self._dc = None
+            from omarchy_ai.execution.provenance import Taint
+
             self._input_guard = SimpleNamespace(
-                run=lambda execute, name, args: execute(name, args)
+                run=lambda execute, name, args: execute(name, args), taint=Taint()
             )
 
         def _set_watchdog_state(self, state):
@@ -198,8 +200,10 @@ def voice_read_aloud_is_not_a_command() -> tuple[bool, str]:
             self._watchdog_on = False
             self._action_log: list = []
             self._dc = Channel()
+            from omarchy_ai.execution.provenance import Taint
+
             self._input_guard = SimpleNamespace(
-                run=lambda execute, name, args: execute(name, args)
+                run=lambda execute, name, args: execute(name, args), taint=Taint()
             )
 
         def _set_watchdog_state(self, state):

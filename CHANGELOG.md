@@ -65,6 +65,13 @@ Rules for every release:
   chat the task started in, opens or shows up in the file manager when
   you're at the desk, and by voice I just tell you what it is and where.
   I keep those files for two weeks.
+- Whether you talk at the desk, type in the chat, call from your phone or
+  talk to the speaker, I now follow the same rules before I do anything:
+  the same questions before deleting or sending, the same care with things
+  I read in emails and files, and I won't do the same thing twice for one
+  request.
+- Tools you added yourself now work in every kind of conversation, not
+  only in Gemini voice and chat.
 
 ### Fixes
 
@@ -79,7 +86,33 @@ Rules for every release:
   once, in the chat as well as by voice; an empty reply no longer counts as
   having told you, and neither does a late "on it" on its own.
 
+- On the phone's OpenAI call, tool calls skipped the safety checks every
+  other conversation has: a delete ran without the tap it needs, typing
+  went to whatever window had focus, and "exit" could close a shell without
+  asking. They now go through the same checks, and asking the assistant to
+  send you a file from that call works (it never did).
+- On the phone's Gemini chat, two typed messages in a row counted as one
+  request, so the second "turn it up" could be skipped as a repeat.
+- The turn-based Gateway mode (Omarchi-ai) could not use MyApi or Gmail
+  even when connected, and "what did you just do?" failed there. Both work
+  now.
+- "What did you do in that window?" no longer fails in a Gemini
+  conversation after a command the fast path ran.
+
 ### Under the hood
+
+- `execution/dispatch.py`: one tool registry (`registry_tools`: built-in,
+  MyApi when connected, user tools) and one dispatch path
+  (`arun`/`run`: the ToolRunner wrapped in the conversation's InputGuard)
+  for the desktop OpenAI session, every Gemini session (desktop voice, the
+  Gateway realtime transport, typed chat, phone call, satellite), the
+  Gateway STT/TTS pipeline and the phone bridge's `/api/tool`.
+  `tests/test_parity.py` drives each surface through its own handlers with
+  the same fake tools and holds them to the same answers, with the
+  differences that are on purpose listed (each with its reason). The phone
+  page now sends `conversation_id` and the turns since the last call
+  (`events`) with each tool call; the bridge keeps one guard, action log and
+  per-resource ordering per phone conversation.
 
 - `runtime/workers.py`: `delegate(kind=research|browser|files, brief)`, a
   catalog tool. Research and browser jobs run `browser_task` on the

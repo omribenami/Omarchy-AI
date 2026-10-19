@@ -286,6 +286,20 @@ def _read_api_key(config: Config) -> str:
         return f.read().strip()
 
 
+# The phone's own tool (execution/dispatch.py: the registry, plus each
+# surface's own), declared to the phone's OpenAI call only.
+SHARE_FILE_TOOL = {
+    "type": "function", "name": "share_file",
+    "description": ("Attach one existing desktop file to this phone chat when the user asks you to send, "
+                    "share, or give them that file. Use the exact absolute path and do not claim it was sent "
+                    "unless this tool succeeds."),
+    "parameters": {"type": "object", "properties": {
+        "path": {"type": "string", "description": "Absolute path of the existing desktop file."},
+        "label": {"type": "string", "description": "Optional short caption."},
+    }, "required": ["path"]},
+}
+
+
 def _relay_offer(config: Config, offer_sdp: str, conversation: str = "", identity=None) -> str:
     """POSTs the browser's SDP offer to OpenAI (server-side, real key) and
     returns the answer SDP — same request shape as the desktop LiveSession,
@@ -306,16 +320,7 @@ def _relay_offer(config: Config, offer_sdp: str, conversation: str = "", identit
     where = origin.describe({**origin.current(conversation or None), "person": None})
     if where:
         session_config["instructions"] += "\n\nWHERE THE USER IS: " + where
-    session_config["delegation"]["responses"]["tools"].append({
-        "type": "function", "name": "share_file",
-        "description": ("Attach one existing desktop file to this phone chat when the user asks you to send, "
-                        "share, or give them that file. Use the exact absolute path and do not claim it was sent "
-                        "unless this tool succeeds."),
-        "parameters": {"type": "object", "properties": {
-            "path": {"type": "string", "description": "Absolute path of the existing desktop file."},
-            "label": {"type": "string", "description": "Optional short caption."},
-        }, "required": ["path"]},
-    })
+    session_config["delegation"]["responses"]["tools"].append(dict(SHARE_FILE_TOOL))
     body = json.dumps(
         {
             "session": session_config,
@@ -1030,44 +1035,135 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "expected {\"name\": \"...\", \"arguments\": {...}}"})
             return
         from ..core import logs
+        from ..execution import dispatch
+        conversation = str(data.get("conversation_id") or "")
         # This request's thread: its log lines carry the phone conversation (core/logs.py).
-        logs.set_ids(session_id=str(data.get("conversation_id") or "phone-bridge"), turn_id=None)
-        log.info("phone bridge tool call: %s(%s)", name, args)
-        if name == "share_file":
-            from ..core import conversations
-            try:
-                meta = conversations.share_file(str(data.get("conversation_id") or ""),
-                                                str(args.get("path") or ""), str(args.get("label") or ""))
-            except (KeyError, OSError, ValueError) as exc:
-                self._send_json(200, {"ok": False, "message": f"Could not attach file: {exc}"})
-                return
-            self._send_json(200, {"ok": True, "message": f"Attached {meta['name']} to the chat."})
+        logs.set_ids(session_id=conversation or "phone-bridge", turn_id=None)
+        name = dispatch.tool_name(str(name))
+        if not isinstance(args, dict):
+            self._send_json(200, {"ok": False, "message": "The model requested invalid arguments."})
             return
-        if name == "get_recent_actions":
-            # No per-session action log here (unlike LiveSession's
-            # self._action_log) — the phone bridge has no session object
-            # to hang one off. Graceful empty result rather than an
-            # "unknown action" error, since this is a real tool the model
-            # may reach for.
-            self._send_json(200, {"ok": True, "message": "[]"})
+        # The conversation's own guard, as every other conversation has one
+        # (plan 4.6): what the user said and the replies since its last call
+        # come with the call (the page's `events`).
+        call = _phone_call(conversation)
+        call.hear(data.get("events"))
+        if call.heard:
+            logs.set_ids(turn_id=call.guard.turn_origin)  # one request: same-turn repeats (InputGuard)
+        log.info("phone bridge tool call: %s(%s)", name, args)
+        if name == dispatch.RECENT_ACTIONS:
+            self._send_json(200, {"ok": True, "message": dispatch.recent_actions(call.action_log, args.get("target"))})
             return
         from ..core import identities
         token = identities.set_current(identity_for_cookie(self.headers.get("Cookie", "")))
         try:
             # Paired phone only (checked before _handle_tool): the one caller
             # allowed to unlock; run_action refuses it for everyone else.
-            # On the ToolRunner: the tool's deadline answers a call that hangs.
-            result = runner.default_runner().run(
-                name, args,
-                execute=lambda n, a: unlock_screen_for_paired_phone() if n == "unlock_screen" else run_action(n, a))
+            # The shared dispatch path (execution/dispatch.py): the tool's
+            # deadline, the approval policy, taint and fencing.
+            tool = runner.spec(name)
+            with call.holding(tool.resource, exclusive=not tool.reads):
+                result = dispatch.run(call, call.guard, name, args,
+                                      execute=lambda n, a: _phone_action(conversation, n, a))
         except Exception:  # noqa: BLE001
             log.exception("phone bridge: tool call %s failed", name)
             self._send_json(200, {"ok": False, "message": f"{name} failed unexpectedly"})
             return
         finally:
             identities.reset_current(token)
+        call.logged(name, args, result.ok, result.message)
         log.info("phone bridge tool result: ok=%s message=%r", result.ok, result.message)
         self._send_json(200, {"ok": result.ok, "message": result.message})
+
+
+def _phone_action(conversation: str, name: str, args: dict):
+    """run_action, plus the two tools only a paired phone has: unlock_screen
+    and share_file (into this phone conversation)."""
+    from ..execution.actions import ActionResult
+    if name == "unlock_screen":
+        return unlock_screen_for_paired_phone()
+    if name == "share_file":
+        from ..core import conversations
+        try:
+            meta = conversations.share_file(conversation, str(args.get("path") or ""), str(args.get("label") or ""))
+        except (KeyError, OSError, ValueError) as exc:
+            return ActionResult(False, f"Could not attach file: {exc}")
+        return ActionResult(True, f"Attached {meta['name']} to the chat.")
+    return run_action(name, args)
+
+
+class _PhoneCall:
+    """One phone conversation's tool-call state (the phone's OpenAI call
+    posts each tool call to /api/tool): its InputGuard, its action log for
+    get_recent_actions, and per-resource ordering of its mutating calls --
+    what the desktop session keeps on its LiveSession."""
+
+    MAX_LOG = 100
+    MAX_EVENTS = 200
+
+    def __init__(self) -> None:
+        from ..execution.verified_input import InputGuard
+        self.guard = InputGuard()
+        self.heard = False
+        self.action_log: list[dict] = []
+        self._lock = threading.Lock()
+        self._resources: dict[str, threading.Lock] = {}
+
+    def hear(self, events) -> None:
+        """Apply the page's transcript events since the last call, in order:
+        ["heard", text] (the user's words; consecutive pieces are one
+        utterance) and ["replied"] (the assistant answered)."""
+        if not isinstance(events, list):
+            return
+        words: list[str] = []
+
+        def flush() -> None:
+            if words:
+                self.guard.heard_user(" ".join(" ".join(words).split())[:4000])
+                self.heard = True
+                words.clear()
+
+        with self._lock:
+            for event in events[-self.MAX_EVENTS:]:
+                if not isinstance(event, list) or not event:
+                    continue
+                if event[0] == "heard" and len(event) > 1 and isinstance(event[1], str):
+                    words.append(event[1])
+                elif event[0] == "replied":
+                    flush()
+                    self.guard.assistant_replied()
+            flush()
+
+    def holding(self, resource: str, *, exclusive: bool):
+        import contextlib
+        if not exclusive:
+            return contextlib.nullcontext()
+        with self._lock:
+            lock = self._resources.setdefault(resource, threading.Lock())
+        return lock
+
+    def logged(self, name: str, args: dict, ok: bool, message: str) -> None:
+        with self._lock:
+            if name == "close_window" and ok:
+                return
+            self.action_log = [*self.action_log[-(self.MAX_LOG - 1):],
+                               {"action": name, "args": args, "ok": ok, "message": message, "window": {}}]
+
+
+_PHONE_CALLS: dict[str, _PhoneCall] = {}
+_PHONE_CALLS_MAX = 16
+_phone_calls_lock = threading.Lock()
+
+
+def _phone_call(conversation: str) -> _PhoneCall:
+    """The state of one phone conversation ("" for calls that name none,
+    such as the unlock button), the most recent _PHONE_CALLS_MAX kept."""
+    with _phone_calls_lock:
+        call = _PHONE_CALLS.pop(conversation, None) or _PhoneCall()
+        _PHONE_CALLS[conversation] = call  # most recent last
+        while len(_PHONE_CALLS) > _PHONE_CALLS_MAX:
+            _PHONE_CALLS.pop(next(iter(_PHONE_CALLS)))
+        return call
 
 
 class PhoneHTTPServer(ThreadingHTTPServer):

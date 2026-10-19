@@ -217,8 +217,7 @@ class TextChat:
             entry = {"role": "user", "text": text}
             adapter._transcript.append(entry)
             self._unanswered, self._calls_at = entry, len(adapter._seen)
-            adapter._turn_id = logs.new_id()  # each typed line is a user turn (core/logs.py)
-            adapter._input_guard.heard_user(text)
+            adapter.typed_turn(text)  # each typed line is a user turn (core/logs.py)
             # A typed line is the user answering: announcements said before
             # it count as heard (acknowledged_ids), as speech does in a call.
             adapter.user_spoke_at = adapter._last_user_speech = time.monotonic()

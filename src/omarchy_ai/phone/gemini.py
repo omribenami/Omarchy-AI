@@ -31,6 +31,20 @@ log = logging.getLogger(__name__)
 # (never clips a quiet speaker, may splice less under loud background).
 # Calibrate from the "loud-run speech p50" in the guard's log lines.
 PHONE_SPLICE_ABORT_RMS = 1500.0
+
+# The phone's own tool (execution/dispatch.py: the registry, plus each
+# surface's own), declared to Gemini on the phone only.
+SHARE_FILE_DECLARATION = {
+    'name': 'share_file',
+    'description': ('Attach one existing desktop file to this phone chat when the user asks you to send, '
+                    'share, or give them that file. Use the exact absolute path. The phone gets a real '
+                    'downloadable file card; never claim a file was sent without this tool succeeding.'),
+    'parameters_json_schema': {'type': 'object', 'properties': {
+        'path': {'type': 'string', 'description': 'Absolute path of the existing file on the desktop.'},
+        'label': {'type': 'string', 'description': 'Optional short caption shown with the file.'},
+    }, 'required': ['path']},
+    'behavior': 'BLOCKING',
+}
 _slots = threading.BoundedSemaphore(2)
 # Phone calls in progress: (their loop, adapter, set once the call is saved).
 _calls: list = []
@@ -307,7 +321,7 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
             text = for_speech(text)  # ...and reaches the model and transcript as "[password]"
             display = text or ("Attached " + ", ".join(str(m.get('name')) for m in attachment_meta))
             adapter._transcript.append({'role': 'user', 'text': display, 'attachments': attachment_meta})
-            adapter._input_guard.heard_user(text)
+            adapter.typed_turn(text)  # a user turn of its own, as in the desktop's typed chat
             emit({'type': 'response.event', 'event': {'type': 'response.created'}})
             if text:
                 parts.insert(0, {'text': text})
@@ -343,17 +357,7 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
                     live_config = build_live_config(config)
                 # Where the user is: the phone, not at this computer (core/origin.py).
                 live_config['system_instruction'] += origin_note(conversation or None, 'phone-voice')
-                live_config['tools'][0]['function_declarations'].append({
-                    'name': 'share_file',
-                    'description': ('Attach one existing desktop file to this phone chat when the user asks you to send, '
-                                    'share, or give them that file. Use the exact absolute path. The phone gets a real '
-                                    'downloadable file card; never claim a file was sent without this tool succeeding.'),
-                    'parameters_json_schema': {'type': 'object', 'properties': {
-                        'path': {'type': 'string', 'description': 'Absolute path of the existing file on the desktop.'},
-                        'label': {'type': 'string', 'description': 'Optional short caption shown with the file.'},
-                    }, 'required': ['path']},
-                    'behavior': 'BLOCKING',
-                })
+                live_config['tools'][0]['function_declarations'].append(dict(SHARE_FILE_DECLARATION))
                 async with live_connect(client, config, model, live_config) as session:
                     if not answer.done():
                         agenda.mark_briefed()  # this prompt carried the heartbeat's pending results

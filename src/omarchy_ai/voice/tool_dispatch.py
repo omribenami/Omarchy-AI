@@ -11,6 +11,10 @@ was confirmed" instead of holding the session. Its outcome goes into the
 per-window action log (get_recent_actions) and back to the model as a
 function_call_output (_send_function_result).
 
+The call itself runs on execution/dispatch.py, the one dispatch path every
+conversation shares (plan 4.6); what is here is this session's own part:
+the per-resource ordering, the action log and the data-channel reply.
+
 Split out of voice/live.py; LiveSession inherits ToolDispatchMixin and still
 owns the state these methods use (_resources, _hangup, _action_log,
 _input_guard, _dc, _demo_waiting_for_action, the watchdog flags).
@@ -22,7 +26,7 @@ import json
 import logging
 
 from ..core import logs
-from ..execution import runner
+from ..execution import dispatch, runner
 from ..execution.actions import run_action
 from . import watchdog
 
@@ -56,8 +60,7 @@ class ToolDispatchMixin:
         self._set_watchdog_state("thinking")
         if self._watchdog_on:
             watchdog.tool_call(name, args)
-        result = await runner.default_runner().arun(
-            name, args, execute=run_action, wrap=self._input_guard.run, owner=self, tag=call_id)
+        result = await dispatch.arun(self, self._input_guard, name, args, execute=run_action, tag=call_id)
         log.info("tool result: ok=%s message=%r", result.ok, result.message)
         if self._watchdog_on:
             watchdog.tool_result(name, args, result.ok, result.message)
@@ -87,17 +90,7 @@ class ToolDispatchMixin:
         return {}
 
     def _get_recent_actions(self, target: str | None) -> str:
-        entries = self._action_log
-        if target:
-            needle = target.lower()
-            entries = [
-                e for e in entries
-                if needle in (e.get("window", {}).get("app") or "").lower()
-                or needle in (e.get("window", {}).get("title") or "").lower()
-            ]
-        if not entries:
-            return json.dumps([])
-        return json.dumps(entries[-20:])
+        return dispatch.recent_actions(self._action_log, target)
 
     def _send_function_result(self, call_id: str, ok: bool, message: str) -> None:
         if self._dc is None:

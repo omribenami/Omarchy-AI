@@ -33,10 +33,9 @@ from ..core.history import append_session, load_recent_context
 from ..core.summarize import archive_summaries, tail_chars
 from ..core import logs, updates
 from ..core.memory import fence_text, load_preferences, notes_hint
-from ..execution import runner
+from ..execution import dispatch, runner
 from ..execution.actions import run_action
 from ..execution.verified_input import InputGuard
-from ..execution.tools import MYAPI_TOOLS, TOOLS
 from ..display import assistant_huds
 from . import status_icon, watchdog
 from .tv_mic import Receiver as TvMicReceiver
@@ -515,8 +514,8 @@ def build_session_config(config: Config, *, surface: str | None = None) -> dict:
                         ),
                         "parameters": {"type": "object", "properties": {}, "required": []},
                     },
-                    *TOOLS,
-                    *(MYAPI_TOOLS if myapi_on else []),
+                    # The one tool registry (execution/dispatch.py).
+                    *dispatch.registry_tools(myapi_on),
                 ],
             },
         },
