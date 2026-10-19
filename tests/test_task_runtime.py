@@ -1483,3 +1483,180 @@ class CodingAgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------- the cancel loop, real tasks 2026-10-17/18
+LIGHT_ON = ("האור בחדר האוכל הודלק. Home Assistant מדווח ש־`light.dining_light` במצב `on`.\n\n"
+            "SUMMARY: The dining-room light is on.\nFILES CHANGED: none\nTESTS RUN: queried it; on\nRISKS: none")
+CANCEL_ACK = ("בוטל לפי בקשתך. לא בוצעו פעולות נוספות.\n\nSUMMARY: Task cancelled by the user.\n"
+              "FILES CHANGED: none\nTESTS RUN: none\nRISKS: none")
+
+
+class CancelLoopTests(RuntimeHarness):
+    """A cancelled task never runs another step; a finished report is a
+    result, not the question; a question that asks nothing does not wait forever."""
+
+    def asking(self):
+        """A worker that asks which light, then turns it on with any answer."""
+        def work(a, ctx):
+            if not a.context.get("user_answer"):
+                return Report("needs_user", question="Which light, the dining light or the chandelier?")
+            return Report(DONE, claim=LIGHT_ON)
+        return ScriptExecutor("SYSTEM_AGENT", work)
+
+    def sent(self):
+        """Every outbox message a task sends, in place of delivering it."""
+        sent = []
+        patcher = patch("omarchy_ai.core.outbox.send", side_effect=lambda msg: sent.append(msg) or ("chat",))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return sent
+
+    def test_after_a_cancel_no_answer_resume_or_recovery_runs_a_step(self):
+        worker = self.asking()
+        runtime = self.runtime([worker], ScriptedJev())
+        task = runtime.start("turn on the dining-room light", str(self.ws), background=False)
+        self.assertEqual(self.store.load(task.id).status, "waiting_user")
+        self.assertTrue(runtime.cancel(task.id)["ok"])
+        for reply in ("ok", "whats the question here??", "לא עבד."):
+            self.assertFalse(runtime.respond(task.id, answer=reply, background=False)["ok"])
+        self.assertFalse(runtime.respond(None, answer="ok", background=False)["ok"])
+        self.assertFalse(runtime.resume(task.id, background=False)["ok"])
+        self.assertEqual(runtime.recover_after_restart([task.id]), [])
+        self.assertFalse(runtime.steer(task.id, "go on")["ok"])
+        self.assertEqual(len(worker.calls), 1)
+        done = self.store.load(task.id)
+        self.assertEqual((done.status, len(done.steps)), ("cancelled", 1))
+
+    def test_a_cancel_from_another_process_after_launch_runs_no_step(self):
+        worker = self.asking()
+        runtime = self.runtime([worker], ScriptedJev())
+        task = runtime.start("turn on the dining-room light", str(self.ws), background=False)
+        stale = self.store.load(task.id)  # loaded while waiting, before the cancel
+        TaskStore(self.store.dir).update(task.id, lambda t: setattr(t, "status", "cancelled"))
+        runtime._drive(stale.id)
+        runtime._loop(stale)  # even handed the stale record
+        self.assertEqual(len(worker.calls), 1)
+        self.assertEqual(self.store.load(task.id).status, "cancelled")
+
+    def test_cancel_typed_as_the_answer_cancels_instead_of_resuming(self):
+        for reply in ("cancel it", "בטל", "Stop."):
+            worker = self.asking()
+            runtime = self.runtime([worker], ScriptedJev())
+            task = runtime.start("turn on the dining-room light", str(self.ws), background=False)
+            result = runtime.respond(task.id, answer=reply, channel="phone", background=False)
+            self.assertTrue(result["ok"], result)
+            done = self.store.load(task.id)
+            self.assertEqual((done.status, done.answers[-1]), ("cancelled", reply))
+            self.assertEqual(len(worker.calls), 1)  # the worker never saw it
+            self.assertFalse(runtime.respond(task.id, answer="ok", background=False)["ok"])
+
+    def test_an_answer_that_merely_mentions_cancel_is_an_answer(self):
+        worker = self.asking()
+        runtime = self.runtime([worker], ScriptedJev())
+        task = runtime.start("x", str(self.ws), background=False)
+        runtime.respond(task.id, answer="don't cancel, the chandelier", background=False)
+        self.assertEqual(len(worker.calls), 2)
+
+    def test_a_finished_report_completes_the_task_and_is_delivered_once_as_a_result(self):
+        sent = self.sent()
+        worker = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim=LIGHT_ON))
+        runtime = TaskRuntime(store=self.store, executors={"SYSTEM_AGENT": worker},
+                              control=ControlPlane(Jev(ScriptedJev(directives=["ASK_USER"]))),
+                              planner=FakePlanner(), notify=True)
+        task = runtime.start("turn on the dining-room light", str(self.ws), background=False)
+        done = self.store.load(task.id)
+        self.assertEqual(done.status, "unverified")
+        self.assertIsNone(done.question)
+        self.assertIn("light.dining_light", done.result)
+        self.assertEqual(len(worker.calls), 1)
+        from omarchy_ai.core import outbox
+        self.assertEqual([m.kind for m in sent], [outbox.RESULT])
+        runtime._emit(done, done.status)  # a second attempt is the same notice
+        self.assertEqual(len(sent), 1)
+
+    def test_a_finished_report_with_evidence_is_certified_not_asked(self):
+        def work(a, ctx):
+            ctx.run_command("true", a.workspace)
+            return Report(DONE, claim=LIGHT_ON)
+        worker = ScriptExecutor("SYSTEM_AGENT", work)
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER"]))
+        task = runtime.start("turn on the dining-room light", str(self.ws), background=False)
+        self.assertEqual(self.store.load(task.id).status, "certified")
+        self.assertEqual(len(worker.calls), 1)
+
+    def test_a_refused_certification_of_a_finished_report_ends_it_without_another_round(self):
+        def work(a, ctx):
+            ctx.run_command("true", a.workspace)
+            return Report(DONE, claim=LIGHT_ON)
+        worker = ScriptExecutor("SYSTEM_AGENT", work)
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER", "CONTINUE"], certified=0.3))
+        task = runtime.start("turn on the dining-room light", str(self.ws), background=False)
+        done = self.store.load(task.id)
+        self.assertEqual(done.status, "unverified")
+        self.assertEqual(len(worker.calls), 1)
+
+    def test_a_cancellation_acknowledgement_cancels_the_task(self):
+        worker = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim=CANCEL_ACK))
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER"]))
+        task = runtime.start("x", str(self.ws), background=False)
+        done = self.store.load(task.id)
+        self.assertEqual((done.status, done.question), ("cancelled", None))
+
+    def test_a_real_question_is_still_asked(self):
+        worker = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim="Which of the two lights did you mean?"))
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER"]))
+        task = runtime.start("x", str(self.ws), background=False)
+        self.assertEqual(self.store.load(task.id).status, "waiting_user")
+
+    def test_needs_user_without_a_question_is_a_result(self):
+        worker = ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report("needs_user", claim=LIGHT_ON))
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER"]))
+        task = runtime.start("x", str(self.ws), background=False)
+        done = self.store.load(task.id)
+        self.assertNotEqual(done.status, "waiting_user")
+        self.assertEqual(done.steps[0]["outcome"], "done")
+
+    def stuck(self, task_id, question, hours):
+        task = Task(id=task_id, goal="תדליק את האור בחדר האוכל.", workspace=str(self.ws), status="waiting_user",
+                    question=question)
+        task.finish_step(task.add_step("CODEX", "x"), "done", question)
+        task.budget["question_asked"] = time.time() - hours * 3600
+        self.store.save(task)
+
+    def test_a_stale_question_that_asks_nothing_is_closed_and_surfaced_once(self):
+        sent = self.sent()
+        runtime = TaskRuntime(store=self.store, executors={}, control=ControlPlane(Jev(ScriptedJev())),
+                              planner=FakePlanner(), notify=True)
+        self.stuck("result", "I need your input to continue: " + LIGHT_ON, 30)
+        self.stuck("ack", "I need your input to continue: " + CANCEL_ACK, 30)
+        self.stuck("fresh", "I need your input to continue: " + LIGHT_ON, 1)
+        self.stuck("real", "Which light, the dining light or the chandelier?", 30)
+        closed = runtime.expire_stale_questions()
+        self.assertEqual(sorted(closed), ["ack: cancelled", "result: unverified"])
+        result = self.store.load("result")
+        self.assertIsNone(result.question)
+        self.assertIn("light.dining_light", result.result)
+        self.assertEqual(self.store.load("ack").status, "cancelled")
+        self.assertEqual(self.store.load("fresh").status, "waiting_user")
+        self.assertEqual(self.store.load("real").status, "waiting_user")
+        from omarchy_ai.core import outbox
+        self.assertEqual([(m.kind, m.origin_id) for m in sent], [(outbox.RESULT, "task-result")])
+        self.assertEqual(runtime.expire_stale_questions(), [])
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(runtime.respond("result", answer="ok", background=False)["ok"])
+
+
+class QuestionShapeTests(unittest.TestCase):
+    def test_question_result_and_cancel_shapes(self):
+        from omarchy_ai.runtime import questions
+        self.assertFalse(questions.is_question("I need your input to continue: " + LIGHT_ON))
+        self.assertFalse(questions.is_question("I need your input to continue: TEST_COMMAND: python -c 'a?b'"))
+        self.assertTrue(questions.is_question("Which light did you mean?"))
+        self.assertTrue(questions.cancel_acknowledged(CANCEL_ACK))
+        self.assertFalse(questions.cancel_acknowledged("I cancelled your 3 pm meeting."))
+        for said in ("cancel it", "Cancel it.", "בטל", "תבטל את זה", "never mind", "stop"):
+            self.assertTrue(questions.cancel_intent(said), said)
+        for said in ("ok", "whats the question here??", "לא עבד.", "don't cancel", "cancel the meeting",
+                     "No, not approved: do not do it."):
+            self.assertFalse(questions.cancel_intent(said), said)

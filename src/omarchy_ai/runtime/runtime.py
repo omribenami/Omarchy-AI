@@ -38,7 +38,7 @@ from .control import LIVE_GAPS, ControlPlane
 from .executors import Executor, default_executors
 from .executors.base import (BLOCKED, DIAGNOSE, DONE, FAILED as R_FAILED, IMPLEMENT, NEEDS_APPROVAL,
                              NEEDS_CODE_CHANGE, NEEDS_USER, REVIEW, TEST, WORK, Assignment, Report)
-from . import llm
+from . import llm, questions
 from .llm import WorkerModel, WorkerModelError
 from .permissions import _TOOLS_CLI, Assessment, Risk, Scope, classify, coding_agent_risk, decide, split_commands
 from .task import (ACTIVE, AWAITING_CONFIRMATION, CANCELLED, CERTIFIED, FAILED, INTERRUPTED, RUNNING, TERMINAL, UNVERIFIED,
@@ -175,6 +175,16 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
                                                 + ("approval" if wanted == WAITING_APPROVAL else "an answer")}
             return {"ok": False, "message": "no task is waiting for " + ("approval" if wanted == WAITING_APPROVAL
                                                                          else "an answer")}
+        if (task.status == WAITING_USER and questions.cancel_intent(answer or "")
+                and task.certification.get("status") != AWAITING_CONFIRMATION):
+            # 2026-10-18 20:50: "cancel it" typed into the phone's answer box
+            # went to the worker as an answer; the task never stopped, and the
+            # next answers turned the lights on three more times. A cancel is
+            # a cancel, whichever box it was typed in.
+            self.store.update(task.id, lambda t: t.answers.append(str(answer)[:2000]))
+            done = self.cancel(task.id)
+            return {**done, "message": f"{done['message']} (the answer said to cancel it); nothing more will run"
+                    if done.get("ok") else done.get("message", "")}
         if owned_elsewhere(task):
             return {"ok": False, "message": f"task {task.id} is being run by another process (pid {task.owner['pid']})"}
         if task.status == WAITING_APPROVAL:
@@ -363,6 +373,48 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
         if done:
             log.info("approvals tidied: %s", "; ".join(done))
             self._refresh_task_hud()
+        return done
+
+    def expire_stale_questions(self, now: float | None = None) -> list[str]:
+        """A task waiting on a "question" that asks nothing does not wait
+        forever. Real tasks 2026-10-17: a finished "the light is on" and a
+        Shabbat-times answer sat as questions for a day; every reply resumed
+        them. Older than questions.STALE_QUESTION_HOURS, such a task ends:
+        cancelled if the worker said it was cancelled, otherwise unverified
+        with the report as its result, delivered once as a result (the
+        outbox key is the notice's fingerprint). Nothing is run again. A real
+        question keeps waiting. Called on the heartbeat."""
+        now = time.time() if now is None else now
+        ttl = questions.STALE_QUESTION_HOURS * 3600
+        done = []
+        for task in self.store.list(50):
+            if (task.status != WAITING_USER or task.certification.get("status") == AWAITING_CONFIRMATION
+                    or owned_elsewhere(task) or questions.is_question(task.question or "")):
+                continue
+            asked = float(task.budget.get("question_asked") or task.updated_at or now)
+            if now - asked < ttl:
+                continue
+
+            def expire(t, question=task.question):
+                if t.status != WAITING_USER or t.question != question:
+                    return  # answered or changed meanwhile
+                report = questions.strip_prefix(question or "")
+                t.question, t.next_dispatch, t.phase = None, None, "done"
+                t.certification.setdefault("status", "not_certified")
+                if questions.cancel_acknowledged(report):
+                    t.status, t.result = CANCELLED, "Cancelled by the user."
+                else:
+                    t.status = UNVERIFIED
+                    t.result = ((report[:1200] + "\n\n" if report else "")
+                                + f"Not verified: it waited over {questions.STALE_QUESTION_HOURS:g} hours on a question "
+                                "that asked nothing, so it was closed. Nothing was run again.")[:1500]
+                t.add_note("Closed: waiting on a question that asked nothing.")
+            closed = self.store.update(task.id, expire)
+            if closed is not None and closed.status in TERMINAL:
+                done.append(f"{task.id}: {closed.status}")
+                self._emit(closed, closed.status)
+        if done:
+            log.info("stale task questions closed: %s", "; ".join(done))
         return done
 
     def reassign(self, task_id: str | None, agent: str, *, unsandboxed: bool = False,
@@ -569,13 +621,14 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
         task.status = RUNNING
         task.owner = this_process()
         task.phase = "starting"
-        self.store.save(task)
+        self.store.save(task)  # adopts a cancel made since the launch, by any process
+        if task.status == CANCELLED:  # cancelled between launch and start
+            task.owner = None
+            return
         # A task can spend noticeable time planning or selecting an executor.
         # Tell every attached surface immediately, rather than making progress
         # visibility depend on the first worker process having started.
         self._emit(task, "progress")
-        if task.status == CANCELLED:  # cancelled between launch and start
-            return
         if task.certification.get("status") == AWAITING_CONFIRMATION and task.answers:
             return self._confirmed(task)
         resumed_at = time.time()
@@ -701,6 +754,10 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             task.add_error(f"unknown executor {name}")
             task.next_dispatch = None
             return True
+        if task.status == CANCELLED:
+            # Adopted from the file by the loop's last save: no step after a
+            # cancel, whoever made it (the loop then stops and says so).
+            return True
         task.phase = f"{name.lower()}:{dispatch['role']}"
         if dispatch["write"] and name in CODING:
             self._checkpoint(task)
@@ -722,6 +779,11 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             report = Report(R_FAILED, claim=f"{name} crashed: {type(exc).__name__}: {exc}")
         finally:
             llm.TIER.reset(tier)
+        if report.status == NEEDS_USER and not report.question and not questions.is_question(report.claim):
+            # A report with nothing to answer is a result, not a question
+            # (2026-10-17: "the light is on" waited a day as the question).
+            task.add_note(f"{name} said it needed the user but asked nothing; its report is taken as its result.")
+            report.status = DONE
         outcome = {DONE: "done", NEEDS_APPROVAL: "waiting_approval", NEEDS_USER: "waiting_user",
                    NEEDS_CODE_CHANGE: "done", BLOCKED: "blocked"}.get(report.status, "failed")
         task.finish_step(step, outcome, report.claim)
@@ -824,6 +886,7 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
     # ----------------------------------------------------------- endings
     def _ask_user(self, task: Task, question: str) -> None:
         task.question = question[:800]
+        task.budget["question_asked"] = time.time()
         task.status = WAITING_USER
         task.phase = "waiting_user"
         self.store.save(task)
