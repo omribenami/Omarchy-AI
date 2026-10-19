@@ -109,9 +109,26 @@ class DeliveryTests(WorkerCase):
         worker = pool.start("research", "what is new in Python 3.14 " + "x" * 5000)
         pool.join(worker.id, 10)
         args = tool.calls[0]
-        self.assertTrue(args["url"].startswith(workers.SEARCH_URL))
+        self.assertTrue(args["url"].startswith("https://duckduckgo.com/?q="))
         self.assertLess(len(args["goal"]), workers.BRIEF_CHARS + 200)
         self.assertIn("Python 3.14", args["goal"])
+
+    def test_searches_and_bare_browser_work_do_not_start_on_google(self):
+        # Google answers the automated browser with a CAPTCHA (2026-10-19).
+        research = workers._args(
+            workers.Worker("w-1", "research", "python 3.14"), False
+        )["url"]
+        browser = workers._args(
+            workers.Worker("w-2", "browser", "read the news"), False
+        )["url"]
+        self.assertEqual(research, "https://duckduckgo.com/?q=python+3.14")
+        self.assertEqual(browser, "https://duckduckgo.com")
+        self.assertEqual(
+            workers._args(
+                workers.Worker("w-3", "browser", "x", url="https://shop.example"), False
+            )["url"],
+            "https://shop.example",
+        )
 
     def test_the_result_is_said_in_an_open_conversation_with_its_report_fenced(self):
         said: list[dict] = []

@@ -162,9 +162,58 @@ def show_running_task() -> None:
             log.debug("could not activate the task tab", exc_info=True)
 
 
-def _ensure_dedicated_browser() -> None:
-    """Start the browser-use-only Chromium profile with a stable CDP port."""
-    global _browser_process
+# Keep the dedicated browser rendering and navigating while its window is
+# hidden, occluded or behind the session lock. Real failure (2026-10-18
+# 19:04): with the screen locked, every browser_task stopped at "Page.navigate
+# timed out after 15s waiting for the daemon" with the tab on about:blank;
+# after unlocking, the same tasks loaded pages. None of these weakens the
+# sandbox or web security; they only switch off background throttling.
+_RENDER_WHEN_HIDDEN_FLAGS = (
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+)
+_PROC = Path("/proc")
+# One launch (or restart) at a time: two callers must not both start a unit.
+_launch_lock = threading.Lock()
+
+
+def _running_browser_lacks_flags() -> bool:
+    """True only when the running omarchy-ai-browser unit's Chromium is known
+    to have been started without _RENDER_WHEN_HIDDEN_FLAGS (one launched
+    before they existed). Unknown (no PID, unreadable /proc): False."""
+    try:
+        shown = subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value",
+                                "omarchy-ai-browser.service"], capture_output=True, text=True, timeout=5)
+        pid = int((shown.stdout or "0").strip() or 0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        argv = (_PROC / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    args = {a.decode(errors="replace") for a in argv if a}
+    if not any(a.endswith("chromium") for a in args):
+        return False
+    return not all(flag in args for flag in _RENDER_WHEN_HIDDEN_FLAGS)
+
+
+def _ensure_dedicated_browser(restart_stale: bool = False) -> None:
+    """Start the browser-use-only Chromium profile with a stable CDP port.
+
+    restart_stale (a new browser_task only): a dedicated browser that is
+    running without _RENDER_WHEN_HIDDEN_FLAGS is restarted once so it picks
+    them up, and only while no browser task holds the task lock. Showing,
+    inspecting or resuming never restarts it (the user may be typing in it).
+    The profile keeps cookies and sign-ins across the restart."""
+    with _launch_lock:
+        _ensure_dedicated_browser_locked(restart_stale)
+
+
+def _ensure_dedicated_browser_locked(restart_stale: bool) -> None:
+    global _owned_browser
     endpoint = "http://127.0.0.1:9229"
     # A 0.3s probe misread a busy Chromium (heavy ad page) as dead, then the
     # relaunch collided with the still-running unit and the task failed
@@ -175,16 +224,34 @@ def _ensure_dedicated_browser() -> None:
     for _ in range(4 if unit_active else 1):
         try:
             urllib.request.urlopen(endpoint + "/json/version", timeout=2).close()
-            os.environ["BU_CDP_URL"] = endpoint
-            return
         except Exception:
             time.sleep(0.5)
+            continue
+        if not (restart_stale and unit_active and _running_browser_lacks_flags()):
+            os.environ["BU_CDP_URL"] = endpoint
+            return
+        if not _task_lock.acquire(blocking=False):
+            # A task is running in it: keep it; a later task restarts it.
+            os.environ["BU_CDP_URL"] = endpoint
+            return
+        try:
+            log.warning("dedicated Chromium was started without the render-when-hidden flags; restarting it")
+            subprocess.run(["systemctl", "--user", "stop", "omarchy-ai-browser.service"], check=False, timeout=20)
+            _owned_browser = None
+            _launch_dedicated_browser(endpoint)
+        finally:
+            _task_lock.release()
+        return
     if unit_active:
         log.warning("dedicated Chromium unit is running but CDP is unresponsive; restarting it")
         subprocess.run(["systemctl", "--user", "stop", "omarchy-ai-browser.service"], check=False, timeout=20)
     # The process may have crashed while BU_CDP_URL remained in the daemon
     # environment. Clear stale routing so the next request can relaunch
     # Chromium instead of waiting 30s for a dead endpoint.
+    _launch_dedicated_browser(endpoint)
+
+
+def _launch_dedicated_browser(endpoint: str) -> None:
     os.environ.pop("BU_CDP_URL", None)
     os.environ.pop("BU_CDP_WS", None)
     # Use an explicit argument set for the automation profile.
@@ -203,7 +270,7 @@ def _ensure_dedicated_browser() -> None:
     browser_argv = [
         binary, "--remote-debugging-port=9229", f"--user-data-dir={profile}",
         "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
-        "--hide-crash-restore-bubble",
+        "--hide-crash-restore-bubble", *_RENDER_WHEN_HIDDEN_FLAGS,
         "--ozone-platform=wayland", "about:blank",
     ]
     # Keep Chromium's GPU/renderer children out of omarchy-ai.service.
@@ -590,7 +657,7 @@ def run_browser_task(args: dict, config) -> ActionResult:
         return ActionResult(False, "browser_task requires an http(s) URL and a complete goal", harness=True)
     progress = _Progress(goal, _steps_from(args))
 
-    _ensure_dedicated_browser()
+    _ensure_dedicated_browser(restart_stale=not args.get("resume"))
     from jev_ultrafast import Agent
     from jev_ultrafast import agent as agent_module
     from jev_ultrafast import model as policy
@@ -711,7 +778,7 @@ def run_browser_task(args: dict, config) -> ActionResult:
             outcome, executed, error = _run_agent(Agent, url, args, progress, generation, started, config)
             if error is None:
                 return outcome
-            if attempt == 0 and executed == 0 and _connection_error(error):
+            if attempt == 0 and executed == 0 and _connection_error(error) and not _screen_is_locked():
                 log.warning("browser connection lost before any action; reconnecting once: %s", error)
                 _reset_connection()
                 continue
@@ -738,6 +805,20 @@ def run_browser_task(args: dict, config) -> ActionResult:
         _task_lock.release()
 
 
+SCREEN_LOCKED_BROWSER = ("the browser can't load pages while the screen is locked. Tell the user, and ask them to "
+                         "unlock it (from their paired phone: say unlock, or press its Unlock button), then try again.")
+
+
+def _screen_is_locked() -> bool:
+    """The Hyprland session lock state; unknown counts as unlocked."""
+    try:
+        from .actions.desktop import _screen_locked
+        return bool(_screen_locked())
+    except Exception:
+        log.debug("could not read the screen lock state", exc_info=True)
+        return False
+
+
 def _stopped(executed: int, error: BaseException) -> ActionResult:
     """A task that raised. A lost connection or a busy decision service is
     the harness's own report, nothing read from the site, so it is not
@@ -746,6 +827,10 @@ def _stopped(executed: int, error: BaseException) -> ActionResult:
     content-derived). Any other error may quote the page."""
     text = str(error)
     ours = _connection_error(error)
+    if ours and _screen_is_locked():
+        # Not a generic timeout: the cause, and what fixes it.
+        return ActionResult(False, f"Browser task stopped after {executed} actions: {SCREEN_LOCKED_BROWSER}",
+                            harness=True)
     if "HTTP 503" in text or "HTTP 529" in text or "HTTP 429" in text:
         # Not the raw 600-char JSON: something she can say.
         text = "the Jev decision service (Vercel Gateway) kept answering 'temporarily unavailable'"

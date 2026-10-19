@@ -670,6 +670,13 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(steps[0]["action"], "browser_task")
         self.assertEqual(steps[0]["args"]["url"], "https://www.google.com")
 
+    def test_a_search_that_does_not_name_google_starts_on_duckduckgo(self):
+        from omarchy_ai.execution import missions
+        steps, _, _ = missions.validate({"steps": [
+            {"action": "browser_task", "say": "I am searching the web for Omarchy.", "goal": "find the Omarchy homepage"},
+            {"action": "terminal_run", "say": "list", "command": "ls"}]})
+        self.assertEqual(steps[0]["args"]["url"], "https://duckduckgo.com")
+
     def test_flat_fields_are_accepted(self):
         from omarchy_ai.execution import missions
         steps, _, _ = missions.validate({"steps": [{"action": "terminal_run", "say": "x", "command": "ls"}]})

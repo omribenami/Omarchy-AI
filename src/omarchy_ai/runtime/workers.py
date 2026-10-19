@@ -70,7 +70,9 @@ REPORT_CHARS = 1500
 KEEP = 50  # records kept in workers.json
 PREFIX = "w-"
 SOURCE = "external:worker"  # what a worker's report is, to a model reading it
-SEARCH_URL = "https://www.google.com/search?q="
+# Not Google: it answers the automated browser with a CAPTCHA (2026-10-19).
+SEARCH_URL = "https://duckduckgo.com/?q="
+START_URL = "https://duckduckgo.com"
 
 QUEUED, RUNNING, DONE, FAILED, CANCELLED, INTERRUPTED = (
     "queued",
@@ -163,7 +165,7 @@ def _args(worker: Worker, resume: bool) -> dict:
     url = worker.url or (
         SEARCH_URL + quote_plus(worker.brief[:200])
         if worker.kind == RESEARCH
-        else "https://www.google.com"
+        else START_URL
     )
     args: dict[str, Any] = {"url": url, "goal": goal}
     if resume:
