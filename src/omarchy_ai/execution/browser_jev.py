@@ -587,7 +587,7 @@ def run_browser_task(args: dict, config) -> ActionResult:
     url = str(args.get("url") or "").strip()
     goal = str(args.get("goal") or "").strip()
     if not url.startswith(("https://", "http://")) or not goal:
-        return ActionResult(False, "browser_task requires an http(s) URL and a complete goal")
+        return ActionResult(False, "browser_task requires an http(s) URL and a complete goal", harness=True)
     progress = _Progress(goal, _steps_from(args))
 
     _ensure_dedicated_browser()
@@ -699,7 +699,8 @@ def run_browser_task(args: dict, config) -> ActionResult:
         agent_module.choose, agent_module.field_text = old_choose, old_agent_field
         Agent.command.__globals__["choose"] = old_command_choose
         Agent.command.__globals__["field_text"] = old_command_field
-        return ActionResult(False, "another browser task is already running; wait for its result instead of opening another")
+        return ActionResult(False, "another browser task is already running; wait for its result instead of opening another",
+                            harness=True)
     try:
         # A cached tab whose DevTools session died used to fail every
         # following task instantly; heal first, then retry once when a
@@ -714,12 +715,7 @@ def run_browser_task(args: dict, config) -> ActionResult:
                 log.warning("browser connection lost before any action; reconnecting once: %s", error)
                 _reset_connection()
                 continue
-            text = str(error)
-            if "HTTP 503" in text or "HTTP 529" in text or "HTTP 429" in text:
-                # Not the raw 600-char JSON: something she can say.
-                text = "the Jev decision service (Vercel Gateway) kept answering 'temporarily unavailable'"
-            return ActionResult(False, f"Browser task stopped after {executed} actions: {text[:300]}. "
-                                       "The task tab has been left open; completion was not verified.")
+            return _stopped(executed, error)
     finally:
         # Keep the owned tab visible for inspection after completion/failure.
         # Upstream close() closes the tab, which looks like a browser crash.
@@ -740,6 +736,22 @@ def run_browser_task(args: dict, config) -> ActionResult:
         global _background_task
         _background_task = False
         _task_lock.release()
+
+
+def _stopped(executed: int, error: BaseException) -> ActionResult:
+    """A task that raised. A lost connection or a busy decision service is
+    the harness's own report, nothing read from the site, so it is not
+    fenced as web content and does not taint the conversation (2026-10-18:
+    "Page.navigate timed out" made the retry of the assistant's own URL look
+    content-derived). Any other error may quote the page."""
+    text = str(error)
+    ours = _connection_error(error)
+    if "HTTP 503" in text or "HTTP 529" in text or "HTTP 429" in text:
+        # Not the raw 600-char JSON: something she can say.
+        text = "the Jev decision service (Vercel Gateway) kept answering 'temporarily unavailable'"
+        ours = True
+    return ActionResult(False, f"Browser task stopped after {executed} actions: {text[:300]}. "
+                               "The task tab has been left open; completion was not verified.", harness=ours)
 
 
 def _where(state) -> str:
@@ -782,7 +794,7 @@ def _run_agent(Agent, url, args, progress, generation, started, config):
         recovery_attempts = 0
         for state in agent.run():
             if generation != _cancel_generation:
-                return ActionResult(False, "Browser task cancelled because the assistant stopped."), 0, None
+                return ActionResult(False, "Browser task cancelled because the assistant stopped.", harness=True), 0, None
             final = state
             history = state.get("history") or []
             elapsed = time.monotonic() - started
@@ -860,7 +872,7 @@ def _run_agent(Agent, url, args, progress, generation, started, config):
                         continue
                 break
         if not final:
-            return ActionResult(False, "browser agent produced no result"), 0, None
+            return ActionResult(False, "browser agent produced no result", harness=True), 0, None
         status = final.get("status")
         history = [h for h in (final.get("history") or []) if not str(h.get("action", "")).startswith("DONE rejected")]
         if status == "done" and (progress.goal_verified() or getattr(progress, "verified_url", None)):

@@ -68,6 +68,12 @@ Rules for every release:
 
 ### Fixes
 
+- When a web search I started failed and I tried the same page again, I
+  refused my own retry as if the page had come from outside content, and
+  handed the job off instead. A page or recipient I picked before reading
+  anything from outside now counts as mine, and a browser timeout is no
+  longer treated as web content. A new target that only shows up in an
+  email or page still needs your tap.
 - In the typed chat, when a smart-home switch or another background job
   finished and I said nothing about it, you were never told. Now I tell you
   once, in the chat as well as by voice; an empty reply no longer counts as

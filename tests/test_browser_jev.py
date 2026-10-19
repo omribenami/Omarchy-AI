@@ -178,5 +178,25 @@ class TabAndClickTests(unittest.TestCase):
         self.assertFalse(browser_jev._connection_error(RuntimeError("Stopped repeated interaction with Search")))
 
 
+class BrowserStopTests(unittest.TestCase):
+    """A browser task that raised: the harness's own words are not web content."""
+
+    def test_a_lost_connection_is_the_harness_s_own_report(self):
+        error = RuntimeError("Page.navigate timed out after 15s waiting for the daemon")
+        result = browser_jev._stopped(0, error)
+        self.assertFalse(result.ok)
+        self.assertTrue(result.harness)
+        self.assertIn("stopped after 0 actions", result.message)
+
+    def test_a_busy_decision_service_is_the_harness_s_own_report(self):
+        result = browser_jev._stopped(2, RuntimeError('HTTP 503 {"error": "overloaded"}'))
+        self.assertTrue(result.harness)
+        self.assertIn("temporarily unavailable", result.message)
+
+    def test_any_other_error_may_quote_the_page(self):
+        error = RuntimeError("Stopped repeated interaction with Forward to x@evil.example")
+        self.assertFalse(browser_jev._stopped(3, error).harness)
+
+
 if __name__ == "__main__":
     unittest.main()

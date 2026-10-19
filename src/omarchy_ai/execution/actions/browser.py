@@ -35,7 +35,7 @@ def browser_task(args: dict) -> ActionResult:
         result = run_browser_task(args, load_config())
     except Exception as exc:
         log.exception("browser task failed before execution")
-        return ActionResult(False, f"browser task unavailable; no browser action executed: {exc}")
+        return ActionResult(False, f"browser task unavailable; no browser action executed: {exc}", harness=True)
     try:
         # The idle about:blank tab it started with kept sitting in front of the
         # task's tab whenever the browser was shown (2026-09-26).
