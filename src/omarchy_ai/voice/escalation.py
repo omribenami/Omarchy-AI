@@ -99,6 +99,7 @@ ASKS_WHY_P = 0.8
 DISPUTES_P = 0.8
 CLAIMS_P = 0.8
 ASKS_ACTION_P = 0.8
+NOT_DONE_P = 0.8
 
 
 def proactive_goal(user_turns: list[str]) -> str:
@@ -188,6 +189,23 @@ def jev_unbacked(last_reply: str, latest: str) -> tuple[bool, dict]:
         return False, {"unavailable": str(exc)[:120]}
     claims, asks = answers["claims_action"]["p"], answers["asks_action"]["p"]
     return claims >= CLAIMS_P and asks >= ASKS_ACTION_P, {"claims_action": claims, "asks_action": asks}
+
+
+def jev_told_not_done(reply: str) -> bool:
+    """Her reply tells the user that what was asked did not happen or is not
+    confirmed, judged in any language. False when Jev is unavailable: then
+    she is corrected, since a second "it did not work" costs less than a
+    false "done"."""
+    from ..core.jev import Jev, JevError, boolean
+    questions = {"not_done": boolean(
+        "Does the assistant's reply tell the user that what they asked for did not happen, failed, is not "
+        "confirmed, or changed nothing (for example that it already was that way)? Judge the meaning, in any "
+        "language. A reply that says it is done, or is being done, is not.")}
+    try:
+        answers = Jev().ask({"assistant_reply": reply[-400:]}, questions, timeout=3, retries=0, fail_fast=True)
+    except JevError:
+        return False
+    return answers["not_done"]["p"] >= NOT_DONE_P
 
 
 def review_note(steps: list) -> str:

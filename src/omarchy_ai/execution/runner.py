@@ -87,6 +87,34 @@ KILL_GRACE = 2.0
 # an empty file or listing is the content.
 DONE = "done"
 
+# A call that acts and answers {"ok": true, "changed": []} confirmed nothing:
+# its target may already have been in that state, or the command did not
+# apply. Live 2026-10-17/18: a smart-home user tool answered so to "turn on
+# the goodnight routine" and to "turn on the living room lights", and she
+# told the user both were done.
+NO_CHANGE = (
+    '[harness note] The tool reported no change ("changed": []). That does not confirm the request: the '
+    "target may already have been in that state, or the command did not apply. Do not tell the user it is "
+    "done. Say it already was so only if a state check shows it; otherwise say the tool reported no change."
+)
+
+
+def no_change(message: str) -> bool:
+    """A result that says it acted on nothing: a JSON object whose `changed` is empty."""
+    text = message.strip()
+    if not text.startswith("{"):
+        return False
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("changed") == []
+        and payload.get("ok", True) is not False
+    )
+
+
 # error_class values
 FAILED, TIMEOUT, CANCELLED, CRASHED, WORKER_LOST = (
     "failed",
@@ -535,6 +563,7 @@ class ToolRunner:
         unsure = None if ok else _not_dispatched(message)
         if unsure is not None:
             outcome, effect_id = unsure
+        quiet = ok and not tool.reads and no_change(message)
         source = provenance.of(tool.name, call.args)
         untrusted = (
             provenance.untrusted(source)
@@ -549,6 +578,8 @@ class ToolRunner:
         # The harness's own words about the result (desktop_task: what already
         # happened), outside the fence and first, where they are read.
         note = passwords.redact(str(getattr(value, "note", "") or "")).strip()
+        if quiet:
+            note = f"{NO_CHANGE}\n{note}".strip()
         if note:
             message = f"{note}\n{message}" if message else note
         return ToolResult(

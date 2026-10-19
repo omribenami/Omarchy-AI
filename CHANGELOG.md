@@ -72,8 +72,20 @@ Rules for every release:
   request.
 - Tools you added yourself now work in every kind of conversation, not
   only in Gemini voice and chat.
+- I no longer tell you something is done while it's still running. If I
+  spoke too soon and it then failed or changed nothing, I correct myself
+  once, plainly; if a second try worked, I tell you that instead.
 
 ### Fixes
+
+- "Turn on good night" and "living room and hallway": while the call was
+  still running I said "I turned it on", then it failed, a retry reported
+  no change, and you were never told. While something runs I'm now told to
+  say I'm on it, not that it's done; if I said more than that before the
+  result came back and the result failed or changed nothing, I correct it
+  once, and a later try that worked is reported once instead. A result
+  that says nothing changed is no longer read as done: I say it already
+  was so when a state check shows that, or that nothing changed.
 
 - "Turn the volume down a little" could turn it down twice: the desktop
   helper turned it down, then stopped on an answer it misread as invalid,
