@@ -75,6 +75,12 @@ Rules for every release:
 
 ### Fixes
 
+- "Turn the volume down a little" could turn it down twice: the desktop
+  helper turned it down, then stopped on an answer it misread as invalid,
+  and its report read like nothing had happened, so I did it again. Its
+  report now starts with what is already done, the misread answer is
+  accepted, and repeating a step it already did in the same request is
+  answered "already done" instead of running again.
 - When a web search I started failed and I tried the same page again, I
   refused my own retry as if the page had come from outside content, and
   handed the job off instead. A page or recipient I picked before reading
