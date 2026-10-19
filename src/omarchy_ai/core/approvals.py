@@ -190,11 +190,13 @@ def decide(
     risk: int | None = None,
     chosen: Collection[str] = (),
     seen: str | None = None,
+    own_words: Collection[str] = (),
 ) -> Verdict:
     """What must happen before `name(args)` runs (the module docstring's matrix).
     `chosen`: targets the assistant itself used before the taint arose
     (execution/provenance.py Taint.chose); `seen`: the untrusted content the
-    conversation saw, None when that record is not whole (Taint.seen)."""
+    conversation saw, None when that record is not whole (Taint.seen);
+    `own_words`: words the user or the assistant wrote first (Taint.own_words)."""
     args = args if isinstance(args, dict) else {}
     if risk is not None and risk >= BLOCKED:
         return Verdict(DENY, "never allowed")
@@ -208,10 +210,11 @@ def decide(
                 said=said,
                 chosen=chosen,
                 seen=seen,
+                own_words=own_words,
             )
             for s in _steps(args)
         ]
-        own = _irreversible(name, args, tainted, said, chosen, seen)
+        own = _irreversible(name, args, tainted, said, chosen, seen, own_words)
         worst = strictest(own, *steps)
         if worst.level == AUTO:
             return worst
@@ -222,7 +225,7 @@ def decide(
     if kind == DESTRUCTIVE:
         return Verdict(TAP, f"{name.replace('_', ' ')} deletes or overwrites for good")
     if kind == SEND:
-        from_content = _from_content(name, args, tainted, said, chosen, seen)
+        from_content = _from_content(name, args, tainted, said, chosen, seen, own_words)
         if standing_match(name, args) and from_content is None:
             return Verdict(AUTO, "standing approval for this recipient")
         if from_content is not None:
@@ -239,7 +242,7 @@ def decide(
                 return Verdict(TAP, why)
         verdict = Verdict(AUTO)
     else:
-        verdict = _irreversible(name, args, tainted, said, chosen, seen)
+        verdict = _irreversible(name, args, tainted, said, chosen, seen, own_words)
     if risk is not None and risk >= HIGH:
         return strictest(verdict, Verdict(TAP, "HIGH risk"))
     if risk is not None and risk >= ELEVATED:
@@ -254,11 +257,18 @@ def _from_content(
     said: str,
     chosen: Collection[str] = (),
     seen: str | None = None,
+    own_words: Collection[str] = (),
 ) -> str | None:
     from ..execution import provenance
 
     return provenance.approval_needed(
-        name, args, tainted=tainted, said=said, chosen=chosen, seen=seen
+        name,
+        args,
+        tainted=tainted,
+        said=said,
+        chosen=chosen,
+        seen=seen,
+        own_words=own_words,
     )
 
 
@@ -269,8 +279,9 @@ def _irreversible(
     said: str,
     chosen: Collection[str] = (),
     seen: str | None = None,
+    own_words: Collection[str] = (),
 ) -> Verdict:
-    why = _from_content(name, args, tainted, said, chosen, seen)
+    why = _from_content(name, args, tainted, said, chosen, seen, own_words)
     return Verdict(TAP, why) if why else Verdict(AUTO)
 
 

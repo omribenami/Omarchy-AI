@@ -108,6 +108,11 @@ Rules for every release:
   other targets still need your tap when you didn't state them, and the
   reason now says "wasn't stated by you" unless it really came from
   content.
+- After that, a follow-up "read the first few search results" was still
+  refused because the word "search" was on Google's page. Everyday words,
+  words you said in any form, and words I used myself before the page
+  showed them no longer count as data taken from a page; a code, a number
+  or an unusual name from the page still needs your tap.
 - In the typed chat, when a smart-home switch or another background job
   finished and I said nothing about it, you were never told. Now I tell you
   once, in the chat as well as by voice; an empty reply no longer counts as

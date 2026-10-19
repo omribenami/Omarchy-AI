@@ -380,6 +380,16 @@ LAWN_SEARCH = {
 }
 
 
+GOOGLE_RESULT = (
+    "Browser task completed and verified by an independent Jev check after 3 "
+    "action(s). Now at https://www.google.com/search?q=best+time+of+day+to+water"
+    "+a+lawn&sca_esv=477d0fc8f5dc8163&sxsrf=APpeQntH3r2n_ioxQWIYzj4XWr9H79efdg%3A"
+    "1792409068365&source=hp&ei=7P3VarDIFNyymtkPh9iG4QE&oq=best+time+of+day+to+"
+    "water+a+lawn&sclient=gws-wiz ('best time of day to water a lawn - Google "
+    "Search')."
+)
+
+
 class ContentTargetTests(unittest.TestCase):
     """A tainted conversation holds back a web address only when the content
     put it there or it would carry data out; every other target stays
@@ -403,6 +413,7 @@ class ContentTargetTests(unittest.TestCase):
             tainted=True,
             said=self.taint.said(),
             seen=self.taint.seen() if seen == "default" else seen,
+            own_words=self.taint.own_words,
         )
 
     def page(self, text):
@@ -481,6 +492,33 @@ class ContentTargetTests(unittest.TestCase):
             self.assertIn("would carry data from outside content", why or "", url)
         # Or written in what the steps search for on a front page.
         steps = dict(LAWN_SEARCH, steps=[f"Search for {key}"])
+        self.assertIn("would carry data", self.needed("browser_task", steps))
+
+    def test_common_words_from_content_are_not_data(self):
+        self.page("Google Search: first results. Read the content, open the page.")
+        steps = dict(
+            LAWN_SEARCH,
+            steps=["Search, then read the content of the first few search results"],
+        )
+        self.assertIsNone(self.needed("browser_task", steps))
+        self.page("חיפוש תוצאות")
+        steps = dict(LAWN_SEARCH, steps=["חיפוש בתוצאות"])
+        self.assertIsNone(self.needed("browser_task", steps))
+
+    def test_the_user_s_words_in_any_form_are_not_data(self):
+        self.taint.heard("and how often should I be watering it?")
+        self.page("Lawns are best watered weekly.")
+        steps = dict(LAWN_SEARCH, steps=["Search how often lawns are watered"])
+        self.assertIsNone(self.needed("browser_task", steps))
+
+    def test_the_assistant_s_own_earlier_words_are_not_data(self):
+        self.taint.wrote({"steps": ["Compare fescue and bermuda grass"]})
+        self.page("Fescue and bermuda both like early watering. Promo: Zanzibarian")
+        steps = dict(LAWN_SEARCH, steps=["Search fescue versus bermuda watering"])
+        self.assertIsNone(self.needed("browser_task", steps))
+        # A word it wrote only after the content held it is still the content's.
+        self.taint.wrote({"steps": ["Search Zanzibarian"]})
+        steps = dict(LAWN_SEARCH, steps=["Search Zanzibarian"])
         self.assertIn("would carry data", self.needed("browser_task", steps))
 
     def test_an_opaque_token_nobody_said_needs_a_tap(self):
@@ -572,6 +610,76 @@ class ContentTargetSessionTests(unittest.TestCase):
         self.assertFalse(result.message.startswith("NOT run:"), result.message)
         self.assertEqual(len(ran), 1)
         self.assertEqual(self.cards, [])
+
+    def test_the_follow_up_search_runs_too(self):
+        # 2026-10-19 06:24:27-06:24:45: the search ran; reading its results
+        # was refused because "search" was in Google's page title.
+        self.run_home_assistant()
+        ran: list[dict] = []
+
+        def browser(message):
+            return lambda n, a: ran.append(a) or ActionResult(True, message)
+
+        first = self.call(
+            "browser_task",
+            {
+                "steps": [
+                    'Search for "best time of day to water a lawn"',
+                    "Read the search results to identify the best time of day to water a lawn.",
+                ],
+                "url": "https://www.google.com",
+                "goal": "Find the best time of day to water a lawn.",
+            },
+            execute=browser(GOOGLE_RESULT),
+        )
+        self.assertTrue(first.untrusted, first.message)
+        self.call(
+            "describe_screen",
+            {"question": "What is on the screen?"},
+            execute=lambda n, a: ActionResult(
+                False, "Screenshot capture failed; screen contents unverified."
+            ),
+        )
+        follow_up = self.call(
+            "browser_task",
+            {
+                "steps": [
+                    'Search for "best time of day to water a lawn"',
+                    "Read the content of the first few search results to find the "
+                    "recommended time.",
+                ],
+                "goal": "Find the best time of day to water a lawn and read the search results.",
+                "url": "https://www.google.com",
+            },
+            execute=browser("Water early in the morning, before 10 am."),
+        )
+        self.assertFalse(follow_up.message.startswith("NOT run:"), follow_up.message)
+        self.assertEqual(len(ran), 2)
+        self.assertEqual(self.cards, [])
+
+    def test_a_distinctive_word_from_the_page_still_needs_a_tap(self):
+        self.run_home_assistant()
+        self.call(
+            "browser_task",
+            dict(LAWN_SEARCH),
+            execute=lambda n, a: ActionResult(
+                True, "Results. Your order code is Zanzibarian, PIN 4821."
+            ),
+        )
+        for extra in ("Zanzibarian", "4821"):
+            pushed = self.call(
+                "browser_task",
+                dict(LAWN_SEARCH, steps=[f"Search for {extra}"]),
+                execute=lambda n, a: ActionResult(True, "done"),
+            )
+            self.assertTrue(pushed.message.startswith("NOT run:"), extra)
+            # Refused once, it is still not the assistant's own word.
+            again = self.call(
+                "browser_task",
+                dict(LAWN_SEARCH, steps=[f"Search for {extra}"]),
+                execute=lambda n, a: ActionResult(True, "done"),
+            )
+            self.assertTrue(again.message.startswith("NOT run:"), extra)
 
     def test_a_held_target_says_it_was_not_stated_not_from_content(self):
         self.run_home_assistant()
