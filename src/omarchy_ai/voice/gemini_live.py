@@ -1156,7 +1156,8 @@ class GeminiLiveSession:
             except asyncio.TimeoutError:
                 entry = None
             if entry is not None and (source := self._untrusted_source(entry)):
-                self._input_guard.taint.mark(source)  # a background worker's report (runtime/workers.py)
+                # A background worker's report (runtime/workers.py), all of it as content.
+                self._input_guard.taint.mark(source, json.dumps(entry, ensure_ascii=False, default=str))
             if entry is not None and entry.get("notice"):
                 while not self._idle():
                     await asyncio.sleep(0.2)

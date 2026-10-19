@@ -281,7 +281,7 @@ class InputGuard:
     def _run(self, execute, name, args):
         # One policy for every session (core/approvals.py).
         verdict = approvals.decide(name, args, tainted=self.taint.tainted, said=self.taint.said(),
-                                   chosen=self.taint.chosen)
+                                   chosen=self.taint.chosen, seen=self.taint.seen())
         sends = name in approvals.SEND_TOOLS  # the tool itself prepares a confirm card
         if verdict.level == approvals.DENY:
             return ActionResult(False, f"NOT run: {verdict.reason}.", harness=True)
@@ -303,7 +303,7 @@ class InputGuard:
             result = execute(tool, tool_args)
             if tool == name and provenance.untrusted(source) and getattr(result, "message", "") \
                     and not getattr(result, "harness", False):
-                self.taint.mark(source)
+                self.taint.mark(source, str(result.message))
             return result
 
         if verdict.level == approvals.VOICE and not sends:

@@ -84,7 +84,7 @@ def _wrap(guard: InputGuard, guarded: bool) -> runner.Wrap | None:
 def _settled(guard: InputGuard, result: runner.ToolResult) -> runner.ToolResult:
     # Untrusted content taints the conversation however the call ran.
     if result.untrusted:
-        guard.taint.mark(result.provenance)
+        guard.taint.mark(result.provenance, result.message)
     return result
 
 
