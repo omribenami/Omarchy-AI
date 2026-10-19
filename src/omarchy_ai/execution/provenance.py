@@ -32,7 +32,7 @@ from contextlib import contextmanager
 import contextvars
 from dataclasses import dataclass
 import re
-from typing import Callable, Iterator
+from typing import Callable, Collection, Iterator
 from urllib.parse import urlparse
 
 USER, SYSTEM, LOCAL_STATE = "user", "system", "local_state"
@@ -165,7 +165,9 @@ def clip(text: str, limit: int) -> str:
 # Enforced in code, not only in the prompt: once untrusted content entered a
 # conversation or task, it is tainted for good. While tainted, an
 # irreversible call aims only at targets the user said (or approved in a
-# plan); a target from anywhere else -- an email's "forward to x@evil", a
+# plan), or that the assistant itself used in a call it made before the
+# taint arose (Taint.chose: the retry of a page it picked, not a page's
+# link); a target from anywhere else -- an email's "forward to x@evil", a
 # page's link, a log's path -- needs the user's tap. approval_needed() is the
 # whole decision (plan 2.4 will fold it into one approval policy); the
 # sessions turn a "needs approval" into the existing approval paths: a
@@ -260,19 +262,33 @@ def _unsaid(aims: list[str], said: str) -> list[str]:
     return [aim for aim in aims if aim and not _tokens(_home(aim)) <= heard]
 
 
-def approval_needed(name: str, args: dict, *, tainted: bool, said: str) -> str | None:
+def own(aim: str) -> str:
+    """A target as Taint.chose keeps it: the same target, written the same
+    way (a trailing slash or surrounding space aside), and nothing looser."""
+    return _home(str(aim).strip()).rstrip("/")
+
+
+def approval_needed(
+    name: str,
+    args: dict,
+    *,
+    tainted: bool,
+    said: str,
+    chosen: Collection[str] = (),
+) -> str | None:
     """None to run the call; otherwise why it needs the user's tap. Only a
     tainted conversation or task is ever stopped, only for an irreversible
     call, and only when one of its targets is not in `said` (the user's own
-    words and any plan they approved), or the call is self-acting. Unsure is
-    a tap."""
+    words and any plan they approved) and is not one the assistant itself
+    used before the taint arose (`chosen`, Taint.chose: exactly that target,
+    not a look-alike), or the call is self-acting. Unsure is a tap."""
     from . import tools
 
     if not tainted or tools.effect_class(name) != tools.IRREVERSIBLE:
         return None
     if name in _SELF_ACTING:
         return _SELF_ACTING[name]
-    missing = _unsaid(targets(name, args), said)
+    missing = [m for m in _unsaid(targets(name, args), said) if own(m) not in chosen]
     if not missing:
         return None
     shown = ", ".join(repr(m[:80]) for m in missing[:3])
@@ -294,15 +310,32 @@ def read_query_needed(args: dict, *, said: str) -> str | None:
     return f"a myapi_call query built from content ({shown}) would leave the machine"
 
 
+_CHOSEN_KEPT = 200  # targets of the assistant's own pre-taint calls a session keeps
+
+
 class Taint:
     """One conversation's taint: whether untrusted content entered it, from
-    where, and what the user said in it."""
+    where, what the user said in it, and the targets the assistant itself
+    aimed at before it was tainted."""
 
     def __init__(self) -> None:
         self.tainted = False
         self.sources: list[str] = []
         self.utterances = 0  # pieces of the user's own words heard so far
         self._joined, self._spaced = "", ""
+        self.chosen: set[str] = set()
+
+    def chose(self, aims: list[str]) -> None:
+        """The targets of a call the assistant is dispatching. Kept only
+        while nothing untrusted has entered the conversation (the call whose
+        own result taints it included, since it is dispatched first): no
+        content can have suggested them, so retrying the same call later is
+        not acting on content. Once tainted, nothing more is added."""
+        if self.tainted:
+            return
+        for aim in aims:
+            if aim and len(self.chosen) < _CHOSEN_KEPT:
+                self.chosen.add(own(aim))
 
     def mark(self, source: str) -> None:
         self.tainted = True

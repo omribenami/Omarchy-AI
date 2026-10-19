@@ -255,7 +255,8 @@ class InputGuard:
 
     def _run(self, execute, name, args):
         # One policy for every session (core/approvals.py).
-        verdict = approvals.decide(name, args, tainted=self.taint.tainted, said=self.taint.said())
+        verdict = approvals.decide(name, args, tainted=self.taint.tainted, said=self.taint.said(),
+                                   chosen=self.taint.chosen)
         sends = name in approvals.SEND_TOOLS  # the tool itself prepares a confirm card
         if verdict.level == approvals.DENY:
             return ActionResult(False, f"NOT run: {verdict.reason}.", harness=True)
@@ -269,6 +270,10 @@ class InputGuard:
         source = provenance.of(name, args)
 
         def run(tool, tool_args):
+            if tool == name and tools.effect_class(name) != tools.READ:
+                # Its targets are the assistant's own while nothing untrusted
+                # came first (a retry of this call is not acting on content).
+                self.taint.chose(provenance.targets(name, args))
             # Only what the tool itself returned can carry content, not a block of ours.
             result = execute(tool, tool_args)
             if tool == name and provenance.untrusted(source) and getattr(result, "message", "") \
