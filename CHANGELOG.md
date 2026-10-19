@@ -98,6 +98,12 @@ Rules for every release:
   now.
 - "What did you do in that window?" no longer fails in a Gemini
   conversation after a command the fast path ran.
+- My own browser stopped loading pages while your screen was locked, and
+  said only that it timed out. It now keeps working when it is hidden or
+  behind the lock screen (an already-open one picks this up at the next new
+  web task), and if a page still can't load while locked, I say that's why.
+  Web searches now start on DuckDuckGo instead of Google, which kept
+  answering with a CAPTCHA.
 
 ### Under the hood
 
