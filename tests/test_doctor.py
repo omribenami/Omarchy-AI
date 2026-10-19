@@ -563,6 +563,36 @@ class StateTests(DoctorCase):
         )
         self.assertEqual(self.check(doctor.check_tasks).status, YELLOW)
 
+    def test_tasks_waiting_on_a_question_that_asks_nothing(self):
+        tasks = self.state / "tasks"
+        tasks.mkdir()
+        now = time.time()
+
+        def waiting(task_id, question):
+            (tasks / f"{task_id}.json").write_text(
+                json.dumps(
+                    {
+                        "id": task_id,
+                        "goal": "g",
+                        "workspace": "/tmp",
+                        "status": "waiting_user",
+                        "question": question,
+                        "updated_at": now,
+                    }
+                )
+            )
+
+        waiting("asks", "Which light did you mean?")
+        self.assertEqual(self.check(doctor.check_tasks).status, GREEN)
+        waiting(
+            "done",
+            "I need your input to continue: the light is on.\n\nSUMMARY: done",
+        )
+        result = self.check(doctor.check_tasks)
+        self.assertEqual(result.status, YELLOW)
+        self.assertIn("done", result.reason)
+        self.assertEqual(result.details["no_question"], ["done"])
+
     def test_agenda_leases(self):
         from omarchy_ai.core import agenda
         from omarchy_ai.runtime.task import this_process

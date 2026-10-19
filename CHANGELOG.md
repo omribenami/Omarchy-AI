@@ -122,6 +122,12 @@ Rules for every release:
   web task), and if a page still can't load while locked, I say that's why.
   Web searches now start on DuckDuckGo instead of Google, which kept
   answering with a CAPTCHA.
+- Typing or saying "cancel it" as the answer to a background task's
+  question now cancels the task. Before, it went to the worker as an
+  answer, the task kept going, and later replies turned the lights on three
+  more times. A finished result is no longer shown as "a question for you":
+  the task ends with it. A task left waiting on a question that asks
+  nothing closes on its own after 4 hours, and doctor points it out.
 
 ### Under the hood
 

@@ -4,7 +4,9 @@ Split out of runtime/runtime.py, which re-exports every name here; TaskRuntime
 inherits DirectingMixin."""
 from __future__ import annotations
 
-from .task import FAILED, Task, UNVERIFIED
+from . import questions
+from .executors.base import DONE, REVIEW, TEST
+from .task import CANCELLED, FAILED, Task, UNVERIFIED
 from .certify import CERTIFY_P, MAX_PLAN_ATTEMPTS, VALIDATED_P
 from .recovery import _timeout_step
 
@@ -127,7 +129,9 @@ class DirectingMixin:
                 task.next_dispatch = self._assignment(task, name, "CONTINUE")
                 return True
             question = (last or {}).get("claim") or task.goal
-            self._ask_user(task, f"I need your input to continue: {question[:600]}")
+            if last and last.get("report_status") == DONE and not questions.is_question(question):
+                return self._settle_report(task, last, allowed)
+            self._ask_user(task, f"{questions.ASK_PREFIX} {question[:600]}")
             return False
         if d == "CERTIFY":
             return self._certify(task)
@@ -159,6 +163,35 @@ class DirectingMixin:
             name = task.agent
         task.next_dispatch = self._assignment(task, name, d)
         return True
+
+    def _settle_report(self, task: Task, last: dict, allowed: list[str]) -> bool:
+        """Jev chose ASK_USER, but the worker's finished report asks nothing.
+
+        Real task 2026-10-17 20:38: "the dining-room light is on" became the
+        task's question ("I need your input to continue: ...") and waited a
+        day; a worker's "cancelled at your request" became the next one. A
+        report the user cannot answer ends the task: a cancellation as
+        cancelled, a result through certification, or unverified when the
+        evidence gate does not allow certification."""
+        claim = str(last.get("claim") or "")
+        if questions.cancel_acknowledged(claim):
+            task.add_decision("settle", "CANCELLED", None, {"instead_of": "ASK_USER"})
+            self._finish(task, CANCELLED, "Cancelled by the user.")
+            return False
+        task.add_decision("settle", "RESULT", None, {"instead_of": "ASK_USER"})
+        if "CERTIFY" in allowed:
+            if not self._certify(task):
+                return False  # certified, or asking "did it work?" (a real question)
+            # Refused: another worker round would repeat the work (the light
+            # was turned on three more times), so it ends here, unverified.
+            gap = "Jev did not certify it"
+        else:
+            gap = task.certification.get("gate") or "the evidence did not allow certification"
+        # The work's own account, not a test designer's (the last step may be one).
+        claim = next((s["claim"] for s in reversed(task.steps) if s.get("outcome") == "done" and s.get("claim")
+                      and s.get("role") not in (TEST, REVIEW)), claim)
+        self._finish(task, UNVERIFIED, f"{claim[:1500]}\n\nNot verified: {gap}.")
+        return False
 
     def _consecutive(self, task: Task) -> int:
         """How many times in a row the last executor has run."""
