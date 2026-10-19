@@ -32,9 +32,7 @@ from ..config import Config
 from ..core.history import append_session, load_recent_context
 from ..core.memory import fence_text, load_preferences, notes_hint
 from ..core import logs
-from ..execution import passwords, runner
-from ..execution.actions import run_action
-from ..execution.tools import TOOLS
+from ..execution import dispatch, passwords, runner
 from ..execution.verified_input import InputGuard
 from . import status_icon, watchdog
 
@@ -204,9 +202,11 @@ class GatewayClient:
         return self.evaluate_response(state, questions)["answers"]
 
     def chat(self, messages: list[dict]) -> dict:
-        # execution.tools is in Responses API shape; the Gateway's OpenAI
-        # compatible endpoint uses the function-nested Chat Completions form.
-        tools = [{"type": "function", "function": {k: v for k, v in tool.items() if k != "type"}} for tool in TOOLS]
+        # The one tool registry (execution/dispatch.py), in Responses API
+        # shape; the Gateway's OpenAI compatible endpoint uses the
+        # function-nested Chat Completions form.
+        tools = [{"type": "function", "function": {k: v for k, v in tool.items() if k != "type"}}
+                 for tool in dispatch.registry_tools(dispatch.myapi_on(self.config))]
         model = self._text_model()
         # Jev is the typed decision/browser policy, not a text model. Keep a
         # capable Gateway text model for the visible sentence layer.
@@ -323,6 +323,7 @@ class OmarchySession:
         self._hangup = asyncio.Event()
         self._transcript: list[dict] = []
         self._guard = InputGuard()
+        self._action_log: list[dict] = []  # get_recent_actions (execution/dispatch.py)
         self._state = "listening"
         self._audit_session = logs.new_id()  # log correlation (core/logs.py)
         self.on_connected = None
@@ -519,15 +520,18 @@ class OmarchySession:
 
     async def _execute(self, name: str, args: dict) -> dict:
         # Only normalize the observed provider namespace, never arbitrary suffixes.
-        if name.startswith("default_api."):
-            name = name[len("default_api."):]
-        if name not in {tool["name"] for tool in TOOLS} or not isinstance(args, dict):
+        name = dispatch.tool_name(name)
+        if not dispatch.known(name, dispatch.myapi_on(self.config)) or not isinstance(args, dict):
             return {"ok": False, "message": "The model requested an unknown action or invalid arguments."}
+        if name == dispatch.RECENT_ACTIONS:
+            return {"ok": True, "message": dispatch.recent_actions(self._action_log, args.get("target"))}
         watchdog.tool_call(name, args)
         try:
-            result = await runner.default_runner().arun(
-                name, args, execute=run_action, wrap=self._guard.run, owner=self)
+            # The shared dispatch path of every conversation (execution/dispatch.py).
+            result = await dispatch.arun(self, self._guard, name, args)
             payload = {"ok": result.ok, "message": result.message}
+            self._action_log = [*self._action_log[-99:], {"action": name, "args": args, "ok": result.ok,
+                                                          "message": result.message, "window": {}}]
         except Exception:
             log.exception("Action failed: %s", name)
             payload = {"ok": False, "message": f"{name} failed."}

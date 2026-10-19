@@ -16,7 +16,7 @@ from ..core import alert_clips, identities, logs, outbox, quota, retry, updates
 from ..core import origin as origins
 from ..core.history import append_session
 from ..execution import catalog, user_tools
-from ..execution import provenance, runner
+from ..execution import dispatch, provenance, runner
 from ..execution.actions import run_action, ActionResult
 from ..execution.verified_input import InputGuard, writes_externally
 from . import status_icon, watchdog
@@ -1439,12 +1439,11 @@ class GeminiLiveSession:
         """One tool call on the ToolRunner: its tool's deadline (a hung call
         is answered "timed out after N s; nothing was confirmed"), cancelled
         with this conversation or its call id. `guarded` runs it through
-        InputGuard, as the model's own calls always were."""
-        result = await runner.default_runner().arun(
-            name, args, execute=execute, wrap=self._input_guard.run if guarded else None, owner=self, tag=call_id)
-        if getattr(result, "untrusted", False):  # an unguarded call's content taints this conversation too
-            self._input_guard.taint.mark(getattr(result, "provenance", ""))
-        return result
+        InputGuard, as the model's own calls always were. The shared path of
+        every conversation (execution/dispatch.py); untrusted content in an
+        unguarded call's result taints this conversation too."""
+        return await dispatch.arun(self, self._input_guard, name, args, execute=execute, tag=call_id,
+                                   guarded=guarded)
 
     def _run_tool(self, name: str, args: dict) -> ActionResult:
         """run_action, except unlock_screen from the paired phone (the only
@@ -1574,8 +1573,9 @@ class GeminiLiveSession:
             elif redirect is not None:
                 result = redirect
             elif call.name in self.extra_tools:
+                # Guarded like every other call the model makes (plan 4.6).
                 result = await self._tool(call.name, dict(call.args or {}),
-                                          lambda name, args: self.extra_tools[name](args), call.id, guarded=False)
+                                          lambda name, args: self.extra_tools[name](args), call.id)
             elif call.name == "run_mission":
                 result = await self._run_mission(session, call.args or {})
             elif call.name == "get_recent_actions":
@@ -1810,6 +1810,13 @@ class GeminiLiveSession:
         if call_id in self._blocking_calls:
             self._blocking_calls.discard(call_id)
             self._tool_done_at = time.monotonic()
+
+    def typed_turn(self, text: str) -> None:
+        """A typed line: a user turn of its own (core/logs.py turn_id, what
+        InputGuard's same-turn repeat check keys on) whose words the guard
+        hears. The typed chat and the phone's chat both start one here."""
+        self._turn_id = logs.new_id()
+        self._input_guard.heard_user(text)
 
     def _replied(self) -> None:
         self._input_guard.assistant_replied()

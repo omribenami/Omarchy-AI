@@ -7,6 +7,7 @@ const source = html.split('<script>')[1].split('</script>')[0];
 function page({offerFails = false} = {}) {
   const elements = new Map(), sent = [];
   let micRequests = 0, stopped = 0, peers = 0;
+  const fetches = [];
   function element(id) {
     if (!elements.has(id)) elements.set(id, {value: '', hidden: true, style: {}, dataset: {}, children: [],
       handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; },
@@ -35,10 +36,11 @@ function page({offerFails = false} = {}) {
     performance: {now: () => 0}, innerWidth: 390, innerHeight: 844, devicePixelRatio: 1,
     matchMedia: () => ({matches: false}), addEventListener() {}, requestAnimationFrame() {}, setInterval() {},
     setTimeout() {return 1;}, clearTimeout() {},
-    fetch: async url => url === '/api/live/offer' ? {ok: !offerFails, json: async () => offerFails ? {error: 'test failure'} : {sdp: 'answer'}} : {ok: true, json: async () => ({available: false})},
+    fetch: async (url, init) => { fetches.push({url, body: init && init.body ? JSON.parse(init.body) : null});
+      return url === '/api/live/offer' ? {ok: !offerFails, json: async () => offerFails ? {error: 'test failure'} : {sdp: 'answer', conversation_id: 'conv-1'}} : {ok: true, json: async () => ({available: false})}; },
   };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
-  return {element, sent, sandbox, stats: () => ({micRequests, stopped, peers}),
+  return {element, sent, sandbox, fetches, stats: () => ({micRequests, stopped, peers}),
     async click(id) { await element(id).handlers.click({currentTarget: element(id)}); },
     async send(text) { element('messageInput').value = text; await element('composer').handlers.submit({preventDefault() {}}); }};
 }
@@ -266,4 +268,21 @@ test('mirror Text on a live voice call switches to text: mic off, replies silent
   assert.equal(p.element('remoteAudio').muted, true);
   await p.send('What is on screen?');
   assert.equal(p.sent.at(-2).item.content[0].text, 'What is on screen?');
+});
+test('a tool call carries its conversation and the turns since the last call', async () => {
+  const p = page();
+  await vm.runInContext('start()', p.sandbox);
+  const say = (type, delta) => vm.runInContext(`onDataMessage(${JSON.stringify(JSON.stringify({type, delta}))})`, p.sandbox);
+  say('session.input_transcript.delta', 'type exit ');
+  say('session.input_transcript.delta', 'please');
+  say('session.output_transcript.delta', 'End the shell');
+  say('session.output_transcript.delta', ' session?');
+  say('session.input_transcript.delta', 'yes');
+  const call = name => vm.runInContext(`callTool(${JSON.stringify(name)}, {})`, p.sandbox);
+  await call('type_text');
+  const first = p.fetches.filter(f => f.url === '/api/tool').at(-1).body;
+  assert.equal(first.conversation_id, 'conv-1');
+  assert.deepEqual(JSON.parse(JSON.stringify(first.events)), [['heard', 'type exit please'], ['replied'], ['heard', 'yes']]);
+  await call('press_key');
+  assert.deepEqual(JSON.parse(JSON.stringify(p.fetches.at(-1).body.events)), []);
 });

@@ -589,6 +589,12 @@ About 90 typed tools plus Omarchy's full command set:
   rendered once in your voice's language), otherwise "On it, one moment."
   One acknowledgement per request. A background result it has not spoken a
   few seconds after it came back is told to you once.
+- **Same rules everywhere** (`execution/dispatch.py`). Desktop voice, the
+  typed chat, the phone (voice or text, Gemini or OpenAI), the speaker and
+  the turn-based Gateway mode offer the same tools, including the ones you
+  added, and run every call through the same checks: approvals, untrusted
+  content, verified keyboard focus, one action per request.
+  `tests/test_parity.py` lists the few differences that are on purpose.
 - **One place for everything it tells you** (`core/outbox.py`). Results,
   questions, approvals and alerts go to the surface you are on: said in an
   open conversation (desktop, phone call, typed chat, speaker) and nowhere

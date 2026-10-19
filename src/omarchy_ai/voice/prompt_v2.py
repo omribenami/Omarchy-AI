@@ -30,8 +30,7 @@ from ..core import agenda, skills, updates
 from ..core.history import load_recent_context
 from ..core.memory import fence_text, load_preferences, notes_hint
 from ..core.summarize import archive_summaries, tail_chars
-from ..execution import catalog
-from ..execution.tools import MYAPI_TOOLS, TOOLS
+from ..execution import catalog, dispatch
 from . import speaker_id
 
 PROMPT_VERSION = "v2"
@@ -349,7 +348,7 @@ def session_tools(config: Config, *, myapi_on: bool | None = None) -> list[dict]
     """The same tool list as the legacy session (the shared schemas, as is)."""
     if myapi_on is None:
         myapi_on = bool(config.myapi_enabled and myapi.is_connected())
-    return [_END_CONVERSATION, *TOOLS, *(MYAPI_TOOLS if myapi_on else [])]
+    return [_END_CONVERSATION, *dispatch.registry_tools(myapi_on)]
 
 
 def build_session_config_v2(config: Config, *, surface: str | None = None) -> dict:
