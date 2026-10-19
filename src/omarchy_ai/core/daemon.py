@@ -178,6 +178,7 @@ class OmaDaemon:
                     from ..runtime import service as task_service
                     await asyncio.to_thread(task_service.get_runtime().tidy_approvals)
                     await asyncio.to_thread(task_service.get_runtime().expire_confirmations)
+                    await asyncio.to_thread(task_service.get_runtime().expire_stale_questions)
                     await asyncio.to_thread(task_service.get_runtime().report_running_progress)
                     from . import conversations
                     await asyncio.to_thread(conversations.sync_installs)  # a tool install to approve, in its chat

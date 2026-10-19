@@ -104,6 +104,12 @@ Rules for every release:
   now.
 - "What did you do in that window?" no longer fails in a Gemini
   conversation after a command the fast path ran.
+- Typing or saying "cancel it" as the answer to a background task's
+  question now cancels the task. Before, it went to the worker as an
+  answer, the task kept going, and later replies turned the lights on three
+  more times. A finished result is no longer shown as "a question for you":
+  the task ends with it. A task left waiting on a question that asks
+  nothing closes on its own after 4 hours, and doctor points it out.
 
 ### Under the hood
 

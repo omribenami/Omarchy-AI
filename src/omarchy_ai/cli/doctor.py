@@ -1212,6 +1212,7 @@ def entry_state(entry: dict) -> str:
 
 
 def check_tasks(ctx: Context) -> Result:
+    from ..runtime import questions
     from ..runtime import task as rt
 
     title = "Tasks"
@@ -1227,10 +1228,20 @@ def check_tasks(ctx: Context) -> Result:
     ]
     waiting = [t for t in tasks if t.status in (rt.WAITING_APPROVAL, rt.WAITING_USER)]
     running = [t for t in tasks if t.status in rt.ACTIVE and rt.owner_alive(t.owner)]
+    # Waiting on a "question" that asks nothing (2026-10-17: a finished
+    # result sat as the question for a day, and every reply resumed it).
+    unanswerable = [
+        t
+        for t in waiting
+        if t.status == rt.WAITING_USER
+        and t.certification.get("status") != rt.AWAITING_CONFIRMATION
+        and not questions.is_question(t.question or "")
+    ]
     details = {
         "interrupted": [t.id for t in interrupted],
         "orphaned": [t.id for t in orphaned],
         "waiting": [t.id for t in waiting],
+        "no_question": [t.id for t in unanswerable],
         "running": len(running),
     }
     if interrupted or orphaned:
@@ -1241,6 +1252,17 @@ def check_tasks(ctx: Context) -> Result:
             YELLOW,
             f"{len(interrupted)} interrupted, {len(orphaned)} orphaned (no live process): {ids}",
             "omarchy-ai-task show ID, then omarchy-ai-task resume ID or cancel ID",
+            details,
+        )
+    if unanswerable:
+        ids = ", ".join(t.id for t in unanswerable[:4])
+        return Result(
+            "tasks",
+            title,
+            YELLOW,
+            f"{len(unanswerable)} waiting on a question that asks nothing: {ids}",
+            f"they close on their own after {questions.STALE_QUESTION_HOURS:g} h while the "
+            "service runs; or omarchy-ai-task show ID, then cancel ID",
             details,
         )
     note = f", {len(waiting)} waiting for you" if waiting else ""
