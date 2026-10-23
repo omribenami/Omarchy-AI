@@ -164,7 +164,7 @@ jobs:
 
       # Keyless (Sigstore, no secret): `gh attestation verify <tarball>
       # --repo omribenami/Omarchy-AI` shows it was built here from this tag.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/omarchy-ai-*-linux-x86_64.tar.gz
 
