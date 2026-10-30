@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -36,7 +37,7 @@ KEYRING_SECONDS = 12 * 3600
 _KEYRING = ("application", "omarchy-ai", "purpose", "vault-cache")
 
 
-def _keyring_get(name: str) -> str | None:
+def _keyring_get(name: str, *, any_age: bool = False) -> str | None:
     import subprocess
     try:
         out = subprocess.run(["secret-tool", "search", "--unlock", *_KEYRING, "name", _norm(name)],
@@ -45,7 +46,7 @@ def _keyring_get(name: str) -> str | None:
         return None
     at = re.search(r"^attribute\.at = (\d+)$", out.stderr + out.stdout, re.M)  # secret-tool prints attributes on stderr
     secret = re.search(r"^secret = (.*)$", out.stdout, re.M)
-    if not at or not secret or time.time() - int(at[1]) > KEYRING_SECONDS:
+    if not at or not secret or (not any_age and time.time() - int(at[1]) > KEYRING_SECONDS):
         return None
     return secret[1]
 
@@ -59,6 +60,11 @@ def _keyring_put(name: str, value: str) -> None:
                        text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+# A revealed value's local copy for masking (revealed_values), by token id.
+_MASK = "masked:"
+_unfetched: set[str] = set()
 
 
 def _revealed_path() -> Path:
@@ -127,6 +133,7 @@ def get(name: str, client: MyApiClient | None = None, *, fresh: bool = False) ->
         raise MyApiError(f"MyApi returned no value for {token.get('label')!r}")
     _cache[token["id"]] = (time.time(), value)
     _record(token["id"])
+    _keyring_put(_MASK + token["id"], value)
     if not name.startswith("vt_"):
         _keyring_put(name, value)
     return value
@@ -149,18 +156,37 @@ def _record(token_id: str) -> None:
 
 
 def revealed_values() -> list[str]:
-    """Values handed out on this machine (by any process), for masking."""
+    """Values handed out on this machine (by any process), for masking.
+
+    Read from the local keyring, where get() keeps each one by its token id:
+    redaction runs this in every log call's first minute, and fetching each
+    value from MyApi again took 20 s while MyApi answered slowly (2026-10-26:
+    a crashed tool's worker waited out its 20 s deadline on its first log
+    line). An id with no local copy yet is fetched in the background, once
+    per process, and is masked from the next refresh on."""
     try:
         ids = json.loads(_revealed_path().read_text())
     except (OSError, ValueError):
         return []
-    values = []
+    values, missing = [], []
     for token_id in ids:
-        try:
-            values.append(get(token_id))
-        except MyApiError:
-            continue
+        value = _keyring_get(_MASK + token_id, any_age=True)
+        if value:
+            values.append(value)
+        elif token_id not in _unfetched:
+            _unfetched.add(token_id)
+            missing.append(token_id)
+    if missing:
+        threading.Thread(target=_fetch_quietly, args=(missing,), daemon=True, name="vault-mask-fill").start()
     return values
+
+
+def _fetch_quietly(token_ids: list[str]) -> None:
+    for token_id in token_ids:
+        try:
+            get(token_id)  # keeps the local copy (_MASK)
+        except Exception:  # noqa: BLE001 -- MyApi down: tried again in the next process
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -36,7 +36,7 @@ import html
 import ipaddress
 import re
 from typing import Callable, Collection, Iterable, Iterator, NamedTuple
-from urllib.parse import unquote, unquote_plus, urlparse
+from urllib.parse import unquote, unquote_plus, urlparse, urlsplit
 
 USER, SYSTEM, LOCAL_STATE = "user", "system", "local_state"
 EXTERNAL, WEB, FILE, TERMINAL, VISION = "external", "web", "file", "terminal", "vision"
@@ -509,6 +509,56 @@ def _carried(
     )
 
 
+_COMMON_TLDS = frozenset({"com", "org", "net", "ai", "io", "app", "dev"})
+
+
+def _open_pages() -> list[str]:
+    """The addresses open in the assistant's own browser right now."""
+    try:
+        from .browser_control import tabs
+        return [t["url"] for t in tabs()]
+    except Exception:  # noqa: BLE001 -- no browser: nothing is open
+        return []
+
+
+def _page_key(url: str) -> tuple[str, str, str] | None:
+    try:
+        parts = urlsplit(url if "//" in url else "https://" + url)
+    except ValueError:
+        return None
+    return parts.netloc.lower().removeprefix("www."), parts.path.rstrip("/"), parts.query
+
+
+def _open_page_text(url: str) -> str | None:
+    """The text of the page at `url` when the assistant's browser has it open."""
+    key = _page_key(url)
+    try:
+        from .browser_control import _eval, tabs
+        tab = next((t for t in tabs() if _page_key(t["url"]) == key), None)
+        return _eval(tab, "(document.querySelector('main') || document.body).innerText") if tab else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# The text of an open page, for words a call would send back to it: none
+# unless the running assistant switched it on (core/daemon.py).
+OPEN_PAGE_TEXT: Callable[[str], str | None] = lambda _url: None  # noqa: E731
+
+# What `approval_needed` asks for the browser's open pages: nothing unless
+# the running assistant switched it on (core/daemon.py), so a test or a CLI
+# never reads a real browser.
+OPEN_PAGES: Callable[[], Collection[str]] = tuple
+
+
+def _already_open(aim: str, open_pages: Callable[[], Collection[str]] | None) -> bool:
+    """Going back to a page the browser already shows sends nothing anywhere:
+    the site served it. 2026-10-20 00:49: asked to read the ChatGPT chat she
+    was on, its own address (a chat id that came from the page) was held
+    back as "data from content", and the job went to a background task."""
+    key = _page_key(aim)
+    return key is not None and any(_page_key(url) == key for url in (open_pages or OPEN_PAGES)())
+
+
 def _browse_problem(
     web: _Web, heard: set[str], seen: _Seen, own_words: Collection[str] = ()
 ) -> tuple[bool, list[str]] | None:
@@ -516,7 +566,12 @@ def _browse_problem(
     it there, the words it would carry out): its host or a distinctive label
     of it appears in the content, or its path, query or fragment carries
     data (_carried)."""
-    if web.host not in _SEARCH_HOSTS:
+    # The user named the site itself ("open ChatGPT" -> chatgpt.com): its
+    # address showing up in a page later does not make it the page's idea.
+    # Every label must be theirs and the ending a common one, so content
+    # cannot steer to chatgpt.evil.com or a look-alike country domain.
+    named = bool(web.labels) and web.labels <= heard and web.host.rsplit(".", 1)[-1] in _COMMON_TLDS
+    if web.host not in _SEARCH_HOSTS and not named:
         if any(name in seen.text for name in web.names):
             return True, []
         if any(label in seen.tokens and label not in heard for label in web.labels):
@@ -537,6 +592,29 @@ def _shown(aims: list[str]) -> str:
     return ", ".join(repr(m[:80]) for m in aims[:3])
 
 
+# Commands that only read the state of this computer: nothing changes and
+# nothing leaves it. 2026-10-29 21:33: "hyprctl monitors", to see why windows
+# left space empty, waited for a tap because a screen description came first.
+_INSPECT = {"hyprctl": {"monitors", "clients", "activewindow", "activeworkspace", "workspaces", "layers",
+                        "binds", "devices", "version", "getoption", "cursorpos"},
+            "uname": None, "uptime": None, "free": None, "df": None, "lsblk": None, "wlr-randr": None}
+
+
+def inspects_only(command: str) -> bool:
+    """A single plain command from _INSPECT: its read-only subcommand, flags
+    and plain words, no pipes, redirections, substitutions or chaining."""
+    if re.search(r"[;&|<>`$(){}\n\\]", command):
+        return False
+    words = command.split()
+    if not words or words[0] not in _INSPECT:
+        return False
+    subcommands = _INSPECT[words[0]]
+    if subcommands is None:
+        return True
+    rest = [w for w in words[1:] if not w.startswith("-")]
+    return bool(rest) and rest[0] in subcommands
+
+
 def approval_needed(
     name: str,
     args: dict,
@@ -546,6 +624,7 @@ def approval_needed(
     chosen: Collection[str] = (),
     seen: str | None = None,
     own_words: Collection[str] = (),
+    open_pages: Callable[[], Collection[str]] | None = None,
 ) -> str | None:
     """None to run the call; otherwise why it needs the user's tap. Only a
     tainted conversation or task is ever stopped, only for an irreversible
@@ -565,6 +644,8 @@ def approval_needed(
 
     if not tainted or tools.effect_class(name) != tools.IRREVERSIBLE:
         return None
+    if name == "terminal_task" and inspects_only(str((args or {}).get("command") or "")):
+        return None
     if name in _SELF_ACTING:
         return _SELF_ACTING[name]
     heard = _tokens(_home(said))
@@ -574,9 +655,15 @@ def approval_needed(
     unstated: list[str] = []
     relaxed = False  # a web address ran on the relaxed rule
     for arg, aim in _aimed(name, args):
+        if aim and own(aim) in chosen and arg in _BROWSE.get(name, ()):
+            relaxed = True  # her own address, but what it would type there is still checked
+            continue
         if not aim or _tokens(_home(aim)) <= heard or own(aim) in chosen:
             continue
         web = _web(aim) if arg in _BROWSE.get(name, ()) else None
+        if web is not None and _already_open(aim, open_pages):
+            relaxed = True
+            continue
         if web is not None and web.bare and web.host in _SEARCH_HOSTS:
             relaxed = True  # a search engine's front page carries nothing
             continue
@@ -598,6 +685,16 @@ def approval_needed(
     ):
         # What it would search for or type on the page (the goal, the steps).
         carrying.append(("the goal and steps", words))
+    if carrying and name in _BROWSE:
+        # Words the target page itself already shows go back to where they
+        # came from: nothing leaves. 2026-10-20 02:21: her reply in a ChatGPT
+        # chat reused its words ("compensation", "capability") and was held
+        # as data carried out.
+        page = next((aim for arg, aim in _aimed(name, args) if arg == "url" and aim), "")
+        text = OPEN_PAGE_TEXT(page) if page and _already_open(page, open_pages) else None
+        if text:
+            shown = _tokens(_plain(text))
+            carrying = [(aim, kept) for aim, words in carrying if (kept := [w for w in words if w not in shown])]
     reasons = []
     if from_content:
         reasons.append(
@@ -673,15 +770,23 @@ class Taint:
         self._own(t for t in words if not _opaque(t) and t not in self._seen_tokens)
 
     def chose(self, aims: list[str]) -> None:
-        """The targets of a call the assistant is dispatching. Kept only
-        while nothing untrusted has entered the conversation (the call whose
-        own result taints it included, since it is dispatched first): no
-        content can have suggested them, so retrying the same call later is
-        not acting on content. Once tainted, nothing more is added."""
+        """The targets of a call the assistant is dispatching. Kept while
+        nothing untrusted has entered the conversation (the call whose own
+        result taints it included, since it is dispatched first): no content
+        can have suggested them, so retrying the same call later is not
+        acting on content. Once tainted, a target is kept only when the whole
+        record of the content seen so far does not hold it: then too it is
+        hers, though the page it opens will show it. 2026-10-29 21:34: her own
+        youtube.com search ran, the page then showed "youtube.com", and eight
+        retries of that same address were held as "came from content"."""
+        record = None
         if self.tainted:
-            return
+            record = _record(self.seen())
+            if record is None:
+                return
         for aim in aims:
-            if aim and len(self.chosen) < _CHOSEN_KEPT:
+            if (aim and len(self.chosen) < _CHOSEN_KEPT
+                    and (record is None or not _in_content(aim, set(), record))):
                 self.chosen.add(own(aim))
 
     def mark(self, source: str, content: str | None = None) -> None:
@@ -717,6 +822,17 @@ class Taint:
         apart)."""
         if text:
             self.utterances += 1
+            self._joined = (self._joined + text)[-_SAID_KEPT:]
+            self._spaced = (self._spaced + " " + text)[-_SAID_KEPT:]
+            self._own(_tokens(text))
+
+    def recall(self, text: str) -> None:
+        """The user's own words from earlier in this conversation, before this
+        session: theirs as much as anything heard now, but not a new turn.
+        2026-10-19 21:38: each typed phone message is a session of its own;
+        the taint carried over, the user's "open ChatGPT" did not, so her
+        https://chatgpt.com was held back as "from content"."""
+        if text:
             self._joined = (self._joined + text)[-_SAID_KEPT:]
             self._spaced = (self._spaced + " " + text)[-_SAID_KEPT:]
             self._own(_tokens(text))

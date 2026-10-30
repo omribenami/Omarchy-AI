@@ -29,6 +29,19 @@ fi
   || { echo 'Jev Ultrafast browser dependency failed to install.' >&2; exit 1; }
 echo "==> Verified Jev Ultrafast browser agent"
 
+echo "==> Installing command launchers in ~/.local/bin"
+USER_BIN_DIR="$HOME/.local/bin"
+mkdir -p "$USER_BIN_DIR"
+for command_name in omarchy-ai omarchy-ai-doctor omarchy-ai-dashboard omarchy-ai-task omarchy-ai-tool omarchy-ai-vault; do
+  launcher="$USER_BIN_DIR/$command_name"
+  target="$PROJECT_DIR/.venv/bin/$command_name"
+  if [[ -e "$launcher" && ! -L "$launcher" ]]; then
+    echo "    Leaving existing non-symlink $launcher alone" >&2
+    continue
+  fi
+  ln -sfn "$target" "$launcher"
+done
+
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-ai"
 mkdir -p "$CONFIG_DIR"
 
@@ -71,6 +84,7 @@ echo
 echo "Setup complete. Next steps:"
 echo "  systemctl --user enable --now omarchy-ai"
 echo "  journalctl --user -u omarchy-ai -f"
+echo "  omarchy-ai doctor"
 echo
 echo "Say 'omachy' to talk. Additional bundled wake words can be enabled in Settings."
 echo "End a conversation by saying goodbye/stop/that's all."

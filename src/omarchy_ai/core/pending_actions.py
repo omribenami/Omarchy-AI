@@ -98,6 +98,15 @@ def create(action: dict) -> str:
     return aid
 
 
+def waiting_in(cid: str) -> list[dict]:
+    """The actions still waiting for an answer in this conversation, newest first."""
+    if not cid:
+        return []
+    found = [dict(v, id=k) for k, v in _load().items()
+             if v.get("status") == WAITING and v.get("conversation") == cid and not expired(v)]
+    return sorted(found, key=lambda a: float(a.get("created") or 0), reverse=True)
+
+
 def get(aid) -> dict | None:
     if not isinstance(aid, str):
         return None

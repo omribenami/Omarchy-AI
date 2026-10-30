@@ -10,6 +10,7 @@ import urllib.error
 from email.message import Message
 from unittest import mock
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import cancel, retry
 from omarchy_ai.execution import tools
 from omarchy_ai.myapi.client import MyApiError

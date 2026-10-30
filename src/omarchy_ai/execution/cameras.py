@@ -9,6 +9,12 @@ Optional: `<command> wait <name> <seconds>` blocks until that camera's motion
 sensor reports movement (exit 0) or the time passes without any (exit 3).
 Any other exit means the program cannot wait on that camera, and a watch on
 it looks on a timer instead. `wait <name> 0` only answers whether it can.
+
+Optional: `<command> focus <name> <file>` writes a close-up of the thing the
+camera's detector is tracking right now (a person, a car) to <file> (exit 0),
+or exits 3 when nothing is being tracked. A watch judges that close-up next
+to the full frame, since someone walking up the drive is a few dozen pixels
+of it, and keeps looking every few seconds while something is tracked.
 """
 from __future__ import annotations
 
@@ -49,14 +55,26 @@ def names(config) -> list[str]:
 
 
 def resolve(name: str, config) -> str:
-    """The camera's exact name, so a watch cannot be created on a guess."""
+    """The camera's exact name, so a watch cannot be created on a guess.
+
+    A partial, Hebrew or misspelled name resolves when exactly one camera
+    fits it (execution/naming.py): live 2026-10-26, "Door", "הדלת" and
+    "הדלת, הרינג" each failed against a camera called "front door"."""
     known = names(config)
     said = name.strip().casefold()
     spoken = said.removeprefix("the ").removesuffix(" camera").strip()  # "the driveway camera"
     match = next((k for k in known if k.casefold() in (said, spoken)), None)
-    if match is None:
-        raise ValueError(f"no camera named {name!r}; the cameras are: {', '.join(known) or 'none'}")
-    return match
+    if match is not None:
+        return match
+    from . import naming
+    match, options = naming.match(name, {k: [k] for k in known})
+    if match is not None:
+        return match
+    if len(options) > 1:
+        raise ValueError(f"{name!r} could be any of these cameras: {', '.join(options)}. Ask the user which one, "
+                         "then call again with that exact name.")
+    raise ValueError(f"no camera named {name!r}; the cameras are: {', '.join(known) or 'none'}. "
+                     "Call again with one of these exact names.")
 
 
 def snapshot(name: str, config, key: str) -> Path:
@@ -69,6 +87,29 @@ def snapshot(name: str, config, key: str) -> Path:
     _run(config, "snapshot", name, str(path))
     if not _valid_image(path):
         raise LookupError(f"camera {name!r} returned no image")
+    return path
+
+
+def focus(name: str, config, key: str) -> Path | None:
+    """A close-up of what the camera's detector tracks now, kept as
+    FRAME_DIR/<key>; None when nothing is tracked or the program has no
+    `focus`."""
+    from .vision import _valid_image
+
+    command = getattr(config, "camera_snapshot_command", None)
+    if not command:
+        return None
+    FRAME_DIR.mkdir(parents=True, exist_ok=True)
+    path = FRAME_DIR / key
+    path.unlink(missing_ok=True)
+    try:
+        proc = subprocess.run([*shlex.split(command), "focus", name, str(path)], capture_output=True, text=True,
+                              timeout=_TIMEOUT, check=False, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0 or not _valid_image(path):
+        path.unlink(missing_ok=True)
+        return None
     return path
 
 

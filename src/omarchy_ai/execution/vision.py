@@ -62,17 +62,24 @@ def _capture() -> Path | None:
     # "save" mode: just grim + echo the path, no clipboard copy or
     # notification — this capture is for internal use, not the user-facing
     # screenshot action.
-    try:
-        proc = subprocess.run(
-            ["omarchy-capture-screenshot", "fullscreen", "save"],
-            capture_output=True, text=True, timeout=10, check=False, env=desktop_env(),
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    path_str = (proc.stdout or "").strip().splitlines()
-    if not path_str:
+    for _ in range(2):
+        try:
+            proc = subprocess.run(
+                ["omarchy-capture-screenshot", "fullscreen", "save"],
+                capture_output=True, text=True, timeout=10, check=False, env=desktop_env(),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode != 0:
+            return None
+        path_str = (proc.stdout or "").strip().splitlines()
+        if path_str:
+            break
+        # The script's first step is `pkill slurp && exit 0`: a region picker
+        # left open (2026-10-29 21:31) was closed and nothing was captured.
+        # It is gone now, so the second run takes the picture.
+        log.info("screenshot capture closed a leftover region picker; capturing again")
+    else:
         return None
     path = Path(path_str[0])
     for _ in range(20):

@@ -71,7 +71,9 @@ Assistant, or in whatever else serves it. Restart `omarchy-ai.service`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `satellite_silence_seconds` | 20 | The conversation ends after this long without anyone speaking |
+| `satellite_quiet_hours` | unset | `"HH:MM-HH:MM"` (local time, may cross midnight): inside it a speaker never starts a conversation by itself; one the user opens still answers |
 | `satellite_mic_gain` | 1.0 | Multiplies the device's microphone level, for the wake word and the conversation |
+| `satellite_wake_threshold` | unset | Wake threshold for this far-field speaker; unset uses `wake_threshold` |
 | `satellite_speech_rms` | 800 | Level (after gain) that counts as the user speaking, for the stuck-turn guard |
 | `satellite_talk_channel` | 1 | Which microphone channel goes to the model when the device sends two: 1 is the noise-suppressed one on a Voice PE, 0 the raw one. The wake word always uses the first |
 
@@ -90,6 +92,26 @@ assistant and reads one JSON object per line on its standard input:
 speaker plays it. The state is repeated every few seconds while a
 conversation is open, so a display can time out on its own if the lines
 stop. Use it to drive a wall display, a light, or anything else.
+
+The same program gets the questions background tasks wait on:
+
+```json
+{"question": "open", "id": "20261028-101500-ab12cd.1", "text": "Which screen should I mirror?", "speaker": "192.0.2.10"}
+{"question": "answered", "id": "20261028-101500-ab12cd.1", "speaker": "192.0.2.10"}
+```
+
+`speaker` is the speaker the task was asked on ("" if none); a question that
+ends without an answer is `withdrawn`. Open questions are sent again every
+minute. A question of a task asked on a speaker is said on that speaker
+first; unanswered there, or with no speaker listening, it goes to the phone.
+
+A display can have her ask an open question on a speaker, so it is answered
+out loud: put a random token of yours in `~/.config/omarchy-ai/satellite-ask-token`
+(`satellite_ask_token_path`, mode 0600) and POST
+`{"token": "...", "id": "<question id>", "speaker": "<host, optional>"}` as
+plain text to `http://<this computer>:<satellite_http_port>/question/ask`.
+Only an open question's own words can be said this way; without the file
+the route is off.
 
 `OMARCHY_AI_WAKE_DIAGNOSTICS=1` logs the satellite's best wake score and
 level every 5 seconds, for choosing the gain.

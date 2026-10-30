@@ -176,6 +176,19 @@ class ControlPlane:
             "says what they want, or tells it to go ahead, is not.")})
         return bool(answers) and answers["declined"]["p"] >= DECLINED_P
 
+    def already_answered(self, task: Task, question: str, asked: list[str]) -> float | None:
+        """P(a worker's new question asks for what the user was already asked
+        and answered) -- runtime/directing.py _worker_question. None when Jev
+        is unavailable."""
+        state = json.dumps({"request": _clip(task.title, 600),
+                            "questions_already_asked": [_clip(q, 300) for q in asked[-4:]],
+                            "user_answers_oldest_first": [_clip(a, 300) for a in task.answers[-6:]],
+                            "new_question": _clip(question, 600)}, ensure_ascii=False)
+        answers = self._ask(task, state, {"already_answered": boolean(
+            "Does the new question ask the user for something they were already asked, or that their answers "
+            "already tell, directly or by obvious implication? Judge the meaning, in any language.")})
+        return answers["already_answered"]["p"] if answers else None
+
     # -- DIRECT ----------------------------------------------------------
     def direct(self, task: Task, allowed: list[str], executors: dict[str, str]) -> tuple[Choice, Choice]:
         criteria = {k: DIRECTIVES[k] for k in allowed}

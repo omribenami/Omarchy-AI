@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core.jev import JevError
 from omarchy_ai.execution.actions import ActionResult
 from omarchy_ai.voice import switchboard
@@ -436,3 +437,27 @@ class TaskStatusRepeatTests(unittest.TestCase):
             messages.append(session.send_tool_response.call_args.kwargs["function_responses"].response["message"])
         self.assertIn("x" * 100, messages[0])
         self.assertIn('"unchanged": true', messages[1])
+
+
+class RecoveryRouteTests(unittest.TestCase):
+    """2026-10-20 01:41-01:43: after browser_task kept failing, every other route was sent back to browser_task."""
+
+    ANSWERS = {"route": {"choice": "reject", "p": 0.85}, "matches": {"p": 0.32}, "gap": {"choice": "tool", "p": 0.9},
+               "better_tool": {"choice": "browser_task", "p": 0.9,
+                               "probabilities": {"browser_task": 0.9, "browser_control": 0.05}}}
+    ARGS = {"action": "type", "text": "hello", "target": "Ask ChatGPT", "submit": True}
+
+    def test_another_route_after_a_failure_runs(self):
+        c = Context("continue the chat with ChatGPT", [], None, [], failed_tools=frozenset({"browser_task"}))
+        verdict = switchboard.decide(self.ANSWERS, "browser_control", self.ARGS, c)
+        self.assertEqual(verdict.action, "execute")
+        self.assertEqual(verdict.evidence["recovering_from"], ["browser_task"])
+
+    def test_without_a_failure_the_same_call_is_sent_back(self):
+        c = Context("continue the chat with ChatGPT", [], None, [])
+        self.assertEqual(switchboard.decide(self.ANSWERS, "browser_control", self.ARGS, c).action, "reject")
+
+    def test_a_call_far_from_the_request_is_still_stopped_while_recovering(self):
+        answers = dict(self.ANSWERS, matches={"p": 0.05})
+        c = Context("continue the chat with ChatGPT", [], None, [], failed_tools=frozenset({"browser_task"}))
+        self.assertEqual(switchboard.decide(answers, "lock_screen", {}, c).action, "reject")

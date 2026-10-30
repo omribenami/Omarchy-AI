@@ -162,7 +162,7 @@ class RuntimeHarness(unittest.TestCase):
         # No test runs a real sudo: with Flux's PAM helper on, even `sudo -n`
         # asks the phone. From 2026-10-05 to 10-07 every run of this suite sent
         # the user a fingerprint request for `true` with no reason.
-        for target, fake in (("omarchy_ai.runtime.runtime._sudo", lambda command: (command.split("sudo", 1)[1], None)),
+        for target, fake in (("omarchy_ai.runtime.runtime._sudo", lambda command, **kw: (command.split("sudo", 1)[1], None)),
                              ("omarchy_ai.execution.approval_context.note", lambda *a, **kw: None)):
             unsudo = patch(target, side_effect=fake)
             unsudo.start()
@@ -203,6 +203,8 @@ class PermissionTests(unittest.TestCase):
             "kill -9 1234": Risk.ELEVATED,
             "systemctl --user restart pipewire": Risk.HIGH,
             "sudo systemctl restart bluetooth": Risk.HIGH,
+            "ssh admin@server 'sudo pacman -Syu'": Risk.HIGH,
+            "sshpass ssh admin@server 'sudo pacman -Syu'": Risk.HIGH,
             "pacman -Rns foo": Risk.HIGH,
             "git push --force": Risk.HIGH,
             "cat ~/.ssh/id_ed25519": Risk.HIGH,
@@ -355,9 +357,9 @@ class TaskRuntimeTests(RuntimeHarness):
         runtime.start("do the thing", str(self.ws), background=False)
 
         self.assertIn(("progress", "starting"), events)
-        self.assertIn(("progress", "status:Sending to Jev: planning"), events)
-        self.assertIn(("progress", "status:Sending to Jev: choosing tools"), events)
-        self.assertTrue(any(event == "progress" and phase == "status:System Agent" for event, phase in events))
+        self.assertIn(("progress", "status:Planning the task"), events)
+        self.assertIn(("progress", "status:Choosing a worker"), events)
+        self.assertTrue(any(event == "progress" and phase == "status:System Agent is working" for event, phase in events))
 
     def test_planner_budget_leaves_each_backend_time_to_answer(self):
         # 2026-10-08 00:29: 45 s over three backends gave each 15 s; codex
@@ -1645,6 +1647,171 @@ class CancelLoopTests(RuntimeHarness):
         self.assertEqual(runtime.expire_stale_questions(), [])
         self.assertEqual(len(sent), 1)
         self.assertFalse(runtime.respond("result", answer="ok", background=False)["ok"])
+
+
+WHICH_SCREEN = ("מצאתי את הטלוויזיה בסלון, אבל השיקוף עדיין לא התחיל. איזה מסך לשקף — הטלפון, המחשב או מכשיר "
+                "אחר?\n\nSUMMARY: Identified the living-room TV; awaiting source clarification.\nFILES CHANGED: None.\n"
+                "TESTS RUN: adb devices -l\nRISKS: none\nCOMMANDS THAT DID IT:")
+WHICH_SCREEN_AGAIN = ("האישור התקבל והחיבור לטלוויזיית הסלון תקין. איזה מסך לשקף — המחשב, הטלפון או מכשיר אחר?\n\n"
+                      "SUMMARY: ממתין לזיהוי מקור השיקוף.\nFILES CHANGED: None.")
+
+
+class RepeatedQuestionTests(RuntimeHarness):
+    """Real task 2026-10-26 15:08: "mirror the screen to the living-room TV"
+    asked "which screen?" four times; the answers never changed anything."""
+
+    def asking_worker(self, *claims):
+        claims = list(claims)
+        return ScriptExecutor("SYSTEM_AGENT", lambda a, ctx: Report(DONE, claim=claims.pop(0) if claims else "Mirroring."))
+
+    def test_the_question_is_stored_as_a_person_reads_it(self):
+        worker = self.asking_worker(WHICH_SCREEN)
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER"]))
+        task = runtime.start("תשקפי את המסך בטלוויזיה של הסלון", str(self.ws), background=False)
+        question = self.store.load(task.id).question
+        self.assertTrue(question.startswith("מצאתי את הטלוויזיה"), question)
+        for leak in ("I need your input", "SUMMARY", "FILES CHANGED", "TESTS RUN"):
+            self.assertNotIn(leak, question)
+
+    def test_answers_are_put_in_front_of_the_worker_on_resume(self):
+        worker = self.asking_worker(WHICH_SCREEN, "Mirroring the computer to Living Room TV.")
+        runtime = self.runtime([worker], ScriptedJev(directives=["ASK_USER", "FAIL"]))
+        task = runtime.start("תשקפי את המסך בטלוויזיה של הסלון", str(self.ws), background=False)
+        runtime.respond(task.id, answer="תשקפי את המחשב", background=False)
+        resumed = worker.calls[1].instructions
+        self.assertTrue(resumed.startswith("THE USER ALREADY ANSWERED"), resumed[:200])
+        self.assertIn("1. תשקפי את המחשב", resumed)
+        self.assertIn("איזה מסך לשקף", resumed)  # the question it was the answer to
+        self.assertIn("Do not ask any of these questions again", resumed)
+
+    def test_a_question_already_answered_goes_back_to_the_worker_not_the_user(self):
+        jev = ScriptedJev(directives=["ASK_USER", "ASK_USER", "FAIL"])
+        worker = self.asking_worker(WHICH_SCREEN, WHICH_SCREEN_AGAIN, "Mirroring the computer.")
+        runtime = self.runtime([worker], jev)
+        task = runtime.start("תשקפי את המסך בטלוויזיה של הסלון", str(self.ws), background=False)
+        self.assertEqual(self.store.load(task.id).status, "waiting_user")
+        runtime.respond(task.id, answer="סלון", background=False)
+        done = self.store.load(task.id)
+        self.assertNotEqual(done.status, "waiting_user")  # not asked a second time
+        self.assertEqual(len(worker.calls), 3)
+        self.assertIn("They already answered that", worker.calls[2].instructions)
+        self.assertTrue(any(d["kind"] == "ask" and d["value"] == "ALREADY_ANSWERED" for d in done.decisions))
+        self.assertEqual(len(done.budget["asked"]), 1)
+
+    def test_jev_judges_a_paraphrase_as_the_same_question(self):
+        class Judge(ScriptedJev):
+            def __call__(self, state, questions, timeout=8):
+                if "already_answered" in questions:
+                    self.judged = json.loads(state)
+                    return jev_answer(questions, {"already_answered": 0.9})
+                return super().__call__(state, questions, timeout)
+        jev = Judge(directives=["ASK_USER", "ASK_USER", "FAIL"])
+        paraphrase = "לשקף את מסך המחשב בבית או את מסך הטלפון שבידך?"  # few shared words
+        worker = self.asking_worker(WHICH_SCREEN, paraphrase, "Mirroring the computer.")
+        runtime = self.runtime([worker], jev)
+        task = runtime.start("x", str(self.ws), background=False)
+        runtime.respond(task.id, answer="המחשב!!!", background=False)
+        self.assertNotEqual(self.store.load(task.id).status, "waiting_user")
+        self.assertEqual(jev.judged["user_answers_oldest_first"], ["המחשב!!!"])
+        self.assertEqual(jev.judged["new_question"], paraphrase)
+
+    def test_a_new_question_is_still_asked(self):
+        jev = ScriptedJev(directives=["ASK_USER", "ASK_USER"])
+        worker = self.asking_worker("Which account should I use?", "What is the two-factor code on your phone?")
+        runtime = self.runtime([worker], jev)  # Jev unavailable for the check: the words differ
+        task = runtime.start("x", str(self.ws), background=False)
+        runtime.respond(task.id, answer="the work one", background=False)
+        done = self.store.load(task.id)
+        self.assertEqual(done.status, "waiting_user")
+        self.assertIn("two-factor", done.question)
+
+    def test_the_same_question_reaches_the_user_after_two_returns(self):
+        jev = ScriptedJev(directives=["ASK_USER"] * 4)
+        worker = self.asking_worker(*([WHICH_SCREEN] * 4))
+        runtime = self.runtime([worker], jev)
+        task = runtime.start("x", str(self.ws), background=False)
+        runtime.respond(task.id, answer="סלון", background=False)
+        done = self.store.load(task.id)
+        self.assertEqual(done.status, "waiting_user")  # bounded: the user may still answer or cancel
+        self.assertEqual(len(worker.calls), 4)
+        self.assertEqual(done.budget["repeat_questions"], 2)
+
+    def test_prefer_a_default_over_asking(self):
+        worker = self.asking_worker("Mirroring the computer.")
+        runtime = self.runtime([worker], ScriptedJev(directives=["FAIL"]))
+        runtime.start("mirror the screen to the TV", str(self.ws), background=False)
+        self.assertIn('"the screen" or "this" means this computer', worker.calls[0].instructions)
+
+
+class OwnerSudoTests(RuntimeHarness):
+    """The user, 2026-10-25: recognized by voice or by phone, sudo runs with
+    no approval and no fingerprint; anyone else, and anything destructive,
+    still asks; BLOCKED never runs."""
+
+    def setUp(self):
+        super().setUp()
+        from omarchy_ai.core import identities
+        identities.add("owner")
+        identities.add("guest")
+        identities.set_owner("owner")
+        # The harness patched _sudo; this one also records the owner bit.
+        self.sudo_calls = []
+        recording = patch("omarchy_ai.runtime.runtime._sudo",
+                          side_effect=lambda command, owner=False: (self.sudo_calls.append(owner)
+                                                                     or (command.split("sudo", 1)[1], None)))
+        recording.start()
+        self.addCleanup(recording.stop)
+
+    def run_as(self, person, how, command):
+        from omarchy_ai.core import identities
+        seen = []
+
+        def work(a, ctx):
+            r = ctx.run_command(command, a.workspace, 10)
+            seen.append(r)
+            if "request" in r:
+                return Report(NEEDS_APPROVAL, claim="need root", approval=r["request"])
+            return Report(DONE, claim="ran it")
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], ScriptedJev(directives=["FAIL"]))
+        token = identities.set_current(identities.Identity(person, how))
+        try:
+            task = runtime.start("root thing", str(self.ws), background=False)
+        finally:
+            identities.reset_current(token)
+        return self.store.load(task.id), seen[0]
+
+    def test_owner_by_voice_or_phone_runs_sudo_without_asking(self):
+        for how in ("voice", "phone"):
+            with self.subTest(how=how):
+                self.sudo_calls.clear()
+                task, result = self.run_as("owner", how, "sudo true")
+                self.assertEqual(result["decision"], "allow", result)
+                self.assertIsNone(task.pending_approval)
+                self.assertNotEqual(task.status, "waiting_approval")
+                self.assertEqual(self.sudo_calls, [True])  # the saved password, not the phone
+
+    def test_others_still_ask(self):
+        for person, how in (("guest", "voice"), (None, None), ("owner", "typed"), ("guest", "phone")):
+            with self.subTest(person=person, how=how):
+                self.sudo_calls.clear()
+                task, result = self.run_as(person, how, "sudo true")
+                self.assertEqual(result["decision"], "ask", result)
+                self.assertEqual(task.status, "waiting_approval")
+                self.assertEqual(self.sudo_calls, [])
+
+    def test_owner_destructive_sudo_still_needs_a_tap(self):
+        for command in ("sudo pacman -Rns foo", "sudo rm -rf /var/lib/foo", "sudo parted /dev/sdz rm 1",
+                        "ssh admin@server 'sudo rm -rf /srv/data'"):
+            with self.subTest(command=command):
+                task, result = self.run_as("owner", "voice", command)
+                self.assertEqual(result["decision"], "ask", result)
+                self.assertEqual(task.status, "waiting_approval")
+                self.assertEqual(self.sudo_calls, [])
+
+    def test_owner_blocked_sudo_is_refused(self):
+        task, result = self.run_as("owner", "phone", "sudo mkfs.ext4 /dev/sdz1")
+        self.assertEqual(result["decision"], "deny", result)
+        self.assertEqual(self.sudo_calls, [])
 
 
 class QuestionShapeTests(unittest.TestCase):

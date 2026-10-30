@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from fakes.myapi_server import FakeMyApi, fake_identity
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import agenda, approvals, effects, outbox, retry
 from omarchy_ai.execution import actions, tools
 from omarchy_ai.execution.actions import ActionResult

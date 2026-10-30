@@ -130,3 +130,134 @@ def cancel_intent(answer: str) -> bool:
 def cancel_acknowledged(text: str) -> bool:
     """A worker's report says the task itself was cancelled."""
     return bool(_CANCEL_ACK.search(strip_prefix(text)))
+
+
+# -- what reaches the phone ---------------------------------------------------
+# Real task 2026-10-26 15:08 ("mirror the screen to the living-room TV"): the
+# phone's chat got "I need your input to continue: <Hebrew question>
+# SUMMARY: ... FILES CHANGED: None. TESTS RUN: ... RISKS: ...", the same text
+# again as "Progress: ...", **markdown**, and two "Cancelled by the user."
+# cards. Everything a person reads about a task (chat cards, notices) goes
+# through these: the words a person would say, nothing of the report format.
+
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+_EMPHASIS = re.compile(r"\*\*|__|(?<![\w*])\*(?=\S)|(?<=\S)\*(?![\w*])")
+_SENTENCE = re.compile(r"(?<=[.!?؟])\s+")
+_JEV = re.compile(r"\bJev\b")
+_HEBREW = re.compile(r"[֐-׿]")
+_LATIN = re.compile(r"[A-Za-z]")
+_NOT_VERIFIED = re.compile(r"\n*\s*Not verified:", re.IGNORECASE)
+
+
+def clean(text: str) -> str:
+    """A worker's text as a person reads it: no "I need your input" prefix,
+    no SUMMARY/FILES CHANGED/... tail, no markdown marks, one line."""
+    text = strip_prefix(text)
+    match = _TAIL.search(text)
+    if match:
+        text = text[: match.start()]
+    text = _HEADING.sub("", text)
+    text = _EMPHASIS.sub("", text.replace("`", ""))
+    return " ".join(text.split())
+
+
+def brief(text: str, limit: int) -> str:
+    """Whole sentences up to `limit` characters (a cut word gets an ellipsis)."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    out = ""
+    for sentence in _SENTENCE.split(text):
+        if len(out) + len(sentence) + 1 > limit:
+            break
+        out = f"{out} {sentence}".strip()
+    if out:
+        return out
+    cut = text[: limit - 1].rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:—-") + "…"
+
+
+def ask_text(question: str, limit: int = 320) -> str:
+    """A question card: the question in the worker's (the user's) words, with
+    at most the sentence that leads into it, and no English preamble."""
+    text = clean(question)
+    if len(text) > limit and ("?" in text or "؟" in text):
+        sentences = _SENTENCE.split(text)
+        asked = [i for i, s in enumerate(sentences) if "?" in s or "؟" in s]
+        keep = sorted({i for i in asked} | ({asked[0] - 1} if asked[0] > 0 else set()))
+        text = " ".join(sentences[i] for i in keep)
+        if len(text) > limit:
+            text = " ".join(sentences[i] for i in asked)
+    return brief(text, limit)
+
+
+def result_text(result: str, limit: int = 280) -> str:
+    """A result card: a sentence or two, with "not verified" said plainly and
+    nothing about the deciding model or the workers' report format."""
+    text = str(result or "")
+    parts = _NOT_VERIFIED.split(text, maxsplit=1)
+    unverified = len(parts) > 1
+    sentences = []
+    for sentence in _SENTENCE.split(clean(parts[0])):
+        if _JEV.search(sentence):
+            # "I could not complete this: Jev judged that ..." keeps its first half.
+            head = sentence.split(":", 1)[0]
+            sentence = f"{head}." if ":" in sentence and not _JEV.search(head) else ""
+        if sentence:
+            sentences.append(sentence)
+    body = brief(" ".join(sentences), limit)
+    if unverified:
+        return f"{body} (Not verified.)" if body else "Finished, but I could not verify the result."
+    return body or brief(clean(text), limit)
+
+
+def hebrew(text: str) -> bool:
+    """The text is mostly Hebrew (more Hebrew letters than Latin ones)."""
+    text = str(text or "")
+    return len(_HEBREW.findall(text)) > len(_LATIN.findall(text))
+
+
+# -- questions already answered ----------------------------------------------
+# The same task: the worker asked "which screen should I mirror?" four times.
+# The answers ("living room", "there is only one TV", "mirror the COMPUTER!!!")
+# reached it only inside a JSON context that its prompt truncated, and nothing
+# stopped the same question from going back to the user.
+
+_TOKEN = re.compile(r"\w+", re.UNICODE)
+SAME_QUESTION_OVERLAP = 0.5
+
+
+def _question_words(text: str) -> set[str]:
+    sentences = [s for s in _SENTENCE.split(clean(text)) if "?" in s or "؟" in s] or [clean(text)]
+    words = set()
+    for word in _TOKEN.findall(" ".join(sentences).lower()):
+        # Hebrew attaches "the/and/to/in/that" to the word: הטלפון = טלפון.
+        if _HEBREW.match(word) and len(word) > 3 and word[0] in "הובלש":
+            word = word[1:]
+        if len(word) > 1:
+            words.add(word)
+    return words
+
+
+def similar(a: str, b: str) -> bool:
+    """Two questions ask for the same thing, judged by their words (the
+    fallback when Jev is unavailable: it does not understand paraphrase)."""
+    x, y = _question_words(a), _question_words(b)
+    return bool(x and y) and len(x & y) / len(x | y) >= SAME_QUESTION_OVERLAP
+
+
+def answered_block(asked: list[str], answers: list[str]) -> str:
+    """What the user already said, put in front of the worker's assignment."""
+    answers = [str(a).strip() for a in answers if str(a).strip()]
+    if not answers:
+        return ""
+    lines = ["THE USER ALREADY ANSWERED (read this before anything else; it is part of the request):"]
+    if asked:
+        lines.append("Questions already put to the user:")
+        lines += [f"- {brief(clean(q), 300)}" for q in asked[-4:]]
+    lines.append("The user's answers, oldest first (the last one is the most recent):")
+    lines += [f"{i}. {brief(a, 600)}" for i, a in enumerate(answers[-6:], 1)]
+    lines.append("Act on these answers now. Do not ask any of these questions again, or one that asks for the "
+                 "same thing in other words: when something still seems open, take the most reasonable reading "
+                 "of the request and these answers, do it, and say in your report what you assumed.")
+    return "\n".join(lines)

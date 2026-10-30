@@ -73,6 +73,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
 
 log = logging.getLogger("omarchy_ai.display.discovery")
 
@@ -182,37 +183,49 @@ _ADB_MODEL_TIMEOUT = 3.0
 # devices. Deliberately unbounded/no TTL: correctness-first, small list,
 # per the task's own "don't over-engineer" call.
 _adb_model_name_cache: dict[str, str] = {}
+# A failed lookup is retried after this long, not on every refresh.
+_ADB_NAME_RETRY = 60.0
+_adb_name_failed_at: dict[str, float] = {}
 
 
 def _resolve_adb_model_name(address: str, port: int | None, fallback: str) -> str:
     """Best-effort friendly name for a device only seen via `_adb._tcp`
     (whose mDNS instance name is just `adb-<serial>`, not useful to read
-    out loud) -- queries `ro.product.model` over adb. Falls back to
-    `fallback` (the raw mDNS name) on any timeout/error rather than ever
-    raising or blocking discovery."""
+    out loud): the name the user gave the device in its own settings
+    (`settings get global device_name`, e.g. "Living Room TV"), else its
+    model (`ro.product.model`). Falls back to `fallback` (the raw mDNS
+    name) on any timeout/error rather than ever raising or blocking
+    discovery.
+
+    Only a real answer is cached. Live 2026-10-25: one slow adb round trip
+    cached the TV as "adb-FUSA..." for the life of the process, so the same
+    TV was listed as "Living Room TV" by one call and "adb-..." by the
+    next, and start_casting("Living Room TV") failed."""
     addr = f"{address}:{port or 5555}"
     cached = _adb_model_name_cache.get(addr)
     if cached is not None:
         return cached
+    if time.monotonic() - _adb_name_failed_at.get(addr, -_ADB_NAME_RETRY) < _ADB_NAME_RETRY:
+        return fallback  # failed a moment ago: don't stall every refresh on it
 
-    name = fallback
     try:
         subprocess.run(
             ["adb", "connect", addr],
             capture_output=True, text=True, timeout=_ADB_MODEL_TIMEOUT, check=False,
         )
-        proc = subprocess.run(
-            ["adb", "-s", addr, "shell", "getprop", "ro.product.model"],
-            capture_output=True, text=True, timeout=_ADB_MODEL_TIMEOUT, check=False,
-        )
-        model = proc.stdout.strip()
-        if proc.returncode == 0 and model:
-            name = model
+        for query in (["settings", "get", "global", "device_name"], ["getprop", "ro.product.model"]):
+            proc = subprocess.run(
+                ["adb", "-s", addr, "shell", *query],
+                capture_output=True, text=True, timeout=_ADB_MODEL_TIMEOUT, check=False,
+            )
+            name = proc.stdout.strip()
+            if proc.returncode == 0 and name and name != "null":
+                _adb_model_name_cache[addr] = name
+                return name
     except (subprocess.TimeoutExpired, FileNotFoundError):
         log.warning("could not resolve model name for %s via adb, using mDNS name %r", addr, fallback)
-
-    _adb_model_name_cache[addr] = name
-    return name
+    _adb_name_failed_at[addr] = time.monotonic()
+    return fallback
 
 
 def discover_adb_tcp_devices() -> list[dict]:

@@ -29,6 +29,8 @@ dependencies = [
     "jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast.git@1231850a0bf1a0c0341fe408ef1668dbbfdfac46",
     "py3langid>=0.4.0",
     "aioesphomeapi>=46.6.0",
+    # A voice satellite may answer through a Google Cast speaker (satellite_cast).
+    "pychromecast>=14.1.0",
 ]
 
 [project.scripts]

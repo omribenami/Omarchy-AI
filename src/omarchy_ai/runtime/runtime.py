@@ -708,6 +708,11 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             "do not turn a solvable capability gap into a final failure. Missing ACCESS is different: a key that "
             "is not there, a 401/403, an account or project that may not use a model or endpoint, a login. That "
             "is the user's to grant: ask them with the exact error, and do not rewrite their project around it."
+            "\n\nAsking the user: only for what you cannot settle yourself. Prefer the most reasonable default, act "
+            "on it, and say in your report what you assumed. A request made at this desktop computer (its "
+            "speaker, microphone or keyboard) about \"the screen\" or \"this\" means this computer; a room or "
+            "device name that matches one thing on the network is that thing. Never ask again what the user "
+            "already answered (the answers are in front of this assignment and in user_answers)."
         )
         try:
             from ..core import outputs
@@ -765,9 +770,16 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
         step["directive"] = dispatch.get("directive")
         tier = llm.TIER.set(task.model_tier)  # this task's escalation step, for every worker call below
         step["model"] = _model_of(executor)
-        self._progress(task, name.replace("_", " ").title())
+        self._progress(task, f"{name.replace('_', ' ').title()} is working")
+        instructions = dispatch["instructions"]
+        if dispatch["role"] not in (TEST, REVIEW):
+            # In front, not in the context JSON: 2026-10-26 the user's three
+            # answers were cut off by the prompt's 12000-character context
+            # and Codex asked "which screen?" a fourth time.
+            answered = questions.answered_block([a.get("q", "") for a in task.budget.get("asked", [])], task.answers)
+            instructions = f"{answered}\n\n{instructions}" if answered else instructions
         assignment = Assignment(task_id=task.id, role=dispatch["role"], goal=task.goal,
-                                instructions=dispatch["instructions"], workspace=task.workspace,
+                                instructions=instructions, workspace=task.workspace,
                                 context=self._context_for(task, dispatch), write_access=dispatch["write"],
                                 timeout=dispatch.get("timeout", 600))
         ctx = WorkContextImpl(self, task, step["n"])
@@ -819,8 +831,8 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
             return False
         if report.status == NEEDS_USER:
             task.next_dispatch = dispatch
-            self._ask_user(task, report.question or report.claim or "I need your input to continue.")
-            return False
+            return self._worker_question(task, report.question or report.claim or "I need your input to continue.",
+                                         name)
         task.next_dispatch = None
         self.store.save(task)
         self._emit(task, "progress")
@@ -885,8 +897,14 @@ class TaskRuntime(PlanningMixin, DirectingMixin, CertifyMixin, RecoveryMixin):
 
     # ----------------------------------------------------------- endings
     def _ask_user(self, task: Task, question: str) -> None:
-        task.question = question[:800]
+        # As a person reads it: no "I need your input" preamble, no worker
+        # report sections (SUMMARY: ...), no markdown (runtime/questions.py).
+        task.question = (questions.clean(question) or str(question or "").strip())[:800]
         task.budget["question_asked"] = time.time()
+        # What was asked, and how many answers there were then: a later
+        # question is checked against the ones answered since (_worker_question).
+        task.budget["asked"] = [*task.budget.get("asked", []),
+                                {"q": task.question[:400], "answers": len(task.answers)}][-8:]
         task.status = WAITING_USER
         task.phase = "waiting_user"
         self.store.save(task)
@@ -959,9 +977,16 @@ class WorkContextImpl:
             event.set()  # stops a command running in this process
         return bool(event and event.is_set()) or self.task.status == CANCELLED
 
-    def _decide(self, kind: str, subject: str, assessment: Assessment):
+    @property
+    def owner_task(self) -> bool:
+        """Started by the owner recognized by voice or on their own phone
+        (identities.Identity.recognized_owner): its sudo runs unasked."""
+        from ..core import identities
+        return identities.Identity(self.task.person or None, self.task.person_how or None).recognized_owner
+
+    def _decide(self, kind: str, subject: str, assessment: Assessment, *, owner_sudo: bool = False):
         decision = decide(kind, subject, assessment, auto_approve=Risk.parse(self.task.auto_approve, Risk.NORMAL),
-                          grants=set(self.task.grants))
+                          grants=set(self.task.grants), owner_sudo=owner_sudo)
         if decision.behavior == "ask" and decision.fingerprint in self.task.declined:
             decision.behavior = "deny"
             assessment.reasons.append("the user already declined this in this task")
@@ -1002,7 +1027,15 @@ class WorkContextImpl:
         destructive = approvals.destructive_assessment(assessment.reasons)
         if destructive:
             assessment.always_ask = True  # a human tap, whatever auto-approve says (core/approvals.py)
-        decision = self._decide("command", command, assessment)
+        # The user, 2026-10-25: recognized by voice or phone, she gets the job
+        # done even with sudo, no approval or fingerprint (task 20261025-
+        # 171414-0f1918 asked the phone six times, and some timed out). Only
+        # a sudo the harness feeds the password to, and nothing that deletes.
+        owner_sudo = ((bool(re.match(r"\s*sudo\s", command)) or _has_remote_sudo(command))
+                      and not approvals.destructive_command(command) and self.owner_task)
+        decision = self._decide("command", command, assessment, owner_sudo=owner_sudo)
+        if owner_sudo and decision.allowed and assessment.risk >= Risk.HIGH:
+            assessment.reasons.append("the recognized owner's own task: sudo runs without asking")
         record = {"command": command[:2000], "cwd": cwd, "step": self.step, "role": role,
                   "decision": decision.behavior, "risk": assessment.risk.name, "reasons": assessment.reasons[:4],
                   "at": time.time()}
@@ -1027,7 +1060,14 @@ class WorkContextImpl:
             # The phone's fingerprint screen asks who runs this sudo and why.
             from ..execution import approval_context
             approval_context.note(f"Task: {request_text(self.task.goal)}")
-            command, stdin_text = _sudo(command)
+            command, stdin_text = _sudo(command, owner=owner_sudo)
+        elif assessment.risk >= Risk.HIGH and _has_remote_sudo(command):
+            # SSH_ASKPASS handles the login itself. Feed the separately
+            # approved admin password to the remote command's stdin, where
+            # `sudo -S` reads it; it never enters argv, a task file, or a log.
+            from ..execution import approval_context
+            approval_context.note(f"Task: {request_text(self.task.goal)}")
+            command, stdin_text = _remote_sudo(command)
         event = self.runtime._cancel.get(self.task.id)
         run_as, env = passwords.ssh_env(command, shell._base_env())
         installs = [t for v, t in _TOOLS_CLI.findall(command) if v == "install" and t]
@@ -1280,25 +1320,65 @@ def _config(name: str, default):
         return default
 
 
-def _sudo(command: str) -> tuple[str, str | None]:
+def _sudo(command: str, owner: bool = False) -> tuple[str, str | None]:
     """An approved root command: feed the user-enabled keyring password to
     `sudo -S`, never through a model or a log. Without Sudo Access enabled,
     `sudo -n` fails fast instead of hanging on a prompt. With Flux's phone
     approval on for sudo, no password is fed at all: sudo asks the phone for
     a fingerprint (execution/flux_approve.py), and a denial or no answer
-    fails on the empty stdin."""
+    fails on the empty stdin. `owner`: the recognized owner's own task, which
+    needs no fingerprint, so the saved password goes first and the phone is
+    the fallback when none is saved."""
+    # The harness owns authentication options. Keeping a worker's -n prevents
+    # password authentication; duplicating -p makes sudo reject the command.
+    # Only consume leading authentication flags, never options of the program
+    # that sudo will run or the rest of the shell expression.
+    command = re.sub(
+        r"^\s*sudo\s+(?:(?:-n|-S|--non-interactive|--stdin)\s+|"
+        r"(?:-p|--prompt)\s+(?:'[^']*'|\"[^\"]*\"|\S+)\s+)*",
+        "sudo ", command, count=1)
     try:
         from ..config import load_config
         from ..execution import flux_approve, sudo_approval
-        if flux_approve.sudo_ready():
+        if not owner and flux_approve.sudo_ready():
             return re.sub(r"^\s*sudo\s", "sudo -S -p '' ", command, count=1), ""
         if load_config().sudo_access_enabled:
             password = sudo_approval.retrieve()
             if password:
                 return re.sub(r"^\s*sudo\s", "sudo -S -p '' ", command, count=1), password + "\n"
+        if owner and flux_approve.sudo_ready():
+            return re.sub(r"^\s*sudo\s", "sudo -S -p '' ", command, count=1), ""
     except Exception:  # noqa: BLE001
         pass
     return re.sub(r"^\s*sudo\s", "sudo -n ", command, count=1), None
+
+
+def _has_remote_sudo(command: str) -> bool:
+    """Whether an ssh invocation's remote command contains a sudo word."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    try:
+        ssh = words.index("ssh")
+    except ValueError:
+        return False
+    return any(re.match(r"\s*sudo(?:\s|$)", word) for word in words[ssh + 2:])
+
+
+def _remote_sudo(command: str) -> tuple[str, str | None]:
+    """Supply an approved saved password to sudo on the SSH destination."""
+    try:
+        from ..execution import passwords
+        password = passwords.ssh_password()
+        if password:
+            rewritten = re.sub(r"(?<![\w-])sudo\s+", "sudo -S ", command, count=1)
+            return rewritten, password + "\n"
+    except Exception:  # noqa: BLE001
+        pass
+    # Preserve the non-interactive failure behavior when no credential is
+    # enabled, instead of leaving a remote task hanging at a password prompt.
+    return re.sub(r"(?<![\w-])sudo\s+", "sudo -n ", command, count=1), None
 
 
 def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
@@ -1328,6 +1408,11 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
             _phone(title, f"{request_text(task.goal)[:120]}\n{req.get('risk')}: {str(req.get('subject', ''))[:200]}\n"
                    "Approve it on the desktop.", kind="approval", conversation=task.conversation)
         return
+    if event == "waiting_user" and not questions.ask_text(task.question or ""):
+        # A report that was only its structured tail ("SUMMARY: ...") has no
+        # question left once cleaned: an empty card or push asks nothing.
+        log.warning("task %s: question with no words in it not sent: %r", task.id, str(task.question or "")[:200])
+        return
     title, body, fingerprint = notice(task, event)
     # Notifications are delivery attempts, not task transitions. Store a
     # stable fingerprint before delivery so a reconnect/restart cannot repeat
@@ -1335,20 +1420,57 @@ def _notify(runtime: TaskRuntime, task: Task, event: str) -> None:
     # means a later, genuinely new question is still shown.
     if task.notifications.get(event) == fingerprint:
         return
+    if event == "waiting_user":
+        # The same words again with no answer in between are not news, whatever
+        # the step (2026-10-26: "which screen?" reached the user four times).
+        said = hashlib.sha1(body.encode()).hexdigest()
+        unchanged = task.notifications.get("waiting_user_text") == f"{said}:{len(task.answers)}"
+        task.notifications["waiting_user_text"] = f"{said}:{len(task.answers)}"
+        if unchanged:
+            task.notifications[event] = fingerprint
+            runtime.store.save(task)
+            log.info("task %s: the same question again with no answer since; not sent again", task.id)
+            return
     task.notifications[event] = fingerprint
     runtime.store.save(task)
+    if event == "waiting_user":
+        send_question(task, outbox_key(task, fingerprint))
+        return
     from ..core import outbox
     # One message (core/outbox.py): said in an open conversation, else shown
     # where the user is. The daemon's task listener (runtime/service.py)
     # sends the same key first when a conversation can say it.
     outbox.send(outbox.Message(
-        outbox.QUESTION if event == "waiting_user" else outbox.RESULT, title, body, origin_id=f"task-{task.id}",
+        outbox.RESULT, title, body, origin_id=f"task-{task.id}",
         dedupe_key=outbox_key(task, fingerprint), conversation=task.conversation or "",
         # A click on a finished task's notification (or its Open button) shows the whole task.
         actions={"default": "Open task"} if event in TERMINAL else None,
         on_action=(lambda choice, task_id=task.id: _open_task(task_id) if choice == "default" else None)))
     if event in TERMINAL:
         _deliver_artifacts(task)
+
+
+def send_question(task: Task, dedupe_key: str, *, away: bool = False) -> tuple[str, ...]:
+    """A task's question, once per key (core/outbox.py): said in an open
+    conversation, else on the phone and the desktop as the user's presence
+    says. `away`: the user did not answer it on the speaker, so the phone
+    and its chat only. The phone's title is the question itself: a tap
+    opens the chat it was asked in (core/conversations.py for_notification
+    goes by title), and the notification already says what to answer."""
+    from ..core import outbox
+    title, body, _ = notice(task, "waiting_user")
+    asked = questions.brief(questions.ask_text(task.question or ""), 90)
+    return outbox.send(outbox.Message(
+        outbox.QUESTION, f"Question: {asked}", body, origin_id=f"task-{task.id}", dedupe_key=dedupe_key,
+        conversation=task.conversation or "", desktop_title=title,
+        channels=(outbox.PUSH, outbox.CHAT) if away else ()))
+
+
+# A worker's notes on checking its own work, not something the user asked
+# for: 2026-10-29 two tasks put acceptance-audit.txt, verification.txt (x2),
+# final-verification.txt, independent-verification.json, runtime-recheck.txt,
+# session-verification.txt and verify_cast.py into the user's phone chat.
+_EVIDENCE_FILE = re.compile(r"verif|audit|acceptance|recheck|evidence|self[-_]?check", re.I)
 
 
 def _deliver_artifacts(task: Task) -> None:
@@ -1359,13 +1481,17 @@ def _deliver_artifacts(task: Task) -> None:
         base = outputs.task_dir(task.id).resolve()
     except ValueError:
         return
-    for path in task.artifacts[:MAX_ATTACHMENTS_PER_TURN]:
+    # The worker's own proof stays in the task folder, and takes no slot.
+    made = [p for p in task.artifacts if not _EVIDENCE_FILE.search(Path(p).stem)]
+    for path in made[:MAX_ATTACHMENTS_PER_TURN]:
         resolved = Path(path).resolve()
         if base not in resolved.parents:
             continue  # only what the task wrote into its own outputs folder
         try:
+            # Captioned with its own name: captioned with the request, a
+            # task's five files read as her saying it five times (2026-10-27).
             outbox.attachment(str(resolved), origin_id=f"task-{task.id}", conversation=task.conversation or "",
-                              label=request_text(task.goal)[:120], untrusted=bool(task.tainted),
+                              untrusted=bool(task.tainted),
                               person=task.person or None)
         except Exception:  # noqa: BLE001 -- one file must not stop the others
             log.warning("could not deliver task file %s", resolved.name, exc_info=True)
@@ -1379,7 +1505,8 @@ NOTICE_TITLES = {"waiting_approval": "Omarchy task needs approval", "waiting_use
 def notice(task: Task, event: str) -> tuple[str, str, str]:
     """(title, body, fingerprint) of a task question or outcome notice."""
     title = NOTICE_TITLES.get(event, "")
-    said = (task.question if event == "waiting_user" else task.result) or ""
+    said = (questions.ask_text(task.question or "") if event == "waiting_user"
+            else questions.result_text(task.result or "") or task.result or "")
     body = f"{request_text(task.goal)[:120]}\n\n{said[:400]}"
     steps = len(getattr(task, "steps", None) or [])
     fingerprint = hashlib.sha1(f"{event}\x1f{steps}\x1f{body}".encode()).hexdigest()

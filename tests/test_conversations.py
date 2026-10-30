@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import unittest.mock
 from unittest.mock import patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import conversations, skills
 from omarchy_ai.phone import server
 
@@ -31,10 +32,23 @@ class ConversationTests(unittest.TestCase):
         patcher = patch.object(conversations, "_redact", side_effect=lambda text, speech: text.replace("hunter2", "***"))
         patcher.start()
         self.addCleanup(patcher.stop)
+        # conftest.py's no_jev_for_question_cards, for unittest runs too (no network).
+        patcher = patch.object(conversations, "_open_question", lambda question: False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tasks = {}
 
     def lookup(self, task_id):
         return self.tasks.get(task_id)
+
+    def test_each_speaker_keeps_its_own_conversation_and_says_which_it_is(self):
+        first = conversations.desktop("satellite", "10.0.0.1")
+        conversations.add_line(first, "user", "hello")
+        self.assertEqual(conversations.desktop("satellite", "10.0.0.1"), first)
+        other = conversations.desktop("satellite", "10.0.0.2")
+        self.assertNotEqual(other, first)
+        self.assertEqual((conversations.device(first), conversations.device(other)), ("10.0.0.1", "10.0.0.2"))
+        self.assertEqual(conversations.device(conversations.create("phone-voice")), "")
 
     def test_a_call_transcript_lands_in_its_conversation(self):
         cid = conversations.create("phone-voice")
@@ -94,7 +108,7 @@ class ConversationTests(unittest.TestCase):
         conversations.task_event(task, "progress")
         card = conversations.get(cid, self.lookup)["lines"][-1]
         self.assertEqual(card["kind"], "progress")
-        self.assertIn("Still working", card["text"])
+        self.assertEqual(card["text"], "Working on it…")  # the worker's name is not news for the user
 
     def test_progress_event_uses_the_runtime_live_stage_when_available(self):
         cid = conversations.create("phone-text")
@@ -130,8 +144,69 @@ class ConversationTests(unittest.TestCase):
                          "Verifying saved changes")
         task.status, task.question = "waiting_user", "Which account?"
         card = conversations.get(cid, self.lookup)["lines"][-1]
-        self.assertEqual((card["kind"], card["status"], card["text"]),
+        self.assertEqual((card["kind"], card["status"], card["question"]),
                          ("question", "waiting", "Which account?"))
+
+    # 2026-10-26 15:08, "mirror the screen to the living-room TV": what the phone's chat got.
+    WHICH_SCREEN = ("I need your input to continue: מצאתי את הטלוויזיה בסלון, אבל השיקוף עדיין לא התחיל. "
+                    "**איזה מסך לשקף — הטלפון, המחשב או מכשיר אחר?**\n\nSUMMARY: Identified the living-room TV; "
+                    "awaiting source clarification.\nFILES CHANGED: None.\nTESTS RUN: `adb devices -l` — device\n"
+                    "RISKS: none\nCOMMANDS THAT DID IT:")
+
+    def test_a_question_card_is_just_the_question_in_the_users_language(self):
+        cid = conversations.create("desktop-voice")
+        task = SimpleNamespace(id="t-q", conversation=cid, status="waiting_user", question=self.WHICH_SCREEN,
+                               pending_approval=None, result="", certification={})
+        self.tasks[task.id] = task
+        conversations.task_event(task, "waiting_user")
+        card = conversations.get(cid, self.lookup)["lines"][-1]
+        self.assertEqual(card["question"], "מצאתי את הטלוויזיה בסלון, אבל השיקוף עדיין לא התחיל. "
+                                           "איזה מסך לשקף — הטלפון, המחשב או מכשיר אחר?")
+        self.assertEqual(card["text"], "")  # Flux shows the question once
+        self.assertEqual(card["status"], "waiting")  # still matched to the task's raw question
+
+    def test_results_are_short_and_plain(self):
+        from omarchy_ai.runtime import questions
+        self.assertEqual(questions.result_text("The **light** is on.\n\nSUMMARY: x\nFILES CHANGED: none\n\n"
+                                               "Not verified: Jev did not certify it."), "The light is on. (Not verified.)")
+        self.assertEqual(questions.result_text("I could not complete this: Jev judged that the acceptance criteria "
+                                               "are not met."), "I could not complete this.")
+        long = " ".join(f"Sentence number {i} says something." for i in range(40))
+        self.assertLessEqual(len(questions.result_text(long)), 280)
+        self.assertTrue(questions.result_text(long).endswith("."))
+
+    def test_identical_consecutive_cards_are_not_repeated(self):
+        cid = conversations.create("phone-text")
+        task = SimpleNamespace(id="t-c", conversation=cid, status="cancelled", result="Cancelled by the user.")
+        conversations.task_event(task, "cancelled")
+        conversations.task_event(task, "cancelled")
+        cards = [l for l in conversations._load(cid)["lines"] if l["role"] == "card"]
+        self.assertEqual([c["text"] for c in cards], ["Cancelled by the user."])
+
+    def test_runtime_plumbing_does_not_become_cards(self):
+        cid = conversations.create("desktop-voice")
+        task = SimpleNamespace(id="t-p", conversation=cid, status="running", steps=[],
+                               goal="תשקפי את המסך בטלוויזיה של הסלון", question=None, result="",
+                               pending_approval=None, certification={})
+        self.tasks[task.id] = task
+        for phase in ("starting", "status:Sending to Jev: planning", "status:Planning the task",
+                      "status:Sending to Jev: choosing tools", "status:Jev decision: WORKFLOW AGENT",
+                      "status:Workflow Agent", "status:Codex", "status:Codex is working",
+                      "status:Choosing next action", "status:Running adb devices", "status:Still working: starting."):
+            task.phase = phase
+            conversations.task_event(task, "progress")
+        task.phase = "status:Step 2: Fetching October receipt"  # a real stage
+        conversations.task_event(task, "progress")
+        conversations.task_event(task, "progress")
+        texts = [l["text"] for l in conversations._load(cid)["lines"] if l["role"] == "card"]
+        self.assertEqual(texts, ["עובדת על זה…", "Step 2: Fetching October receipt"])
+        # After a question, the next stretch of work gets its own "working on it".
+        task.status, task.question = "waiting_user", self.WHICH_SCREEN
+        conversations.task_event(task, "waiting_user")
+        task.status, task.question, task.phase = "running", None, "status:Codex is working"
+        conversations.task_event(task, "progress")
+        kinds = [l["kind"] for l in conversations._load(cid)["lines"] if l["role"] == "card"]
+        self.assertEqual(kinds, ["progress", "progress", "question", "progress"])
 
     def test_interrupted_task_explains_why_its_chat_stopped_moving(self):
         cid = conversations.create("phone-text")

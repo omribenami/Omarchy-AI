@@ -318,6 +318,8 @@ class Sender:
         # 256-sample (5.3ms) quantum; on this loaded 2-core machine every
         # node xrun'd thousands of times (pw-top, 2026-09-27 00:57).
         sink = a.audio_source.removesuffix(".monitor")
+        # Phone audio starts after WebRTC connects. Force live aggregation
+        # so that this initially idle input cannot stall SDP negotiation.
         audio = (
             f'pipewiresrc target-object={sink} stream-properties="props,stream.capture.sink=true,node.latency=1024/48000" '
             "do-timestamp=true ! "
@@ -327,7 +329,7 @@ class Sender:
             'caps="audio/x-raw,format=S16LE,rate=48000,channels=1,layout=interleaved" '
             'max-bytes=16384 leaky-type=downstream ! audioconvert ! audioresample ! '
             'queue max-size-buffers=4 leaky=downstream ! voice_mix. '
-            'audiomixer name=voice_mix ignore-inactive-pads=true ! '
+            'audiomixer name=voice_mix force-live=true ignore-inactive-pads=true ! '
             'audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! '
             "opusenc bitrate=64000 ! rtpopuspay pt=111 ! "
             "queue ! webrtc.sink_1"

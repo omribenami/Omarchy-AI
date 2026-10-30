@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import conversations, effects, pending_actions
 from omarchy_ai.execution import myapi_agent
 from omarchy_ai.execution.actions import ActionResult

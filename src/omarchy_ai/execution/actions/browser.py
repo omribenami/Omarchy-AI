@@ -62,7 +62,17 @@ def inspect_browser(args: dict) -> ActionResult:
         state = inspect()
     except Exception as exc:  # noqa: BLE001
         return ActionResult(False, f"assistant browser not reachable: {exc}")
-    return ActionResult(not state.get("error"), json.dumps(state, ensure_ascii=False)[:6000])
+    return ActionResult(not state.get("error"), json.dumps(state, ensure_ascii=False)[:9000])
+
+
+def sign_in(args: dict) -> ActionResult:
+    """Sign in as the user, approved by their fingerprint (execution/site_login.py)."""
+    from ..site_login import sign_in as run
+    try:
+        return run(args)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("sign_in failed")
+        return ActionResult(False, f"sign_in could not run: {exc}", harness=True)
 
 
 def show_browser(args: dict) -> ActionResult:

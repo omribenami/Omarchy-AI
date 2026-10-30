@@ -21,6 +21,7 @@ by a concurrent refresh() just because a discovery pass happened to run).
 
 from __future__ import annotations
 
+import re
 import time
 
 from . import discovery
@@ -36,6 +37,37 @@ def _fallback_address() -> str:
     return (discovery.fallback_tv() or "").split(":")[0]
 
 
+_FALLBACK_NAME = "previously paired TV"
+
+
+def _placeholder(name: str, address: str) -> bool:
+    """A name that only identifies the device to a machine: an mDNS
+    `adb-<serial>` instance, a raw address, or the fallback label."""
+    name = (name or "").strip()
+    return (not name or name == _FALLBACK_NAME or name.split(":")[0] == address
+            or bool(re.fullmatch(r"adb-[\w.-]+", name)))
+
+
+def _rename(dev: dict, name: str) -> None:
+    """One stable friendly name per device; every other name it was seen
+    under is kept as an alias. Live 2026-10-25: one TV was "Living Room TV"
+    in one discovery pass and "adb-FUSA..." in the next, so the name the
+    model had just been given no longer matched anything."""
+    aliases = dev.setdefault("aliases", [])
+    current = dev.get("name") or ""
+    if name == current:
+        return
+    if _placeholder(name, dev["address"]) and not _placeholder(current, dev["address"]):
+        keep, other = current, name
+    else:
+        keep, other = name, current
+    dev["name"] = keep
+    if other and other != keep and other not in aliases:
+        aliases.append(other)
+    if keep in aliases:
+        aliases.remove(keep)
+
+
 def refresh() -> list[dict]:
     """Runs a real discovery pass and merges it into the registry -- the
     one function that actually talks to the network. Never raises
@@ -47,15 +79,17 @@ def refresh() -> list[dict]:
     now = time.time()
     for d in seen:
         existing = _devices.get(d["address"])
-        if existing is not None and existing["status"] in _ACTIVE_STATUSES:
+        if existing is not None:
             # Don't let a concurrent mDNS pass flicker an active
             # connect/session back to "online" -- just refresh the name in
             # case it changed (e.g. the user renamed the device).
-            existing["name"] = d["name"]
+            _rename(existing, d["name"])
             existing["last_seen"] = now
+            if existing["status"] not in _ACTIVE_STATUSES:
+                existing["status"] = "online"
             continue
         _devices[d["address"]] = {
-            "name": d["name"], "address": d["address"], "status": "online", "last_seen": now,
+            "name": d["name"], "address": d["address"], "status": "online", "last_seen": now, "aliases": [],
         }
 
     for addr, dev in _devices.items():
@@ -65,8 +99,8 @@ def refresh() -> list[dict]:
     fallback_addr = _fallback_address()
     if fallback_addr and fallback_addr not in _devices:
         _devices[fallback_addr] = {
-            "name": "previously paired TV", "address": fallback_addr,
-            "status": "unknown", "last_seen": 0.0,
+            "name": _FALLBACK_NAME, "address": fallback_addr,
+            "status": "unknown", "last_seen": 0.0, "aliases": [],
         }
 
     _last_refresh = now
@@ -91,7 +125,8 @@ def snapshot() -> list[dict]:
             _set_status(host, "connecting")
         elif state in {"failed", "stopped"}:
             _set_status(host, "offline")
-    return sorted((dict(d) for d in _devices.values()), key=lambda d: d["name"].lower())
+    return sorted(({**d, "aliases": list(d.get("aliases") or [])} for d in _devices.values()),
+                  key=lambda d: d["name"].lower())
 
 
 def get_or_refresh(max_age: float = 10.0) -> list[dict]:
@@ -113,7 +148,7 @@ def _set_status(address: str, status: str) -> None:
         # A target resolved via raw IP (never seen by mDNS discovery) --
         # still worth tracking once it's actually being cast to.
         _devices[address] = {
-            "name": address, "address": address, "status": status, "last_seen": time.time(),
+            "name": address, "address": address, "status": status, "last_seen": time.time(), "aliases": [],
         }
 
 

@@ -430,6 +430,11 @@ def main() -> None:
     # MyApi/Gmail reads run in killable worker processes (execution/runner.py).
     from ..execution import runner
     runner.use_workers()
+    # A page the assistant's browser already shows is not data leaving it
+    # (execution/provenance.py _already_open).
+    from ..execution import provenance
+    provenance.OPEN_PAGES = provenance._open_pages
+    provenance.OPEN_PAGE_TEXT = provenance._open_page_text
     # Cooldowns, breakers and quota state from before a restart (and saved
     # from now on): a backend that just failed is not tried first again.
     from . import provider_health

@@ -77,6 +77,7 @@ from .browser import (  # noqa: F401
     inspect_browser,
     open_browser,
     show_browser,
+    sign_in,
 )
 from .terminal import (  # noqa: F401
     open_terminal,
@@ -90,6 +91,7 @@ from .terminal import (  # noqa: F401
     terminal_type,
 )
 from .desktop import (  # noqa: F401
+    dismiss_notifications,
     SCREEN_LOCKED,
     _OMARCHY_BLOCKED_SUBCOMMANDS,
     _OMARCHY_SAFE_GROUPS,
@@ -279,6 +281,7 @@ ACTIONS = {
     "browser_task": browser_task,
     "inspect_browser": inspect_browser,
     "show_browser": show_browser,
+    "sign_in": sign_in,
     "browser_control": browser_control,
     "open_files": open_files,
     "open_editor": open_editor,
@@ -311,6 +314,7 @@ ACTIONS = {
     "execute_command": execute_command,
     "type_text": type_text,
     "press_key": press_key,
+    "dismiss_notifications": dismiss_notifications,
     "submit_sudo_password": submit_sudo_password,
     "bluetooth_toggle": bluetooth_toggle,
     "nightlight_toggle": nightlight_toggle,

@@ -5,10 +5,18 @@ from unittest.mock import MagicMock, patch
 import threading
 
 import numpy as np
-from omarchy_ai.voice import audio, wake
+from omarchy_ai.voice import audio, satellite, wake
 
 
 class WakeMicrophoneTests(unittest.TestCase):
+    def test_satellite_can_use_a_more_sensitive_threshold(self):
+        config = SimpleNamespace(wake_threshold=.48, satellite_wake_threshold=.35)
+        self.assertEqual(satellite._wake_threshold(config), .35)
+
+    def test_satellite_threshold_defaults_to_shared_threshold(self):
+        config = SimpleNamespace(wake_threshold=.48, satellite_wake_threshold=None)
+        self.assertEqual(satellite._wake_threshold(config), .48)
+
     def test_desktop_frame_is_not_replaced_by_tv_silence(self):
         desktop = np.full(audio.FRAME_SAMPLES, 1234, dtype=np.int16)
         proc = SimpleNamespace(stdout=io.BytesIO(desktop.tobytes()), tv_mic=MagicMock())

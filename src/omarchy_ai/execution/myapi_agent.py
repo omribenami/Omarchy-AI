@@ -416,6 +416,9 @@ def hold(tool: str, tool_args: dict, service: str, operation: str, arguments: di
         harness=True)
 
 
+SAME_CARD_SECONDS = 120
+
+
 def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult:
     """A tool call that only a human tap may approve (core/approvals.py): held
     back by the taint check (execution/provenance.py; `sources` names the
@@ -426,6 +429,16 @@ def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult
     from ..core import conversations, pending_actions
     cid = conversations.CURRENT.get()
     title = f"Run {name.replace('_', ' ')}"
+    # One card per held action: 2026-10-29 21:34 she retried a held
+    # browser_task eight times in 35 s and each retry put a new card on the
+    # user's phone. A card for this tool still waiting from moments ago is
+    # the one the user answers.
+    waiting = next((a for a in pending_actions.waiting_in(cid) if a.get("tool") == name
+                    and time.time() - float(a.get("created") or 0) < SAME_CARD_SECONDS), None)
+    if waiting is not None:
+        return ActionResult(False, (
+            f"NOT run: {name} is already waiting for the user's tap on the card in the chat ({why}). Do not call "
+            "it again: tell the user once, briefly, that it waits for their tap, then go on."), harness=True)
     fields = [{"label": k.replace("_", " ").capitalize(),
                "value": (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))[:4000]}
               for k, v in (args or {}).items() if v not in (None, "")]
@@ -441,7 +454,8 @@ def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult
                                          "text": f"{title}? {why}", "expires_at": expires,
                                          "action": {"id": aid, "title": title, "service": "tool", "method": name,
                                                     "fields": fields}})
-            how = "A card with Send is in the chat: only the user's tap on it runs this; a spoken yes does not count."
+            how = ("A card with Send is in the chat: the user's tap on it runs this, or the owner's own clear spoken "
+                   "yes while they are recognized (it is heard directly; you need not pass it on).")
         else:
             how = "There is no chat to put its card in, so it cannot run from here; the user can do it themselves."
         return ActionResult(False, (
@@ -457,8 +471,9 @@ def ask_tap(name: str, args: dict, why: str, sources: list[str]) -> ActionResult
                                      "expires_at": expires,
                                      "action": {"id": aid, "title": title, "service": "tool", "method": name,
                                                 "fields": fields}})
-        how = ("A card with Send is in the chat: only the user's tap on it runs this; a spoken yes does not "
-               "count, and task_respond cannot approve it.")
+        how = ("A card with Send is in the chat: the user's tap on it runs this, or the owner's own clear spoken "
+               "yes while they are recognized (it is heard directly; you need not pass it on). task_respond "
+               "cannot approve it.")
     else:
         how = ("Only the user can supply it: ask them to say the exact target themselves; the identical call "
                "runs once they have said it.")

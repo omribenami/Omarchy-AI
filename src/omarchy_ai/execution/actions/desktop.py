@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -33,6 +34,20 @@ def brightness_set(args: dict) -> ActionResult:
     return _run(["omarchy-brightness-display", f"{pct}%"])
 
 
+# --- notifications -----------------------------------------------------------
+
+def dismiss_notifications(args: dict) -> ActionResult:
+    """Omarchy's own Super+Shift+comma / Super+comma. 2026-10-29 21:17-21:22:
+    she had no way to clear a stack of stuck popups, and the shortcut never
+    reached the desktop (no window focused)."""
+    which = "dismissOne" if str(args.get("which") or "all").lower() == "last" else "dismissAll"
+    result = _run(["omarchy-shell", "notifications", which])
+    if not result.ok:
+        return result
+    return ActionResult(True, "Closed the latest notification" if which == "dismissOne"
+                        else "Closed all notification popups (they stay in the notification history)")
+
+
 # --- capture / launchers -----------------------------------------------------
 
 def screenshot(args: dict) -> ActionResult:
@@ -42,6 +57,7 @@ def screenshot(args: dict) -> ActionResult:
     path = _capture()
     if path is None:
         return ActionResult(False, "Screenshot capture failed; no saved image verified.")
+    sent = _to_away_chat(path)
     cfg = load_config()
     if _gateway_key_configured(cfg):
         evidence = look(
@@ -53,8 +69,25 @@ def screenshot(args: dict) -> ActionResult:
         )
         if evidence.startswith("error:"):
             return ActionResult(False, f"Screenshot saved at {path}, but visual inspection failed: {evidence}")
-        return ActionResult(True, f"Screenshot saved at {path}. Visual evidence: {evidence}")
-    return ActionResult(True, f"Screenshot saved at {path}")
+        return ActionResult(True, f"Screenshot saved at {path}{sent}. Visual evidence: {evidence}")
+    return ActionResult(True, f"Screenshot saved at {path}{sent}")
+
+
+def _to_away_chat(path) -> str:
+    """The screenshot into the chat of a user who is not at this computer
+    (typing on the phone, 2026-10-29 21:30: they could not see what she
+    captured). Returns the note for the result, "" when not sent."""
+    from ...core import conversations, origin, outbox
+    cid = conversations.CURRENT.get()
+    try:
+        if not cid or origin.current(cid).get("at_this_computer") is not False:
+            return ""
+        used = outbox.attachment(str(path), origin_id=f"screenshot-{Path(path).name}", conversation=cid,
+                                 channels=(outbox.CHAT,))
+    except Exception:  # noqa: BLE001 -- the screenshot itself still worked
+        log.warning("could not put the screenshot in the chat", exc_info=True)
+        return ""
+    return " and sent to the user's chat" if used else ""
 
 
 def lock_screen(args: dict) -> ActionResult:
@@ -259,6 +292,41 @@ def type_text(args: dict) -> ActionResult:
 _WTYPE_MODIFIERS = {"shift", "ctrl", "alt", "logo", "super", "win", "altgr", "capslock"}
 
 
+# Hyprland's modmask bits for wtype's modifier names.
+_MODMASK = {"shift": 1, "ctrl": 4, "alt": 8, "logo": 64, "super": 64, "win": 64}
+# A binding with one of these in its description acts on the focused window
+# (Super+W "Close window", Super+F "Full screen") or on the whole session
+# (Super+Ctrl+L "Lock system"): it keeps the focus check.
+_WINDOW_BINDING = re.compile(r"window|full ?screen|full width|float|pin|split|group|move|resize|swap|focus"
+                             r"|lock|power|suspend|shut|reboot|log ?out|exit", re.I)
+
+
+def desktop_shortcut(key, modifiers) -> str | None:
+    """The description of the Hyprland binding this Super shortcut runs when
+    it does not act on any window (Super+Shift+comma "Dismiss all
+    notifications"), else None. Such a key goes to the desktop, not to the
+    focused window, so it needs no verified focus (2026-10-29 21:19: the
+    shortcut was refused four times, "focus is unverified")."""
+    modifiers = [modifiers] if isinstance(modifiers, str) else list(modifiers or [])
+    names = {str(m).strip().lower() for m in modifiers}
+    if not key or not names & {"logo", "super", "win"} or not names <= set(_MODMASK):
+        return None
+    mask = 0
+    for name in names:
+        mask |= _MODMASK[name]
+    try:
+        binds = json.loads(subprocess.check_output(["hyprctl", "binds", "-j"], env=_desktop_env(), text=True,
+                                                   timeout=5))
+    except Exception:  # noqa: BLE001 -- unknown: it needs focus as before
+        return None
+    for bind in binds:
+        if bind.get("modmask") == mask and str(bind.get("key") or "").lower() == str(key).lower() \
+                and not bind.get("submap"):
+            description = str(bind.get("description") or "")
+            return description if description and not _WINDOW_BINDING.search(description) else None
+    return None
+
+
 def press_key(args: dict) -> ActionResult:
     key = args.get("key")
     if not key:
@@ -271,6 +339,11 @@ def press_key(args: dict) -> ActionResult:
     modifiers = args.get("modifiers") or []
     if isinstance(modifiers, str):
         modifiers = [modifiers]
+    if title := desktop_shortcut(key, modifiers):
+        # An Omarchy shortcut runs its own bound command, as execute_command
+        # does: no synthetic keys, no window to reach. 2026-10-29 21:19:
+        # Super+Shift+comma was pressed as keys and never got there.
+        return execute_command({"title": title})
     # wtype's modifier names: shift/ctrl/alt/logo/altgr/capslock. "super"/
     # "win" are common aliases people (and the model) would reach for — map
     # them rather than fail on a technicality.
@@ -289,7 +362,31 @@ def press_key(args: dict) -> ActionResult:
     argv += ["-k", key]
     for m in reversed(normalized):
         argv += ["-m", m]
-    return _run(argv)
+    probe = _browser_enter_probe(key, normalized)
+    result = _run(argv)
+    if probe is None or not result.ok:
+        return result
+    from ..browser_control import after_enter
+    return after_enter(*probe)
+
+
+def _browser_enter_probe(key: str, modifiers: list) -> tuple | None:
+    """Enter going to the assistant's own browser: what to check afterwards
+    (browser_control.after_enter), or None for any other key or window."""
+    if modifiers or str(key).lower() not in ("return", "enter", "kp_enter"):
+        return None
+    try:
+        from ..browser_jev import _dedicated_window
+        env = _desktop_env()
+        clients = json.loads(subprocess.check_output(["hyprctl", "clients", "-j"], env=env, text=True, timeout=5))
+        active = json.loads(subprocess.check_output(["hyprctl", "activewindow", "-j"], env=env, text=True, timeout=5))
+        window = _dedicated_window(clients)
+    except Exception:  # noqa: BLE001 -- unknown: the key goes as before
+        return None
+    if not window or window.get("address") != active.get("address"):
+        return None
+    from ..browser_control import enter_probe
+    return enter_probe()
 
 
 def submit_sudo_password(_args: dict) -> ActionResult:
@@ -505,4 +602,22 @@ def run_omarchy_command(args: dict) -> ActionResult:
             "content rather than just changing a setting) -- ask the user "
             "to run that one themselves.",
         )
+    if _interactive_capture(argv):
+        # 2026-10-29 21:30: "capture screen" ran the region picker, which
+        # waited 30 s for a mouse drag nobody made; its leftover slurp then
+        # made the next real capture exit without an image.
+        return ActionResult(False, "Not run: that capture waits for the user to drag a region with the mouse. "
+                            "For a picture of the screen use the screenshot tool (or describe_screen to look).")
     return _run(["omarchy", *argv], timeout=30)
+
+
+def _interactive_capture(argv: list[str]) -> bool:
+    """`omarchy capture screenshot` / `screenrecord` in a mode that asks the
+    user to pick a region or window."""
+    words = [a.strip().lower() for a in argv]
+    if words[:1] == ["capture"]:
+        words = words[1:]
+    if not words or words[0] not in ("screenshot", "screenrecord"):
+        return False
+    mode = next((w for w in words[1:] if not w.startswith("-")), "smart" if words[0] == "screenshot" else "")
+    return mode in ("smart", "region", "windows", "window")

@@ -353,8 +353,11 @@ class Config:
     # satellite_host is set. The key file holds the device's API encryption
     # key (base64, mode 0600); the device fetches her speech from
     # satellite_http_port on this machine. The conversation ends after
-    # satellite_silence_seconds without anyone speaking. satellite_mic_gain
-    # multiplies the device's microphone level; satellite_speech_rms is the
+    # satellite_silence_seconds without anyone speaking. A separate
+    # satellite_wake_threshold can make a far-field speaker more sensitive
+    # without changing the desktop and phone detectors; unset inherits the
+    # shared wake_threshold. satellite_mic_gain multiplies the device's
+    # microphone level; satellite_speech_rms is the
     # level (after gain) that counts as the user speaking, for the stuck-turn
     # guard. satellite_voice_rms is the lower level that counts as speech for
     # recognizing who speaks (unset: 0.4 of satellite_speech_rms): on a
@@ -364,16 +367,42 @@ class Config:
     # model when the device sends two (1 = the second, noise-suppressed one
     # on a Voice PE); the wake word always uses the first.
     satellite_host: str | None = None
+    # Optional second ESPHome voice satellite. Both satellites share the
+    # assistant but keep independent audio streams and speakers.
+    satellite_host_2: str | None = None
     # The room the satellite speaker stands in ("living room"): where "here"
     # is for a request said to it (core/origin.py).
     satellite_room: str = ""
     satellite_port: int = 6053
     satellite_key_path: str = str(CONFIG_DIR / "satellite-key")
     satellite_http_port: int = 8767
+    satellite_http_port_2: int = 8768
     satellite_silence_seconds: int = 20
+    # Quiet hours for the speakers, "HH:MM-HH:MM" in local time ("22:00-07:00"
+    # crosses midnight); empty: none. Inside them a speaker never starts a
+    # conversation by itself (a reminder, a task's result or question goes to
+    # the phone and the inbox instead); one the user opens still answers.
+    satellite_quiet_hours: str = ""
+    satellite_room_2: str = ""
+    # A Google Cast speaker (its address) that says the satellite's replies
+    # instead of the satellite's own speaker; the satellite still listens.
+    satellite_cast: str | None = None
+    satellite_cast_2: str | None = None
+    # The satellite's LED as {state: [r, g, b]} (0-255) for wake (the wake
+    # word was heard), listening (connected: talk now) and speaking; off
+    # otherwise. Unset: the device's own firmware drives its LED.
+    satellite_led_colors: dict | None = None
+    satellite_led_colors_2: dict | None = None
+    satellite_wake_threshold: float | None = None
     satellite_mic_gain: float = 1.0
     satellite_speech_rms: float = 800.0
     satellite_voice_rms: float | None = None
+    # A program of yours run each time a job she could not finish is handed
+    # to a background task (voice/escalation.py): it gets one JSON object on
+    # its standard input (task_id, session, conversation, the escalation brief
+    # with the user's words and what failed, her recent tool results) and runs
+    # detached, e.g. to start a coding agent that fixes the cause. Unset: none.
+    escalation_command: str | None = None
     # A program of yours that shows what the satellite is doing somewhere
     # else (a wall display, a light). It is started with the assistant and
     # reads JSON lines on its standard input: {"state": "listening"},
@@ -381,6 +410,14 @@ class Config:
     # timed to the speaker), {"state": "idle"}. The state is repeated every
     # few seconds while a conversation is open.
     satellite_state_command: str | None = None
+    # The same program also gets the questions background tasks wait on
+    # (runtime/asking.py): {"question": "open", "id": ..., "text": ...,
+    # "speaker": <host it was asked on, or "">}, then "answered" or
+    # "withdrawn" with the same id; the open ones are repeated every minute.
+    # A display may ask for an open question to be put on a speaker: POST
+    # {"token", "id", "speaker"?} to /question/ask on satellite_http_port.
+    # Off unless this file holds a token of yours (random, mode 0600).
+    satellite_ask_token_path: str = str(CONFIG_DIR / "satellite-ask-token")
     satellite_talk_channel: int = 1
 
     # Phone bridge (src/omarchy_ai/phone/server.py) — a local HTTP server

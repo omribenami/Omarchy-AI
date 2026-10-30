@@ -53,6 +53,7 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -67,6 +68,11 @@ NAME = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
 RUN_TIMEOUT = 120
 TEST_TIMEOUT = 180
 OUTPUT_CHARS = 4000
+# A tool's "context" call (tool.json): what the assistant should know at the
+# start of every conversation, such as the devices a smart-home tool can
+# reach. Its output is kept this long, then fetched again in the background.
+CONTEXT_REFRESH_SECONDS = 600
+CONTEXT_MAX_CHARS = 3000
 # What a tool.json "sandbox" field may add to the default tool sandbox.
 SANDBOX_NEEDS = frozenset({"assistant_keys", "desktop"})
 
@@ -111,6 +117,11 @@ def validate(folder: Path) -> tuple[dict | None, list[str]]:
     reads = spec.get("read_operations", [])
     if not isinstance(reads, list) or not all(isinstance(r, str) for r in reads):
         problems.append('read_operations must be a list of `operation` values that only look things up')
+    context = spec.get("context")
+    if context is not None:
+        call = context.get("args") if isinstance(context, dict) else None
+        if not isinstance(call, dict) or str(call.get("operation") or "") not in (reads if isinstance(reads, list) else []):
+            problems.append('context must be {"args": {...}} whose "operation" is one of read_operations')
     box = spec.get("sandbox", True)
     if not (isinstance(box, bool) or (isinstance(box, dict) and set(box) <= {"needs", "network"}
                                       and set(box.get("needs") or []) <= SANDBOX_NEEDS)):
@@ -371,6 +382,58 @@ def schemas() -> list[dict]:
             for t in installed()]
 
 
+_context: dict[str, tuple[float, str]] = {}   # tool -> (fetched at, monotonic; its output)
+_context_busy: set[str] = set()
+_context_lock = threading.Lock()
+
+
+def _fetch_context(name: str, args: dict) -> None:
+    try:
+        result = run(name, args)
+        if result.ok:
+            with _context_lock:
+                _context[name] = (time.monotonic(), result.message[:CONTEXT_MAX_CHARS])
+        else:
+            log.info("Tool %s context not refreshed: %s", name, result.message[:200])
+    finally:
+        with _context_lock:
+            _context_busy.discard(name)
+
+
+def context_texts(wait: float = 3.0) -> dict[str, str]:
+    """{tool: its context output} for every approved tool that declares a
+    read-only "context" call, for the start of a conversation. A kept output
+    is used at once (fetched again in the background when older than
+    CONTEXT_REFRESH_SECONDS); with none yet, the call gets `wait` seconds.
+    2026-10-28: a hand-written list of the house's devices in the user's
+    preferences went stale as devices changed; this one follows them."""
+    found: dict[str, str] = {}
+    for tool in installed():
+        name = tool["name"]
+        folder = _approved(name)
+        context = _spec(folder).get("context") if folder is not None else None
+        call = context.get("args") if isinstance(context, dict) else None
+        if not isinstance(call, dict) or str(call.get("operation") or "") not in read_operations(name):
+            continue
+        with _context_lock:
+            kept = _context.get(name)
+            stale = kept is None or time.monotonic() - kept[0] > CONTEXT_REFRESH_SECONDS
+            worker = None
+            if stale and name not in _context_busy:
+                _context_busy.add(name)
+                worker = threading.Thread(target=_fetch_context, args=(name, dict(call)),
+                                          name=f"tool-context-{name}", daemon=True)
+        if worker is not None:
+            worker.start()
+            if kept is None:
+                worker.join(wait)
+        with _context_lock:
+            kept = _context.get(name)
+        if kept and kept[1].strip():
+            found[name] = kept[1]
+    return found
+
+
 def read_operations(name: str) -> frozenset[str]:
     """`operation` values of an approved tool that change nothing (its
     tool.json "read_operations"): the switchboard lets those through as reads."""
@@ -401,8 +464,19 @@ def run(name: str, args: dict):
     folder = _approved(name)
     if folder is None:
         return ActionResult(False, f"{name} is not an approved tool (or changed since it was approved)")
+    from .catalog import conform, usage
+    spec = _spec(folder)
+    schema = spec.get("parameters") if isinstance(spec.get("parameters"), dict) else {}
+    args, moved = conform(schema, dict(args or {}))
+    if moved:
+        log.info("Tool %s arguments fitted to its schema: %s", name, ", ".join(moved))
     if problem := _not_a_choice(folder, args):
         return ActionResult(False, f"{name}: {problem}")
+    props = schema.get("properties") or {}
+    absent = [k for k in schema.get("required") or [] if k in props and args.get(k) in (None, "")]
+    if absent:
+        tool = {"name": name, "parameters": schema}
+        return ActionResult(False, f"{name} not run: missing {', '.join(absent)}. {usage(tool, absent, args)}")
     try:
         done = _sandboxed(folder, "run", input_text=json.dumps(args or {}), timeout=RUN_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -411,5 +485,21 @@ def run(name: str, args: dict):
         return ActionResult(False, f"{name} could not start: {exc}")
     output = (done.stdout.strip() or done.stderr.strip())[:OUTPUT_CHARS]
     if done.returncode:
-        return ActionResult(False, f"{name} failed (exit {done.returncode}): {output or 'no output'}")
+        return ActionResult(False, f"{name} failed (exit {done.returncode}): {output or 'no output'}"
+                                   + _argument_hint(name, schema, args, output))
     return ActionResult(True, output or "done")
+
+
+def _argument_hint(name: str, schema: dict, args: dict, output: str) -> str:
+    """When a failed tool's message names one of its own parameters that the
+    call left out ("ask needs the request in 'text'"), say exactly how to
+    pass it. Live 2026-10-26: that message came back three times in a row
+    and the model never found the key."""
+    from .catalog import usage
+    props = schema.get("properties") or {}
+    named = [k for k in props if args.get(k) in (None, "")
+             and re.search(rf"['\"`]{re.escape(k)}['\"`]|\b{re.escape(k)}\b(?= (is |are )?(missing|required|needed))",
+                           output or "")]
+    if not named:
+        return ""
+    return " -- " + usage({"name": name, "parameters": schema}, named, args)

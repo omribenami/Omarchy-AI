@@ -698,12 +698,20 @@ def _classify_one(sub: str, cwd: Path, scope: Scope) -> Assessment:
         elif verb not in ("list", "ls", "show", "view", "info", "outdated", "freeze", "--version", "search", "why", "tree"):
             result.raise_to(Risk.NORMAL, "")
     elif word in ("ssh",):
-        result.raise_to(Risk.NORMAL, "runs a command on another machine")
+        # The remote command is one or more already shell-split arguments.
+        # Treat remote sudo exactly like local sudo: it must receive a
+        # specific human approval before the harness may supply a credential.
+        if any(re.match(r"\s*sudo(?:\s|$)", arg) for arg in args):
+            result.raise_to(Risk.HIGH, "runs as root on another machine")
+        else:
+            result.raise_to(Risk.NORMAL, "runs a command on another machine")
     elif word in ("sshpass", "ssh-copy-id"):
         # The harness answers the password prompt (execution/passwords.py):
         # the user's password goes to another machine, so the user OKs it.
         host = next((a for a in args if "@" in a and not a.startswith("-")), "another machine")
         result.raise_to(Risk.ELEVATED, f"logs in to {host} with your password (the harness types it; never shown)")
+        if word == "sshpass" and any(re.match(r"\s*sudo(?:\s|$)", arg) for arg in args):
+            result.raise_to(Risk.HIGH, "runs as root on another machine")
     elif word in ("gh",):
         verb = " ".join(args[:2])
         # `gh api` is a GET unless a method or a field says otherwise.
@@ -878,7 +886,8 @@ def _classify_writer(word, args, sub, cwd, scope, result):
 # Enforcement
 # ---------------------------------------------------------------------------
 # Auto-approval can be raised to ELEVATED at most: HIGH always asks
-# (MiniMax's "bypassImmune") and BLOCKED is never runnable.
+# (MiniMax's "bypassImmune") and BLOCKED is never runnable. One exception:
+# a sudo command in a task the recognized owner started (owner_sudo).
 MAX_AUTO_APPROVE = Risk.ELEVATED
 
 
@@ -900,11 +909,19 @@ def fingerprint(kind: str, subject: str) -> str:
     return f"{kind}:{' '.join(subject.split())}"
 
 
-def decide(kind: str, subject: str, assessment: Assessment, *, auto_approve: Risk, grants: set[str]) -> Decision:
+def decide(kind: str, subject: str, assessment: Assessment, *, auto_approve: Risk, grants: set[str],
+           owner_sudo: bool = False) -> Decision:
+    """`owner_sudo`: the subject is a sudo command (local or over ssh) the
+    harness feeds the saved password to, in a task started by the owner
+    recognized by voice or phone (identities.Identity.recognized_owner).
+    Its HIGH is then allowed; always_ask (a destructive command, a tool the
+    assistant wrote) still asks, and BLOCKED is still denied."""
     fp = fingerprint(kind, subject)
     if assessment.risk is Risk.BLOCKED:
         return Decision("deny", assessment, fp)
     if assessment.risk <= min(auto_approve, MAX_AUTO_APPROVE) and not assessment.always_ask:
+        return Decision("allow", assessment, fp)
+    if owner_sudo and assessment.risk <= Risk.HIGH and not assessment.always_ask:
         return Decision("allow", assessment, fp)
     if fp in grants:
         return Decision("allow", assessment, fp)

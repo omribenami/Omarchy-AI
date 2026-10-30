@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.config import Config
 from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, conversations
@@ -44,12 +45,12 @@ class SpeakerReminderTests(unittest.TestCase):
         self.assertEqual(json.loads(result.message)["scheduled"]["announce"], "satellite")
         self.assertEqual([j.get("announce") for j in agenda._load()], ["satellite"])
 
-    def test_rejected_away_from_the_speaker(self):
+    def test_asked_for_by_name_away_from_the_speaker_goes_to_the_default_speaker(self):
+        # The user, 2026-10-26: where it was asked from, "or if explicitly asked".
         self.source.return_value = "desktop-voice"
         result = self.schedule()
-        self.assertFalse(result.ok)
-        self.assertIn("announce_on_speaker", result.message)
-        self.assertEqual(agenda._load(), [])
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual([(j.get("announce"), j.get("speaker")) for j in agenda._load()], [("satellite", "")])
 
     def test_rejected_for_another_day_or_kind(self):
         for extra in ({"in_minutes": 13 * 60}, {"in_minutes": None, "at": "tomorrow 9:00"},
@@ -59,7 +60,15 @@ class SpeakerReminderTests(unittest.TestCase):
             self.assertIn("later today", result.message)
         self.assertEqual(agenda._load(), [])
 
-    def test_plain_reminder_and_a_smuggled_announce_are_not_spoken(self):
+    def test_a_reminder_asked_on_the_speaker_is_said_there_unless_the_user_says_not_to(self):
+        result = actions.schedule_task({"title": "Call back", "kind": "remind", "in_minutes": 5})
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(agenda._load()[0]["announce"], "satellite")
+        actions.schedule_task({"title": "Quiet", "kind": "remind", "in_minutes": 5, "announce_on_speaker": False})
+        self.assertNotIn("announce", agenda._load()[1])
+
+    def test_a_smuggled_announce_away_from_the_speaker_is_not_spoken(self):
+        self.source.return_value = "desktop-voice"
         result = actions.schedule_task({"title": "Call back", "kind": "remind", "in_minutes": 5,
                                         "announce": "satellite"})
         self.assertTrue(result.ok, result.message)
@@ -91,7 +100,7 @@ class SpeakerDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.sat = voice_satellite.Satellite(Config())
         self.sat._client, self.sat._loop, self.sat._phase = Mock(), asyncio.get_running_loop(), "wake"
         self.sat._run_session = Mock(side_effect=lambda *a: asyncio.sleep(0))
-        patch.object(voice_satellite, "_running", self.sat).start()
+        patch.dict(voice_satellite._running, {"speaker": self.sat}, clear=True).start()
         patch.object(agenda, "_calls", {}).start()
         self.addCleanup(patch.stopall)
         self.addCleanup(self.sat._pool.shutdown)
@@ -151,7 +160,7 @@ class SpeakerDeliveryTests(unittest.IsolatedAsyncioTestCase):
         d._on_agenda_result({"id": "r1", "title": "Build finished"})
         self.sat._run_session.assert_not_called()
         self.assertTrue(d._listen_stop.is_set())
-        with patch.object(voice_satellite, "_running", None):
+        with patch.dict(voice_satellite._running, {}, clear=True):
             d = daemon()
             d._on_agenda_result(dict(ENTRY))
             self.assertTrue(d._listen_stop.is_set())

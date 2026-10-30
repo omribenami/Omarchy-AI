@@ -37,10 +37,19 @@ _PAGE_STATE = r"""(() => {
     sign_in_prompts: signInLinks,
     password_field: all('input[type=password]').length > 0,
     captcha: !!document.querySelector('iframe[src*="captcha"], iframe[src*="challenge"], .g-recaptcha, #challenge-form, [data-sitekey]'),
-    dialogs: all('[role=dialog], dialog[open], [aria-modal=true]').map(d => text(d).slice(0, 300)).slice(0, 3),
+    // Only one with an area covers anything: ChatGPT keeps an empty 0x0 role=dialog section, and
+    // "a dialog is open" sent a task chasing a popup that was not there (2026-10-20 00:33).
+    dialogs: all('[role=dialog], dialog[open], [aria-modal=true]').filter(d => { const r = d.getBoundingClientRect();
+      return r.width > 1 && r.height > 1; }).map(d => text(d).slice(0, 300)).slice(0, 3),
     alerts: all('[role=alert], .flash-error, .error, .alert-danger, [aria-live=assertive]').map(text).filter(Boolean).map(t => t.slice(0, 200)).slice(0, 4),
     controls: all('button, a[role=button], input[type=submit]').map(e => ({label: text(e).slice(0, 60), disabled: !!(e.disabled || e.getAttribute('aria-disabled') === 'true')})).filter(c => c.label).slice(0, 40),
     excerpt: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').slice(0, 1500),
+    // The latest part of a chat, feed or result sits at the end of the main content, not the top
+    // (2026-10-20: asked to read a ChatGPT conversation, she had only its sidebar).
+    // Still working (a Stop button while an answer streams): read again after waiting.
+    busy: [...document.querySelectorAll('button,[role=button]')].some(b => vis(b) &&
+      /^(stop|cancel generating|stop generating|stop streaming)/i.test((b.getAttribute('aria-label') || b.innerText || '').trim())),
+    end_of_page: ((document.querySelector('main') || document.body || {}).innerText || '').replace(/\s+/g, ' ').slice(-2500),
   };
 })()"""
 

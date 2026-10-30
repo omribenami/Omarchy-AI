@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import conversations, outbox, outputs
 from omarchy_ai.execution.actions import desktop
 from omarchy_ai.execution.actions.base import ActionResult
@@ -252,6 +253,7 @@ class TaskTests(AttachmentCase):
         meta = lines[0]["attachments"][0]
         self.assertEqual(meta["name"], "report.csv")
         self.assertTrue(meta["untrusted"])
+        self.assertNotIn("make a report", lines[0]["text"])  # not the request again
 
 
 if __name__ == "__main__":

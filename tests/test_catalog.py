@@ -293,9 +293,10 @@ class UseToolDispatchTests(unittest.TestCase):
         s = self.session(lambda *a: self.fail("no review for an offer"))
         offer = catalog.Resolution(False, message='{"tools": [{"name": "run_omarchy_command"}]}')
         oks = [self.dispatch(s, {"name": "run_omarchy_command", "request": "stop"}, offer)[1]["ok"]
-               for _ in range(4)]
-        self.assertEqual(oks, [True, True, False, False])
-        self.assertGreater(s._escalator._last_escalation, 0)  # two failures: handed to the Task Runtime
+               for _ in range(5)]
+        self.assertEqual(oks, [True, True, False, False, False])
+        # The same call failing three times is a loop: handed to the Task Runtime.
+        self.assertGreater(s._escalator._last_escalation, 0)
         s._last_user_speech += 1  # the user speaks: a new turn starts counting again
         self.assertTrue(self.dispatch(s, {"request": "remind me"}, offer)[1]["ok"])
 

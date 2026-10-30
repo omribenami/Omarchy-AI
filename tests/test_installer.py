@@ -8,6 +8,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallerTests(unittest.TestCase):
+    def test_setup_installs_user_facing_commands_on_path(self):
+        setup = (ROOT / 'scripts/setup.sh').read_text()
+        self.assertIn('USER_BIN_DIR="$HOME/.local/bin"', setup)
+        self.assertIn('omarchy-ai omarchy-ai-doctor', setup)
+        self.assertIn('ln -sfn "$target" "$launcher"', setup)
+        self.assertIn('omarchy-ai doctor', setup)
+
     def test_setup_verifies_jev_ultrafast_install(self):
         setup = (ROOT / 'scripts/setup.sh').read_text()
         self.assertIn('from jev_ultrafast import Agent', setup)

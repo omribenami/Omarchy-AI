@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from . import questions
 from .executors.base import DONE, REVIEW, TEST
-from .task import CANCELLED, FAILED, Task, UNVERIFIED
+from .task import CANCELLED, FAILED, WAITING_USER, Task, UNVERIFIED
 from .certify import CERTIFY_P, MAX_PLAN_ATTEMPTS, VALIDATED_P
 from .recovery import _timeout_step
 
@@ -14,6 +14,10 @@ from .recovery import _timeout_step
 # before the answer is delivered unverified (_repeating_after_rejection).
 MAX_STEPS_WITHOUT_EVIDENCE = 2
 MAX_CONSECUTIVE_RETRIES = 2
+# A worker question the user already answered goes back to the worker this
+# many times, with the answers; after that the user is asked after all.
+MAX_REPEATED_QUESTIONS = 2
+ALREADY_ANSWERED_P = 0.6
 
 
 class DirectingMixin:
@@ -131,8 +135,9 @@ class DirectingMixin:
             question = (last or {}).get("claim") or task.goal
             if last and last.get("report_status") == DONE and not questions.is_question(question):
                 return self._settle_report(task, last, allowed)
-            self._ask_user(task, f"{questions.ASK_PREFIX} {question[:600]}")
-            return False
+            worker = task.agent or (pick.value if pick.value in executors
+                                    else (last or {}).get("executor") or "SYSTEM_AGENT")
+            return self._worker_question(task, f"{questions.ASK_PREFIX} {question[:600]}", worker)
         if d == "CERTIFY":
             return self._certify(task)
         if d == "RUN_TESTS":
@@ -163,6 +168,78 @@ class DirectingMixin:
             name = task.agent
         task.next_dispatch = self._assignment(task, name, d)
         return True
+
+    def _worker_question(self, task: Task, question: str, executor: str) -> bool:
+        """Put a worker's question to the user, unless the user already
+        answered it. False when the task now waits for the user.
+
+        Real task 2026-10-26 15:08: asked by voice at the desktop to mirror
+        "the screen" to the living-room TV, Codex asked "which screen should
+        I mirror -- the phone, the computer or another device?" four times.
+        The answers were "living room", "there is only one TV, called living
+        room TV", and "mirror the COMPUTER!!!". A question the answers
+        already settle goes back to the worker with them, to act on.
+
+        A question that asks again what the user was asked and has not
+        answered yet is not put to them again: the task goes back to waiting
+        on the one they already have (said, pushed, on the tablet). Only an
+        answer, a cancel or a new question moves it on."""
+        pending = self._still_unanswered(task, question)
+        if pending is not None:
+            asked = questions.brief(questions.clean(question), 300)
+            task.add_decision("ask", "STILL_UNANSWERED", None, {"question": asked, "waiting_on": pending[:300]})
+            task.add_note(f"Not asked again (the user has not answered it yet): {asked}")
+            task.question = task.question or pending
+            task.status = WAITING_USER
+            task.phase = "waiting_user"
+            self.store.save(task)
+            self._refresh_task_hud()
+            return False
+        earlier = self._already_answered(task, question)
+        repeats = int(task.budget.get("repeat_questions", 0))
+        if earlier is None or repeats >= MAX_REPEATED_QUESTIONS:
+            self._ask_user(task, question)
+            return False
+        task.budget["repeat_questions"] = repeats + 1
+        asked = questions.brief(questions.clean(question), 300)
+        task.add_decision("ask", "ALREADY_ANSWERED", None, {"question": asked, "answered": earlier[:300]})
+        task.add_note(f"Not asked again (the user already answered it): {asked}")
+        dispatch = self._assignment(task, executor, "CONTINUE")
+        dispatch["instructions"] = (
+            f"You asked the user: \"{asked}\". They already answered that (their answers are above). Do not ask "
+            "it again: act on their answers, or on the most reasonable reading of the request, and finish the "
+            "job.\n\n" + dispatch["instructions"])
+        dispatch.setdefault("context", {})["question_already_answered"] = asked
+        task.next_dispatch = dispatch
+        self.store.save(task)
+        return True
+
+    def _still_unanswered(self, task: Task, question: str) -> str | None:
+        """The question last put to the user, not answered since, when
+        `question` asks the same thing (Jev judges the meaning; without Jev,
+        the same words), else None."""
+        asked = (task.budget.get("asked") or [])[-1:]
+        if not asked or not asked[0].get("q") or len(task.answers) > int(asked[0].get("answers", 0)):
+            return None
+        last = asked[0]["q"]
+        judge = getattr(self.control, "already_answered", None)
+        p = judge(task, questions.clean(question), [last]) if judge else None
+        if p is not None:
+            return last if p >= ALREADY_ANSWERED_P else None
+        return last if questions.similar(last, question) else None
+
+    def _already_answered(self, task: Task, question: str) -> str | None:
+        """The earlier question, answered since, that `question` asks again
+        (Jev judges the meaning; without Jev, the same words), else None."""
+        answered = [a.get("q", "") for a in task.budget.get("asked", [])
+                    if len(task.answers) > int(a.get("answers", 0)) and a.get("q")]
+        if not answered:
+            return None
+        judge = getattr(self.control, "already_answered", None)
+        p = judge(task, questions.clean(question), answered) if judge else None
+        if p is not None:
+            return answered[-1] if p >= ALREADY_ANSWERED_P else None
+        return next((q for q in reversed(answered) if questions.similar(q, question)), None)
 
     def _settle_report(self, task: Task, last: dict, allowed: list[str]) -> bool:
         """Jev chose ASK_USER, but the worker's finished report asks nothing.

@@ -86,7 +86,7 @@ class PlanningMixin:
 
     # ---------------------------------------------------------------- plan
     def _plan(self, task: Task) -> None:
-        self._progress(task, "Sending to Jev: planning")
+        self._progress(task, "Planning the task")
         try:
             # 90 s, shared by the backends (30 s each when all three are up).
             # 2026-10-08 00:29: 45 s gave each 15 s. Measured on that request
@@ -198,7 +198,7 @@ class PlanningMixin:
         return False
 
     def _route(self, task: Task) -> bool:
-        self._progress(task, "Sending to Jev: choosing tools")
+        self._progress(task, "Choosing a worker")
         if not self._workers_ready(task):
             return False
         candidates = self._candidates(exclude={"TEST_AGENT", "REVIEW_AGENT"}, task=task)
@@ -226,7 +226,7 @@ class PlanningMixin:
         task.needs_code = needs_code
         task.add_decision("route", pick.value, pick.p, {"needs_code_change": needs_code, "fallback": pick.fallback,
                                                         "probabilities": pick.probabilities})
-        self._progress(task, f"Jev decision: {pick.value.replace('_', ' ')}")
+        self._progress(task, f"Handing it to {pick.value.replace('_', ' ').title()}")
         if pick.value == "ASK_USER":
             self._ask_user(task, "Before I start, can you tell me more precisely what you want done?")
             return False

@@ -112,7 +112,10 @@ def _job_text(goal: str) -> str:
     if goal.startswith("Escalated from the voice assistant"):
         said = goal.split("What the user said", 1)[-1].split("What the voice assistant tried", 1)[0]
         turns = [line[2:] for line in said.splitlines() if line.startswith("- ")]
-        return " / ".join(turns[-3:])[:400] or goal[:400]
+        # The job is often the earliest of them ("open ChatGPT and talk to
+        # it"), the latest only "logged in" (2026-10-19 21:21): keep the
+        # latest whole and as much of the earlier ones as fits.
+        return " / ".join(turns[-5:])[-600:] or goal[:400]
     from ..core import skills
     if (name := skills.skill_of_goal(goal)):  # a skill being carried out: the request, not its steps
         return f"{skills.request_of_goal(goal) or 'run it'} (saved skill {name})"[:400]
@@ -327,9 +330,28 @@ def _local_workspace(named) -> tuple[str, str]:
     path = Path(str(named)).expanduser()
     if path.is_dir():
         return str(path), ""
+    if (found := _same_name_checkout(path)) is not None:
+        return str(found), ""
     return home, (f"\n\nThe folder named for this job, {named}, does not exist on this computer. If the job is on "
                   "another machine, work on that machine over ssh and treat this as the path there; if it is a local "
                   "folder under another name, find it first.")
+
+
+# Where the user's checkouts usually live: "~/omarchy-ai" means ~/Git/omarchy-ai.
+_CODE_ROOTS = ("Git", "git", "src", "code", "projects", "dev", "repos")
+
+
+def _same_name_checkout(path: Path) -> Path | None:
+    """The one folder of that name directly under a code root in the home
+    folder, for a named folder that is not there. 2026-10-29 21:36: "open
+    Claude in the omarchy-ai folder" went to ~/omarchy-ai, and the worker spent
+    four and a half minutes finding ~/Git/omarchy-ai."""
+    home = Path.home()
+    if path.parent != home or not path.name:
+        return None
+    found = [home / root / path.name for root in _CODE_ROOTS if (home / root / path.name).is_dir()]
+    unique = {p.resolve() for p in found}
+    return found[0] if len(unique) == 1 else None
 
 
 def _not_started(goal: str, reason: str, cid: str) -> ActionResult:
@@ -527,14 +549,19 @@ def _in_this_conversation(runtime, task_id):
            "in the phone's Text with Omarchy.")
     if task_id and (task_id.startswith(conversations.TOOL_INSTALL) or task_id.startswith(conversations.ACTION)):
         return task_id, None
+    from . import asking
     if task_id:
         task = runtime.store.load(task_id)
         # Tasks from before conversations existed have none: they stay answerable.
-        if task is not None and task.conversation and task.conversation != current:
+        # A question she said in this conversation (on a speaker, from the
+        # wall tablet; runtime/asking.py) is answered here too.
+        if (task is not None and task.conversation and task.conversation != current
+                and not asking.was_put_to(task.id, current)):
             return None, f"Not answered: task {task_id} belongs to another conversation. {ask}"
         return task_id, None
     waiting = [t for t in runtime.store.list(50)
-               if t.status in (WAITING_APPROVAL, WAITING_USER) and t.conversation == current]
+               if t.status in (WAITING_APPROVAL, WAITING_USER)
+               and (t.conversation == current or t.status == WAITING_USER and asking.was_put_to(t.id, current))]
     installs = [line for line in (conversations.get(current) or {}).get("lines", [])
                 if line.get("role") == "card" and line.get("status") == "waiting"
                 and (str(line.get("task_id", "")).startswith(conversations.TOOL_INSTALL)
@@ -599,6 +626,7 @@ def announce_to(session_getter, loop, wake=None) -> None:
     `wake(entry)` (the daemon's _on_agenda_result) says a WAKE_EVENTS entry
     now: in the open conversation or phone call, else by starting one."""
     from ..core import outbox
+    from . import asking
     from . import runtime as runtime_module
 
     def listener(task, event):
@@ -606,9 +634,18 @@ def announce_to(session_getter, loop, wake=None) -> None:
         # their own listener. Never inject a heartbeat into the live model.
         if event not in _OUTCOMES or task.source == "cli":
             return
+        if event == "waiting_user" and not asking.shown(task):
+            log.warning("task %s: question with no words in it not said: %r", task.id, str(task.question or "")[:200])
+            return
         entry = _remember(task, event)
         if entry is None:
             return  # duplicate outcome, including one delivered before restart
+        if getattr(task, "conversation", ""):
+            entry["for_conversation"] = task.conversation  # said in that chat's call (outbox.announce_to_calls)
+        if event == "waiting_user":
+            entry.update(question=asking.shown(task), question_id=asking.question_id(task))
+            if asking.deliver(task, entry):
+                return  # said on the speaker it was asked on (runtime/asking.py)
         if wake is not None and event in WAKE_EVENTS:
             loop.call_soon_threadsafe(wake, entry)
             return
@@ -627,6 +664,7 @@ def announce_to(session_getter, loop, wake=None) -> None:
         _, _, fingerprint = runtime_module.notice(task, event)
         outbox.once(runtime_module.outbox_key(task, fingerprint), say, origin_id=f"task-{task.id}")
     runtime = get_runtime()
+    runtime.listeners.append(asking.on_event)  # open questions on a display (satellite_state_command)
     runtime.listeners.append(listener)
     # Tasks a restart cut off never emit an event (the runtime marks them
     # interrupted before anyone listens): queue those once as well.

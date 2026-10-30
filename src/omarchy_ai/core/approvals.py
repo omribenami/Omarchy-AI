@@ -82,6 +82,13 @@ SEND_TOOLS = frozenset(
 # module imports a great deal).
 LOW, NORMAL, ELEVATED, HIGH, BLOCKED = range(5)
 TAP_BY, VOICE_BY, STANDING_BY = "tap", "voice", "standing"
+# The owner's own yes, recognized (voice/gemini_live.py _voice_approve): their
+# transcribed words, never the model's, judged by Jev to approve that card,
+# while they are recognized by voice or on their own phone. The owner asked
+# for it (2026-10-28): "override requests that require approval when she is
+# confident she speaks with me and I approved by voice". It answers a card a
+# tap would, but never a DENY, a HIGH risk call, or a card over 10 minutes old.
+OWNER_VOICE_BY = "owner_voice"
 STANDING_KINDS = {
     "gmail_send": "GMAIL_SEND_EMAIL",
     "gmail_reply": "GMAIL_REPLY_TO_THREAD",
@@ -120,9 +127,10 @@ def destructive_command(command: str) -> bool:
 
 
 # What runtime/permissions.classify says when a command deletes outside the
-# workspace or removes software.
+# workspace, removes software or edits a disk's partitions.
 _DESTRUCTIVE_REASON = re.compile(
-    r"deletes \S.* outside|deletes system path|removes packages|removes an app|uninstalls|empties the package cache",
+    r"deletes \S.* outside|deletes system path|removes packages|removes an app|uninstalls|empties the package cache"
+    r"|edits partitions",
 )
 
 
@@ -200,6 +208,12 @@ def decide(
     args = args if isinstance(args, dict) else {}
     if risk is not None and risk >= BLOCKED:
         return Verdict(DENY, "never allowed")
+    if name == "terminal_sudo" and _recognized_owner():
+        # The user, 2026-10-25: recognized by voice or phone, the job gets
+        # done even with sudo. The saved password goes to the assistant's own
+        # terminal's prompt (it reads the prompt first), after untrusted
+        # content too; what that terminal runs was checked when it was typed.
+        return Verdict(AUTO, "the recognized owner's sudo")
     if name == "schedule_task":
         # Approved at creation: the schedule needs what its strictest step needs now.
         steps = [
@@ -288,6 +302,12 @@ def _irreversible(
 # ------------------------------------------------------------ who may approve
 
 
+def _recognized_owner() -> bool:
+    from . import identities
+
+    return identities.current().recognized_owner
+
+
 def _speaker_id_enabled() -> bool:
     try:
         from ..config import load_config
@@ -340,12 +360,28 @@ def voice_refusal(
     return speaker_refusal(identity)
 
 
+def owner_voice_refusal(*, risk: int = ELEVATED, asked_at: float | None = None,
+                        now: float | None = None) -> str | None:
+    """Why the recognized owner's spoken yes cannot answer a card, or None."""
+    from . import identities
+
+    if risk >= HIGH:
+        return "it is HIGH risk"
+    if asked_at is not None and (time.time() if now is None else now) - asked_at > TTL_SECONDS:
+        return "it was prepared more than 10 minutes ago"
+    if not identities.current().recognized_owner:
+        return "the owner was not recognized"
+    return None
+
+
 def accepts(verdict: Verdict, by: str, **context) -> str | None:
     """Why `by` (tap | voice) cannot answer a call needing `verdict`, or None."""
     if verdict.level == DENY:
         return verdict.reason or "never allowed"
     if by == TAP_BY or verdict.level == AUTO:
         return None
+    if by == OWNER_VOICE_BY:
+        return owner_voice_refusal(risk=context.get("risk", ELEVATED), asked_at=context.get("asked_at"))
     if verdict.level == TAP:
         return verdict.reason or "only a tap approves it"
     return voice_refusal(**context)

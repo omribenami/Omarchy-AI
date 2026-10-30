@@ -38,6 +38,15 @@ class Identity:
     person: str | None = None
     how: str | None = None  # "phone" | "voice" | "typed" | None
 
+    @property
+    def recognized_owner(self) -> bool:
+        """The owner, recognized by their voice or on their own phone (its
+        Flux chat included). The user, 2026-10-25: then she gets the job
+        done, sudo included, with no approval or fingerprint (runtime/
+        runtime.py, core/approvals.py). Typing at this computer is not a
+        recognition: anyone at the keyboard is "typed"."""
+        return bool(self.person) and self.how in ("voice", "phone") and self.person == owner()
+
 
 CURRENT_IDENTITY: ContextVar[Identity] = ContextVar("omarchy_ai_identity", default=Identity())
 

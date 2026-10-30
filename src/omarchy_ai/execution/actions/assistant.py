@@ -60,12 +60,11 @@ def schedule_task(args: dict) -> ActionResult:
     args = dict(args or {})
     kind = str(args.get("kind") or "").strip()
     args.pop("announce", None)  # only set here, from announce_on_speaker
-    if args.pop("announce_on_speaker", None) is True:
-        from ...core import conversations
-        if conversations.source(conversations.CURRENT.get()) != "satellite":
-            return ActionResult(False, "Task NOT scheduled: announce_on_speaker is only for a reminder asked "
-                                       "through the speaker. Schedule it again without announce_on_speaker.")
-        args["announce"] = "satellite"  # agenda.create checks it is a reminder due today
+    said = args.pop("announce_on_speaker", None)
+    if said is True:
+        args["announce"] = "satellite"  # the user asked for the speaker (agenda._speaker_for)
+    elif said is False:
+        args["announce"] = False        # the user asked for no speaker, even one it was asked on
     has_calls = args.get("steps") not in (None, "", []) or bool(args.get("tool"))
     if kind == "action" and not has_calls:
         request = str(args.get("request") or args.get("title") or "").strip()
@@ -111,12 +110,32 @@ def schedule_task(args: dict) -> ActionResult:
 
 def watch_camera(args: dict) -> ActionResult:
     """A camera watch for the time frame the user gave (core/agenda.py judges
-    each frame); a missing time frame comes back as a question for the user."""
+    each frame); a missing time frame comes back as a question for the user.
+    Several cameras are one watch each (live 2026-10-26: "the driveway and
+    the Ring" became a driveway-only watch, and the delivery went unseen)."""
+    import re
+
     args = dict(args or {})
-    camera = str(args.get("camera") or "").strip()
-    return schedule_task({"kind": "watch", "camera": camera, "condition": args.get("condition"), "repeat": True,
-                          "title": args.get("title") or f"Watching the {camera} camera",
-                          "for_minutes": args.get("for_minutes"), "every_minutes": args.get("every_minutes")})
+    said = args.get("camera")
+    said = said if isinstance(said, list) else re.split(r"\s*(?:,|;|\band\b|\s+ו(?=\S))\s*", str(said or ""))
+    cameras = [str(c).strip() for c in said if str(c).strip()] or [""]
+    results = []
+    for camera in dict.fromkeys(cameras):
+        title = args.get("title") or f"Watching the {camera} camera"
+        if len(cameras) > 1 and args.get("title"):
+            title = f"{args['title']} ({camera})"
+        results.append(schedule_task({"kind": "watch", "camera": camera, "condition": args.get("condition"),
+                                      "looks_like": args.get("looks_like"), "repeat": True, "title": title,
+                                      "announce_on_speaker": args.get("announce_on_speaker"),
+                                      "for_minutes": args.get("for_minutes"),
+                                      "every_minutes": args.get("every_minutes")}))
+    if len(results) == 1:
+        return results[0]
+    ok = [r for r in results if r.ok]
+    message = "\n".join(r.message for r in results)
+    if not ok:
+        return ActionResult(False, message)
+    return ActionResult(True, f"{len(ok)} of {len(results)} camera watches started:\n{message}")
 
 
 def look_camera(args: dict) -> ActionResult:

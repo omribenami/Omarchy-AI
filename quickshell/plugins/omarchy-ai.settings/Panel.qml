@@ -126,6 +126,24 @@ Panel {
     Qt.callLater(root._processQueue)
   }
 
+  function _finishSettingsOutput(rawText) {
+    if (settingsProc._settled || settingsProc._cb === null) return
+    var framed = root._framed(rawText)
+    var result = null
+    if (!framed.ok) {
+      result = { error: framed.error || "Settings helper failed" }
+    } else if (framed.body.length > root.settingsMaxBytes) {
+      result = { error: "Settings helper output exceeded " + root.settingsMaxBytes + " bytes" }
+    } else {
+      try {
+        result = framed.body.trim() ? JSON.parse(framed.body) : { error: "Settings helper returned no response" }
+      } catch (e) {
+        result = { error: "settings helper returned invalid output" }
+      }
+    }
+    root._finishProcess(result)
+  }
+
   Process {
     id: settingsProc
     stdinEnabled: true
@@ -139,36 +157,30 @@ Panel {
     property var _stdinText: null
     property bool _settled: false
     stdout: StdioCollector {
+      id: settingsStdout
       waitForEnd: true
-      onStreamFinished: {
-        if (settingsProc._settled) return
-        var framed = root._framed(text)
-        var result = null
-        if (!framed.ok) {
-          result = { error: framed.error || "Settings helper failed" }
-        } else if (framed.body.length > root.settingsMaxBytes) {
-          result = { error: "Settings helper output exceeded " + root.settingsMaxBytes + " bytes" }
-        } else {
-          try {
-            result = framed.body.trim() ? JSON.parse(framed.body) : { error: "Settings helper returned no response" }
-          } catch (e) {
-            result = { error: "settings helper returned invalid output" }
-          }
-        }
-        if (settingsProc._cb !== null) root._finishProcess(result)
-      }
+      onStreamFinished: root._finishSettingsOutput(text)
     }
   }
 
   Timer {
     id: settingsExitTimer
-    interval: 250
+    // Process.running can turn false before StdioCollector delivers its
+    // buffered stream.  A full settings snapshot is ~10 KB; 250 ms caused
+    // successful key saves to be reported as missing responses on real
+    // shells.  Keep this only as a delayed fail-safe behind the collector.
+    interval: 2000
     repeat: false
     onTriggered: {
       // A timeout may already have settled the callback while the process
       // was still exiting. Still drain the queue once `running` is false.
-      if (!settingsProc._settled && settingsProc._cb !== null)
-        root._finishProcess({ error: "Settings helper exited without a response" })
+      if (!settingsProc._settled && settingsProc._cb !== null) {
+        if (settingsStdout.text && settingsStdout.text.length > 0)
+          root._finishSettingsOutput(settingsStdout.text)
+        // Some Quickshell builds deliver StdioCollector.onStreamFinished
+        // well after Process.running becomes false.  An empty buffer here
+        // is not an error; the collector or the overall deadline settles it.
+      }
       else root._processQueue()
     }
   }
@@ -259,9 +271,10 @@ Panel {
         root.snapshot = result
         root.dirty = true
         root.statusTone = "ok"
-        root.statusMessage = "Gateway key saved — restart to apply"
+        root.statusMessage = "Gateway key saved — restarting assistant…"
         gatewayKeyField.text = ""
         root.gatewayKeyEditing = false
+        root.doRestart()
       } else {
         root.statusTone = "error"
         root.statusMessage = "No response from settings helper"
@@ -523,10 +536,11 @@ Panel {
       if (result && result.restarted) {
         root.dirty = false
         root.statusTone = "ok"
-        root.statusMessage = "Daemon restarted"
+        root.statusMessage = "Restart requested — Omachy is starting"
+        root.fetchSnapshot()
       } else {
         root.statusTone = "error"
-        root.statusMessage = (result && result.reason) || "Restart failed"
+        root.statusMessage = "Changes are saved, but could not be applied: " + ((result && (result.reason || result.error)) || "restart failed")
       }
     })
   }
@@ -711,9 +725,19 @@ Panel {
         Text {
           visible: root.settingsReady
           width: parent.width; wrapMode: Text.WordWrap
-          text: (root.snapshot.assistant && root.snapshot.assistant.error_detail) || (root.dirty ? "Changes saved · apply below to use them" : "Running provider: " + ((root.snapshot.assistant && root.snapshot.assistant.provider) || "offline"))
+          text: (root.snapshot.assistant && root.snapshot.assistant.error_detail) || (root.dirty ? "Changes saved · restart required" : "Running provider: " + ((root.snapshot.assistant && root.snapshot.assistant.provider) || "offline"))
           color: root.snapshot.assistant && root.snapshot.assistant.error_detail ? Color.urgent : Color.muted
           font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
+        }
+        Button {
+          visible: root.settingsReady
+          width: parent.width
+          text: root.restarting ? "Restarting assistant…" : root.dirty ? "Apply changes now" : root.assistantState === "offline" ? "Start assistant" : "No changes to apply"
+          iconText: root.dirty || root.assistantState === "offline" ? "󰜉" : "󰄬"; bordered: true; selected: root.dirty || root.assistantState === "offline"; focusable: true
+          foreground: root.fg; accent: Color.accent; fontFamily: root.bar.fontFamily
+          enabled: !root.restarting && (root.dirty || root.assistantState === "offline")
+          opacity: enabled ? 1 : 0.62
+          onClicked: root.doRestart()
         }
         Column {
           visible: root.settingsReady
@@ -726,7 +750,7 @@ Panel {
             width: parent.width; spacing: Style.space(8)
             TextField { id: gatewayKeyField; visible: !root.gatewayKey.set || root.gatewayKeyEditing; width: parent.width - saveGatewayButton.width - pasteGatewayButton.width - Style.space(16); password: true; placeholderText: "Vercel AI Gateway key"; foreground: root.fg; font.family: root.bar.fontFamily; onAccepted: root.saveGatewayKey(text) }
             Button { id: pasteGatewayButton; text: "Paste"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: root.pasteApiKey(gatewayKeyField) }
-            Button { id: saveGatewayButton; text: root.gatewayKey.set && !root.gatewayKeyEditing ? "Edit key" : "Save key"; bordered: true; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.gatewayKey.set && !root.gatewayKeyEditing) root.gatewayKeyEditing = true; else root.saveGatewayKey(gatewayKeyField.text) } }
+            Button { id: saveGatewayButton; text: root.gatewayKey.set && !root.gatewayKeyEditing ? "Replace key" : "Save & restart"; bordered: true; selected: root.gatewayKeyEditing || !root.gatewayKey.set; accent: Color.accent; foreground: root.fg; fontFamily: root.bar.fontFamily; onClicked: { if (root.gatewayKey.set && !root.gatewayKeyEditing) root.gatewayKeyEditing = true; else root.saveGatewayKey(gatewayKeyField.text) } }
           }
           Text { visible: !root.omarchySelected; width: parent.width; wrapMode: Text.WordWrap; text: root.geminiSelected ? (root.selectedKey.set ? "Google AI Studio key saved. Gemini Live and its older backup models connect to Google directly." : "Enter your Google AI Studio key for Gemini Live. Without it, conversations run on the OpenAI backup voice through the Gateway key.") : (root.selectedKey.set ? "OpenAI key saved for OpenAI Live." : "Enter your OpenAI key for OpenAI Live."); color: root.selectedKey.set ? Color.muted : Color.urgent; font.family: root.bar.fontFamily; font.pixelSize: Style.font.bodySmall }
           Row {
@@ -1454,17 +1478,6 @@ Panel {
               color: Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.72); font.family: root.bar.fontFamily; font.pixelSize: Style.font.caption
             }
           }
-        }
-        Button {
-          visible: root.settingsReady && (root.dirty || root.assistantState === "offline")
-          width: parent.width; text: root.restarting ? "Restarting…" : root.dirty ? "Apply saved changes" : "Start assistant"
-          bordered: true; focusable: true; foreground: root.fg; fontFamily: root.bar.fontFamily
-          // Applying a saved preference must remain clickable while the
-          // daemon is running.  The restart helper still reports a busy
-          // conversation rather than silently doing nothing, and the panel
-          // keeps the dirty state until a restart actually succeeds.
-          enabled: !root.restarting
-          onClicked: root.doRestart()
         }
       }
     }
