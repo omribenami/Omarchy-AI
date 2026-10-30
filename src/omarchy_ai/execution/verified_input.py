@@ -86,6 +86,24 @@ _ASKS_REPEAT = re.compile(
     re.IGNORECASE)
 
 
+def _desktop_shortcut(args) -> str | None:
+    from .actions.desktop import desktop_shortcut
+    args = args if isinstance(args, dict) else {}
+    return desktop_shortcut(args.get("key"), args.get("modifiers"))
+
+
+def _relative(name, args) -> bool:
+    """A step that moves on from where the last one left the page: running it
+    again does more, so a repeat is never the same action. 2026-10-29 21:30:
+    "scroll to the middle" stuck at 20% because each further scroll down was
+    answered "Already done for this request"."""
+    args = args if isinstance(args, dict) else {}
+    action = str(args.get("action") or "")
+    return name == "browser_control" and (action == "key" or (
+        action == "scroll" and str(args.get("direction") or "down") in ("up", "down") and not args.get("to")
+        and args.get("percent") is None))
+
+
 def _key(name, args) -> str:
     return json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str)
 
@@ -259,7 +277,8 @@ class InputGuard:
         """(this call, now the turn's previous action, or None; None), or
         (None, the answer to a repeat that does not run): REPEAT_SECONDS."""
         turn = logs.current().get("turn_id")
-        if not turn or name in _NO_REPEAT_CHECK or tools.effect_class(name) == tools.READ:
+        if (not turn or name in _NO_REPEAT_CHECK or tools.effect_class(name) == tools.READ
+                or _relative(name, args)):
             return None, None
         key = _key(name, args)
         with self._lock:
@@ -321,6 +340,8 @@ class InputGuard:
 
     def _guarded(self, execute, name, args):
         keyboard = name in {"type_text", "press_key", "submit_sudo_password"}
+        if name == "press_key" and not ends_session(name, args) and _desktop_shortcut(args):
+            return execute(name, args)  # goes to the desktop, not to the focused window
         window = self.focused_window(execute) if keyboard and self.address else None
         if keyboard and (not self.address or not window or window.get("address") != self.address):
             self.address = None

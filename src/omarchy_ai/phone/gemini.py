@@ -188,6 +188,8 @@ async def _serve(config, sdp, answer, cancelled, conversation='', identity=None)
     earlier = await asyncio.to_thread(summarize.session_context, conversation) if conversation else ''
     if conversation:
         adapter._transcript = conversations.Transcript(conversation, adapter._transcript)
+        for line in await asyncio.to_thread(conversations.user_lines_before, conversation, time.time()):
+            adapter._input_guard.taint.recall(line)
         conversations.CURRENT.set(conversation)
         def share_file(args):
             from ..execution.actions import ActionResult

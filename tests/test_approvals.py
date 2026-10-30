@@ -15,6 +15,7 @@ from unittest import mock
 
 from fakes.effects_journal import isolate_journal
 from fakes.myapi_server import FakeMyApi, fake_identity
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai import config
 from omarchy_ai.core import (
     agenda,
@@ -508,6 +509,70 @@ class TaskRuntimeTests(Isolated):
 
     def test_high_never_by_voice(self):
         self.assertFalse(self.respond(risk="HIGH"))
+
+
+class OwnerVoiceTests(Isolated):
+    """2026-10-28: the owner, recognized, approves a card by saying so."""
+
+    def as_(self, person, how):
+        token = set_current(Identity(person, how))
+        self.addCleanup(reset_current, token)
+
+    def test_the_recognized_owners_spoken_yes_sends_it(self):
+        aid = self.held_send()
+        self.as_("sam", "voice")
+        ok, message = myapi_agent.decide(aid, True, "voice", approvals.OWNER_VOICE_BY)
+        self.assertTrue(ok, message)
+        self.assertEqual(len(self.fake.writes), 1)
+
+    def test_someone_else_or_an_unrecognized_voice_does_not(self):
+        aid = self.held_send()
+        for who in (("guest", "voice"), ("sam", "typed"), (None, None)):
+            self.as_(*who)
+            ok, message = myapi_agent.decide(aid, True, "voice", approvals.OWNER_VOICE_BY)
+            self.assertFalse(ok, who)
+            self.assertIn("not recognized", message)
+        self.assertEqual(self.fake.writes, [])
+
+    def test_never_a_deny_a_high_risk_call_or_an_old_card(self):
+        self.as_("sam", "phone")
+        by = approvals.OWNER_VOICE_BY
+        self.assertIsNone(approvals.accepts(approvals.Verdict(approvals.TAP, "tainted"), by))
+        self.assertIsNotNone(approvals.accepts(approvals.Verdict(approvals.DENY, "never"), by))
+        self.assertIsNotNone(approvals.accepts(approvals.Verdict(approvals.TAP, "x"), by, risk=approvals.HIGH))
+        self.assertIsNotNone(approvals.accepts(approvals.Verdict(approvals.TAP, "x"), by,
+                                               asked_at=time.time() - approvals.TTL_SECONDS - 5))
+
+    def test_the_session_judges_the_owners_own_words_and_runs_the_card(self):
+        import asyncio
+        from omarchy_ai.config import Config
+        from omarchy_ai.core.jev import Jev
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        aid = self.held_send()
+        session = GeminiLiveSession(Config())
+        session.known_identity = Identity("sam", "phone")
+        with mock.patch.object(Jev, "ask", return_value={"approves": {"p": 0.3}}):
+            self.assertFalse(asyncio.run(session._voice_approve("wait, who is it to?")))
+        self.assertEqual(self.fake.writes, [])
+        with mock.patch.object(Jev, "ask", return_value={"approves": {"p": 0.96}}) as ask:
+            self.assertTrue(asyncio.run(session._voice_approve("כן, אני מאשר לך")))
+        self.assertEqual(ask.call_args.args[0]["user_words"], "כן, אני מאשר לך")
+        self.assertEqual(len(self.fake.writes), 1)
+        self.assertEqual(pending_actions.get(aid)["status"], pending_actions.DONE)
+        self.assertIn("approved", session._announcements.get_nowait()["notice"])
+
+    def test_the_session_never_judges_someone_elses_yes(self):
+        import asyncio
+        from omarchy_ai.config import Config
+        from omarchy_ai.core.jev import Jev
+        from omarchy_ai.voice.gemini_live import GeminiLiveSession
+        aid = self.held_send()
+        session = GeminiLiveSession(Config())
+        session.known_identity = Identity("guest", "phone")
+        with mock.patch.object(Jev, "ask") as ask:
+            self.assertFalse(asyncio.run(session._voice_approve("yes do it")))
+        ask.assert_not_called()
+        self.assertEqual(pending_actions.get(aid)["status"], pending_actions.WAITING)
 
 
 if __name__ == "__main__":

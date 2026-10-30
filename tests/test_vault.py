@@ -32,7 +32,7 @@ class VaultTests(unittest.TestCase):
         vault._cache.clear()
         # Never touch the real GNOME Keyring (2026-09-28: an unpatched run left a
         # fake 'elevenlabs' value in the user's keyring cache).
-        for name, fake in (("_keyring_get", lambda name: None), ("_keyring_put", lambda name, value: None)):
+        for name, fake in (("_keyring_get", lambda name, **_: None), ("_keyring_put", lambda name, value: None)):
             patcher = patch.object(vault, name, side_effect=fake)
             patcher.start()
             self.addCleanup(patcher.stop)

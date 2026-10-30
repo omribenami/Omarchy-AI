@@ -13,9 +13,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import history
 from omarchy_ai.execution import askpass, passwords
 from omarchy_ai.execution.actions import ActionResult
+from omarchy_ai.runtime import runtime as runtime_module
 from omarchy_ai.runtime.permissions import Risk, Scope, classify
 from omarchy_ai.runtime.task import Task, TaskStore
 
@@ -136,6 +138,18 @@ class SshTests(KeyringFree):
             self.assertTrue(actions.terminal_sudo({"name": "ssh-ha"}).ok)
         submit.assert_called_once_with("ssh-ha", SECRET)
 
+    def test_terminal_sudo_gives_a_remote_sudo_prompt_the_ssh_password(self):
+        from omarchy_ai.execution import actions, workbench
+        self.stored = [SECRET]
+        screen = "$ ssh alice@h 'sudo apt-get update'\n[sudo] password for alice: "
+        with patch.object(workbench, "exists", return_value=True), \
+                patch.object(workbench, "read", return_value=ActionResult(True, screen)), \
+                patch.object(workbench, "submit_password", return_value=ActionResult(True, "ok")) as submit:
+            result = actions.terminal_sudo({"name": "ssh-ha"})
+        self.assertTrue(result.ok)
+        self.assertIn("remote sudo", result.message)
+        submit.assert_called_once_with("ssh-ha", SECRET)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -185,6 +199,48 @@ class RuntimeSshTests(RuntimeHarness):
         self.assertEqual([c for c, _ in ssh], ["ssh-copy-id -i k.pub alice@192.0.2.10"])
         self.assertEqual(ssh[0][1]["SSH_ASKPASS_REQUIRE"], "force")
         self.assertEqual(self.stored, [SECRET])
+        self.assertNotIn(SECRET, self.store.path(task.id).read_text())
+
+    def test_approved_remote_sudo_gets_saved_password_only_on_stdin(self):
+        command = "ssh admin@server 'sudo pacman -Syu'"
+        with patch.object(passwords, "ssh_password", return_value=SECRET):
+            rewritten, stdin_text = runtime_module._remote_sudo(command)
+        self.assertEqual(rewritten, "ssh admin@server 'sudo -S pacman -Syu'")
+        self.assertEqual(stdin_text, SECRET + "\n")
+        self.assertNotIn(SECRET, rewritten)
+
+    def test_remote_sudo_without_saved_access_fails_noninteractively(self):
+        command = "ssh admin@server 'sudo pacman -Syu'"
+        with patch.object(passwords, "ssh_password", return_value=None):
+            rewritten, stdin_text = runtime_module._remote_sudo(command)
+        self.assertEqual(rewritten, "ssh admin@server 'sudo -n pacman -Syu'")
+        self.assertIsNone(stdin_text)
+
+    def test_approved_password_login_can_run_remote_sudo(self):
+        ran = []
+
+        def fake_run(command, cwd=None, **kw):
+            ran.append((command, kw.get("stdin_text"), kw.get("env") or {}))
+            return shell.CommandResult(str(command), str(cwd), 0, "updated", 0.1)
+
+        def work(a, ctx):
+            result = ctx.run_command("sshpass ssh admin@server 'sudo pacman -Syu'", a.workspace, 10)
+            if result["decision"] == "ask":
+                return Report(NEEDS_APPROVAL, claim="need remote root", approval=result["request"])
+            return Report(DONE, claim=result["output"])
+
+        runtime = self.runtime([ScriptExecutor("SYSTEM_AGENT", work)], ScriptedJev())
+        with patch.object(passwords, "ssh_password", return_value=SECRET), \
+                patch.object(shell, "run", side_effect=fake_run):
+            task = runtime.start("update the server", str(self.ws), background=False)
+            waiting = self.store.load(task.id)
+            self.assertEqual(waiting.pending_approval["risk"], "HIGH")
+            self.assertTrue(runtime.respond(task.id, approve=True, channel="phone", background=False)["ok"])
+
+        remote = next(item for item in ran if isinstance(item[0], str) and item[0].startswith("ssh "))
+        self.assertEqual(remote[0], "ssh admin@server 'sudo -S pacman -Syu'")
+        self.assertEqual(remote[1], SECRET + "\n")
+        self.assertEqual(remote[2]["SSH_ASKPASS_REQUIRE"], "force")
         self.assertNotIn(SECRET, self.store.path(task.id).read_text())
 
 

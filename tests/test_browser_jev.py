@@ -30,6 +30,19 @@ class BrowserActionGuardTests(unittest.TestCase):
             guarded(self.action, self.page, text="bananas")
         self.assertEqual(original.call_count, 3)
 
+    def test_a_reused_browser_is_not_cancelled_by_an_earlier_tasks_guard(self):
+        # Regression 2026-10-19: the reused browser's act kept every earlier
+        # task's guard; once a conversation ended, each held a stale
+        # generation and every new task was "cancelled" before acting.
+        original = Mock(return_value={})
+        browser = Mock(act=original)
+        browser.act = browser_jev._guard_browser_action(browser.act, browser_jev._cancel_generation)
+        with patch.object(browser_jev, "_cancel_generation", browser_jev._cancel_generation):
+            browser_jev._cancel_generation += 1  # a conversation ended
+            browser.act = browser_jev._guard_browser_action(browser.act, browser_jev._cancel_generation)
+            browser.act(self.action, self.page, text="hello")
+        original.assert_called_once()
+
 
 class BrowserReuseTests(unittest.TestCase):
     class FakeAgent:
@@ -63,8 +76,19 @@ class BrowserReuseTests(unittest.TestCase):
         ]
         browser.evaluate.return_value = "complete"
         browser_jev._owned_browser = browser
-        browser_jev._agent_with_reused_tab(self.FakeAgent, "https://en.wikipedia.org", "search Hyprland")
+        with patch.object(browser_jev, "_means_open_page", return_value=False):
+            browser_jev._agent_with_reused_tab(self.FakeAgent, "https://en.wikipedia.org", "search Hyprland")
         browser.call.assert_called_once_with("Page.navigate", url="https://en.wikipedia.org")
+
+    def test_the_sites_front_page_does_not_leave_the_open_page_the_goal_is_about(self):
+        # 2026-10-20 00:49: "read the conversation on the active ChatGPT tab" with url chatgpt.com/.
+        browser = Mock()
+        browser.target = "owned-target"
+        browser.observe.return_value = {"url": "https://chatgpt.com/c/6ad6d252", "title": "Chat", "actions": []}
+        browser_jev._owned_browser = browser
+        with patch.object(browser_jev, "_means_open_page", return_value=True):
+            browser_jev._agent_with_reused_tab(self.FakeAgent, "https://chatgpt.com/", "read this conversation")
+        browser.call.assert_not_called()
 
     def test_different_site_navigates_the_owned_target(self):
         browser = Mock()
@@ -300,3 +324,62 @@ class DedicatedBrowserLaunchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoEffectMovesTests(unittest.TestCase):
+    """2026-10-20 00:33: the agent clicked ChatGPT's already-filled box over and over, never Send."""
+
+    PAGE = {"actions": [{"id": "e1", "kind": "fill", "label": "Ask ChatGPT", "value": "hello there"},
+                        {"id": "e2", "kind": "click", "label": "Open Ask ChatGPT"},
+                        {"id": "e3", "kind": "click", "label": "Send"},
+                        {"id": "wait", "kind": "wait", "label": "Wait for the page to update"}]}
+
+    def test_a_control_that_changes_nothing_twice_is_no_longer_offered(self):
+        moves = browser_jev._Moves()
+        self.assertIsNone(moves.note({"action": "Open Ask ChatGPT", "kind": "click", "page_changed": False}))
+        self.assertEqual(moves.note({"action": "Ask ChatGPT", "kind": "fill", "page_changed": False}), "Ask ChatGPT")
+        page = moves.filter({"actions": list(self.PAGE["actions"])})
+        self.assertEqual([a["label"] for a in page["actions"]], ["Send", "Wait for the page to update"])
+
+    def test_a_move_that_changes_the_page_offers_everything_again(self):
+        moves = browser_jev._Moves()
+        for _ in range(2):
+            moves.note({"action": "Open Ask ChatGPT", "kind": "click", "page_changed": False})
+        moves.note({"action": "Send", "kind": "click", "page_changed": True})
+        self.assertEqual(len(moves.filter({"actions": list(self.PAGE["actions"])})["actions"]), 4)
+
+    def test_waiting_is_never_a_strike(self):
+        moves = browser_jev._Moves()
+        for _ in range(3):
+            self.assertIsNone(moves.note({"action": "Wait for the page to update", "kind": "wait",
+                                          "page_changed": False}))
+
+    def test_a_typed_step_is_confirmed_by_the_field_holding_its_text(self):
+        progress = browser_jev._Progress("Talk to ChatGPT", ['Type "Hello  there" in the message box',
+                                                             "Click Send", "Read the reply"])
+        progress.see(self.PAGE)
+        self.assertTrue(progress.advance())
+        self.assertEqual(progress.index, 1)
+
+    def test_the_banned_control_is_named_in_the_goal(self):
+        progress = browser_jev._Progress("Send the message", None)
+        progress.no_effect.append("Ask ChatGPT")
+        self.assertIn("'Ask ChatGPT'", progress.render())
+
+    def test_a_stuck_result_lists_the_controls_not_tried(self):
+        text = browser_jev._untried({"page": self.PAGE}, [{"action": "Open Ask ChatGPT"}])
+        self.assertIn("'Send'", text)
+        self.assertNotIn("'Ask ChatGPT'", text)
+        self.assertIn("browser_control", text)
+
+    def test_typed_text_that_leaves_the_box_is_sent_and_what_follows_is_judged(self):
+        progress = browser_jev._Progress("Talk", ['Type "hello there" in the box', "Send it", "Wait for the reply"])
+        progress.see({"actions": [{"kind": "fill", "label": "Ask", "value": "hello there"}], "text": "hello there"})
+        progress.see({"actions": [{"kind": "fill", "label": "Ask", "value": ""}],
+                      "text": "You: Hello there\nAssistant: Hi, how can I help?"})
+        self.assertTrue(progress.advance())
+        self.assertEqual(progress.index, 2)  # typed and sent: only the reply is left
+        self.assertEqual(progress.after_sent, "Assistant: Hi, how can I help?")
+        self.assertIn("omarchy_after_sent", progress.questions())
+        progress.read({"omarchy_after_sent": {"probability": 0.9}})
+        self.assertTrue(progress.goal_verified())

@@ -53,6 +53,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 from typing import Iterator
@@ -231,6 +232,7 @@ class Policy:
     expose: list[tuple[Path, bool]] = field(default_factory=list)
     network: bool = True
     label: str = ""
+    ssh_config: bool = False
 
     def describe(self) -> str:
         return (
@@ -493,6 +495,7 @@ def for_command(
             sockets.add("dbus")
             raw_bus = True
     if names & _SSH_PROGRAMS:
+        policy.ssh_config = True
         hidden = [p for p in hidden if p != home / ".ssh"]
         expose.append((home / ".ssh", False))
     if names & _GPG_PROGRAMS:
@@ -744,6 +747,7 @@ def wrapped(
         return
     proxy = None
     directory: Path | None = None
+    ssh_directory: tempfile.TemporaryDirectory | None = None
     try:
         bus = _bus_path(env) if "dbus" in policy.sockets else None
         if bus is not None and policy.dbus_talk is not None and bus.exists():
@@ -759,6 +763,15 @@ def wrapped(
         built = build_argv(
             argv, policy, env=env, cwd=cwd, dbus_socket=proxy[1] if proxy else None
         )
+        if policy.ssh_config:
+            # Unprivileged bwrap maps host root to nobody. OpenSSH rejects
+            # included configs with that owner even though they are read-only.
+            # Snapshot only public client configuration, retaining its content
+            # and paths; never copy host keys or disable host verification.
+            ssh_directory = tempfile.TemporaryDirectory(prefix="omarchy-ai-ssh-")
+            binds = _ssh_config_binds(Path(ssh_directory.name))
+            offset = built.index("--die-with-parent")
+            built[offset:offset] = binds
         yield [bwrap, *built[1:]]
     finally:
         if proxy is not None:
@@ -770,6 +783,33 @@ def wrapped(
                 proc.kill()
         if directory is not None:
             shutil.rmtree(directory, ignore_errors=True)
+        if ssh_directory is not None:
+            ssh_directory.cleanup()
+
+
+def _ssh_config_binds(directory: Path, root: Path = Path("/etc/ssh")) -> list[str]:
+    binds = []
+    paths = [root / "ssh_config", *sorted((root / "ssh_config.d").glob("*.conf"))]
+    for index, path in enumerate(paths):
+        try:
+            with path.open("rb") as source:
+                info = os.fstat(source.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != 0
+                    or info.st_mode & 0o022
+                ):
+                    continue  # Preserve SSH's rejection of genuinely unsafe files.
+                data = source.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024:
+                continue
+            snapshot = directory / str(index)
+            snapshot.write_bytes(data)
+            snapshot.chmod(0o400)
+            binds += ["--ro-bind", str(snapshot), str(path.resolve())]
+        except OSError:
+            continue  # Missing/unreadable configs retain their normal behavior.
+    return binds
 
 
 READ_ONLY_HINT = (

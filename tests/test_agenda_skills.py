@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, skills
 from omarchy_ai.core.jev import Jev
@@ -179,6 +180,43 @@ class AgendaTests(unittest.TestCase):
         self.assertEqual(judge.call_count, 2)  # the first frame and the one confirming it
         self.notify.assert_called_once()
 
+    def test_a_concrete_cue_seen_on_two_looks_alerts_when_the_condition_alone_does_not(self):
+        # Live 2026-10-26: a delivery walked up the drive; "McDonald's arrives"
+        # scored 0.13 on the frame, "a person carrying a bag" 0.75+.
+        job = self.camera_watch(looks_like=["a person on foot carrying a bag"])
+        self.assertEqual(job["cues"], ["a person on foot carrying a bag"])
+        seen = {"met": {"p": 0.1}, "cue0": {"p": 0.9}, "urgency": {"choice": "normal", "p": 1.0}}
+        gone = {"met": {"p": 0.1}, "cue0": {"p": 0.2}, "urgency": {"choice": "normal", "p": 1.0}}
+        with patch("omarchy_ai.execution.cameras.snapshot", lambda name, config, key: Path("/frames") / key), \
+                patch("omarchy_ai.execution.cameras.focus", return_value=None), \
+                patch("omarchy_ai.execution.vision.judge_image", side_effect=[seen, gone]) as judge:
+            agenda.run_job(next(j for j in agenda._load() if j["id"] == job["id"]), None, self.now)
+        self.assertIn("a person on foot carrying a bag", judge.call_args.args[1]["cue0"]["instructions"])
+        self.notify.assert_not_called()  # one look is not enough
+        with patch("omarchy_ai.execution.cameras.snapshot", lambda name, config, key: Path("/frames") / key), \
+                patch("omarchy_ai.execution.cameras.focus", return_value=None), \
+                patch("omarchy_ai.execution.vision.judge_image", side_effect=[seen, seen]):
+            agenda.run_job(next(j for j in agenda._load() if j["id"] == job["id"]), None, self.now + 120)
+        self.notify.assert_called_once()
+        self.assertIn("carrying a bag -- probably: a parcel is on the doorstep", agenda._inbox_read()[-1]["detail"])
+
+    def test_a_close_up_of_the_tracked_object_is_judged_too(self):
+        job = self.camera_watch(looks_like=["a person on foot carrying a bag"])
+        frame = {"met": {"p": 0.1}, "cue0": {"p": 0.3}, "urgency": {"choice": "normal", "p": 1.0}}
+        close = {"met": {"p": 0.2}, "cue0": {"p": 0.9}}
+        with tempfile.TemporaryDirectory() as tmp:
+            crop = Path(tmp) / "crop.jpg"
+
+            def focus(name, config, key):
+                crop.write_bytes(b"x")
+                return crop
+            with patch("omarchy_ai.execution.cameras.snapshot", lambda name, config, key: Path("/frames") / key), \
+                    patch("omarchy_ai.execution.cameras.focus", focus), \
+                    patch("omarchy_ai.execution.vision.judge_image", side_effect=[frame, close]):
+                verdict = agenda._look(next(j for j in agenda._load() if j["id"] == job["id"]))
+            self.assertFalse(crop.exists())  # the close-up is not kept
+        self.assertEqual((verdict["cue_p"], verdict["tracking"]), (0.9, True))
+
     def test_camera_that_gives_no_frame_keeps_the_watch_waiting(self):
         job = self.camera_watch()
         def offline(name, config, key):
@@ -239,6 +277,59 @@ class AgendaTests(unittest.TestCase):
         job = agenda._load()[0]
         self.assertEqual((job["camera"], job["repeat"], job["schedule"], job["title"]),
                          ("driveway", True, {"every_minutes": 1.0}, "Watching the Driveway camera"))
+
+    def test_watch_camera_on_several_cameras_starts_one_watch_each(self):
+        from omarchy_ai.execution import actions
+        with patch("omarchy_ai.execution.cameras.names", return_value=["driveway", "front door"]), \
+                patch("omarchy_ai.execution.cameras.can_wait", return_value=False), \
+                patch.object(agenda, "tick"):
+            started = actions.watch_camera({"camera": "driveway and the front door", "condition": "food arrives",
+                                            "looks_like": ["a person carrying a bag"], "for_minutes": 10})
+        self.assertTrue(started.ok, started.message)
+        self.assertEqual(sorted(j["camera"] for j in agenda._load()), ["driveway", "front door"])
+        self.assertTrue(all(j["cues"] == ["a person carrying a bag"] for j in agenda._load()))
+
+    def asked_on(self, source, device=""):
+        from omarchy_ai.core import conversations
+        return patch.multiple(conversations, source=lambda cid: source, device=lambda cid: device)
+
+    def test_what_is_asked_on_a_speaker_is_said_on_that_speaker(self):
+        # The user, 2026-10-26: notify where it was asked from, unless told otherwise.
+        with self.asked_on("satellite", "10.0.0.2"):
+            watch = self.camera_watch()
+            later_today = agenda.create({"title": "Tea", "kind": "remind", "in_minutes": 1}, now=self.now)
+            in_three_days = agenda.create({"title": "Bins", "kind": "remind", "in_minutes": 3 * 1440}, now=self.now)
+            quiet = self.camera_watch(announce=False)
+        self.assertEqual((watch["announce"], watch["speaker"]), ("satellite", "10.0.0.2"))
+        self.assertEqual(later_today["speaker"], "10.0.0.2")
+        self.assertNotIn("announce", in_three_days)   # it could land in the night
+        self.assertNotIn("announce", quiet)           # the user said not to
+        with self.asked_on("phone-voice"):
+            self.assertNotIn("announce", self.camera_watch())
+            named = self.camera_watch(announce="satellite")  # "tell me on the speaker", asked on the phone
+        self.assertEqual((named["announce"], named["speaker"]), ("satellite", ""))
+
+    def test_a_fired_watch_names_the_speaker_it_was_asked_on(self):
+        with self.asked_on("satellite", "10.0.0.2"):
+            job = self.camera_watch()
+        self.look(job["id"], 0.97)
+        entry = agenda._inbox_read()[-1]
+        self.assertEqual((entry["announce"], entry["speaker"]), ("satellite", "10.0.0.2"))
+
+    def test_movement_keeps_the_looks_coming_while_something_is_tracked(self):
+        job = self.camera_watch(motion=True)
+        tracking = iter([True, True, False])
+        looks = []
+
+        def look(job_id):
+            looks.append(job_id)
+            agenda._update(job_id, last_tracking=next(tracking, False))
+        listener = agenda._MotionListener(job["id"])
+        with patch.object(agenda, "MOTION_LOOKS", (0, 0)), patch.object(agenda, "BURST_SECONDS", 0), \
+                patch.object(agenda, "run_now", look):
+            listener._burst()
+        # two tracked looks add a quick look each; then the two planned looks
+        self.assertEqual(len(looks), 4)
 
     def test_motion_listener_exists_only_while_its_watch_does_and_looks_on_movement(self):
         class Wait:  # the user's `wait`: movement once, then nothing until terminated

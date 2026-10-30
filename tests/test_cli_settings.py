@@ -36,7 +36,7 @@ class RestartTests(unittest.TestCase):
                 patch.object(settings.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
             result = settings.cmd_restart(None)
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "restart", settings.SERVICE])
+        self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "--no-block", "restart", settings.SERVICE])
         self.assertTrue(result["restarted"])
 
     def test_reports_the_real_systemctl_failure_reason(self):
@@ -46,6 +46,34 @@ class RestartTests(unittest.TestCase):
             result = settings.cmd_restart(None)
         self.assertFalse(result["restarted"])
         self.assertIn("too quickly", result["reason"])
+
+    def test_live_listening_state_ignores_stale_journal_session_marker(self):
+        calls = [
+            subprocess.CompletedProcess([], 0, "active\n", ""),
+        ]
+        with (
+            patch.object(
+                settings.control, "request", return_value={"state": "listening"}
+            ),
+            patch.object(settings.subprocess, "run", side_effect=calls) as run,
+        ):
+            busy, reason = settings._conversation_busy()
+        self.assertFalse(busy)
+        self.assertIn("safe to restart", reason)
+        self.assertEqual(run.call_count, 1)
+
+    def test_live_active_state_gives_actionable_reason_without_reading_journal(self):
+        calls = [subprocess.CompletedProcess([], 0, "active\n", "")]
+        with (
+            patch.object(
+                settings.control, "request", return_value={"state": "active"}
+            ),
+            patch.object(settings.subprocess, "run", side_effect=calls) as run,
+        ):
+            busy, reason = settings._conversation_busy()
+        self.assertTrue(busy)
+        self.assertEqual(reason, "finish the current conversation, then apply changes")
+        self.assertEqual(run.call_count, 1)
 
 
 class _LogCapture(logging.Handler):

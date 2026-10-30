@@ -8,7 +8,8 @@ approval gate) could have done it. A prompt rule asking her to delegate is
 a suggestion to the very model that gave up; here the harness decides.
 
 It escalates when, within FAILURE_WINDOW seconds:
-- tool calls fail twice (ok=False; not guard messages she corrects herself), or
+- two different tool calls fail (ok=False; not guard messages she corrects
+  herself; the same call repeated counts once, until SAME_CALL_LOOP), or
 - one fails and she then tells the user she can't / it failed, or
 - one fails and the user asks her to find out why.
 
@@ -47,12 +48,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import re
+import subprocess
 import sys
+import time
+
+log = logging.getLogger("omarchy_ai.voice.gemini")
 
 FAILURE_WINDOW = 180.0
 COOLDOWN = 120.0
 FAILURES_TO_ESCALATE = 2
+SAME_CALL_LOOP = 3  # the same call failing this often is a loop, not one attempt
 REVIEW_WINDOW = 300.0
 REVIEW_NOTE_TTL = 120.0
 REVIEW_STEPS = 8
@@ -78,6 +85,9 @@ IGNORED_TOOLS = frozenset({
 # job coming back to her on purpose.
 _NOT_A_FAILURE = re.compile(
     r"^Not executed:|judged the request .* ambiguous|^Not run: Jev checked|^Not run: the screen is locked|^Input NOT sent"
+    # The approval policy holding a call for the user's tap or words: waiting
+    # on them, not the job failing (2026-10-20 00:49: escalated as a failure).
+    r"|^NOT run:"
     r'|name one|does not exist|similar names|"status": "handoff"'
     # Waiting on the user, not failing: which TV (2026-09-27 02:06), and a
     # sign-in only they can finish (2026-09-27 00:44, 10:24).
@@ -99,7 +109,14 @@ ASKS_WHY_P = 0.8
 DISPUTES_P = 0.8
 CLAIMS_P = 0.8
 ASKS_ACTION_P = 0.8
+NEEDS_TOOL_P = 0.5
 NOT_DONE_P = 0.8
+# A reply that half-claims the job ("On it!") to a request for action, with
+# no tool run: below CLAIMS_P it is not handed over, but she is sent back to it.
+ACK_CLAIM_P = 0.5
+OVERCLAIM_P = 0.7
+ACK_NOTICE = ("You told the user you are on it, but you called no tool, so nothing is happening. Do the job now with "
+              "your tools, step by step, until it is done; do not just say it again.")
 
 
 def proactive_goal(user_turns: list[str]) -> str:
@@ -142,6 +159,68 @@ def jev_judge(last_reply: str, latest: str) -> tuple[bool, bool]:
     return answers["gave_up"]["p"] >= GIVE_UP_P, answers["asks_why"]["p"] >= ASKS_WHY_P
 
 
+def jev_wants_self(user_turns: list[str]) -> bool:
+    """The user asked her to do this herself, not to hand it to a background
+    task, in any language. 2026-10-19 21:35 "you are not a sub-agent" and
+    2026-10-20 00:48 "yourself, not a background task" were each followed by
+    an automatic hand-over. False when Jev is unavailable."""
+    from ..core.jev import Jev, JevError, boolean
+    said = "\n".join(f"- {t[-300:]}" for t in user_turns[-6:])
+    if not said:
+        return False
+    questions = {"self": boolean(
+        "Does the user ask the assistant to do the job herself -- not to hand it to a background task, a "
+        "sub-agent or a worker -- or complain that she handed it off? Judge the meaning, in any language.")}
+    try:
+        answers = Jev().ask({"user_messages_oldest_first": said}, questions, timeout=3, retries=0, fail_fast=True)
+    except JevError:
+        return False
+    return answers["self"]["p"] >= ASKS_ACTION_P
+
+
+def persist_notice(goal: str) -> str:
+    """In place of a hand-over the user ruled out: the same moment, turned
+    into her own next attempt."""
+    tried = goal.split("What the voice assistant tried", 1)[-1].split("Do the user's actual request", 1)[0]
+    return ("The user wants you to do this yourself, so it was NOT handed to a background task. Do not tell "
+            "them you can't. Look at what failed below, then take a different route yourself now: read the "
+            "real state first (inspect_browser, list_windows, read_file), change one thing (another tool, "
+            "another button, another address, browser_control step by step), and keep going until the job is "
+            "done or only the user can unblock it (a CAPTCHA, a password, an approval)." + tried[:1500])
+
+
+def jev_handed_back(last_reply: str, latest: str) -> bool:
+    """Her reply, instead of doing the request, says she can't, or asks the
+    user for something she could find or decide herself. 2026-10-20 01:24:
+    "you didn't say which messages to send; write the three for me", to "send
+    it three more messages in YOUR conversation", with no tool called. False
+    when Jev is unavailable."""
+    from ..core.jev import Jev, JevError, boolean
+    questions = {"handed_back": boolean(
+        "Instead of doing what the user asked, does the assistant's reply say it cannot, or ask the user to "
+        "supply content, a choice or a detail that the assistant could find out itself (on the screen, in the "
+        "open page, in files or earlier messages) or decide itself (what to write, which of equal options)? A "
+        "question about what only the user knows or must approve (a password, money, whom to send something "
+        "to as them, which of two things they meant) is not. Judge the meaning, in any language.")}
+    try:
+        answers = Jev().ask({"user_latest_message": latest[-400:], "assistant_reply": last_reply[-400:]}, questions,
+                            timeout=3, retries=0, fail_fast=True)
+    except JevError:
+        return False
+    return answers["handed_back"]["p"] >= GIVE_UP_P
+
+
+def untried_notice(reply: str, tools: list[dict]) -> str:
+    """She told the user she can't, and nothing she tried failed: what her
+    tools can do, so the next move is an attempt, not a question."""
+    listed = "\n".join(f"- {t['name']}: {t['summary']}" for t in tools)
+    return ("You just told the user you can't, or asked them to do part of the job, without having tried: "
+            f"{reply[-200:]!r}. Your tools can do it. Likeliest first:\n{listed}\n"
+            "A tool not in your function list runs through use_tool (name and args). Do it now and carry on "
+            "with the job; ask the user only for what only they can give (a password, an approval, what they "
+            "want).")
+
+
 def jev_disputes(last_reply: str, latest: str) -> bool:
     """The user says her result is wrong, in any language. False when Jev is
     unavailable: then she is simply not prompted to check herself."""
@@ -181,14 +260,24 @@ def jev_unbacked(last_reply: str, latest: str) -> tuple[bool, dict]:
             "Does the user's latest message ask for something to be done, or say that something that should have "
             "happened did not? Judge the meaning, in any language. Chat, a question that can be answered by "
             "talking, or thanks is not."),
+        # 2026-10-27 20:55: "talk to me in the parents' bedroom", said to the
+        # bedroom speaker, and "I'm listening here; how can I help?" scored
+        # 0.94 and 0.92 and became a twelve-minute background task. Replayed:
+        # 0.08 for that and for "talk to me" / "explain this tool", 0.86-0.96
+        # for a light, a song, a reminder and a countdown.
+        "needs_tool": boolean(
+            "To do what the user's latest message asks, must the assistant operate a device, app, service, timer "
+            "or reminder, or look something up? Answer no when talking with the user is all it takes (for example "
+            "a request to talk, listen, explain or keep them company). Judge the meaning, in any language."),
     }
     try:
         answers = Jev().ask({"assistant_reply": last_reply[-400:], "user_latest_message": latest[-400:]}, questions,
                             timeout=3, retries=0, fail_fast=True)
     except JevError as exc:
         return False, {"unavailable": str(exc)[:120]}
-    claims, asks = answers["claims_action"]["p"], answers["asks_action"]["p"]
-    return claims >= CLAIMS_P and asks >= ASKS_ACTION_P, {"claims_action": claims, "asks_action": asks}
+    claims, asks, needs = (answers[name]["p"] for name in ("claims_action", "asks_action", "needs_tool"))
+    return (claims >= CLAIMS_P and asks >= ASKS_ACTION_P and needs >= NEEDS_TOOL_P,
+            {"claims_action": claims, "asks_action": asks, "needs_tool": needs})
 
 
 def jev_told_not_done(reply: str) -> bool:
@@ -208,6 +297,54 @@ def jev_told_not_done(reply: str) -> bool:
     return answers["not_done"]["p"] >= NOT_DONE_P
 
 
+def jev_overclaims(reply: str, results: list[str]) -> bool:
+    """Her reply tells the user more than the results of the calls behind it
+    show, judged in any language. 2026-10-29: "the computer is locked"
+    one second after a background task to lock it had only started (it failed
+    73 minutes later), and "the notifications just did not close" after every
+    key press was refused unsent. False when Jev is unavailable."""
+    from ..core.jev import Jev, JevError, boolean
+    questions = {"overclaims": boolean(
+        "Compare the assistant's reply with the results of the tool calls it made for it. Does the reply tell the "
+        "user something those results do not show: that a job is done when it only started or is still running, "
+        "that an action happened when the results say it was not sent, not run or failed, or a cause or outcome "
+        "the results do not give? Judge the meaning, in any language. A reply that says it started, is in "
+        "progress, failed, or is not confirmed, as the results say, does not.")}
+    try:
+        answers = Jev().ask({"assistant_reply": reply[-400:], "tool_results": [r[-300:] for r in results[-6:]]},
+                            questions, timeout=3, retries=0, fail_fast=True)
+    except JevError:
+        return False
+    return answers["overclaims"]["p"] >= OVERCLAIM_P
+
+
+def overclaim_notice(results: list[str]) -> str:
+    return ("Correction needed: your last reply told the user more than your tool results show. The results were: "
+            + " | ".join(r[:200] for r in results[-4:]) + ". Tell the user now, in one or two sentences, in their "
+            "language, what actually happened according to these results (started and still running, not sent, "
+            "failed, or not confirmed). Do not invent a cause, and do not apologize at length.")
+
+
+def report_failure(config, details: dict) -> bool:
+    """Hand a job she could not finish to the user's escalation_command (one
+    JSON object on its standard input), detached: the user's request,
+    2026-10-29, to have every such failure fixed at its cause. True if it
+    was started."""
+    command = getattr(config, "escalation_command", None)
+    if not command:
+        return False
+    try:
+        process = subprocess.Popen(command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, start_new_session=True, text=True)
+        process.stdin.write(json.dumps({**details, "at": time.time()}, ensure_ascii=False, default=str))
+        process.stdin.close()
+    except (OSError, ValueError) as exc:
+        log.warning("escalation_command could not start: %s", exc)
+        return False
+    log.info("Escalation reported to escalation_command: task=%s", details.get("task_id"))
+    return True
+
+
 def review_note(steps: list) -> str:
     tried = "\n".join(f"- {s.tool}({_short(s.args)[:160]}) -> {' '.join(s.message.split())[:260]}" for s in steps)
     return ("\n\n[assistant note, automatic self-check] The user says the result you gave is wrong, and none of "
@@ -225,6 +362,7 @@ class Failure:
     args: dict
     message: str
     at: float
+    times: int = 1
 
 
 class Escalator:
@@ -251,7 +389,13 @@ class Escalator:
         self._steps = [*self._steps, Failure(tool, dict(args or {}), message or "", now)][-REVIEW_STEPS:]
         if ok or _NOT_A_FAILURE.search(message or ""):
             return
-        self._failures.append(Failure(tool, dict(args or {}), message or "", now))
+        # The same call again is one attempt, not a second approach: 2026-10-19
+        # 21:21 one browser_task sent twice 3 s apart was "2 attempts failed"
+        # and the job left her before she had tried anything else.
+        # Sent three times it is a loop (2026-09-27: ~60 identical offers), and escalates.
+        same = [f for f in self._failures if (f.tool, f.args) == (tool, dict(args or {}))]
+        self._failures = [f for f in self._failures if f not in same]
+        self._failures.append(Failure(tool, dict(args or {}), message or "", now, sum(f.times for f in same) + 1))
 
     def pending(self, now: float) -> bool:
         """A recent failure that could escalate (cheap; due() may call Jev)."""
@@ -324,6 +468,8 @@ class Escalator:
             reason = f"missing capability: {capability.message[:180]}"
         elif len(self._failures) >= FAILURES_TO_ESCALATE:
             reason = f"{len(self._failures)} attempts failed"
+        elif (looped := max(f.times for f in self._failures)) >= SAME_CALL_LOOP:
+            reason = f"the same call failed {looped} times"
         elif last_reply or latest:
             gave_up, asks_why = self._judge(last_reply, latest)
             if gave_up:

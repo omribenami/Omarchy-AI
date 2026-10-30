@@ -251,16 +251,25 @@ def calls_open() -> bool:
         return any(not loop.is_closed() for loop in _calls.values())
 
 
+def _call_conversation(session) -> str:
+    return str(getattr(getattr(session, "_transcript", None), "conversation", "") or "")
+
+
 def announce_to_calls(entry: dict) -> bool:
-    """Hand an entry to every open call. True if one will say it."""
+    """Hand an entry to the open calls. True if one will say it. An entry for
+    a conversation (`for_conversation`: the chat its task was asked in) goes
+    only to the call holding that conversation when one is open; else to
+    every call. Live 2026-10-29 21:41: a result of a request typed on the
+    phone was also said on the living-room speaker, in a conversation a false
+    wake word had just opened."""
     with _lock:
-        calls = list(_calls.items())
-    heard = False
+        calls = [(session, loop) for session, loop in _calls.items() if not loop.is_closed()]
+    target = entry.get("for_conversation") or ""
+    if target:
+        calls = [call for call in calls if _call_conversation(call[0]) == target] or calls
     for session, loop in calls:
-        if not loop.is_closed():
-            loop.call_soon_threadsafe(session.announce, dict(entry))
-            heard = True
-    return heard
+        loop.call_soon_threadsafe(session.announce, dict(entry))
+    return bool(calls)
 
 
 @dataclass
@@ -349,15 +358,21 @@ def route(msg: Message) -> tuple[str, ...]:
     where = presence()
     if msg.kind == ATTACHMENT:
         return _attachment_route(msg, where)
+    # The phone always gets it; the surface the user is on is added on top
+    # (the user, 2026-10-26: "notify on the phone by default... and the
+    # speaker/laptop and so will be added on top").
+    # Every push of a message with a chat links that chat, so a tap opens it
+    # (Flux looks the chat up by the notification's title): without the link
+    # a question pushed while a conversation was open, or at the desk, opened
+    # no chat.
+    chat = (CHAT,) if msg.conversation else ()
     if where == AT_VOICE:
-        return (VOICE,)
+        return (VOICE,) + chat + (PUSH,)
     if msg.priority == URGENT:
-        return (DESKTOP, PUSH) + ((CHAT,) if msg.conversation else ())
+        return (DESKTOP, PUSH) + chat
     if where in (AT_PHONE, AWAY):
-        return (PUSH,) + ((CHAT,) if msg.conversation else ())
-    if where == AT_DESK:
-        return (DESKTOP,)
-    return (DESKTOP, PUSH) + ((CHAT,) if msg.conversation else ())
+        return (PUSH,) + chat
+    return (DESKTOP, PUSH) + chat
 
 
 def _attachment_route(msg: Message, where: str) -> tuple[str, ...]:
@@ -508,6 +523,13 @@ def _say(entry: dict, wake: bool = False) -> bool:
 
 
 def _entry(msg: Message) -> dict:
+    entry = _plain_entry(msg)
+    if msg.conversation and not entry.get("for_conversation"):
+        entry = {**entry, "for_conversation": msg.conversation}  # announce_to_calls
+    return entry
+
+
+def _plain_entry(msg: Message) -> dict:
     if msg.kind == ATTACHMENT and msg.entry is None:
         from . import outputs
 

@@ -170,6 +170,16 @@ class EscalatorTests(unittest.TestCase):
                        "user's password: call show_browser and ask the user to sign in there", 2.0)
         self.assertIsNone(e.due(3.0, ["upload it"], "I can't"))
 
+    def test_the_same_call_repeated_is_one_attempt(self):
+        # 2026-10-19 21:21: one browser_task sent twice, 3 s apart, escalated.
+        e = Escalator(judge())
+        call = {"url": "https://chatgpt.com", "steps": ["Type hello and press Enter"]}
+        e.observe_call("browser_task", call, False, "stopped", 1.0)
+        e.observe_call("browser_task", call, False, "stopped", 4.0)
+        self.assertIsNone(e.due(4.0, ["go"], ""))
+        e.observe_call("browser_control", {"action": "type", "text": "hello"}, False, "stopped", 6.0)
+        self.assertIsNotNone(e.due(6.0, ["go"], ""))
+
     def test_old_failures_expire(self):
         e = Escalator(judge())
         e.observe_call("browser_task", {}, False, "stopped", 0.0)
@@ -180,26 +190,26 @@ class EscalatorTests(unittest.TestCase):
         e = Escalator(judge())
         e.observe_call("browser_task", {}, False, "stopped", 1.0)
         e.observe_call("start_task", {"goal": "x"}, True, "{}", 2.0)
-        e.observe_call("browser_task", {}, False, "stopped", 3.0)
-        e.observe_call("browser_task", {}, False, "stopped", 4.0)
+        e.observe_call("browser_task", {"url": "a"}, False, "stopped", 3.0)
+        e.observe_call("browser_task", {"url": "b"}, False, "stopped", 4.0)
         self.assertIsNone(e.due(5.0, ["go"], ""))
 
     def test_cooldown_after_an_escalation(self):
         e = Escalator(judge())
         for t in (1.0, 2.0):
-            e.observe_call("browser_task", {}, False, "stopped", t)
+            e.observe_call("browser_task", {"t": t}, False, "stopped", t)
         self.assertIsNotNone(e.due(2.0, ["go"], ""))
         for t in (3.0, 4.0):
-            e.observe_call("browser_task", {}, False, "stopped", t)
+            e.observe_call("browser_task", {"t": t}, False, "stopped", t)
         self.assertIsNone(e.due(4.0, ["go"], ""))
         for t in (200.0, 201.0):
-            e.observe_call("browser_task", {}, False, "stopped", t)
+            e.observe_call("browser_task", {"t": t}, False, "stopped", t)
         self.assertIsNotNone(e.due(201.0, ["go"], ""))
 
     def test_brief_fits_start_task(self):
         e = Escalator(judge())
         for t in range(6):
-            e.observe_call("browser_task", {"steps": ["x" * 500] * 5}, False, "y" * 2000, float(t))
+            e.observe_call("browser_task", {"steps": ["x" * 500] * 5, "n": t}, False, "y" * 2000, float(t))
         self.assertLessEqual(len(e.due(6.0, ["z" * 2000] * 10, "w" * 2000)), 4000)
 
 
@@ -224,16 +234,18 @@ class UnbackedClaimTests(unittest.TestCase):
         with patch.object(Jev, "ask", return_value=answers) as ask:
             verdict = escalation.jev_unbacked("On it, starting now.", self.TURNS[0])
         state, questions = ask.call_args.args
-        self.assertEqual(set(questions), {"claims_action", "asks_action"})
+        self.assertEqual(set(questions), {"claims_action", "asks_action", "needs_tool"})
         self.assertEqual(state, {"assistant_reply": "On it, starting now.", "user_latest_message": self.TURNS[0]})
         self.assertEqual(ask.call_args.kwargs, {"timeout": 3, "retries": 0, "fail_fast": True})
         return verdict
 
-    def test_both_judgments_are_needed(self):
-        self.assertEqual(self.ask(claims_action=0.9, asks_action=0.85),
-                         (True, {"claims_action": 0.9, "asks_action": 0.85}))
-        self.assertFalse(self.ask(claims_action=0.79, asks_action=0.95)[0])  # she answered, asked or declined
-        self.assertFalse(self.ask(claims_action=0.95, asks_action=0.79)[0])  # the user was only talking
+    def test_all_three_judgments_are_needed(self):
+        self.assertEqual(self.ask(claims_action=0.9, asks_action=0.85, needs_tool=0.9),
+                         (True, {"claims_action": 0.9, "asks_action": 0.85, "needs_tool": 0.9}))
+        self.assertFalse(self.ask(claims_action=0.79, asks_action=0.95, needs_tool=0.9)[0])  # she answered or declined
+        self.assertFalse(self.ask(claims_action=0.95, asks_action=0.79, needs_tool=0.9)[0])  # the user was only talking
+        # "talk to me in the bedroom" on the bedroom speaker: talking is all it takes
+        self.assertFalse(self.ask(claims_action=0.94, asks_action=0.92, needs_tool=0.08)[0])
 
     def test_jev_unavailable_is_no_claim(self):
         from omarchy_ai.core.jev import Jev, JevError
@@ -282,7 +294,7 @@ class UnbackedClaimTests(unittest.TestCase):
         self.assertEqual(e.unbacked(20.0, self.TURNS, "It has started."), (None, {}))
         failed = Escalator(judge(), unbacked=decide)
         for at in (1.0, 2.0):
-            failed.observe_call("browser_task", {}, False, "stopped", at)
+            failed.observe_call("browser_task", {"at": at}, False, "stopped", at)
         self.assertIsNotNone(failed.due(3.0, self.TURNS, ""))
         self.assertEqual(failed.unbacked(4.0, self.TURNS, "I handed it over."), (None, {}))
         self.assertEqual(decide.calls, [])
@@ -307,7 +319,45 @@ class SessionEscalationTests(unittest.TestCase):
         s._transcript = [{"role": "user", "text": "open an issue on Omarchy about the Wi-Fi freeze"}]
         s._switchboard = SimpleNamespace(review=lambda tool, args, ctx: verdict)
         s._escalator = Escalator(judge())  # no network in tests
+        patcher = patch("omarchy_ai.voice.escalation.jev_wants_self", return_value=False)
+        self.wants_self = patcher.start()
+        self.addCleanup(patcher.stop)
         return s
+
+    def test_a_user_who_wants_her_to_do_it_gets_her_next_attempt_not_a_task(self):
+        # 2026-10-20 00:49: "yourself, not a background task", then an automatic hand-over.
+        s = self.session(None)
+        self.wants_self.return_value = True
+        with patch("omarchy_ai.voice.gemini_live.run_action") as run:
+            asyncio.run(s._escalate(escalation.brief(["do it yourself"], [], "", "2 attempts failed")))
+        run.assert_not_called()
+        notice = s._announcements.get_nowait()["notice"]
+        self.assertIn("NOT handed to a background task", notice)
+        self.assertIn("take a different route yourself", notice)
+
+    def test_giving_up_without_trying_gets_her_tools_not_silence(self):
+        # 2026-10-20 01:06: "I can't read the conversation; tell me what to send", after only list_windows.
+        s = self.session(None)
+        tools = [{"name": "inspect_browser", "summary": "Read the page open in the assistant's browser", "p": 0.6}]
+        with patch("omarchy_ai.voice.escalation.jev_handed_back", return_value=True), \
+                patch("omarchy_ai.execution.catalog.suggest", return_value=tools):
+            asyncio.run(s._check_untried(["continue the chat with ChatGPT"], "I can't read it, tell me", 0.0))
+        notice = s._announcements.get_nowait()["notice"]
+        self.assertIn("without having tried", notice)
+        self.assertIn("inspect_browser", notice)
+
+    def test_a_real_failure_is_left_to_escalation(self):
+        s = self.session(None)
+        s._escalator.observe_call("browser_task", {"url": "x"}, False, "stopped", 5.0)
+        with patch("omarchy_ai.voice.escalation.jev_handed_back") as judge_call:
+            asyncio.run(s._check_untried(["go"], "I can't", 1.0))
+        judge_call.assert_not_called()
+        self.assertTrue(s._announcements.empty())
+
+    def test_a_guard_waiting_on_the_user_is_not_a_failure(self):
+        e = Escalator(judge(gave_up=True))
+        e.observe_call("browser_task", {"url": "x"}, False, "NOT run: browser_task came after untrusted content", 1.0)
+        self.assertIsNone(e.due(2.0, ["read it"], "I can't"))
 
     def test_second_failure_starts_a_task_and_announces_it(self):
         s = self.session(switchboard.Verdict("execute", "browser_task", {}))
@@ -321,7 +371,10 @@ class SessionEscalationTests(unittest.TestCase):
             with patch("omarchy_ai.voice.gemini_live.run_action", side_effect=act) as run, \
                     patch("omarchy_ai.voice.gemini_live.LiveSession._current_window", return_value={}):
                 for n in range(2):
-                    await s._run_call(session, SimpleNamespace(id=f"c{n}", name="browser_task", args={"url": "x"}))
+                    # A different attempt on the address she picked herself (a new one
+                    # after web content would wait for the user's tap: not a failure).
+                    await s._run_call(session, SimpleNamespace(id=f"c{n}", name="browser_task",
+                                                               args={"url": "x0", "goal": f"try {n}"}))
                 await asyncio.gather(*list(s._bg_tasks))
             return run
 

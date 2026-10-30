@@ -161,6 +161,11 @@ def _read_secrets() -> None:
                 value = None
             if value and len(value) >= _MIN_SECRET:
                 values.append(value)
+        try:  # site logins kept for sign_in (execution/site_login.py)
+            from .site_login import saved_passwords
+            values += [v for v in saved_passwords() if len(v) >= _MIN_SECRET]
+        except Exception:  # noqa: BLE001
+            pass
         try:  # MyApi vault values a program was given (myapi/vault.py)
             from ..myapi import vault
             values += [v for v in vault.revealed_values() if len(v) >= _MIN_SECRET]

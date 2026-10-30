@@ -47,7 +47,18 @@ GOLDEN = Path(__file__).parent / "fixtures" / "legacy_session_instructions.txt"
 # count_tokens, 12494 -> 12502); the instructions already said to
 # acknowledge and keep listening, so nothing else in the prompt or the
 # declared tools changed.
-LEGACY_LIVE_SHA256 = "26bc35c97330380f0144aafe4e0dacdd0075357878b975ee3b9b5db43ca006fe"
+# 2026-10-19: the catalog signature line gained
+# "sign_in(username, use_given_password), " (execution/site_login.py);
+# 2026-10-20: browser_control's signature gained ", key" (its key action);
+# nothing else in the prompt or the declared tools changed.
+# 2026-10-26: watch_camera gained `looks_like` and several cameras per call
+# (a delivery watch missed the person carrying the bag), and announce_on_speaker
+# (schedule_task, watch_camera) now describes the default "said where it was
+# asked"; nothing else changed.
+# 2026-10-29: browser_control's scroll gained `percent` and direction
+# "middle" (one call to the middle of a page), and the catalog gained
+# dismiss_notifications; nothing else changed.
+LEGACY_LIVE_SHA256 = "7b2210ff36fa05a221e517c28645503724e5a80b6f6d706a896f7e0d0651373a"
 FROZEN = datetime.datetime(2026, 1, 15, 12, 0, 0)
 
 
@@ -202,6 +213,11 @@ class PromptV2Tests(unittest.TestCase):
         )
         self.assertIn("call end_conversation", text)
 
+    def test_how_to_run_doctor_does_not_authorize_running_it(self):
+        text = v2_session()["instructions"]
+        self.assertIn("If they ask how to run it", text)
+        self.assertIn("without running it", text)
+
     def test_memory_needs_the_users_yes_and_never_comes_from_content(self):
         text = v2_session()["instructions"]
         self.assertIn("only after a yes call it again with confirmed true", text)
@@ -210,12 +226,10 @@ class PromptV2Tests(unittest.TestCase):
 
     def test_claims_no_mechanism_that_does_not_exist(self):
         text = v2_session(speaker_id_enabled=True, myapi_on=True)["instructions"]
-        # run_diagnostics exists since plan 3.2 and is listed in the tool
-        # catalog like every catalog tool; the prose must still not claim it.
+        # Most catalog-only tools must not be claimed in prose. Diagnostics
+        # is intentionally named now so a how-to question does not execute it.
         text = text.split("TOOL CATALOG:")[0]
         for missing in (
-            "doctor",
-            "run_diagnostics",
             "shared_speaker",
             "attach the file",
         ):

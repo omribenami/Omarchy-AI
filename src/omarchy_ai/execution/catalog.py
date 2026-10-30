@@ -154,8 +154,9 @@ _FILL_SYSTEM = (
     "Fill the arguments of one tool call. Input: the tool (name, description, JSON-schema parameters), `request` "
     "(what the voice assistant asked for) and `user_said` (speech recognition, possibly garbled). Return a JSON "
     "object {\"call_arguments\": {...}} holding the tool's parameters, exactly as its schema and description say (follow the "
-    "description's own examples for the exact values). Use only what the request, the user's words and the "
-    "description support; leave out any parameter you would have to guess."
+    "description's own examples for the exact values). `request` decides what the call does (its action or "
+    "operation); `user_said` may only supply details the request leaves out, never a different action. Use only what "
+    "the request, the user's words and the description support; leave out any parameter you would have to guess."
 )
 
 
@@ -192,7 +193,170 @@ def _normalize(args: dict, tools: dict[str, dict]) -> tuple[str, dict]:
     for key, value in args.items():
         if key not in ("name", "args", "request") and key in props:
             given.setdefault(key, value)
+    if name in tools:
+        given, moved = conform(tools[name].get("parameters") or {}, given)
+        if moved:
+            log.info("Catalog call to %s fitted to its schema: %s", name, ", ".join(moved))
     return name, given
+
+
+# Argument names the live model uses for the same thing. Journal
+# 2026-10-26: a smart-home user tool failed "ask needs the request in
+# 'text'" three times running; the request was sent as `request`.
+_SYNONYMS = (
+    frozenset({"text", "request", "query", "q", "prompt", "message", "msg", "question", "input", "utterance",
+               "sentence", "phrase", "instruction", "instructions", "command", "say", "words", "search",
+               "search_query", "content", "body"}),
+    frozenset({"entity_id", "entity_ids", "entity", "entities", "device", "device_id", "device_name", "target",
+               "targets"}),
+    frozenset({"camera", "camera_name", "cam", "camera_id"}),
+    frozenset({"area", "room", "location", "zone", "place"}),
+    frozenset({"operation", "op", "action", "mode"}),
+    frozenset({"url", "link", "href", "uri", "address", "website"}),
+    frozenset({"path", "file", "file_path", "filepath", "filename"}),
+    frozenset({"service", "service_name"}),
+    frozenset({"service_data", "data", "params", "parameters", "attributes"}),
+)
+
+
+def _type_fits(prop: dict, value) -> bool:
+    kinds = {prop.get("type")} | {(o or {}).get("type") for o in (prop.get("oneOf") or prop.get("anyOf") or [])}
+    kinds.discard(None)
+    if not kinds:
+        return True
+    by_type = {"string": str, "array": list, "object": dict, "boolean": bool, "integer": int, "number": (int, float)}
+    return any(isinstance(value, by_type[k]) for k in kinds if k in by_type)
+
+
+def _mentions(text: str, value: str) -> bool:
+    return bool(re.search(rf"(?<![\w]){re.escape(value.casefold())}(?![\w])", (text or "").casefold()))
+
+
+def conform(schema: dict, args: dict) -> tuple[dict, list[str]]:
+    """`args` fitted to the tool's declared schema where the intent is plain:
+    a value under a synonym of a missing parameter (`request` for `text`),
+    the one unexpected string where one required string is missing, an enum
+    value in the wrong case, and a missing required enum (`operation`) that
+    the other arguments' descriptions all point to ("For call" on domain and
+    service -> operation "call"; live 2026-10-24 a garage call was sent with
+    domain/service/entity_id and no operation). Returns (args, what moved)."""
+    props = (schema or {}).get("properties") or {}
+    if not props or not isinstance(args, dict):
+        return args, []
+    args, notes = dict(args), []
+    required = [k for k in (schema.get("required") or []) if k in props]
+
+    def missing(key):
+        return key not in args or args[key] in (None, "")
+
+    for key in [k for k in args if k not in props]:
+        group = next((g for g in _SYNONYMS if key.casefold() in g), None)
+        if group is None:
+            continue
+        targets = [p for p in props if p.casefold() in group and missing(p) and _type_fits(props[p], args[key])]
+        if len(targets) > 1:
+            targets = [p for p in targets if p in required] or targets
+        if len(targets) == 1:
+            args[targets[0]] = args.pop(key)
+            notes.append(f"{key}->{targets[0]}")
+    unknown = [k for k in args if k not in props and isinstance(args[k], str) and args[k].strip()]
+    wanted = [k for k in required if missing(k) and (props[k] or {}).get("type") == "string"
+              and not (props[k] or {}).get("enum")]
+    if len(unknown) == 1 and len(wanted) == 1:
+        args[wanted[0]] = args.pop(unknown[0])
+        notes.append(f"{unknown[0]}->{wanted[0]}")
+    for key, prop in props.items():
+        allowed = (prop or {}).get("enum")
+        if not allowed:
+            continue
+        value = args.get(key)
+        if isinstance(value, str) and value not in allowed:
+            folded = re.sub(r"[\s-]+", "_", value.strip().casefold())
+            same = [a for a in allowed if isinstance(a, str) and re.sub(r"[\s-]+", "_", a.casefold()) == folded]
+            if not same and folded:
+                # A shortened value ("play" for play_music / play_movie),
+                # settled by the other arguments: a value naming the rest
+                # (media_type "music"), or a description naming the option
+                # ("media type for play_music"). Live 2026-10-26: a song
+                # request failed on operation "play" and was escalated.
+                same = [a for a in allowed if isinstance(a, str)
+                        and folded in re.sub(r"[\s-]+", "_", a.casefold()).split("_")]
+                if len(same) > 1:
+                    said = [str(v).casefold() for k, v in args.items() if k != key and isinstance(v, str)]
+                    same = [a for a in same
+                            if any(part in said for part in a.casefold().split("_") if part != folded)
+                            or any(_mentions((props.get(k) or {}).get("description"), a)
+                                   for k in args if k != key and k in props)] or same
+            if len(same) == 1:
+                args[key] = same[0]
+                notes.append(f"{key}={same[0]}")
+        elif missing(key) and key in required:
+            pointed = None
+            for other, value in args.items():
+                if other == key or other not in props:
+                    continue
+                said = {a for a in allowed if isinstance(a, str) and _mentions((props[other] or {}).get("description"), a)}
+                if said:
+                    pointed = said if pointed is None else pointed & said
+            if pointed is not None and len(pointed) == 1:
+                args[key] = next(iter(pointed))
+                notes.append(f"{key}={args[key]} (from the other arguments)")
+    return args, notes
+
+
+def usage(tool: dict, keys, given: dict | None = None) -> str:
+    """How to pass `keys` to this tool: their names, what they hold, and a
+    call to copy (with the values already `given`), so a retry gets the
+    argument names right."""
+    schema = tool.get("parameters") or {}
+    props = schema.get("properties") or {}
+    given = {k: v for k, v in (given or {}).items() if k in props and v not in (None, "")}
+    example: dict = {}
+    for key in dict.fromkeys([*(schema.get("required") or []), *given, *keys]):
+        prop = props.get(key) or {}
+        if key in given:
+            example[key] = given[key]
+        elif prop.get("enum"):
+            example[key] = prop["enum"][0]
+        else:
+            example[key] = f"<{(prop.get('description') or key).split('.')[0][:60]}>"
+    described = "; ".join(f"`{k}`: {(props.get(k) or {}).get('description', '')[:120]}" for k in keys)
+    return (f"Use exactly these argument names ({described}). For example: use_tool(name={tool['name']!r}, "
+            f"args={json.dumps(example, ensure_ascii=False)}).")
+
+
+_CONTENT_ARGS = frozenset({"text", "message", "body", "content"})
+# A parameter that wants the user's request itself (a smart-home tool's
+# `text`: "the user's request, in their words") is filled with use_tool's
+# `request` when the filler paraphrased it.
+_WANTS_REQUEST = re.compile(r"user'?s (own )?(request|words)|in (their|the user's) (own )?words", re.I)
+
+
+def _request_into(tool: dict, given: dict, request: str) -> dict:
+    """`given` plus use_tool's `request` in the parameter that wants the
+    user's request, when it is missing and applies to the chosen operation
+    (its description names none of the tool's enum values, or names the one
+    given)."""
+    props = (tool.get("parameters") or {}).get("properties") or {}
+    if not request:
+        return given
+    for key, prop in props.items():
+        if key in given or (prop or {}).get("type") != "string" or not _WANTS_REQUEST.search(
+                str((prop or {}).get("description") or "")):
+            continue
+        description = str(prop.get("description") or "")
+        named = {(k, v) for k, p in props.items() for v in ((p or {}).get("enum") or [])
+                 if isinstance(v, str) and _mentions(description, v)}
+        if not named or any(given.get(k) == v for k, v in named):
+            return {**given, key: request}
+    return given
+
+
+def _same_words(part: str, whole: str) -> bool:
+    """`part` appears in `whole`, ignoring case, punctuation and spacing."""
+    def norm(text):
+        return " ".join(re.findall(r"\w+", text.casefold()))
+    return bool(norm(part)) and f" {norm(part)} " in f" {norm(whole)} "
 
 
 def _complete(tool: dict, given: dict, request: str, heard: str, fill) -> dict | None:
@@ -209,8 +373,39 @@ def _complete(tool: dict, given: dict, request: str, heard: str, fill) -> dict |
     except Exception as exc:  # the offer below still works without it
         log.warning("Catalog argument fill failed for %s: %s", tool["name"], str(exc)[:160])
         return None
+    # Text to type or send is content: it must be in her request, never made
+    # up by the filler. 2026-10-20 01:29: "press Enter" was filled as typing
+    # the user's own instruction ("another 3 messages") and sent to ChatGPT.
+    props = schema.get("properties") or {}
+    for key in _CONTENT_ARGS & set(filled) - set(given):
+        if not _same_words(str(filled[key]), request):
+            if request and _WANTS_REQUEST.search(str((props.get(key) or {}).get("description") or "")):
+                log.info("Catalog fill for %s: %s is the request itself", tool["name"], key)
+                filled[key] = request
+                continue
+            log.info("Catalog fill for %s dropped %s: not in the request", tool["name"], key)
+            filled.pop(key)
+    _named_choices(props, filled, given, request, tool["name"])
     args = {**filled, **given}
     return None if _problems(tool, args) else args
+
+
+def _named_choices(props: dict, filled: dict, given: dict, request: str, name: str) -> None:
+    """A choice the filler made that the request never names gives way to
+    the one the request names first. 2026-10-29 21:30: use_tool(name=
+    browser_control, request='click "SUBSCRIBE"') was filled as a scroll
+    from the user's earlier "scroll to the middle", three times."""
+    words = re.findall(r"\w+", request.casefold())
+    # A tool that takes the user's own words ("list cameras in the house" as
+    # a smart-home question) reads a verb in them as words, not as a choice.
+    if not words or any(_WANTS_REQUEST.search(str((p or {}).get("description") or "")) for p in props.values()):
+        return
+    for key, prop in props.items():
+        options = {v.casefold(): v for v in (prop or {}).get("enum") or [] if isinstance(v, str)}
+        if key in given or key not in filled or str(filled[key]).casefold() in words or words[0] not in options:
+            continue
+        log.info("Catalog fill for %s: %s %r -> %r, as the request says", name, key, filled[key], options[words[0]])
+        filled[key] = options[words[0]]
 
 
 def _keyword_rank(request: str, tools: dict[str, dict], matched_only: bool = False) -> list[dict]:
@@ -272,6 +467,7 @@ def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fi
         return Resolution(False, message=f"{name} is one of your own tools: call it directly, not through use_tool.")
     if name in tools:
         tool = tools[name]
+        given = _request_into(tool, given, request)
         problems = _problems(tool, given)
         if problems and (filled := _complete(tool, given, request, heard, fill)) is not None:
             return Resolution(True, name, filled, evidence={"by": "name", "filled": True})
@@ -319,8 +515,28 @@ def resolve(args: dict, heard: str = "", *, myapi_on: bool = False, jev=None, fi
         return Resolution(False, message=_offer(top, "Jev is not sure which tool fits; the likeliest are below."),
                           evidence=evidence)
     tool = tools[answer["choice"]]
+    given, _moved = conform(tool.get("parameters") or {}, given)
+    given = _request_into(tool, given, request)
     if not _problems(tool, given):
         return Resolution(True, tool["name"], given, picked=True, evidence=evidence)
     if (filled := _complete(tool, given, request, heard, fill)) is not None:
         return Resolution(True, tool["name"], filled, evidence={**evidence, "filled": True})
     return Resolution(False, message=_offer([tool], f"Jev picked {tool['name']}."), evidence=evidence)
+
+
+def suggest(need: str, *, myapi_on: bool = False, jev=None, count: int = 4) -> list[dict]:
+    """The tools, declared or in the catalog, likeliest to do `need`, best
+    first ({name, summary, p}). For when the model says it cannot do
+    something without having tried (voice/gemini_live.py _judge_claim):
+    2026-10-20 01:06 she told the user she could not read the open ChatGPT
+    conversation, never having looked at inspect_browser in the catalog."""
+    tools = {t["name"]: t for t in TOOLS if t["name"] in CORE} | catalog(myapi_on)
+    from ..core.jev import Jev, choice
+    answer = (jev or Jev()).ask(
+        {"need": need[:600]},
+        {"tool": choice("Which tool does `need`, or the first step toward it?",
+                        {n: _summary(t) for n, t in tools.items()})},
+        timeout=TIMEOUT, retries=0)["tool"]
+    ranked = sorted(answer["probabilities"].items(), key=lambda kv: kv[1], reverse=True)
+    return [{"name": n, "summary": _summary(tools[n]), "p": round(p, 2)} for n, p in ranked if n in tools][:count]
+

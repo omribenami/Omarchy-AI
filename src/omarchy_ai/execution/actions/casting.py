@@ -84,6 +84,28 @@ def _discover_androidtv_devices() -> list[dict]:
         return []
 
 
+def _match_device(target: str, devices: list[dict]) -> tuple[dict | None, list[dict]]:
+    """(the device `target` names, []) or (None, the devices it could be).
+
+    A TV goes by its friendly name and every other name discovery has seen
+    it under (registry.py aliases: its mDNS instance name, its own
+    device_name), and is matched by those names' words, room words
+    ("salon", "סלון" -> living room) and spelling (execution/naming.py).
+    When several fit equally, a live one beats an offline one. A target
+    with no identifying word ("the TV") comes back with every device."""
+    from .. import naming
+
+    by_address = {d["address"]: d for d in devices}
+    key, keys = naming.match(target, {d["address"]: [d["name"], *(d.get("aliases") or [])] for d in devices})
+    if key is not None:
+        return by_address[key], []
+    options = [by_address[k] for k in keys]
+    live = [d for d in options if d["status"] in ("online", "connecting", "connected")]
+    if len(options) > 1 and len(live) == 1 and len(options) < len(devices):
+        return live[0], []
+    return None, options
+
+
 def _resolve_cast_target(target: str | None) -> tuple[str | None, ActionResult | None]:
     """Resolves a spoken/typed target -- a name from list_cast_targets, a
     raw IP[:port], or nothing -- to a single adb address ("host:port").
@@ -99,36 +121,38 @@ def _resolve_cast_target(target: str | None) -> tuple[str | None, ActionResult |
     from ...display import registry
 
     devices = registry.get_or_refresh()
+    live = [d for d in devices if d["status"] in ("online", "connecting", "connected")]
 
+    if target and _looks_like_address(target):
+        host = target.split(":")[0]
+        port = target.split(":")[1] if ":" in target else "5555"
+        return f"{host}:{port}", None
     if target:
-        needle = target.strip().lower()
-        matches = [d for d in devices if needle in d["name"].lower()]
-        if len(matches) == 1:
-            return f"{matches[0]['address']}:5555", None
-        if len(matches) > 1:
-            names = ", ".join(d["name"] for d in matches)
+        device, options = _match_device(target, devices)
+        if device is not None:
+            return f"{device['address']}:5555", None
+        if options and len(options) < len(devices):
+            names = ", ".join(d["name"] for d in options)
             return None, ActionResult(
                 False,
                 f"'{target}' matches more than one TV on the network ({names}) "
                 "-- ask which exact one, then call start_casting again with that name.",
             )
-        if _looks_like_address(target):
-            host = target.split(":")[0]
-            port = target.split(":")[1] if ":" in target else "5555"
-            return f"{host}:{port}", None
-        if devices:
-            names = ", ".join(d["name"] for d in devices)
+        if not options:
+            if devices:
+                names = ", ".join(d["name"] for d in devices)
+                return None, ActionResult(
+                    False, f"no TV named '{target}' found on the network right now. Available: {names}. "
+                           "Call start_casting again with one of these names as the target."
+                )
             return None, ActionResult(
-                False, f"no TV named '{target}' found on the network right now. Available: {names}"
+                False, f"no TV named '{target}' found, and no TVs are currently discoverable on the network"
             )
-        return None, ActionResult(
-            False, f"no TV named '{target}' found, and no TVs are currently discoverable on the network"
-        )
+        # Only "the TV": the same as no target.
 
     # Only ever auto-pick among devices actually seen live -- "unknown"
     # (the never-confirmed fallback entry) and "offline" ones don't count
     # toward an unambiguous single choice, they're just kept visible.
-    live = [d for d in devices if d["status"] in ("online", "connecting", "connected")]
     if len(live) == 1:
         return f"{live[0]['address']}:5555", None
     if len(live) > 1:
@@ -234,6 +258,13 @@ def _start_casting(args: dict) -> ActionResult:
         session.start([_VENV_PYTHON, "-u", str(_REPO_ROOT / "scripts/spike_cast_sender.py")],
                       str(_REPO_ROOT), host)
         connected, detail = session.wait_connected()
+        if not connected and session.active():
+            # The sender restarts itself (Restart=on-failure) when its first
+            # signaling try fails: 2026-10-29 21:14 it was reconnecting as this
+            # wait ran out, the user was told mirroring failed, and a
+            # background task then found it working.
+            log.info("cast to %s: not connected yet (%s); the sender is still trying, waiting once more", host, detail)
+            connected, detail = session.wait_connected()
         if not connected:
             session.stop()
             return failed(f"casting failed: {detail}")
@@ -416,10 +447,9 @@ def _reachable_target_for_install(target: str | None) -> str | None:
     devices = _discover_androidtv_devices()
     addr = None
     if target:
-        needle = target.strip().lower()
-        matches = [d for d in devices if needle in d["name"].lower()]
-        if len(matches) == 1:
-            addr = f"{matches[0]['address']}:5555"
+        match, _ = _match_device(target, devices) if devices and not _looks_like_address(target) else (None, [])
+        if match is not None:
+            addr = f"{match['address']}:5555"
         elif _looks_like_address(target):
             host = target.split(":")[0]
             port = target.split(":")[1] if ":" in target else "5555"

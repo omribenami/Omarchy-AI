@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.config import Config
 from omarchy_ai.core import agenda, identities, outbox
 from omarchy_ai.core.identities import Identity

@@ -237,6 +237,7 @@ class _Call:
         self.value: Any = None
         self.error: BaseException | None = None
         self.stop_class = ""
+        self._late: Callable[[], None] | None = None  # released: told how it really ended (ToolRunner.release)
 
     def listen(self, callback: Callable[[], None]) -> None:
         with self._lock:
@@ -253,17 +254,31 @@ class _Call:
 
     def complete(self, value: Any, error: BaseException | None) -> None:
         with self._lock:
-            if self._settled.is_set():
+            late = self._late
+            if self._settled.is_set() and late is None:
                 log.info(
                     "tool %s finished after it was stopped; result dropped",
                     self.spec.name,
                 )
                 return
             self.finished, self.value, self.error = True, value, error
-            self._settle()
+            if not self._settled.is_set():
+                self._settle()
+        if late is not None:
+            late()
+
+    def release(self, late: Callable[[], None]) -> bool:
+        """Its conversation ended: let it run on, never cancelled, and call
+        `late` when it ends. False when it already ended."""
+        with self._lock:
+            if self._settled.is_set():
+                return False
+            self._late, self.owner = late, None
+        return True
 
     def stop(self, error_class: str, reason: str) -> bool:
-        """Stop the call unless it already finished; returns whether it did."""
+        """Stop the call unless it already finished; returns whether it did.
+        A released call only stops being waited for: it runs on."""
         with self._lock:
             if self._settled.is_set():
                 return False
@@ -271,7 +286,8 @@ class _Call:
             self._settle()
             # Inside the lock: complete() cannot slip in between, and the
             # effect journal sees the cancel before any later confirmation.
-            self.token.cancel(reason)
+            if self._late is None:
+                self.token.cancel(reason)
         return True
 
     def wait(self, timeout: float) -> bool:
@@ -400,6 +416,30 @@ class ToolRunner:
                 and (tags is None or c.tag in tags)
             ]
         return sum(call.stop(CANCELLED, reason) for call in calls)
+
+    def release(
+        self,
+        *,
+        owner: object,
+        keep: Callable[[str, dict], bool],
+        on_late: Callable[[str, dict, ToolResult], None],
+    ) -> int:
+        """The conversation of `owner` ended: its running calls that `keep`
+        (name, args) are not cancelled but finish, and on_late(name, args,
+        result) gets how each ended. Live 2026-10-27: "close the garage" was
+        cut off by a phone call that ended 16 s in; the garage closed and
+        nobody was told. Returns how many."""
+        with self._lock:
+            calls = [c for c in self._running if c.owner == owner and keep(c.spec.name, c.args)]
+        released = 0
+        for call in calls:
+            def late(call: _Call = call) -> None:
+                try:
+                    on_late(call.spec.name, call.args, self._outcome(call))
+                except Exception:  # noqa: BLE001 -- a lost notice must not break the call thread
+                    log.warning("could not report %s after its conversation ended", call.spec.name, exc_info=True)
+            released += call.release(late)
+        return released
 
     def responsive(self, timeout: float = 2.0) -> str | None:
         """None when a call could start now: the runner's lock is free and a

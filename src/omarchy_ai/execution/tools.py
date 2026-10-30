@@ -70,17 +70,19 @@ TOOLS: list[dict] = [
             "repeat": {"type": "boolean", "description": "watch: keep watching and alert every time it becomes true."},
             "expires_in_hours": {"type": "number", "description": "watch: stop after this long (default 24)."},
             "for_minutes": {"type": "number", "description": "watch: the time frame in minutes, instead of expires_in_hours. Required for a camera or the screen."},
-            "announce_on_speaker": {"type": "boolean", "description": "remind, asked on the speaker, due later today: the user said yes to also hearing it on the speaker."},
+            "announce_on_speaker": {"type": "boolean", "description": "Only when the user said where to hear it. A reminder for today or a watch asked on a speaker is said on that speaker anyway; true: the user asked to hear it on the speaker (from anywhere); false: the user asked not to."},
             "catch_up": {"type": "string", "enum": ["skip", "run_once_late"], "description": "If the computer is off or asleep then: skip (reported missed; default for actions that change things) or run_once_late (default for reminders, reads). Read back if_missed."},
             "on": {"type": "object", "description": "Run on an event, not a time: {event: file_changed+path | email+query (Gmail) | process_exited+process | device_online+host or check (command) | calendar (lead_minutes); optional debounce_minutes, quiet_hours 'HH:MM-HH:MM', quiet hold|drop}. process_exited and device_online fire once unless repeat."},
         }, "required": ["title", "kind"]}),
     _tool("watch_camera", "Start a background watch that keeps checking a home camera for a time frame and alerts the user if something happens; never for one look at what a camera shows now. For kids playing outside, danger, a delivery, a car, an animal. Use it for 'watch', 'keep an eye on', 'monitor' or 'tell me if' on a camera; a single look with look_camera cannot keep that promise. Until the time frame ends, the camera's current frame and the condition go to the image decision model again and again, in the background, even after this conversation; the user is alerted each time the condition becomes true and told when the watch ends. `for_minutes` is the time frame the user said: when they said none, ask them how long before calling, never guess one. Stop it early with cancel_scheduled_task.", {
         "type": "object", "properties": {
-            "camera": {"type": "string", "description": "The camera's name; a wrong name returns the real ones."},
+            "camera": {"type": "string", "description": "The camera's name; a wrong name returns the real ones. Several cameras (a delivery can come up the drive or to the door): their names separated by commas, one watch each."},
             "condition": {"type": "string", "description": "The complete statement to detect, judged from one picture by a model that knows nothing else: name who or what is watched and spell out vague words as things one can see. For 'watch the kids, tell me if anything is dangerous' write 'a child is in the street or near a moving vehicle, has fallen or looks hurt, is climbing something high, is near fire or deep water, or is with an adult stranger', never just 'anything dangerous'. Add whatever the user named."},
+            "looks_like": {"type": "array", "items": {"type": "string"}, "description": "1-4 concrete things this camera would actually show when the condition happens, small and without readable logos, in English. For a food delivery: 'a person on foot carrying a bag or food container', 'a person walking up the driveway or path toward the door', 'a car or scooter stopping in front of the house'. A look that clearly shows one of them alerts too."},
             "for_minutes": {"type": "number", "description": "How long to keep watching, in minutes, as the user said."},
             "every_minutes": {"type": "number", "description": "Only when the user asked for a pace: minutes between looks (1 is the fastest)."},
             "title": {"type": "string", "description": "Short label for the alerts, in the user's language."},
+            "announce_on_speaker": {"type": "boolean", "description": "Only when the user said where to hear it. Asked on a speaker, it is said on that speaker anyway; true: the user asked to hear it on the speaker; false: the user asked not to."},
         }, "required": ["camera", "condition"]}),
     _tool("look_camera", "One look now at a home camera to answer what it shows. A wrong camera name returns the real names. To keep watching over time, use watch_camera.", {
         "type": "object", "properties": {
@@ -91,6 +93,10 @@ TOOLS: list[dict] = [
         "type": "object", "properties": {"include_finished": {"type": "boolean"}}, "required": []}),
     _tool("show_routines_hud", "Show the desktop HUD listing all active scheduled/cron routines. Use when the user asks to see/show/open routines, schedules, or cron jobs."),
     _tool("hide_routines_hud", "Close the scheduled-routines HUD. Use when the user asks you to close, hide, or dismiss it."),
+    _tool("dismiss_notifications", "Close the desktop's notification popups: all of them (default), or only the "
+          "latest with which='last'. They stay in the notification history. Use when the user asks to clear, close "
+          "or dismiss notifications.", {
+              "type": "object", "properties": {"which": {"type": "string", "enum": ["all", "last"]}}}),
     _tool("cancel_scheduled_task", "Cancel a scheduled task or watch by id (get ids from list_scheduled_tasks).", {
         "type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
     _tool("run_scheduled_task_now", "Run or re-check a scheduled task/watch immediately in the background. Its result arrives later; this does not verify anything.", {
@@ -116,7 +122,7 @@ TOOLS: list[dict] = [
     _tool("check_assistant_updates", "Check GitHub for a newer stable Omarchy AI install bundle. Returns installed and latest versions or an honest network error. Does not install anything."),
     _tool("update_assistant", "Update Omarchy AI itself from its verified GitHub bundle. Call ONLY when the user explicitly says to update/install the assistant update, never just because an update exists or they ask about it. Runs separately, preserves settings and previous installation, and restarts the assistant. Tell the user the conversation will disconnect at restart. A successful tool result means started, NOT completed. Do not run git pull or terminal install commands instead."),
     _tool("get_update_status", "Read progress/result of the assistant self-update. Report preparing/installing/completed/failed accurately; a queued or running update is not complete."),
-    _tool("run_diagnostics", "Check the assistant's own health (keys, Gateway, MyApi, audio, wake word, desktop, service, stuck work, disk, version). Problems first, each with a fix."),
+    _tool("run_diagnostics", "Run assistant health checks. Call only when asked to run/check diagnostics; 'how do I run the doctor?' needs the command, not this tool. Report only returned evidence, problems first."),
     _tool("report_issue", "File a new GitHub issue as the user (their logged-in gh CLI, or the token in Assistant Settings) on any GitHub repo: 'omarchy' = the Omarchy OS itself (omacom/omarchy, the default for OS, kernel, driver, desktop or hardware problems), 'omarchy-ai' = this assistant (omribenami/Omarchy-AI, the default when repo is empty), or any owner/name. This is the way to open a GitHub issue -- never the browser. Only call it when the user asks to report/file an issue, or agrees when you offer. Write the issue in English with the real evidence you have (log lines, versions, hardware, steps) even if the conversation is in another language. It is public: say the repo and title in one sentence and file it once the user says yes. If the result is a failure, say exactly why.", {
         "type": "object", "properties": {
             "repo": {"type": "string", "description": "'omarchy', 'omarchy-ai', or owner/name. Empty = omarchy-ai."},
@@ -182,15 +188,19 @@ TOOLS: list[dict] = [
           "verifies it is gone. Works only when the user talks from their paired phone app."),
     _tool("open_terminal", "Open a new terminal window."),
     _tool("open_browser", "Open the default web browser."),
-    _tool("inspect_browser", "Read-only look at the assistant browser's task tab: URL, title, whether the site shows the browser signed in, open dialogs, error banners, visible buttons (and which are disabled), a text excerpt, and a diagnosis of anything on the page that blocks the task. Call it whenever a browser_task failed or the user asks why it failed, before explaining; never guess the cause."),
-    _tool("browser_control", "Steer the assistant's own browser by hand, one step, when the user asks: list_tabs; switch_tab (tab = number or words like 'the GitHub one'); close_tab; open (url, in a new tab); back / forward / reload; scroll (direction up/down/top/bottom, amount = screens, or to = some visible text); click (target = the label or description of a button/link/tab/checkbox, e.g. 'New issue' or 'the sign in button'); type (text, target = the field, submit=true presses Enter). It acts on the tab the user is looking at and brings it to their screen. Jev matches the user's words to the real tabs/elements; if nothing matches, the result lists what is there. For a whole goal (fill and send a form, shop, research) use browser_task instead. Before a click that buys, sends, publishes, deletes or submits something, read it back and get the user's yes.", {
+    _tool("inspect_browser", "Read the page open in the assistant's browser, including its latest part (a chat's newest messages, a form's result), without touching it. Also: URL, title, whether the site shows the browser signed in, open dialogs, error banners, visible buttons (and which are disabled), a text excerpt, the end of the page's main text (a chat's latest messages, a form's result), and a diagnosis of anything on the page that blocks the task. Call it whenever a browser_task failed or the user asks why it failed, before explaining; never guess the cause."),
+    _tool("browser_control", "Steer the assistant's own browser by hand, one step, when the user asks: list_tabs; switch_tab (tab = number or words like 'the GitHub one'); close_tab; open (url, in a new tab); back / forward / reload; scroll (direction up/down/top/middle/bottom, amount = screens, percent = a point of the page such as 50 for its middle, or to = some visible text); click (target = the label or description of a button/link/tab/checkbox, e.g. 'New issue' or 'the sign in button'); type (text, target = the field, submit=true presses Enter, checks it was sent and returns what the page added, e.g. the reply); wait (until the page stops changing, e.g. a reply finished streaming, amount = max seconds; returns its latest text); key (key = Enter, Escape, Tab, arrows, PageDown: presses it on the focused element; Enter is checked like submit). It acts on the tab the user is looking at and brings it to their screen. Jev matches the user's words to the real tabs/elements; if nothing matches, the result lists what is there. For a whole goal (fill and send a form, shop, research) use browser_task instead. Before a click that buys, sends, publishes, deletes or submits something, read it back and get the user's yes.", {
         "type": "object", "properties": {
             "action": {"type": "string", "enum": ["list_tabs", "switch_tab", "close_tab", "open", "back", "forward",
-                                                  "reload", "scroll", "click", "type"]},
+                                                  "reload", "scroll", "click", "type", "wait", "key"]},
             "tab": {"type": "string"}, "url": {"type": "string"}, "target": {"type": "string"},
-            "text": {"type": "string"}, "submit": {"type": "boolean"},
-            "direction": {"type": "string", "enum": ["up", "down", "top", "bottom"]},
-            "amount": {"type": "number"}, "to": {"type": "string"}}, "required": ["action"]}),
+            "text": {"type": "string"}, "submit": {"type": "boolean"}, "key": {"type": "string"},
+            "direction": {"type": "string", "enum": ["up", "down", "top", "middle", "bottom"]},
+            "amount": {"type": "number"}, "percent": {"type": "number"}, "to": {"type": "string"}}, "required": ["action"]}),
+    _tool("sign_in", "Sign in to a site in the assistant's browser AS THE USER when they ask you to (\"log in for me\", \"sign in with my account\"). Open the site's sign-in form first (browser_task: click its 'Log in'). It types the user's saved login for that site, or the username you pass plus the password the user typed in the chat; the password never reaches you. The user approves each use with a fingerprint on their phone, so do NOT ask them for permission in words. If it says there is no saved login, ask the user for the missing username/password, then call it again with use_given_password=true.", {
+        "type": "object", "properties": {
+            "username": {"type": "string", "description": "The account's email or username, when the user gave one or the site has none saved."},
+            "use_given_password": {"type": "boolean", "description": "Use the password the user just typed in the chat instead of the saved one."}}}),
     _tool("show_browser", "Bring the assistant's own browser, with its task tab in front, to the user's screen. Use it when the user must act there themselves, e.g. sign in to a site the assistant browser is signed out of."),
     _tool("browser_task", "REQUIRED for web navigation, searching, forms and opening links. Uses one persistent owned Chromium tab with the installed browser-use/jev-ultrafast Agent, typesafe-ai/jev policy model, structured live DOM, fresh-target checks and bounded execution. Put the complete multi-step web goal in one call, and for anything with more than one stage also pass `steps` in order (e.g. search X; open the X result; open its Y link): Jev then verifies each step on the page before starting the next, which keeps the task in order. Success is only reported when an independent Jev check confirms the page shows the whole goal done; otherwise the result says NOT verified and where it stopped. If it returns blocked or not verified after partial progress, call it at most once more with only the remaining work and resume=true; it continues on the same page. Never retry the same blocked goal repeatedly, call open_browser between attempts, or use desktop keyboard tools to drive the browser.", {
         "type": "object", "properties": {
@@ -968,7 +978,7 @@ EFFECT_CLASSES = {
     "show_tasks_hud": REVERSIBLE, "hide_tasks_hud": REVERSIBLE, "search_os_knowledge": READ,
     "get_release_notes": READ, "schedule_task": IRREVERSIBLE, "watch_camera": IRREVERSIBLE,
     "look_camera": READ,
-    "list_scheduled_tasks": READ, "show_routines_hud": REVERSIBLE, "hide_routines_hud": REVERSIBLE,
+    "list_scheduled_tasks": READ, "show_routines_hud": REVERSIBLE, "hide_routines_hud": REVERSIBLE, "dismiss_notifications": REVERSIBLE,
     "cancel_scheduled_task": REVERSIBLE, "run_scheduled_task_now": IRREVERSIBLE, "find_skill": READ,
     "load_skill": READ, "run_skill": IRREVERSIBLE, "save_skill": REVERSIBLE, "list_skills": READ,
     "delete_skill": IRREVERSIBLE, "check_assistant_updates": READ, "update_assistant": IRREVERSIBLE,
@@ -984,7 +994,7 @@ EFFECT_CLASSES = {
     "nightlight_toggle": IRREVERSIBLE, "battery_status": READ, "run_omarchy_command": IRREVERSIBLE,
     # apps, browser, files
     "github_upload_attachment": IRREVERSIBLE, "open_terminal": REVERSIBLE, "open_browser": REVERSIBLE,
-    "inspect_browser": READ, "browser_control": IRREVERSIBLE, "show_browser": REVERSIBLE,
+    "inspect_browser": READ, "browser_control": IRREVERSIBLE, "show_browser": REVERSIBLE, "sign_in": REVERSIBLE,
     "browser_task": IRREVERSIBLE, "open_files": REVERSIBLE, "open_editor": REVERSIBLE, "list_files": READ,
     "read_file": READ, "write_file": IRREVERSIBLE, "edit_file": IRREVERSIBLE,
     # windows, input, terminals
@@ -1024,7 +1034,7 @@ PROVENANCE = {
     "show_tasks_hud": _SYS, "hide_tasks_hud": _SYS, "search_os_knowledge": _LOCAL,
     "get_release_notes": "external:github", "schedule_task": _LOCAL, "watch_camera": _LOCAL,
     "look_camera": "vision",
-    "list_scheduled_tasks": _LOCAL, "show_routines_hud": _SYS, "hide_routines_hud": _SYS,
+    "list_scheduled_tasks": _LOCAL, "show_routines_hud": _SYS, "hide_routines_hud": _SYS, "dismiss_notifications": _SYS,
     "cancel_scheduled_task": _LOCAL, "run_scheduled_task_now": _LOCAL, "find_skill": _LOCAL,
     "load_skill": _LOCAL, "run_skill": _LOCAL, "save_skill": _LOCAL, "list_skills": _LOCAL,
     "delete_skill": _LOCAL, "check_assistant_updates": "external:github", "update_assistant": _SYS,
@@ -1040,7 +1050,7 @@ PROVENANCE = {
     "nightlight_toggle": _SYS, "battery_status": _SYS, "run_omarchy_command": _SYS,
     # apps, browser, files
     "github_upload_attachment": _SYS, "open_terminal": _SYS, "open_browser": _SYS,
-    "inspect_browser": "web", "browser_control": "web", "show_browser": _SYS,
+    "inspect_browser": "web", "browser_control": "web", "show_browser": _SYS, "sign_in": "web",
     "browser_task": "web", "open_files": _SYS, "open_editor": _SYS, "list_files": "file",
     "read_file": "file", "write_file": _SYS, "edit_file": _SYS,
     # windows, input, terminals
@@ -1131,7 +1141,8 @@ DEADLINES = {
         "open_files", "open_editor", "read_tile_log", "workspace_switch", "workspace_next", "workspace_prev",
         "window_fullscreen_toggle", "list_windows", "show_window_labels", "hide_window_labels",
         "media_play_pause", "media_next", "media_prev", "set_reminder", "list_reminders", "clear_reminders",
-        "show_tasks_hud", "hide_tasks_hud", "show_routines_hud", "hide_routines_hud", "terminal_read",
+        "show_tasks_hud", "hide_tasks_hud", "show_routines_hud", "hide_routines_hud", "dismiss_notifications",
+        "terminal_read",
         "terminal_type", "terminal_show", "terminal_hide", "terminal_close", "task_status",
         "list_scheduled_tasks", "cancel_scheduled_task", "list_skills", "load_skill", "save_skill",
         "delete_skill", "get_update_status", "remember_preference", "recall", "search_os_knowledge",
@@ -1141,7 +1152,7 @@ DEADLINES = {
     **dict.fromkeys((
         "focus_window", "close_window", "move_window_to_workspace", "type_text", "press_key",
         "submit_sudo_password", "list_commands", "execute_command", "run_omarchy_command", "terminal_task",
-        "terminal_sudo", "open_browser", "show_browser", "inspect_browser", "browser_control", "desktop_task",
+        "terminal_sudo", "open_browser", "show_browser", "inspect_browser", "desktop_task",
         "start_task", "delegate", "task_respond", "schedule_task", "watch_camera", "find_skill", "list_cast_targets",
         "stop_casting", "myapi_list_services", "myapi_service_methods", "myapi_vault_list",
         "run_diagnostics",
@@ -1158,6 +1169,12 @@ DEADLINES = {
     "list_files": 150.0, "read_file": 150.0,
     # a 90 s task budget plus starting the dedicated browser
     "browser_task": 180.0,
+    # type/key/click wait up to 60 s for the page to finish (a streamed
+    # reply); at 60 s the call timed out after sending, and the retry sent
+    # the message twice (2026-10-20 02:39).
+    "browser_control": 150.0,
+    # up to 130 s for the phone's fingerprint, then the login pages
+    "sign_in": 240.0,
     # Jev picks and fills, the call, then up to four Sent-folder checks
     "myapi": 300.0,
     # a sudo write waits up to 130 s for each of two phone approvals
@@ -1179,11 +1196,11 @@ DESKTOP, MYAPI, ASSISTANT, CAMERA = "desktop", "myapi", "assistant", "camera"
 RESOURCES = {
     **dict.fromkeys((
         "desktop_task", "show_tasks_hud", "hide_tasks_hud", "show_routines_hud", "hide_routines_hud",
-        "run_mission", "list_bar_icons", "open_bar_panel", "close_bar_panel", "volume_up", "volume_down",
+        "dismiss_notifications", "run_mission", "list_bar_icons", "open_bar_panel", "close_bar_panel", "volume_up", "volume_down",
         "volume_mute_toggle", "volume_set", "mic_mute_toggle", "brightness_up", "brightness_down",
         "brightness_set", "screenshot", "lock_screen", "unlock_screen", "bluetooth_toggle", "nightlight_toggle",
         "battery_status", "run_omarchy_command", "github_upload_attachment", "open_terminal", "open_browser",
-        "inspect_browser", "browser_control", "show_browser", "browser_task", "open_files", "open_editor",
+        "inspect_browser", "browser_control", "show_browser", "sign_in", "browser_task", "open_files", "open_editor",
         "list_files", "read_file", "write_file", "edit_file", "read_tile_log", "workspace_switch",
         "workspace_next", "workspace_prev", "close_window", "window_fullscreen_toggle", "list_windows",
         "list_commands", "execute_command", "type_text", "press_key", "submit_sudo_password",

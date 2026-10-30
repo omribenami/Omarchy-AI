@@ -61,6 +61,9 @@ Actions:
               without a timeout). Add flags like --no-pager, -n 50, -j. Long jobs: raise timeout (max 1800).
               SSH with a password (the user gave one, or said it is the same as root/sudo): `ssh-copy-id -i
               <key.pub> user@host` once, or `sshpass ssh user@host '<cmd>'`; the harness types the password.
+              Remote sudo uses `sshpass ssh user@host 'sudo <cmd>'`; after HIGH approval, the harness supplies
+              that same locally-keyringed password to both SSH and remote sudo. Never use the MyApi token vault,
+              `secret-tool`, a shell substitution, or a platform password command for login/admin passwords.
               Never write a password into a command and never ask the user to do it by hand.
               Commands run in a sandbox: below ELEVATED, ~/.config is read-only and only the workspace, /tmp,
               caches and the paths a command names as write targets (redirect, cp/mv/mkdir/tee/touch) are

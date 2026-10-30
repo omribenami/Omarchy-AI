@@ -673,6 +673,16 @@ def _conversation_busy() -> tuple[bool, str]:
     if is_active != "active":
         return False, f"service is not running ({is_active or 'unknown'}), safe to (re)start"
 
+    # Ask the running daemon first.  The old journal-only check could keep a
+    # stale "session started" marker after a crash and refuse every later
+    # Apply even though the replacement daemon was already listening.
+    status = control.request("status")
+    state = status.get("state")
+    if state == "listening":
+        return False, "assistant is listening and safe to restart"
+    if state in {"starting", "active"}:
+        return True, "finish the current conversation, then apply changes"
+
     proc = subprocess.run(
         ["journalctl", "--user", "-u", SERVICE, "-n", "300", "--no-pager", "-o", "cat"],
         capture_output=True, text=True, check=False,
@@ -714,12 +724,16 @@ def cmd_restart(_args: argparse.Namespace) -> dict:
     if busy:
         return {"restarted": False, "reason": reason}
     proc = subprocess.run(
-        ["systemctl", "--user", "restart", SERVICE],
+        # Type=notify startup loads wake/voice models and can take longer than
+        # the panel's bounded helper deadline.  Queue the systemd job and
+        # return immediately; blocking here made a successful restart look
+        # like a failure while systemd continued it in the background.
+        ["systemctl", "--user", "--no-block", "restart", SERVICE],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
         return {"restarted": False, "reason": (proc.stderr or proc.stdout or "systemctl restart failed").strip()}
-    return {"restarted": True, "reason": "service restarted"}
+    return {"restarted": True, "reason": "restart requested"}
 
 
 def _redact_pairing_secret(text: str, *secrets: str) -> str:

@@ -63,6 +63,30 @@ class UserToolTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn('errors=0 args={"boot": 0}', result.message)
 
+    def contextual(self, operation="devices", reads=("devices",)):
+        make_tool(self.src)
+        spec = json.loads((self.src / "tool.json").read_text())
+        spec.update(read_operations=list(reads), context={"args": {"operation": operation}})
+        spec["parameters"]["properties"]["operation"] = {"type": "string", "enum": ["devices", "call"]}
+        (self.src / "tool.json").write_text(json.dumps(spec))
+        (self.src / "run").write_text("#!/bin/sh\nread args\necho \"Lights: Hall light.hall\"\n")
+
+    def test_a_read_only_context_call_is_given_at_the_start_and_kept(self):
+        self.contextual()
+        self.assertTrue(user_tools.propose(self.src)[0])
+        self.assertTrue(user_tools.install("wifi_health")[0])
+        user_tools._context.clear()
+        self.assertEqual(user_tools.context_texts(wait=10), {"wifi_health": "Lights: Hall light.hall"})
+        with patch.object(user_tools, "run", side_effect=AssertionError("fetched again while fresh")):
+            self.assertEqual(user_tools.context_texts(), {"wifi_health": "Lights: Hall light.hall"})
+        user_tools._context.clear()
+
+    def test_a_context_call_that_changes_something_is_refused(self):
+        self.contextual(operation="call")
+        ok, message = user_tools.propose(self.src)
+        self.assertFalse(ok)
+        self.assertIn("context must be", message)
+
     def test_value_outside_enum_names_the_allowed_ones_without_running(self):
         make_tool(self.src)
         spec = json.loads((self.src / "tool.json").read_text())
@@ -75,6 +99,29 @@ class UserToolTests(unittest.TestCase):
         self.assertIn("'look' is not one of: describe_camera, status", result.message)
         self.assertNotIn("errors=0", result.message)                 # the tool itself never ran
         self.assertTrue(actions.run_action("wifi_health", {"operation": "status"}).ok)
+
+    def test_arguments_under_another_name_reach_the_declared_key_and_a_miss_says_which_key(self):
+        make_tool(self.src)
+        spec = json.loads((self.src / "tool.json").read_text())
+        spec["parameters"] = {"type": "object", "required": ["operation"], "properties": {
+            "operation": {"type": "string", "enum": ["ask", "status"]},
+            "text": {"type": "string", "description": "For ask: the user's request, in their words."}}}
+        (self.src / "tool.json").write_text(json.dumps(spec))
+        (self.src / "run").write_text("#!/bin/sh\nread args\ncase \"$args\" in *'\"text\"'*) echo \"ok $args\";; "
+                                      "*) echo \"ask needs the request in 'text'\" >&2; exit 1;; esac\n")
+        self.assertTrue(user_tools.propose(self.src)[0])
+        self.assertTrue(user_tools.install("wifi_health")[0])
+        result = user_tools.run("wifi_health", {"operation": "ask", "request": "is the porch light on?"})
+        self.assertTrue(result.ok, result.message)
+        self.assertIn('"text": "is the porch light on?"', result.message)
+        result = user_tools.run("wifi_health", {"operation": "ask"})
+        self.assertFalse(result.ok)
+        self.assertIn("`text`: For ask", result.message)
+        self.assertIn('args={"operation": "ask", "text": "<For ask', result.message)
+        self.assertTrue(user_tools.run("wifi_health", {"text": "hi"}).ok)    # only `ask` takes text
+        result = user_tools.run("wifi_health", {})                           # required operation missing: not run
+        self.assertFalse(result.ok)
+        self.assertIn("not run: missing operation", result.message)
 
     def test_changed_after_approval_is_neither_offered_nor_run(self):
         make_tool(self.src)

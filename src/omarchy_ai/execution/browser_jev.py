@@ -79,6 +79,13 @@ def _control_key(action, page):
 
 
 def _guard_browser_action(original, generation):
+    # The browser object is reused across tasks (_agent_with_reused_tab), so
+    # wrap the raw act, not the previous task's guard. 2026-10-19 21:15-21:38:
+    # each task stacked one more guard holding its own, by then stale,
+    # generation, so after any conversation ended every click and keystroke
+    # raised "cancelled because the assistant stopped" -- nine browser tasks
+    # in a row failed with 0 actions and were escalated as her failures.
+    original = getattr(original, "__dict__", {}).get("_unguarded", original)
     recent = []
     uses: dict = {}
 
@@ -98,11 +105,90 @@ def _guard_browser_action(original, generation):
         key = (action.get("kind"), action.get("label"), page.get("url"), text)
         # Fingerprints change when a menu toggles, so fingerprint-only
         # progress detection does not catch repeated Times-button clicks.
-        if action.get("kind") != "wait" and recent[-6:].count(key) >= 3:
+        # Scrolling a long page is one move made many times: "scroll to the
+        # middle" was stopped after three (2026-10-29 21:29), twice.
+        limit = _MAX_SAME_SCROLLS if action.get("kind") == "scroll" else 3
+        if action.get("kind") != "wait" and recent[-2 * limit:].count(key) >= limit:
             raise RuntimeError(f"Stopped repeated interaction with {action.get('label', 'control')}")
         recent.append(key)
         return original(action, page, text=text)
+    guarded._unguarded = original
     return guarded
+
+
+_MAX_SAME_SCROLLS = 12
+
+# A control whose use left the page unchanged this many times in a row is
+# taken out of Jev's choices until something on the page does change.
+_NO_EFFECT_STRIKES = 2
+
+
+def _base_label(label: str) -> str:
+    """The control behind an action: a text box is offered both as `fill X`
+    and as `click "Open X"`; both are the same box."""
+    label = str(label or "")
+    return label[5:] if label.startswith("Open ") else label
+
+
+class _Moves:
+    """What has not worked, so the agent must try something else.
+
+    2026-10-20 00:33-00:35: in ChatGPT's tab the message was already typed;
+    the agent clicked the box ("Open Ask ChatGPT") over and over -- three
+    browser tasks, every one stopped for repeating itself -- while the Send
+    button sat next to it. Upstream only notices three unchanged pages and
+    gives up. Here the second use of one control that changes nothing
+    removes it from the choices (and says so in the goal), so the next
+    decision has to be a different move. Any move that does change the page
+    lifts every ban: the box is offered again for the next message."""
+
+    def __init__(self) -> None:
+        self.strikes: dict[str, int] = {}
+        self.banned: set[str] = set()
+
+    def note(self, item: dict) -> str | None:
+        """One executed action; the label newly banned, if any."""
+        if item.get("kind") == "wait":
+            return None
+        if item.get("page_changed"):
+            self.strikes.clear()
+            self.banned.clear()
+            return None
+        if item.get("page_changed") is not False:
+            return None
+        key = _base_label(item.get("action"))
+        self.strikes[key] = self.strikes.get(key, 0) + 1
+        if self.strikes[key] >= _NO_EFFECT_STRIKES and key not in self.banned:
+            self.banned.add(key)
+            return key
+        return None
+
+    def filter(self, page):
+        if self.banned and isinstance(page, dict) and page.get("actions"):
+            page["actions"] = [a for a in page["actions"]
+                               if a.get("kind") in ("scroll", "wait") or _base_label(a.get("label")) not in self.banned]
+        return page
+
+
+def _filter_observe(original, moves: _Moves):
+    original = getattr(original, "__dict__", {}).get("_unfiltered", original)
+
+    def observe(*args, **kwargs):
+        return moves.filter(original(*args, **kwargs))
+    observe._unfiltered = original
+    return observe
+
+
+def _untried(state, history) -> str:
+    """The page's controls the task never used, for a stuck result: what to try next."""
+    used = {_base_label(h.get("action")) for h in history or []}
+    labels = []
+    for action in ((state or {}).get("page") or {}).get("actions") or []:
+        label = _base_label(action.get("label"))
+        if action.get("kind") in ("click", "fill") and label and label not in used and label not in labels:
+            labels.append(label)
+    return (" Controls on the page it did not try: " + ", ".join(repr(l[:40]) for l in labels[:12])
+            + ". Do the unfinished step yourself with browser_control (click or type, one step).") if labels else ""
 
 
 def _dedicated_window(clients):
@@ -328,10 +414,7 @@ def _adopt_existing_tab():
         browser.session = cdp(
             "Target.attachToTarget", targetId=browser.target, flatten=True,
         )["sessionId"]
-        browser.call(
-            "Emulation.setDeviceMetricsOverride", width=1120, height=780,
-            deviceScaleFactor=1, mobile=False,
-        )
+        _full_window(browser)
         browser.call("Emulation.setFocusEmulationEnabled", enabled=True)
         _remember_target(browser.target)
         log.info("adopted existing dedicated browser target: %s", browser.target)
@@ -339,6 +422,17 @@ def _adopt_existing_tab():
     except Exception:
         log.debug("no existing browser target could be adopted", exc_info=True)
         return None
+
+
+def _full_window(browser) -> None:
+    """Let the page fill its window. jev_ultrafast's Browser() pins every tab
+    it opens to 1120x780, which left the right ~18% of the user's 1366-wide
+    screen empty on every site (2026-10-29); clearing also frees a tab an
+    older build had shrunk."""
+    try:
+        browser.call("Emulation.clearDeviceMetricsOverride")
+    except Exception:  # noqa: BLE001 -- a narrower page still works
+        log.debug("could not clear the page size override", exc_info=True)
 
 
 def _remember_target(target_id) -> None:
@@ -491,19 +585,32 @@ class _Progress:
         self.index = 0
         self.checks: dict | None = None
         self.rejections = 0
+        self.typed: set[int] = set()  # steps whose quoted text a field on the page already holds
+        self.sent: dict[int, int] = {}  # typed steps seen sent
+        self.observed: list[str] = []  # what the page itself showed, for the goal check
+        self.after_sent = ""  # the page text after the last sent text
+        self.after_p: float | None = None
+        self.no_effect: list[str] = []  # controls taken out of the choices (_Moves)
 
     def render(self) -> str:
         scroll = (" If the element needed next is not among the offered elements, use SCROLL_DOWN "
                   "to reveal more of the page instead of searching again.")
         if len(self.steps) == 1:
-            return self.goal + scroll
+            return self.goal + scroll + self._tried()
         lines = [f"Overall goal: {self.goal}", "Steps, strictly in this order:"]
         for i, step in enumerate(self.steps):
             mark = "done" if i < self.index else "CURRENT" if i == self.index else "later"
             lines.append(f"{i + 1}. [{mark}] {step}")
         lines.append(f"Work only on step {self.index + 1} now. Never repeat a done step or start a later one early."
                      + scroll)
-        return "\n".join(lines)
+        return "\n".join(lines) + self._tried()
+
+    def _tried(self) -> str:
+        if not self.no_effect:
+            return ""
+        return ("\nAlready tried with no effect on the page, so no longer offered: "
+                + ", ".join(repr(label[:60]) for label in self.no_effect[-5:])
+                + ". Reach the step another way, e.g. the button that sends or submits it.")
 
     def questions(self) -> dict:
         # One literal yes/no per step (TypeSafe: "ask each decision one way").
@@ -524,8 +631,17 @@ class _Progress:
         # Completion judges only the FINAL step: a destination page cannot
         # prove the earlier steps (those are the tracker's job). Judged on the
         # whole goal, a generic "Package manager" article passed at 0.88.
+        observed = {"observed_by_the_harness": self.observed} if self.observed else {}
+        if self.after_sent:
+            # Narrow on purpose: on the broad goal question a chat reply
+            # scored 0.61-0.68 (2026-10-20 replay), never the bar.
+            questions["omarchy_after_sent"] = {"type": "boolean", "instructions": {
+                "final_step": self.steps[-1], "text_after_the_sent_message": self.after_sent,
+                "question": "The message was sent. Does `text_after_the_sent_message` already show what "
+                            "`final_step` waits for (for example the other side's reply, or a confirmation)? "
+                            "A loading indicator or only interface labels is not."}}
         questions["omarchy_goal_done"] = {"type": "boolean", "instructions": {
-            "final_step": self.steps[-1],
+            "final_step": self.steps[-1], **observed,
             # Picked on labelled real pages (STATUS.md 2026-09-22): "a search
             # ends on its results page" alone made Jev reject omarchy.us for
             # "search Google ... and navigate to the first result" (0.35);
@@ -548,11 +664,48 @@ class _Progress:
             value = (answers.pop(name, None) or {}).get("probability")
             return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 1 else None
         steps = [p(f"omarchy_step_{i}") for i in range(len(self.steps) - 1)]
+        self.after_p = p("omarchy_after_sent")
         self.checks = {"steps": steps, "goal": p("omarchy_goal_done")}
+
+    def see(self, page: dict | None) -> None:
+        """Confirm steps from the page itself. Jev's step check reads the URL
+        and title, which in a chat never change: 2026-10-20 00:33 the message
+        sat in ChatGPT's box and "type it" never counted as done, and in the
+        replay that followed the message was sent and answered while "send
+        it" and "wait for the reply" stayed unconfirmed.
+
+        - a step that types a quoted text is done when a field holds it;
+        - it was sent when the text has left every field and shows on the
+          page, which also completes the step after it;
+        - what the page shows after it (a reply, a confirmation, an error)
+          goes to the goal check, which judges it."""
+        norm = lambda text: " ".join(str(text or "").split()).casefold()  # noqa: E731
+        page = page or {}
+        values = [norm(a.get("value")) for a in page.get("actions") or [] if a.get("kind") == "fill"]
+        shown = norm(page.get("text"))
+        for i, step in enumerate(self.steps):
+            text = norm(_quoted_value(step))
+            if not text:
+                continue
+            if i < len(self.steps) - 1 and any(text in value for value in values):
+                self.typed.add(i)
+            elif i in self.typed and text in shown and not any(text in value for value in values):
+                if i not in self.sent:
+                    self.sent[i] = 0
+                    self._observe(f"the text typed for step {i + 1} left the box and now shows on the page: sent")
+                # What follows it now (a reply, a confirmation, an error): Jev judges it.
+                raw = " ".join(str(page.get("text") or "").split())
+                at = raw.casefold().rfind(text)
+                self.after_sent = raw[at + len(text):].strip()[:500] if at >= 0 else ""
+
+    def _observe(self, line: str) -> None:
+        if line not in self.observed:
+            self.observed = (self.observed + [line])[-4:]
 
     def advance(self) -> bool:
         confirmed = [i for i, value in enumerate((self.checks or {}).get("steps") or [])
-                     if value is not None and value >= _CHECK_THRESHOLD]
+                     if value is not None and value >= _CHECK_THRESHOLD] + sorted(self.typed)
+        confirmed += [i + 1 for i in self.sent if i + 1 < len(self.steps) - 1]
         if self.goal_verified():
             confirmed.append(len(self.steps) - 1)
         target = min(max(confirmed) + 1, len(self.steps) - 1) if confirmed else self.index
@@ -571,6 +724,8 @@ class _Progress:
 
     def goal_verified(self) -> bool:
         goal = (self.checks or {}).get("goal")
+        if self.sent and self.after_p is not None and self.after_p >= _GOAL_THRESHOLD:
+            return True
         return goal is not None and goal >= _GOAL_THRESHOLD
 
     def summary(self) -> str:
@@ -587,6 +742,30 @@ def _same_page(first: str, second: str) -> bool:
         return (a.netloc, a.path.rstrip("/"), a.query) == (b.netloc, b.path.rstrip("/"), b.query)
     except (TypeError, ValueError):
         return False
+
+
+def _front_page(url: str) -> bool:
+    try:
+        parts = urlsplit(url if "//" in url else "https://" + url)
+    except ValueError:
+        return False
+    return parts.path in ("", "/") and not parts.query and not parts.fragment
+
+
+def _means_open_page(goal: str, page: dict) -> bool:
+    """Jev: is the goal about the page already open, not a new job on its
+    site? (A new Wikipedia search must leave the last article, 2026-09-22;
+    "read the conversation on the active tab" must not leave it.)"""
+    from ..core.jev import Jev, boolean
+    try:
+        answer = Jev().ask({"goal": goal[:600], "open_page": {"url": page.get("url"), "title": page.get("title")}},
+                           {"open": boolean("Is `goal` about the page that is already open (`open_page`): to read, "
+                                            "continue, reply in or act on that page or conversation, rather than "
+                                            "a new search or job that starts from the site's front page?")},
+                           timeout=3, retries=0, fail_fast=True)
+    except Exception:  # noqa: BLE001 -- unsure: start from the given address, as before
+        return False
+    return answer["open"]["p"] >= 0.7
 
 
 def _agent_with_reused_tab(Agent, url: str, goal: str, resume: bool = False):
@@ -608,6 +787,11 @@ def _agent_with_reused_tab(Agent, url: str, goal: str, resume: bool = False):
     # previous task's page and block with 0 actions (Hyprland after an Arch
     # Linux article, 2026-09-22), so it now starts from its own URL.
     keep = _same_site(current_url, url) if resume else _same_page(current_url, url)
+    # Just the site's front page, while a page of that site is open: the
+    # model names the site, not the page it means. 2026-10-20 00:49 "read
+    # the conversation on the active ChatGPT tab" with url chatgpt.com/ left
+    # that conversation for an empty new chat.
+    keep = keep or (_same_site(current_url, url) and _front_page(url) and _means_open_page(goal, page))
     if not keep:
         browser.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
@@ -850,10 +1034,14 @@ def _run_agent(Agent, url, args, progress, generation, started, config):
     try:
         agent = _agent_with_reused_tab(Agent, url, progress.render(), resume=bool(args.get("resume")))
         agent.browser.act = _guard_browser_action(agent.browser.act, generation)
+        moves = _Moves()
+        agent.browser.observe = _filter_observe(agent.browser.observe, moves)
+        noted = 0
         try:
             known = {t["targetId"] for t in _page_targets()}
         except Exception:
             known = set()
+        _full_window(agent.browser)
         # Browser() creates its owned tab in the background.  This assistant
         # has a dedicated profile, so make that tab visible and active.  Keep
         # the harness startup target intact: its daemon is attached to that
@@ -895,6 +1083,17 @@ def _run_agent(Agent, url, args, progress, generation, started, config):
                 # agent wandered off (omarchy.us -> #home, 2026-09-22).
                 final = {**state, "status": "done"}
                 break
+            fresh_action = len(history) > noted
+            noted = len(history)
+            if fresh_action and (banned := moves.note(history[-1])):
+                progress.no_effect.append(banned)
+                moves.filter(agent.state["page"])  # the choices for the very next decision too
+                agent.state["goal"] = progress.render()
+                log.info("browser: %r changed nothing twice; offering other moves", banned[:60])
+            elif fresh_action and history[-1].get("page_changed") and progress.no_effect:
+                progress.no_effect.clear()
+                agent.state["goal"] = progress.render()
+            progress.see(agent.state.get("page"))
             if progress.advance():
                 log.info("browser step verified; now step %d/%d", progress.index + 1, len(progress.steps))
                 agent.state["goal"] = progress.render()
@@ -972,7 +1171,8 @@ def _run_agent(Agent, url, args, progress, generation, started, config):
         reason = ("Jev chose DONE but the independent completion check disagreed"
                   if status == "done" or progress.rejections else "blocked")
         return ActionResult(False, f"Browser task NOT verified ({reason}) after {len(history)} action(s); "
-                                   f"now at {_where(final)}; last actions: {last_actions}.{progress.summary()} "
+                                   f"now at {_where(final)}; last actions: {last_actions}.{progress.summary()}"
+                                   f"{_untried(final, history)} "
                                    "Inspect the page (describe_screen) before reporting anything as done."), len(history), None
     except Exception as error:
         log.exception("browser task stopped; retaining its tab for inspection")

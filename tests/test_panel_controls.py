@@ -14,6 +14,23 @@ from omarchy_ai.voice import control
 
 
 class GatewayKeySettingsTests(unittest.TestCase):
+    def test_apply_button_is_at_the_top_and_not_buried_in_scroll_area(self):
+        panel = (Path(__file__).resolve().parents[1] / 'quickshell/plugins/omarchy-ai.settings/Panel.qml').read_text()
+        button = panel.index('root.dirty ? "Apply changes now"')
+        provider = panel.index('text: "AI PROVIDER & ACCESS"')
+        scroll = panel.index('id: scrollArea')
+        self.assertLess(button, provider)
+        self.assertLess(button, scroll)
+        self.assertIn('visible: root.settingsReady', panel)
+        self.assertIn('"No changes to apply"', panel)
+
+    def test_gateway_key_save_restarts_without_a_second_button(self):
+        panel = (Path(__file__).resolve().parents[1] / 'quickshell/plugins/omarchy-ai.settings/Panel.qml').read_text()
+        self.assertIn('"Save & restart"', panel)
+        self.assertIn('root.statusMessage = "Gateway key saved — restarting assistant…"', panel)
+        save_callback = panel[panel.index('function saveGatewayKey'):panel.index('function pasteApiKey')]
+        self.assertIn('root.doRestart()', save_callback)
+
     def test_clean_laptop_without_secret_tool_can_save_gateway_key(self):
         # The old helper wrote the key, then crashed while assembling its
         # response because sudo status unconditionally called secret-tool.

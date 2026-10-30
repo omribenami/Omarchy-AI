@@ -52,11 +52,12 @@ class RoutingTests(OutboxCase):
     def result(self, **kw):
         return outbox.Message(outbox.RESULT, "Done: backup", "All files copied.", **kw)
 
-    def test_at_the_desk_a_desktop_notification_only(self):
+    def test_at_the_desk_a_desktop_notification_and_the_phone(self):
+        # The user, 2026-10-26: the phone by default, the surface they are on on top.
         self.where("active")
-        self.assertEqual(outbox.send(self.result()), (outbox.DESKTOP,))
+        self.assertEqual(outbox.send(self.result()), (outbox.DESKTOP, outbox.PUSH))
         self.desktop.assert_called_once_with("Done: backup", "All files copied.", False)
-        self.push.assert_not_called()
+        self.push.assert_called_once()
 
     def test_away_from_the_desk_or_on_the_phone_page_a_push_and_its_chat(self):
         for desk, phone in (("idle", False), ("active", True)):
@@ -68,18 +69,18 @@ class RoutingTests(OutboxCase):
                 )
         self.desktop.assert_not_called()
 
-    def test_in_a_conversation_it_is_said_there_and_nowhere_else(self):
+    def test_in_a_conversation_it_is_said_there_and_pushed_to_the_phone(self):
         said = self.conversation()
-        self.assertEqual(outbox.send(self.result(conversation="c1")), (outbox.VOICE,))
+        self.assertEqual(outbox.send(self.result(conversation="c1")), (outbox.VOICE, outbox.CHAT, outbox.PUSH))
         self.assertEqual(said[0]["title"], "Done: backup")
         self.desktop.assert_not_called()
-        self.push.assert_not_called()
+        self.push.assert_called_once()
 
     def test_a_phone_call_counts_as_a_conversation(self):
         loop, session = MagicMock(), MagicMock()
         loop.is_closed.return_value = False
         outbox.attach_call(session, loop)
-        self.assertEqual(outbox.send(self.result()), (outbox.VOICE,))
+        self.assertEqual(outbox.send(self.result()), (outbox.VOICE, outbox.PUSH))
         loop.call_soon_threadsafe.assert_called_once()
         self.assertTrue(
             agenda.attached(session), "the agenda's names reach the same registry"

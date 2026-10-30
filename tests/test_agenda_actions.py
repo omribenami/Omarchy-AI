@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import outbox
 from omarchy_ai.core import agenda, retry, schedule
 from omarchy_ai.execution import actions

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 import time
 import urllib.parse
@@ -226,6 +227,52 @@ def _state(tab: dict) -> str:
     return f"now on {info.get('title', '')[:80]!r} ({info.get('url', '')[:120]})"
 
 
+# What a page shows and whether it is still busy. A chat streams its answer
+# for many seconds and shows a Stop button meanwhile; 2026-10-20 01:12 she
+# read the page half a second after pressing Enter, took the previous answer
+# for the new one and typed the next message while the reply was still
+# streaming: Enter did nothing there, and two of her messages went as one.
+_MAIN_TEXT = "((document.querySelector('main') || document.body || {}).innerText || '')"
+_BUSY = r"""(() => [...document.querySelectorAll('button,[role=button]')].some(b => {
+  const r = b.getBoundingClientRect(); const t = (b.getAttribute('aria-label') || b.innerText || '').trim();
+  return r.width > 0 && r.height > 0 && /^(stop|cancel generating|stop generating|stop streaming)/i.test(t); }))()"""
+_FOCUSED_TEXT = "(() => { const e = document.activeElement; return e ? String(e.value ?? e.innerText ?? '') : ''; })()"
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _settle(tab, timeout: float = 60.0, still: float = 2.5) -> tuple[str, bool]:
+    """The page's main text once it stops changing and nothing on it says
+    it is still working (a Stop button). (text, settled)."""
+    started, last, since = time.monotonic(), None, time.monotonic()
+    while time.monotonic() - started < timeout:
+        try:
+            text, busy = _eval(tab, _MAIN_TEXT) or "", bool(_eval(tab, _BUSY))
+        except Exception:  # noqa: BLE001 -- mid-navigation
+            text, busy = last or "", True
+        if text != last or busy:
+            last, since = text, time.monotonic()
+        elif time.monotonic() - since >= still:
+            return last, True
+        time.sleep(0.4)
+    return last or "", False
+
+
+def _new_text(before: str, after: str, limit: int = 1500) -> str:
+    """What the page added: the text after the part it still shares with
+    `before` (a chat appends), else its end."""
+    before, after = _norm(before), _norm(after)
+    common = 0
+    for a, b in zip(before, after):
+        if a != b:
+            break
+        common += 1
+    added = after[common:] if common > len(before) // 2 else after
+    return added[-limit:]
+
+
 # ------------------------------------------------------------------ actions
 def list_tabs(pages, args, jev) -> ActionResult:
     task = _task_tab(pages)
@@ -323,16 +370,36 @@ def scroll(tab, args, jev) -> ActionResult:
     target = {"top": "0", "bottom": "document.documentElement.scrollHeight",
               "up": f"scrollY - innerHeight * 0.8 * {pages_count}",
               "down": f"scrollY + innerHeight * 0.8 * {pages_count}"}.get(direction)
+    percent = args.get("percent", 50 if direction == "middle" else None)
+    if percent is not None:
+        # One call to a point of the page: "scroll to the middle" took ~20
+        # screen-by-screen calls (2026-10-29 21:29).
+        fraction = max(0.0, min(float(percent), 100.0)) / 100
+        direction = f"to {fraction:.0%}"
+        target = f"(document.documentElement.scrollHeight - innerHeight) * {fraction}"
     expression = None if target is None else f"window.scrollTo({{top: {target}, behavior: 'instant'}})"
     if expression is None:
-        return ActionResult(False, "direction must be up, down, top or bottom")
+        return ActionResult(False, "direction must be up, down, top, middle or bottom")
     position = _eval(tab, expression + "; Math.round(100 * scrollY / "
                           "Math.max(1, document.documentElement.scrollHeight - innerHeight))")
     return ActionResult(True, f"scrolled {direction}; {position}% down the page")
 
 
+# Fields where typing and pressing Enter sent nothing, twice, per page:
+# not offered again until a send works (2026-10-20 01:29-01:32: ten tries
+# into an "Edit code" box inside an answer instead of the message box).
+_FAILED_FIELDS: dict[tuple[str, str], int] = {}
+
+
+def _page_of(tab) -> str:
+    return str(tab.get("url") or "").split("#")[0]
+
+
 def _element(tab, words, kind, jev):
     found = _eval(tab, f"{_COLLECT}({json.dumps(kind)})") or []
+    if kind == "field":
+        tried = {label for (page, label), n in _FAILED_FIELDS.items() if page == _page_of(tab) and n >= 2}
+        found = [e for e in found if e["text"] not in tried] or found
     options = {e["id"]: e["text"] + (" (disabled)" if e["disabled"] else "") for e in found}
     key, how = _pick(words, options, "field" if kind == "field" else "button or link", jev)
     return key, how, found
@@ -365,6 +432,7 @@ def click(tab, args, jev) -> ActionResult:
         return ActionResult(False, f"{chosen['text']!r} is disabled on this page")
     probe = "[location.href, document.title, document.body.innerText.length].join('|')"
     before = _eval(tab, probe)
+    text_before = _eval(tab, _MAIN_TEXT) or ""
     if not _click_at(tab, key):
         return ActionResult(False, f"{chosen['text']!r} disappeared before it could be clicked")
     # Single-page sites (GitHub) fetch for a moment before the URL changes:
@@ -379,6 +447,11 @@ def click(tab, args, jev) -> ActionResult:
         if after != before and after is not None and after.split("|")[:2] != before.split("|")[:2]:
             break
     changed = "the page changed" if after != before else "NO visible change on the page (inspect_browser can tell why)"
+    if after is not None and after != before and after.split("|")[0] == before.split("|")[0]:
+        # Changed in place (a sent message, a loaded result): let it finish, and say what is new.
+        text, settled = _settle(tab)
+        changed += (" and finished updating" if settled else ", still updating after 60 s") \
+            + f"; new on the page: {_new_text(text_before, text)!r}"
     return ActionResult(True, f"clicked {chosen['text']!r} ({how}); {changed}; {_state(tab)}")
 
 
@@ -397,6 +470,7 @@ def type_text(tab, args, jev) -> ActionResult:
         label = next(e["text"] for e in found if e["id"] == key)
     else:
         label, how = "the focused field", "focus"
+    before = _eval(tab, _MAIN_TEXT) or "" if args.get("submit") else ""
     calls = [("Input.insertText", {"text": text})]
     if args.get("submit"):
         calls += [("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter",
@@ -405,17 +479,113 @@ def type_text(tab, args, jev) -> ActionResult:
                                               "windowsVirtualKeyCode": 13})]
     _run(_session(tab["ws"], calls))
     time.sleep(0.8 if args.get("submit") else 0.2)
-    return ActionResult(True, f"typed into {label!r} ({how})" + ("; pressed Enter" if args.get("submit") else "")
-                        + f"; {_state(tab)}")
+    if not args.get("submit"):
+        return ActionResult(True, f"typed into {label!r} ({how}); {_state(tab)}")
+    # Sent is when the text left the box, not when Enter was pressed.
+    probe = _norm(text)[:60]
+    for _ in range(5):
+        if probe not in _norm(_eval(tab, _FOCUSED_TEXT) or ""):
+            break
+        time.sleep(0.4)
+    else:
+        failed = (_page_of(tab), label)
+        if not _eval(tab, _BUSY):  # a busy page is no evidence against the box
+            _FAILED_FIELDS[failed] = _FAILED_FIELDS.get(failed, 0) + 1
+        others = [e["text"] for e in (_eval(tab, f"{_COLLECT}('field')") or []) if e["text"] != label]
+        return ActionResult(False, f"typed into {label!r} and pressed Enter, but it was NOT sent: the text is still "
+                                   "in that box. Either the page is busy (still answering: browser_control wait, "
+                                   "then key Enter) or this is not the box that sends"
+                                   + (f" -- other text boxes here: {', '.join(repr(o[:40]) for o in others[:6])}"
+                                      if others else "")
+                                   + ". Do not type the same text into the same box again.")
+    _FAILED_FIELDS.pop((_page_of(tab), label), None)
+    after, settled = _settle(tab)
+    added = _new_text(before, after)
+    return ActionResult(True, f"typed into {label!r} ({how}), pressed Enter and it was sent; "
+                              + ("the page then finished updating" if settled else "the page was still updating after 60 s")
+                              + f". New on the page: {added!r}. {_state(tab)}")
+
+
+def enter_probe() -> tuple | None:
+    """Before Enter goes to the assistant's browser by the desktop keyboard
+    (actions/desktop.py press_key): its front tab, the text waiting in the
+    focused box, and the page's text. None when there is nothing to check."""
+    try:
+        tab = _current(tabs())
+        if tab is None:
+            return None
+        pending = _norm(_eval(tab, _FOCUSED_TEXT) or "")[:60]
+        return (tab, pending, _eval(tab, _MAIN_TEXT) or "") if pending else None
+    except Exception:  # noqa: BLE001 -- no browser to check: the key goes as before
+        return None
+
+
+def after_enter(tab: dict, pending: str, before: str) -> ActionResult:
+    """Enter was pressed on a box that held `pending`: sent only if it left
+    the box. 2026-10-20 02:07: typed by the desktop keyboard into ChatGPT
+    while it was still answering, two messages went as one, unchecked."""
+    time.sleep(0.8)
+    if pending in _norm(_eval(tab, _FOCUSED_TEXT) or ""):
+        return ActionResult(False, "Enter was pressed, but the text is still in the box: NOT sent. The page may be "
+                                   "busy (still answering): wait (browser_control wait), then press Enter again; "
+                                   "do not type the text again.")
+    after, settled = _settle(tab)
+    return ActionResult(True, "Enter pressed and the text was sent; "
+                              + ("the page then finished updating" if settled else "the page was still updating after 60 s")
+                              + f". New on the page: {_new_text(before, after)!r}")
+
+
+_KEYS = {"enter": ("Enter", "Enter", 13, "\r"), "escape": ("Escape", "Escape", 27, ""), "esc": ("Escape", "Escape", 27, ""),
+         "tab": ("Tab", "Tab", 9, ""), "backspace": ("Backspace", "Backspace", 8, ""),
+         "arrowdown": ("ArrowDown", "ArrowDown", 40, ""), "arrowup": ("ArrowUp", "ArrowUp", 38, ""),
+         "pagedown": ("PageDown", "PageDown", 34, ""), "pageup": ("PageUp", "PageUp", 33, "")}
+
+
+@_on_page
+def key(tab, args, jev) -> ActionResult:
+    """Press one key on the page's focused element. Enter on a box holding
+    text is checked like type's submit: sent only if the text left it."""
+    name = re.sub(r"[\s_-]", "", str(args.get("key") or args.get("text") or "")).casefold()
+    if name not in _KEYS:
+        return ActionResult(False, f"key must be one of {', '.join(sorted(_KEYS))}")
+    key_name, code, vk, text = _KEYS[name]
+    pending = _norm(_eval(tab, _FOCUSED_TEXT) or "")[:60] if key_name == "Enter" else ""
+    before = _eval(tab, _MAIN_TEXT) or ""
+    down = {"type": "keyDown", "key": key_name, "code": code, "windowsVirtualKeyCode": vk}
+    _run(_session(tab["ws"], [("Input.dispatchKeyEvent", {**down, **({"text": text} if text else {})}),
+                              ("Input.dispatchKeyEvent", {"type": "keyUp", "key": key_name, "code": code,
+                                                          "windowsVirtualKeyCode": vk})]))
+    time.sleep(0.8)
+    if pending and pending in _norm(_eval(tab, _FOCUSED_TEXT) or ""):
+        return ActionResult(False, "pressed Enter, but the text is still in the box: NOT sent (the page may be "
+                                   "busy: browser_control wait, then try again; or it is not the box that sends).")
+    after, settled = _settle(tab, timeout=60 if pending else 10)
+    added = _new_text(before, after)
+    return ActionResult(True, f"pressed {key_name}" + (" and it was sent" if pending else "")
+                        + (f"; new on the page: {added!r}" if added else "; nothing new on the page")
+                        + f". {_state(tab)}")
+
+
+@_on_page
+def wait(tab, args, jev) -> ActionResult:
+    """Until the page stops changing and shows nothing still working (a
+    reply finished streaming, a result finished loading); then its newest text."""
+    seconds = min(max(float(args.get("amount") or 60), 3), 120)
+    text, settled = _settle(tab, timeout=seconds)
+    return ActionResult(settled, ("The page finished updating" if settled else
+                                  f"The page was still updating after {seconds:.0f} s")
+                        + f". Its latest text: {_norm(text)[-1500:]!r}. {_state(tab)}")
 
 
 ACTIONS = {"list_tabs": list_tabs, "switch_tab": switch_tab, "close_tab": close_tab, "open": open_url,
            "back": navigate, "forward": navigate, "reload": navigate, "scroll": scroll, "click": click,
-           "type": type_text}
+           "type": type_text, "wait": wait, "key": key}
 
 
 def browser_control(args: dict, jev=None) -> ActionResult:
     action = str(args.get("action") or "").strip()
+    if action not in ACTIONS and action.startswith("scroll"):
+        action = "scroll"  # 2026-10-29 21:24: "scroll_document" was refused and she searched again
     if action not in ACTIONS:
         return ActionResult(False, f"action must be one of {', '.join(ACTIONS)}")
     try:

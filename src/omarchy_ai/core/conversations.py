@@ -104,10 +104,12 @@ def flush(cid: str | None = None) -> None:
                 _save(conv, force=True)
 
 
-def create(source: str) -> str:
+def create(source: str, device: str | None = None) -> str:
     cid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
     now = time.time()
     conv = {"id": cid, "title": "", "source": source, "created": now, "updated": now, "lines": [], "titled_at": 0}
+    if device:
+        conv["device"] = device  # which speaker: what is asked there is said there (core/agenda.py)
     with _lock:
         _cache[cid] = conv
         _save(conv, force=True)
@@ -123,14 +125,19 @@ def continue_or_create(cid, source: str) -> str:
     return cid if exists(cid) else create(source)
 
 
-def desktop(source: str = "desktop-voice") -> str:
+def desktop(source: str = "desktop-voice", device: str | None = None) -> str:
     """Desktop voice sessions come one wake word at a time: one soon after the
     last goes on in its conversation instead of starting a new chat. The same
-    for a voice satellite (source "satellite")."""
-    latest = next((c for c in _summaries(empty=True) if c["source"] == source), None)
+    for a voice satellite (source "satellite"), per speaker (`device`)."""
+    latest = next((c for c in _summaries(empty=True) if c["source"] == source
+                   and (device is None or c.get("device") == device)), None)
     if latest and time.time() - latest["updated"] < DESKTOP_GAP:
         return latest["id"]
-    return create(source)
+    return create(source, device)
+
+
+_SENTENCE_END = re.compile(r"[.!?…:]$")
+_WORD_START = re.compile(r"[^\W\d_]")
 
 
 def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = None, *,
@@ -149,7 +156,10 @@ def add_line(cid: str, role: str, text: str, attachments: list[dict] | None = No
         lines = conv["lines"]
         now = time.time()
         if lines and lines[-1].get("role") == role and not attachments and not separate:
-            lines[-1]["text"] += text
+            # A new sentence of hers starts after the last one ended: "על זה!"
+            # then "המחשב נעול." read "על זה!המחשב נעול." (2026-10-29).
+            gap = " " if _SENTENCE_END.search(lines[-1]["text"]) and _WORD_START.match(text) else ""
+            lines[-1]["text"] += gap + text
         else:
             line = {"role": role, "text": text, "at": now}
             if attachments:
@@ -329,7 +339,7 @@ def render_line(line: dict) -> str:
     if line.get("role") == "card" and line.get("kind") == "note":
         return f"[Note] {line.get('text', '')}"
     if line.get("role") == "card":
-        return f"[Task {line.get('task_id')} {line.get('kind')}] {line.get('text', '')}"
+        return f"[Task {line.get('task_id')} {line.get('kind')}] {line.get('text') or line.get('question', '')}"
     text = str(line.get("text", "")).strip()
     if attached:
         text += f" [Attachments: {attached}]"
@@ -345,6 +355,30 @@ def context(cid: str) -> str:
         return ""
     text = "\n".join(render_line(line) for line in conv["lines"])
     return text[-CONTEXT_CHARS:]
+
+
+def user_lines_before(cid, before: float, limit: int = 4, window: float = 1800.0) -> list[str]:
+    """The user's last lines in this conversation from before `before` (and
+    within `window` seconds of it), oldest first."""
+    if not _valid(cid):
+        return []
+    with _lock:
+        conv = _load(cid)
+    lines = [str(line.get("text") or "") for line in (conv or {}).get("lines", [])
+             if line.get("role") == "user" and before - window <= float(line.get("at") or 0) < before]
+    return [" ".join(text.split()) for text in lines if text.strip()][-limit:]
+
+
+def assistant_line_before(cid, before: float, window: float = 1800.0) -> str:
+    """What she said last in this conversation before `before` (within
+    `window` seconds of it), or ""."""
+    if not _valid(cid):
+        return ""
+    with _lock:
+        conv = _load(cid)
+    lines = [str(line.get("text") or "") for line in (conv or {}).get("lines", [])
+             if line.get("role") == "assistant" and before - window <= float(line.get("at") or 0) < before]
+    return " ".join(lines[-1].split()) if lines else ""
 
 
 class Transcript(list):
@@ -401,8 +435,62 @@ def _open_question(question: str) -> bool:
     return p < 0.5
 
 
+# The runtime's own stages: which model decides, which worker runs, the
+# worker's inner loop. 2026-10-26 the phone's chat filled with "Codex",
+# "Sending to Jev: planning", "Jev decision: WORKFLOW AGENT", "Workflow
+# Agent", "Still working: starting." -- none of it the user's business.
+_PLUMBING = re.compile(
+    r"^(sending to jev\b|jev\b|still working\b|running\s|choosing next action|planning the task|"
+    r"choosing (a|the) worker|handing it to\b|progress:)"
+    r"|^(codex|claude code|executor|direct tool|[a-z ]+ (agent|worker))( is working)?\.?$",
+    re.IGNORECASE)
+# Real stages shown in a row before the chat waits for the next question,
+# answer or result; later ones update the last card on read (_with_status).
+MAX_PROGRESS_CARDS = 3
+
+
+def _working(task) -> str:
+    from ..runtime import questions
+    from ..runtime.task import request_text
+    return "עובדת על זה…" if questions.hebrew(request_text(str(getattr(task, "goal", "") or ""))) else "Working on it…"
+
+
+def phone_progress(task) -> tuple[str, bool]:
+    """(text, milestone) of a progress event as the chat shows it: a real
+    stage in plain words, or a short "working on it" for the runtime's own
+    plumbing (milestone False)."""
+    from ..runtime import questions
+    phase = str(getattr(task, "phase", "") or "")
+    label = " ".join(phase.removeprefix("status:").split()) if phase.startswith("status:") else ""
+    if label and not _PLUMBING.search(label) and "://" not in label:
+        return questions.brief(questions.clean(label), 160), True
+    return _working(task), False
+
+
+def _last_task_cards(cid: str, task_id: str) -> list[dict]:
+    """This task's cards in the conversation since its last question, answer
+    prompt or result (the current stretch of work), oldest first."""
+    with _lock:
+        conv = _load(cid)
+        lines = list((conv or {}).get("lines", []))
+    out: list[dict] = []
+    for line in reversed(lines):
+        if line.get("role") != "card" or line.get("task_id") != task_id:
+            continue
+        out.insert(0, line)
+        if line.get("kind") != "progress":
+            break
+    return out
+
+
 def task_event(task, event: str) -> None:
-    """A task started in a conversation reports back into it as a card."""
+    """A task started in a conversation reports back into it as a card.
+
+    What the card says is for a person (runtime/questions.py's clean, ask_text
+    and result_text): the question alone, a result in a sentence or two, and
+    progress only as one "working on it" per stretch of work plus real
+    stages. A card identical to the task's previous one is not added again."""
+    from ..runtime import questions
     cid = getattr(task, "conversation", "")
     kind = _CARD_EVENTS.get(event)
     if not cid or not kind:
@@ -420,15 +508,36 @@ def task_event(task, event: str) -> None:
     elif kind == "question":
         # "Did it work?" (runtime/runtime.py) is a yes or a no whatever follows it.
         confirm = (getattr(task, "certification", None) or {}).get("status") == "awaiting_confirmation"
-        card.update(text=str(task.question or ""), question=str(task.question or ""),
+        # Flux shows `question` and, under it, `text` when that is not empty:
+        # the question once.
+        asked = questions.ask_text(str(task.question or ""))
+        if not asked:
+            # A worker report that was only its SUMMARY/FILES CHANGED tail has
+            # nothing left to ask once cleaned: no card that asks nothing.
+            log.warning("task %s: question card with no words in it not added: %r", task.id,
+                        str(task.question or "")[:200])
+            return
+        card.update(text="", question=asked,
                     open=not confirm and _open_question(str(task.question or "")))
     elif kind == "progress":
-        card["text"] = task_progress(task)
+        text, milestone = phone_progress(task)
+        card["text"] = text
     else:
         if event == "interrupted" and not task.result:
             card["text"] = "Task paused: Omarchy AI restarted before this step finished. You can resume it."
         else:
-            card["text"] = str(task.result or event)
+            card["text"] = questions.result_text(str(task.result or "")) or str(event)
+    stretch = _last_task_cards(cid, task.id)
+    previous = stretch[-1] if stretch else None
+    if previous and previous.get("kind") == kind and previous.get("text") == card.get("text") \
+            and previous.get("question", "") == card.get("question", ""):
+        return  # the same card again ("Cancelled by the user." twice)
+    if kind == "progress":
+        shown = [c for c in stretch if c.get("kind") == "progress"]
+        if not milestone and shown:
+            return  # one "working on it" per stretch of work
+        if len(shown) >= MAX_PROGRESS_CARDS:
+            return
     add_card(cid, card)
 
 
@@ -503,7 +612,10 @@ def _card_status(card: dict, tasks) -> str:
         waiting = task.status == "waiting_approval" and (task.pending_approval or {}).get(
             "fingerprint") == card.get("fingerprint")
     else:
-        waiting = task.status == "waiting_user" and str(task.question or "") == card.get("question")
+        from ..runtime import questions
+        asked = str(getattr(task, "question", "") or "")
+        # Cards since 2026-10-26 hold the question as the phone shows it.
+        waiting = task.status == "waiting_user" and card.get("question") in (asked, questions.ask_text(asked))
     return "waiting" if waiting else "done"
 
 
@@ -538,16 +650,20 @@ def _with_status(conv: dict, tasks) -> list[dict]:
         last = lines[index]
         if task.status in TERMINAL:
             if last.get("kind") != "result" or last.get("event") != task.status:
+                from ..runtime import questions
                 lines.append({"role": "card", "kind": "result", "task_id": task_id,
                               "event": task.status, "status": "done",
-                              "text": task.result or task.status,
+                              "text": questions.result_text(task.result or "") or task.status,
                               "at": getattr(task, "updated_at", conv["updated"])})
         elif last.get("kind") == "progress":
             if task.status == "waiting_user":
-                last.update(kind="question", event=task.status, status="waiting",
-                            text=task.question or "Waiting for your answer", question=task.question or "")
+                from ..runtime import questions
+                last.update(kind="question", event=task.status, status="waiting", text="",
+                            question=questions.ask_text(task.question or "") or "Waiting for your answer")
             elif task.status in ("running", "pending"):
-                last["text"] = task_progress(task)
+                text, milestone = phone_progress(task)
+                if milestone:  # the runtime's own stages leave the card as it was
+                    last["text"] = text
     return lines
 
 
@@ -591,11 +707,19 @@ def summaries(tasks=None) -> dict:
         lines = _with_status(conv, tasks)
         waiting = sum(1 for line in lines if line.get("status") == "waiting")
         total += waiting
-        last = next((line for line in reversed(lines) if line.get("text")), {})
+        # A question card keeps its words in `question` (its `text` is empty).
+        last = next((line for line in reversed(lines) if line.get("text") or line.get("question")), {})
         rows.append({"id": conv["id"], "title": conv.get("title", ""), "source": conv["source"],
                      "created": conv["created"], "updated": conv["updated"],
-                     "preview": " ".join(str(last.get("text", "")).split())[:140], "waiting": waiting})
+                     "preview": " ".join(str(last.get("text") or last.get("question") or "").split())[:140],
+                     "waiting": waiting})
     return {"conversations": rows, "waiting": total}
+
+
+def device(cid) -> str:
+    """The speaker a conversation happens on (its host); "" if not a speaker's."""
+    conv = _load(cid) if cid else None
+    return str((conv or {}).get("device") or "")
 
 
 def source(cid) -> str:

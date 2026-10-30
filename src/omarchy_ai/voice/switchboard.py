@@ -100,6 +100,7 @@ BETTER_P = 0.8        # Jev's other tool replaces the model's: only when clear
 SHORTLIST = 8         # other tools offered with each review
 USER_TOOLS_OFFERED = 3
 REJECT_MATCH = 0.3    # ... and only if the call itself does not look right
+FITS_MATCH = 0.8      # route execute, gap none and this match: no other tool displaces the call
 HARD_MISMATCH = 0.1   # a call this far from the request never runs
 READ_MISMATCH = 0.05  # reads are harmless: reject only obvious nonsense
 ASK_P = 0.85
@@ -125,7 +126,9 @@ class Context:
     calls: list[tuple[str, dict]]     # the model's calls since the request
     description: str = ""             # the tool's own description
     failed: dict | None = None        # her last call, when it failed: {"tool", "args", "error"}
+    failed_tools: frozenset = frozenset()  # tools that genuinely failed for this job in the last minutes
     origin: dict | None = None        # where the request came from (core/origin.py), None fields dropped
+    assistant_said: str = ""          # her reply just before the request ("try it" carries out what she offered)
 
 
 def _options(tool: str, ctx: Context) -> dict:
@@ -223,7 +226,8 @@ def questions(tool: str, ctx: Context, args: dict | None = None, offered: dict |
             "something works, asks for nothing: reject a call that acts on it. The request is speech recognition "
             "output and often garbled: read it with the earlier turns. A short request that only makes sense as "
             "a follow-up (e.g. 'No ssh to it' right after 'So you run it', really 'Now ssh to it') asks for that "
-            "follow-up; do not reject on a misheard word. If `failed_just_before` is given, the model's "
+            "follow-up; do not reject on a misheard word. A short reply such as 'try it', 'yes' or 'do it' asks "
+            "for what the assistant proposed in `assistant_said_before_request`. If `failed_just_before` is given, the model's "
             "previous call failed with that error and the user is still waiting for that job: a call that looks "
             "up what is needed to recover, or does the same job on the right target, is a sensible step, even "
             "when the latest request is only a short reply such as 'it is clear enough' or 'the first one'.",
@@ -260,6 +264,7 @@ def state(tool: str, args: dict, ctx: Context) -> dict:
     result = {
         "request": ctx.request[-600:],
         "earlier_user_turns": [t[-200:] for t in ctx.earlier[-3:]],
+        **({"assistant_said_before_request": ctx.assistant_said[-300:]} if ctx.assistant_said else {}),
         "fast_pass_route": ctx.hint,
         **({"origin": ctx.origin} if ctx.origin else {}),
         "calls_this_turn": [{"tool": n, "args": _short(a)} for n, a in ctx.calls[-6:]],
@@ -316,6 +321,14 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
             "Ask the user one short question, then act."))
     reads = _reads(tool, args)
     floor = READ_MISMATCH if reads else HARD_MISMATCH
+    # Another route after a failure is recovery, not a misfit: 2026-10-20
+    # 01:41-01:43 browser_task kept failing on a chat page, and each
+    # browser_control, focus_window and type_text she tried instead was
+    # sent back with "the tool for this is browser_task". Then only wrong
+    # values and calls far from the request are stopped.
+    recovering = bool(ctx.failed_tools) and tool not in ctx.failed_tools
+    if recovering:
+        evidence["recovering_from"] = sorted(ctx.failed_tools)
     why = {"values": "the target or values are wrong", "tool": "it is the wrong kind of action",
            "not_asked": "the user did not ask for this", "ambiguous": "the request is ambiguous"}.get(gap, "it does not fit")
     # A call that does not fit: Jev thinks it more likely wrong than right
@@ -335,9 +348,14 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
     support = (better.get("probabilities") or {}).get(tool, 1.0) if better else 1.0
     if better:
         evidence["call_support"] = round(support, 2)
-    displaced = (not reads and better.get("choice") not in (None, tool) and better.get("p", 0) >= BETTER_P
-                 and support < 0.2)
-    doubted = not reads and better and route == "reject" and p >= REJECT_P and support < 0.3
+    # A call Jev itself finds right on every count stays: 2026-10-29 20:04
+    # "lock that computer" as a smart-home script call (route execute 0.93,
+    # matches 0.87, gap none) was displaced by a saved countdown
+    # skill, which ran 73 minutes and failed.
+    fits = route == "execute" and match >= FITS_MATCH and gap == "none"
+    displaced = (not reads and not fits and better.get("choice") not in (None, tool)
+                 and better.get("p", 0) >= BETTER_P and support < 0.2)
+    doubted = not reads and better and route == "reject" and p >= REJECT_P and support < 0.3 and not recovering
     if doubted and not displaced:
         ranked = sorted((better.get("probabilities") or {}).items(), key=lambda kv: -kv[1])
         likely = ", ".join([n for n, _ in ranked if n != tool][:2])
@@ -347,7 +365,8 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
         return Verdict("reject", evidence=evidence, message=(
             f"Not run: Jev judged {tool} wrong for the user's request {ctx.request[-200:]!r}.{where} "
             f"More likely: {likely}. Make the right call for what and where the user meant, or ask them."))
-    if (misfit or displaced) and better.get("choice") not in (None, tool) and better.get("p", 0) >= BETTER_P:
+    if ((misfit or displaced) and better.get("choice") not in (None, tool) and better.get("p", 0) >= BETTER_P
+            and not recovering):
         other = better["choice"]
         from ..execution import catalog
         direct = other in catalog.CORE or other in catalog.MYAPI_CORE
@@ -362,8 +381,9 @@ def decide(answers: dict, tool: str, args: dict, ctx: Context) -> Verdict:
     # matches=0.16, gap=not_asked ran, because p was under REJECT_P. When the
     # route's own top choice is reject and the call is a misfit, three answers
     # agree: it does not run.
-    if match < floor or (misfit and route == "reject") or (
-            not reads and route == "reject" and p >= REJECT_P and match < REJECT_MATCH):
+    if match < floor or (recovering and gap == "values" and match < REJECT_MATCH) or (not recovering and (
+            (misfit and route == "reject") or (not reads and route == "reject" and p >= REJECT_P
+                                               and match < REJECT_MATCH))):
         return Verdict("reject", evidence=evidence, message=(
             f"Not run: Jev checked {tool} {json.dumps(_short(args), ensure_ascii=False)[:200]} against the user's "
             f"request {ctx.request[-200:]!r} and {why}. Re-read the request and make the right call, or ask."))

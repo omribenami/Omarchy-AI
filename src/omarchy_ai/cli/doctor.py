@@ -357,6 +357,57 @@ def check_api_keys(ctx: Context) -> Result:
     return Result("api_keys", "API keys", status, reason, "; ".join(fixes), details)
 
 
+def check_settings_applied(ctx: Context) -> Result:
+    """Warn when settings or secrets changed after the daemon started."""
+    title = "Applied settings"
+    unit = ctx.unit()
+    if unit.get("ActiveState") != "active":
+        return Result(
+            "settings_applied",
+            title,
+            GREEN,
+            "assistant is not running; saved settings load when it starts",
+        )
+    pid = str(unit.get("MainPID") or "").strip()
+    try:
+        started = Path(f"/proc/{int(pid)}").stat().st_mtime
+    except (OSError, ValueError):
+        return Result(
+            "settings_applied",
+            title,
+            YELLOW,
+            "could not confirm whether the running assistant loaded the saved settings",
+            "apply changes from Assistant Settings",
+            {"pid": pid},
+        )
+    cfg = ctx.cfg()
+    candidates = [
+        ctx.config_path,
+        Path(cfg.api_key_path),
+        Path(cfg.gemini_api_key_path),
+        Path(cfg.vercel_gateway_api_key_path),
+    ]
+    newer = []
+    for path in candidates:
+        try:
+            if path.stat().st_mtime > started + 0.5:
+                newer.append(path.name)
+        except OSError:
+            continue
+    if newer:
+        return Result(
+            "settings_applied",
+            title,
+            YELLOW,
+            "saved changes are newer than the running assistant",
+            "click Apply changes now in Assistant Settings",
+            {"pending_files": newer},
+        )
+    return Result(
+        "settings_applied", title, GREEN, "running assistant has loaded the saved settings"
+    )
+
+
 def check_gateway(ctx: Context) -> Result:
     title = "Vercel AI Gateway"
     if ctx.quick:
@@ -1486,6 +1537,7 @@ def check_version(ctx: Context) -> Result:
 CHECKS: list[tuple[str, Callable[[Context], Result]]] = [
     ("config", check_config),
     ("api_keys", check_api_keys),
+    ("settings_applied", check_settings_applied),
     ("gateway", check_gateway),
     ("myapi", check_myapi),
     ("quota", check_quota),

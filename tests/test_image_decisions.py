@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.core import jev
 from omarchy_ai.execution import cameras, vision
 from omarchy_ai.voice.omarchy import GatewayClient

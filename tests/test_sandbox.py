@@ -93,6 +93,27 @@ class SandboxedCommandTests(FakeHome):
         self.assertIn((self.home / ".ssh", False), policy.expose)
         self.assertNotIn(self.home / ".ssh", policy.hidden)
 
+    @unittest.skipUnless(
+        Path("/etc/ssh/ssh_config").exists(), "no system SSH client config"
+    )
+    def test_ssh_can_parse_system_config_inside_sandbox(self):
+        # -G only evaluates configuration: no connection or credentials used.
+        result, _ = self.run_at("ssh -G sandbox-check.invalid", Risk.NORMAL)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("hostname sandbox-check.invalid", result.output)
+
+    def test_ssh_config_snapshots_do_not_accept_unsafe_ownership(self):
+        root = self.home / "ssh-system"
+        root.mkdir()
+        (root / "ssh_config").write_text("Host *\n  ServerAliveInterval 17\n")
+        snapshots = self.home / "snapshots"
+        snapshots.mkdir()
+        # User-owned system config must not be laundered into a trusted one.
+        if os.getuid() != 0:
+            self.assertEqual(sandbox._ssh_config_binds(snapshots, root), [])
+        (root / "ssh_config").chmod(0o666)
+        self.assertEqual(sandbox._ssh_config_binds(snapshots, root), [])
+
     def test_write_outside_the_workspace_fails(self):
         target = self.other / "note.txt"
         # Not a write target the classifier can see: only the sandbox stops it.

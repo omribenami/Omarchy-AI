@@ -13,6 +13,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.cli import doctor
 from omarchy_ai.cli.doctor import GREEN, RED, YELLOW, Completed, Context, Response
 from omarchy_ai.core import health
@@ -184,6 +185,32 @@ class ConfigAndKeysTests(DoctorCase):
         result = self.check(doctor.check_api_keys)
         self.assertEqual(result.status, YELLOW)
         self.assertIn("chmod 600", result.fix)
+
+    def test_saved_key_newer_than_daemon_requires_apply(self):
+        self.key("vercel-ai-gateway-key")
+        unit = {**UNIT, "MainPID": str(os.getpid())}
+        key = (
+            "systemctl", "--user", "show", "omarchy-ai", "-p", doctor.UNIT_PROPERTIES
+        )
+        runner = FakeRunner(
+            {key: Completed(0, "".join(f"{k}={v}\n" for k, v in unit.items()))}
+        )
+        future = time.time() + 5
+        os.utime(self.conf / "vercel-ai-gateway-key", (future, future))
+        result = self.check(doctor.check_settings_applied, run=runner)
+        self.assertEqual(result.status, YELLOW)
+        self.assertIn("Apply changes now", result.fix)
+
+    def test_offline_assistant_loads_settings_when_started(self):
+        unit = {**UNIT, "ActiveState": "inactive", "MainPID": "0"}
+        key = (
+            "systemctl", "--user", "show", "omarchy-ai", "-p", doctor.UNIT_PROPERTIES
+        )
+        runner = FakeRunner(
+            {key: Completed(0, "".join(f"{k}={v}\n" for k, v in unit.items()))}
+        )
+        result = self.check(doctor.check_settings_applied, run=runner)
+        self.assertEqual(result.status, GREEN)
 
 
 class NetworkTests(DoctorCase):

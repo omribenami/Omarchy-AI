@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from fakes.effects_journal import isolate_journal
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.execution import provenance, runner, tools
 from omarchy_ai.execution.actions import ActionResult
 from test_effect_class import declared_tools

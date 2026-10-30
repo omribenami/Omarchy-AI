@@ -285,6 +285,7 @@ class GeminiLiveSession:
         self.user_spoke_at = 0.0
         self._hangup = asyncio.Event()
         self._transcript = []
+        self._started_wall = time.time()
         self._audio = asyncio.Queue(maxsize=250)
         self._calls = asyncio.Queue(maxsize=64)
         self._seen = set()
@@ -309,6 +310,13 @@ class GeminiLiveSession:
         # The channel when no conversation in context says it (core/origin.py
         # CHANNELS): the desktop text chat has no saved conversation.
         self.channel: str | None = None
+        # A speaker conversation the wake word opened says nothing on its own
+        # until the user has spoken in it: _announcer holds what arrives. Live
+        # 2026-10-29 21:41: a false wake at night, then a finished task's result
+        # on the ceiling speakers. Set by voice/satellite.py.
+        self.hold_until_spoken = False
+        self._held: list[dict] = []
+        self._before: tuple[list[str], str] | None = None  # _conversation_before
         self._task_seen: dict = {}  # task id -> (what task_status said, monotonic time) (_task_status_repeat)
         self._offers_turn, self._offers = 0.0, 0  # use_tool offers in this user turn (_offer_result)
         self._refused_turn, self._refused = 0.0, {}  # calls Jev sent back in this user turn (_sent_back)
@@ -445,6 +453,7 @@ class GeminiLiveSession:
                         if call.name == "end_conversation":
                             from ..execution.browser_jev import cancel_browser_tasks
                             cancel_browser_tasks()
+                            self._release_house_calls()
                             runner.default_runner().cancel(owner=self, reason="the conversation ended")
                             self._hangup.set()
                             return
@@ -598,6 +607,8 @@ class GeminiLiveSession:
             self._utterance_checked = self._fast_judging = True  # until back at the top (_judge_claim waits)
             text = " ".join("".join(self._utterance).split())
             started = time.monotonic()
+            if await self._voice_approve(text):
+                continue
             decision, route = await asyncio.to_thread(jev_fast.judge, text, origin=self._origin())
             if route:
                 self._route_hint = {**route, "request": text, "at": time.monotonic()}
@@ -644,6 +655,56 @@ class GeminiLiveSession:
                 await asyncio.to_thread(watchdog.tool_result, tool, args, result.ok, result.message)
             self._action_log.append({"action": tool, "args": args, "ok": result.ok, "message": result.message,
                                      "call_id": "jev-fast", "ts": time.time(), "window": None})
+
+    # Jev's bar for "these words approve that card".
+    VOICE_APPROVE_P = 0.9
+
+    async def _voice_approve(self, text: str) -> bool:
+        """The owner, recognized (their voice, or their own phone), says yes
+        to a card waiting in this conversation: it runs as if tapped
+        (core/approvals.py OWNER_VOICE_BY). Their own transcribed words are
+        judged, never the model's: content she read cannot say yes for them.
+        2026-10-28 18:47: "I approve it, you recognize my voice" was answered
+        "the system needs a tap in the app", twice. True when one ran."""
+        identity = self.identity()
+        if not text or not identity.recognized_owner:
+            return False
+        from ..core import approvals, conversations, pending_actions
+        from ..core.jev import Jev, JevError, boolean
+        from ..execution import myapi_agent
+        cid = conversations.CURRENT.get()
+        waiting = await asyncio.to_thread(pending_actions.waiting_in, cid)
+        if not waiting:
+            return False
+        action = waiting[0]
+        what = {"title": action.get("title"), "details": [f"{f.get('label')}: {str(f.get('value'))[:200]}"
+                                                          for f in (action.get("fields") or [])][:6]}
+        question = {"approves": boolean(
+            "The assistant is waiting for the user's OK to run `action`. `user_words` is speech recognition of "
+            "what the user just said. Do these words clearly approve running that action now (yes, approve, do "
+            "it, go ahead, I allow it), in any language? A question, a doubt, 'wait', a refusal, or talk about "
+            "something else is no.")}
+        try:
+            answer = await asyncio.to_thread(Jev().ask, {"action": what, "user_words": text[-300:]}, question,
+                                             timeout=4, retries=0, fail_fast=True)
+        except JevError as error:
+            log.info("Voice approval not judged (%s): %r", error, text[:80])
+            return False
+        p = answer["approves"]["p"]
+        if p < self.VOICE_APPROVE_P:
+            if p >= 0.5:
+                log.info("Voice approval: %r for %s scored %.2f, below the bar", text[:80], action["id"], p)
+            return False
+        self._as_speaker()
+        ok, message = await asyncio.to_thread(myapi_agent.decide, action["id"], True, "voice",
+                                              approvals.OWNER_VOICE_BY)
+        log.info("Voice approval: session=%s action=%s (%s) by the recognized owner (%s) p=%.2f -> ok=%s %r",
+                 self._audit_session, action["id"], action.get("title"), identity.how, p, ok, message[:160])
+        self._announcements.put_nowait({"notice": (
+            f"[Automatic notice, not from the user] The user approved {action.get('title')!r} by voice and it "
+            f"{'ran' if ok else 'did not run'}: {provenance.unfence(message)[:300]} Tell them the outcome in one "
+            "sentence, in their language, and carry on with what it was for. Do not call it again.")})
+        return True
 
     def _jev_already(self, call):
         """A response for Gemini's call if Jev just handled this request."""
@@ -1019,6 +1080,40 @@ class GeminiLiveSession:
         log.info("Claim before result corrected: session=%s origin=%s kind=%s calls=%d", self._audit_session,
                  origin, kind, len(results))
 
+    def _release_house_calls(self) -> None:
+        """The conversation is ending: a user tool still changing something
+        (not one of its reads) finishes instead of being cancelled, and its
+        outcome goes through the outbox. 2026-10-27: "close the garage" on
+        the phone (the call ended 16 s in) and "raise the AC by one" on the
+        speaker (it hung up 1 s in) were both cut off: nobody heard whether
+        it happened."""
+        def keep(name: str, args: dict) -> bool:
+            return (user_tools.exists(name)
+                    and str((args or {}).get("operation") or "") not in user_tools.read_operations(name))
+
+        def on_late(name: str, args: dict, result) -> None:
+            args = args or {}
+            what = str(args.get("text") or args.get("request")
+                       or " ".join(str(args.get(k) or "") for k in ("service", "entity_id")).strip()
+                       or name.replace("_", " "))[:100]
+            reason = " ".join(provenance.unfence(result.message).split())[:200]
+            outbox.send(outbox.Message(
+                outbox.RESULT, ("Done: " if result.ok else "Failed: ") + what,
+                "It finished after the conversation ended." if result.ok else reason,
+                origin_id=f"late:{self._audit_session}:{uuid.uuid4().hex[:8]}",
+                entry={"id": f"late-{uuid.uuid4().hex[:8]}", "title": what,
+                       "detail": "It finished after the conversation ended." if result.ok else f"It failed: {reason}",
+                       "outcome": "completed" if result.ok else "failed"}))
+
+        try:
+            released = runner.default_runner().release(owner=self, keep=keep, on_late=on_late)
+        except Exception:  # noqa: BLE001 -- ending the conversation must not fail
+            log.warning("could not keep the running house actions", exc_info=True)
+            return
+        if released:
+            log.info("Conversation ended with %d house action(s) running: they finish and report through the "
+                     "outbox: session=%s", released, self._audit_session)
+
     def _report_lost(self, call, ran: str, response: dict) -> None:
         """A background result whose conversation connection was gone: once,
         through the outbox (said on the reconnected conversation, else shown)."""
@@ -1151,10 +1246,21 @@ class GeminiLiveSession:
         nobody answers."""
         from google.genai import types
         while not self._hangup.is_set():
+            if self._held and self.user_spoke_at:
+                log.info("User spoke: saying %d held announcement(s): session=%s", len(self._held),
+                         self._audit_session)
+                for held in self._held:
+                    self._announcements.put_nowait(held)
+                self._held = []
             try:
                 entry = await asyncio.wait_for(self._announcements.get(), 0.5)
             except asyncio.TimeoutError:
                 entry = None
+            if entry is not None and self.hold_until_spoken and not self.user_spoke_at:
+                self._held.append(entry)
+                log.info("Announcement held until the user speaks: session=%s title=%r", self._audit_session,
+                         str(entry.get("title") or entry.get("notice") or "")[:80])
+                continue
             if entry is not None and (source := self._untrusted_source(entry)):
                 # A background worker's report (runtime/workers.py), all of it as content.
                 self._input_guard.taint.mark(source, json.dumps(entry, ensure_ascii=False, default=str))
@@ -1166,6 +1272,35 @@ class GeminiLiveSession:
                     + entry["notice"]))]), turn_complete=True)
                 self._claim_checked = self._user_mark()  # her next turn answers this, not the user
                 log.info("Automatic notice said: session=%s %r", self._audit_session, entry["notice"][:120])
+                continue
+            if entry is not None and entry.get("outcome") == "waiting_user" and entry.get("task_id"):
+                # A background task's question (runtime/asking.py): asked, and
+                # the reply passed on. Until 2026-10-28 it went as a heartbeat
+                # result: told, not asked, with nothing saying where the reply goes.
+                if not self._still_asking(entry):
+                    from ..core import agenda
+                    agenda.mark_delivered([entry["id"]] if entry.get("id") else [])
+                    log.info("Question no longer waiting, not asked: task=%s", entry.get("task_id"))
+                    continue
+                while not self._idle():
+                    await asyncio.sleep(0.2)
+                task_id = entry["task_id"]
+                question = str(entry.get("question") or entry.get("detail") or "")[:700]
+                opener = ("You started this conversation yourself because a background task has a question for "
+                          "the user. " if self.proactive and not self._announced else "")
+                await session.send_client_content(turns=types.Content(role="user", parts=[types.Part(text=(
+                    f"[Task question, automatic] {opener}Background task {task_id} ({entry.get('title', '')}) is "
+                    f"paused until the user answers its question: \"{question}\". Ask the user now, briefly, in "
+                    "their language, keeping its meaning. Whatever they reply (an answer, details, or 'you "
+                    f"decide') goes to the task word for word: task_respond with task_id {task_id} and "
+                    "answer=<their reply>. Never answer it for them. If they want it stopped, task_respond with "
+                    "cancel=true. If they do not answer, say nothing more."))]), turn_complete=True)
+                from ..runtime import asking
+                asking.put_to(task_id, getattr(self._transcript, "conversation", "") or "")
+                self._claim_checked = self._user_mark()
+                self._announced.append((entry.get("id"), time.monotonic()))
+                self._announcements_said.append(f"task question: {question[:200]}")
+                log.info("Task question asked: session=%s task=%s", self._audit_session, task_id)
                 continue
             if entry is not None and entry.get("outcome") == "waiting_approval" and not self._still_waiting(entry):
                 # 2026-09-27 10:23: a task cancelled minutes before was still
@@ -1310,6 +1445,21 @@ class GeminiLiveSession:
             groups.append(" ".join("".join(current).split()))
         return groups, " ".join("".join(reply).split())
 
+    def _escalation_turns(self, groups: list[str]) -> list[str]:
+        """The user's turns for an escalation brief: this session's, after the
+        conversation's earlier ones. Each typed phone message is a session of
+        its own, so 2026-10-19 21:21 the brief held only "מחובר" ("logged
+        in"), the reply to her own request to sign in to ChatGPT; the job
+        lost, a saved skill to lock a child's computer fitted that one word
+        and ran. Blocking: call it off the event loop."""
+        from ..core import conversations
+        cid = getattr(self._transcript, "conversation", "")
+        try:
+            earlier = conversations.user_lines_before(cid, self._started_wall) if cid else []
+        except Exception:  # noqa: BLE001 -- the session's own turns still go
+            earlier = []
+        return earlier + groups
+
     async def _check_dispute(self) -> None:
         """The user says her result is wrong (voice/escalation.py): arm the
         self-check for her next tool result, or hand the job over the second time."""
@@ -1325,6 +1475,7 @@ class GeminiLiveSession:
             elif seen_user:
                 said.append(entry["text"])
         reply = " ".join("".join(reversed(said)).split())
+        groups = await asyncio.to_thread(self._escalation_turns, groups)
         goal = await asyncio.to_thread(self._escalator.disputed, time.monotonic(), groups, reply)
         if goal:
             await self._escalate(goal)
@@ -1350,6 +1501,7 @@ class GeminiLiveSession:
             while True:
                 self._escalation_again = False
                 groups, reply = self._user_turns()
+                groups = await asyncio.to_thread(self._escalation_turns, groups)
                 goal = await asyncio.to_thread(self._escalator.due, time.monotonic(), groups, reply)
                 if goal:
                     await self._escalate(goal)
@@ -1409,6 +1561,23 @@ class GeminiLiveSession:
         finally:
             self._claim_check = None
 
+    # Results that mean the job is not done (yet): a background start, or a
+    # call refused or not sent. Only a turn with one of these is compared.
+    _NOT_DONE_RESULT = re.compile(r'"status": "started"|^(Not run|NOT run|Not executed|Input NOT sent)|NOT verified'
+                                  r'|failed|stopped before', re.I)
+
+    async def _check_overclaim(self, reply: str, since: float) -> None:
+        """Her reply against what the calls behind it returned (escalation.
+        jev_overclaims): when it says more, she corrects it at once."""
+        after = time.time() - (time.monotonic() - since)
+        results = [f"{e['action']}: {'ok' if e['ok'] else 'failed'}: {str(e.get('message') or '')[:240]}"
+                   for e in self._action_log if e.get("ts", 0) >= after]
+        if not any(self._NOT_DONE_RESULT.search(r.split(": ", 2)[-1]) for r in results):
+            return
+        if await asyncio.to_thread(escalation.jev_overclaims, reply, results):
+            log.info("Over-claim: %r beyond results %s; she corrects it", reply[:120], [r[:80] for r in results])
+            self._announcements.put_nowait({"notice": escalation.overclaim_notice(results)})
+
     async def _judge_claim(self) -> None:
         mark, since = self._claim_mark, self._claim_since
         await asyncio.sleep(self.CLAIM_SETTLE_SECONDS)
@@ -1424,19 +1593,51 @@ class GeminiLiveSession:
             return  # nothing said, or a call still runs: the turn that reports it is the one to judge
         self._claim_checked = mark  # each user turn is judged once
         acted = [tool for tool, args, at in self._executed if at >= since and not switchboard._reads(tool, args)]
+        if acted:
+            await self._check_overclaim(reply, since)
         if (acted or (self._jev_done and self._jev_done[2] >= since) or self._fast_judging
                 or (self._proactive_task_turn and self._proactive_task_turn in groups[-1])
                 or not self._escalator.claimable(time.monotonic())):
             return  # something that acts ran for these words, or the job was just handed over
         if await asyncio.to_thread(self._task_running):
             return
+        groups = await asyncio.to_thread(self._escalation_turns, groups)
         goal, evidence = await asyncio.to_thread(self._escalator.unbacked, time.monotonic(), groups, reply, since)
         if not goal:
             log.info("Unbacked claim: none in %r -> %r evidence=%s", groups[-1][:120], reply[:120], evidence)
+            if (evidence.get("asks_action", 0) >= escalation.ASKS_ACTION_P
+                    and evidence.get("needs_tool", 1) >= escalation.NEEDS_TOOL_P
+                    and evidence.get("claims_action", 0) >= escalation.ACK_CLAIM_P):
+                # 2026-10-20 01:56: "On it!" (claims 0.65) and nothing else; the turn ended there.
+                log.info("Acknowledged without acting: %r; sending her back to it", reply[:80])
+                self._announcements.put_nowait({"notice": escalation.ACK_NOTICE})
+                return
+            await self._check_untried(groups, reply, since)
             return
         log.info("Unbacked claim: %r -> %r with no tool that acts; handing it over evidence=%s", groups[-1][:120],
                  reply[:120], evidence)
         await self._escalate(goal, unbacked=True)
+
+    async def _check_untried(self, groups: list[str], reply: str, since: float) -> None:
+        """She said she can't (or handed part of the job back to the user)
+        and nothing she tried for it failed: tell her which of her tools do
+        it, so she tries. 2026-10-20 01:06: after only list_windows, "I
+        can't read the conversation or decide what to send; tell me"."""
+        failed = any(f.at >= since for f in self._escalator._failures)
+        if failed or not groups:
+            return  # a real failure: escalation.Escalator handles that
+        if not await asyncio.to_thread(escalation.jev_handed_back, reply, groups[-1]):
+            return
+        try:
+            need = " / ".join(groups[-3:])[-600:]
+            tools = await asyncio.to_thread(lambda: catalog.suggest(
+                need, myapi_on=getattr(self.config, "myapi_enabled", False) and myapi.is_connected()))
+        except Exception as exc:  # noqa: BLE001 -- no suggestions: say nothing
+            log.warning("untried check: no tool suggestions: %s", str(exc)[:160])
+            return
+        log.info("Gave up untried: %r -> %r; suggesting %s", groups[-1][:120], reply[:120],
+                 [t["name"] for t in tools])
+        self._announcements.put_nowait({"notice": escalation.untried_notice(reply, tools)})
 
     async def _read_skill_wanted(self, call, result: ActionResult, heard: str, asked: str,
                                  request: str) -> ActionResult | None:
@@ -1466,6 +1667,12 @@ class GeminiLiveSession:
                                   "instead of only read: " + started.message)
 
     async def _escalate(self, goal: str, proactive: bool = False, unbacked: bool = False) -> None:
+        if not proactive:
+            groups = await asyncio.to_thread(self._escalation_turns, self._user_turns()[0])
+            if await asyncio.to_thread(escalation.jev_wants_self, groups):
+                log.info("Escalation held: the user wants her to do it herself: session=%s", self._audit_session)
+                self._announcements.put_nowait({"notice": escalation.persist_notice(goal)})
+                return
         log.info("Escalating to the Task Runtime: session=%s goal=%r", self._audit_session, goal[:600])
         self._as_speaker()  # the task runs as them (runtime/runtime.py)
         result = await self._tool("start_task", {"goal": goal}, run_action, guarded=False)
@@ -1482,12 +1689,25 @@ class GeminiLiveSession:
                  " (added to the task already doing this job)" if started.get("existing") else "")
         self._announcements.put_nowait({"notice": escalation.notice(task_id, bool(started.get("existing")), proactive,
                                                                     unbacked)})
+        if not proactive and not started.get("existing"):
+            await asyncio.to_thread(escalation.report_failure, self.config, {
+                "task_id": task_id, "session": self._audit_session,
+                "conversation": getattr(self._transcript, "conversation", "") or "",
+                "unbacked": unbacked, "brief": goal,
+                "recent_results": [{k: e.get(k) for k in ("action", "args", "ok", "message")}
+                                   for e in self._action_log[-12:]]})
 
     def _switchboard_context(self) -> switchboard.Context:
         """The user's latest words, a few earlier turns, the fast pass's
         route for them, and the calls the model made since."""
         groups, _ = self._user_turns()
         request = groups[-1] if groups else ""
+        # A typed phone message is a session of its own: without the
+        # conversation's earlier lines Jev judged "תנסי" ("try it") alone and
+        # refused the shortcut she had just offered (2026-10-29 21:19).
+        before_users, before_reply = self._conversation_before()
+        earlier = (before_users + groups[:-1])[-3:]
+        said = self._reply_before_request() or (before_reply if len(groups) <= 1 else "")
         if not request and self._announcements_said:
             request = "(no user words: the assistant is reporting a scheduled result) " + self._announcements_said[-1]
         hint = self._route_hint
@@ -1497,12 +1717,45 @@ class GeminiLiveSession:
         calls = [(name, args) for name, args, at in self._gemini_inflight if at >= since]
         # Her last call, when it failed (not one Jev itself sent back): what she
         # does next is recovery, whatever the user's latest words were.
-        ran = [e for e in self._action_log[-6:] if not str(e.get("message", "")).startswith(_SENT_BACK)]
+        ran = [e for e in self._action_log[-12:] if not str(e.get("message", "")).startswith(_SENT_BACK)]
         last = ran[-1] if ran else None
         failed = ({"tool": last["action"], "args": last["args"], "error": last["message"]}
                   if last and not last["ok"] and time.time() - last.get("ts", 0) < 180 else None)
-        return switchboard.Context(request, groups[-4:-1], {k: hint[k] for k in ("route", "p")} if hint else None,
-                                   calls, failed=failed, origin=self._origin() or None)
+        # Every tool that genuinely failed for this job lately: another tool
+        # after them is her recovering (voice/switchboard.py decide).
+        failed_tools = frozenset(
+            (str(e["args"].get("name")) if e["action"] == "use_tool" and isinstance(e.get("args"), dict)
+             and e["args"].get("name") else e["action"])
+            for e in ran if not e["ok"] and time.time() - e.get("ts", 0) < 300
+            and not str(e.get("message", "")).startswith(("Not run", "NOT run", "Not executed", "Input NOT sent")))
+        return switchboard.Context(request, earlier, {k: hint[k] for k in ("route", "p")} if hint else None,
+                                   calls, failed=failed, failed_tools=failed_tools, origin=self._origin() or None,
+                                   assistant_said=said)
+
+    def _conversation_before(self) -> tuple[list[str], str]:
+        """The user's lines and her last reply in this conversation before
+        this session began (read once: they do not change)."""
+        if self._before is None:
+            from ..core import conversations
+            cid = getattr(self._transcript, "conversation", "")
+            try:
+                self._before = ((conversations.user_lines_before(cid, self._started_wall),
+                                 conversations.assistant_line_before(cid, self._started_wall)) if cid else ([], ""))
+            except Exception:  # noqa: BLE001 -- the session's own turns still go
+                self._before = ([], "")
+        return self._before
+
+    def _reply_before_request(self) -> str:
+        """What she said in this session between the user's last two turns."""
+        said, seen_user = [], False
+        for entry in reversed(self._transcript):
+            if entry["role"] == "user":
+                if said:
+                    break
+                seen_user = True
+            elif seen_user and entry["role"] == "assistant":
+                said.append(entry["text"])
+        return " ".join("".join(reversed(said)).split())
 
     def _origin(self) -> dict:
         """Where the request being handled came from (core/origin.py), None
@@ -1533,6 +1786,19 @@ class GeminiLiveSession:
         log.info("Catalog: call=%s request=%r -> %s %s", call.id, (call.args or {}).get("request", "")[:120],
                  pick.tool if pick.run else "offer", pick.evidence)
         return pick
+
+    @staticmethod
+    def _still_asking(entry: dict) -> bool:
+        """The task still waits on this question (its id, when the entry has one)."""
+        try:
+            from ..runtime import asking
+            from ..runtime.task import WAITING_USER, TaskStore
+            task = TaskStore().load(str(entry.get("task_id") or ""))
+        except Exception:  # noqa: BLE001 -- when unsure, ask it
+            return True
+        if task is None:
+            return True
+        return task.status == WAITING_USER and entry.get("question_id") in (None, asking.question_id(task))
 
     @staticmethod
     def _still_waiting(entry: dict) -> bool:
@@ -1633,6 +1899,23 @@ class GeminiLiveSession:
 
     MAX_SAME_REFUSAL = 2  # the same call, sent back twice: the third answer says stop
 
+    def _heard_better(self, name: str, args: dict, verdict: switchboard.Verdict) -> bool:
+        """A house action (a user tool, reversible, nothing sent anywhere)
+        that Jev sent back as not asked, and she sends again unchanged in the
+        same turn: run it. She hears the audio, Jev reads its transcript.
+        Live 2026-10-28 19:36: "now turn it off" was transcribed "עכשיו תקבי
+        אותו" (תקבי for תכבי); eleven calls in 24 s were sent back until the
+        switchboard was unreachable and the light went off. Replayed, Jev
+        rejects that transcript even given the light she had just turned on."""
+        if verdict.action != "reject" or verdict.evidence.get("gap") != "not_asked":
+            return False
+        if not user_tools.exists(name) or effect_class(name) == "irreversible" or writes_externally(name, args):
+            return False
+        if self._refused_turn != self._last_user_speech:
+            return False
+        key = json.dumps([name, args], sort_keys=True, ensure_ascii=False, default=str)
+        return self._refused.get(key, 0) >= 1
+
     def _sent_back(self, name: str, args: dict, message: str) -> ActionResult:
         """A call Jev sent back (reject or ask). Journal 2026-10-07 21:01: the
         same terminal_task came back nine times in seven seconds, each time
@@ -1728,6 +2011,10 @@ class GeminiLiveSession:
                 early = (asyncio.create_task(self._tool(tool, args, run_action, call.id))
                          if tool in switchboard.READ_ONLY else None)
                 verdict = await review
+                if self._heard_better(tool, args, verdict):
+                    log.info("Switchboard: call=%s %s sent again unchanged after a not-asked reject; running it "
+                             "(she heard the audio, the transcript may be misheard)", call.id, tool)
+                    verdict = switchboard.Verdict("execute", tool, args, evidence={**verdict.evidence, "insisted": True})
                 name, prefix = tool, ""
                 if verdict.action == "reroute":
                     name, args, prefix = verdict.tool, verdict.args, verdict.message + " "
@@ -2334,6 +2621,7 @@ class GeminiLiveSession:
                 self._tv_mic = None
             from ..execution.browser_jev import cancel_browser_tasks
             cancel_browser_tasks()
+            self._release_house_calls()
             runner.default_runner().cancel(owner=self, reason="the conversation ended")
             self._hangup.set()
             for task in tasks:

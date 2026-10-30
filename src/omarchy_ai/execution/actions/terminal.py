@@ -144,6 +144,8 @@ def terminal_sudo(args: dict) -> ActionResult:
     screen = workbench.read(name, 6, settle=False) if workbench.exists(name) else None
     prompt = next((line for line in reversed((screen.message if screen and screen.ok else "").lower().splitlines())
                    if line.strip()), "")
+    remote_session = bool(screen and screen.ok and re.search(
+        r"(?m)^.*(?:^|[\s$])(?:ssh|mosh)(?:\s|$)", screen.message))
     if "password" in prompt and "[sudo]" not in prompt:  # "user@host's password:", not "[sudo] password for"
         password = passwords.ssh_password()
         if password is None:
@@ -151,6 +153,16 @@ def terminal_sudo(args: dict) -> ActionResult:
                                        "one in Assistant Settings > Sudo Access")
         submitted = workbench.submit_password(name, password)
         return ActionResult(submitted.ok, "password submitted to the login prompt" if submitted.ok else submitted.message)
+    if remote_session and "password" in prompt:
+        # A sudo prompt produced inside ssh belongs to the remote account. The
+        # password the user supplied for that login is kept in the local
+        # keyring; MyApi's network token vault is unrelated and may be offline.
+        password = passwords.ssh_password()
+        if password is None:
+            return ActionResult(False, "no password is saved locally for the remote sudo prompt")
+        submitted = workbench.submit_password(name, password)
+        return ActionResult(submitted.ok, "password submitted to the remote sudo prompt"
+                            if submitted.ok else submitted.message)
     if not load_config().sudo_access_enabled:
         return ActionResult(False, "persistent Sudo Access is disabled in Assistant Settings")
     if not workbench.exists(name):

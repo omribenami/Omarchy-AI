@@ -35,6 +35,15 @@ def run_bounded(mode, command, *, stdin=None, env=None, timeout=15):
 
 
 class BoundedStdioTests(unittest.TestCase):
+    def test_panel_allows_buffered_helper_output_to_arrive_after_process_exit(self):
+        panel = PANEL.read_text()
+        self.assertIn("id: settingsExitTimer", panel)
+        self.assertIn("interval: 2000", panel)
+        self.assertNotIn("interval: 250", panel)
+        self.assertIn("id: settingsStdout", panel)
+        self.assertIn("root._finishSettingsOutput(settingsStdout.text)", panel)
+        self.assertNotIn('error: "Settings helper exited without a response"', panel)
+
     def test_script_is_executable_and_pins_the_supervisor(self):
         mode = SCRIPT.stat().st_mode
         self.assertTrue(mode & stat.S_IXUSR)

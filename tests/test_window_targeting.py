@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+import no_live_desktop  # noqa: F401 -- run alone too: no real notification, push or desktop command
 from omarchy_ai.execution import actions, browser_jev
 from omarchy_ai.execution.actions import ActionResult
 

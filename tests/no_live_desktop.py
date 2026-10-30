@@ -176,6 +176,8 @@ subprocess.Popen.__init__ = _guarded_init  # type: ignore[method-assign]
 # STATE_DIR is the user's own. pytest isolates STATE_DIR per test already.
 from omarchy_ai import config as _config  # noqa: E402
 from omarchy_ai.core import outbox as _outbox  # noqa: E402
+from omarchy_ai.core import identities as _identities  # noqa: E402
+from omarchy_ai.myapi import vault as _vault  # noqa: E402
 
 if _config.STATE_DIR == Path("~/.local/state/omarchy-ai").expanduser():
     _outbox.LEDGER_PATH = (
@@ -221,6 +223,14 @@ def _loopback(address) -> bool:
         return ipaddress.ip_address(host.split("%")[0]).is_loopback
     except ValueError:
         return False  # a host name other than localhost
+
+
+# The user's household (who owns MyApi, whose voice and phone are whose)
+# changes what a test is allowed to do; tests start from nobody set up.
+_identities.PATH = Path(tempfile.mkdtemp(prefix="omarchy-test-identities-")) / "identities.json"
+# Which vault values this machine handed out (masked in every log line).
+_revealed = Path(tempfile.mkdtemp(prefix="omarchy-test-vault-")) / "vault_revealed.json"
+_vault._revealed_path = lambda: _revealed
 
 
 _real_connect = socket.socket.connect

@@ -165,3 +165,44 @@ class BrowserControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SendCheckTests(unittest.TestCase):
+    """2026-10-20 01:29-01:32: ten tries into an 'Edit code' box; Enter pressed while a reply streamed."""
+
+    def setUp(self):
+        bc._FAILED_FIELDS.clear()
+        self.addCleanup(bc._FAILED_FIELDS.clear)
+
+    def test_a_box_where_enter_sent_nothing_twice_is_not_offered_again(self):
+        fields = [{"id": "e0", "text": "Edit code", "disabled": False},
+                  {"id": "e1", "text": "Ask ChatGPT", "disabled": False}]
+        tab = {"url": "https://chat.example/c/1", "ws": "ws://x"}
+        bc._FAILED_FIELDS[("https://chat.example/c/1", "Edit code")] = 2
+        seen = {}
+
+        def pick(words, options, what, jev):
+            seen.update(options)
+            return next(iter(options)), "test"
+        with patch.object(bc, "_eval", return_value=fields), \
+                patch.object(bc, "_pick", side_effect=pick):
+            bc._element(tab, "the input field", "field", None)
+        self.assertEqual(list(seen.values()), ["Ask ChatGPT"])
+
+    def test_new_text_is_what_the_page_appended(self):
+        self.assertEqual(bc._new_text("A: hi\nYou:", "A: hi\nYou: q\nA: answer"), " q A: answer")
+
+    def test_enter_that_left_the_text_in_the_box_is_reported_not_sent(self):
+        tab = {"url": "https://chat.example/c/1", "ws": "ws://x"}
+        with patch.object(bc, "_eval", return_value="my message is still here"), patch.object(bc.time, "sleep"):
+            result = bc.after_enter(tab, "my message is still here", "before")
+        self.assertFalse(result.ok)
+        self.assertIn("NOT sent", result.message)
+
+    def test_enter_that_sent_reports_what_the_page_added(self):
+        tab = {"url": "https://chat.example/c/1", "ws": "ws://x"}
+        with patch.object(bc, "_eval", return_value=""), patch.object(bc.time, "sleep"), \
+                patch.object(bc, "_settle", return_value=("A: hi You: q A: answer", True)):
+            result = bc.after_enter(tab, "q", "A: hi")
+        self.assertTrue(result.ok)
+        self.assertIn("answer", result.message)
